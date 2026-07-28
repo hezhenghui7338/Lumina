@@ -27,7 +27,9 @@ fi
 echo "==> Building Lumina.app (Release)…"
 if ! xcodebuild -version >/dev/null 2>&1; then
   echo "ERROR: 需要完整 Xcode（非仅 Command Line Tools）。" >&2
-  echo "       请安装 Xcode 后重试，或从 App Store 安装。" >&2
+  echo "       macOS 15 请从 Apple 开发者网站下载 Xcode 16.x（勿装 App Store 最新版，可能要求 macOS 26+）。" >&2
+  echo "       https://developer.apple.com/download/all/" >&2
+  echo "       或使用 GitHub Actions：Actions → Release → Run workflow" >&2
   exit 1
 fi
 mkdir -p "$DERIVED"
