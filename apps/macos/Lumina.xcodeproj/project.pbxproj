@@ -1,0 +1,358 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 56;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		A1000101 /* LuminaApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000201 /* LuminaApp.swift */; };
+		A1000102 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000202 /* ContentView.swift */; };
+		A1000103 /* ReaderView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000203 /* ReaderView.swift */; };
+		A1000104 /* CoreClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000204 /* CoreClient.swift */; };
+		A1000105 /* SidecarManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000205 /* SidecarManager.swift */; };
+		A1000106 /* DesignSystem.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000206 /* DesignSystem.swift */; };
+		A1000107 /* ThemeManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000207 /* ThemeManager.swift */; };
+		A1000108 /* SearchView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000208 /* SearchView.swift */; };
+		A1000109 /* NewsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000209 /* NewsView.swift */; };
+		A1000110 /* NewsArticleView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000210 /* NewsArticleView.swift */; };
+		A1000111 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000211 /* SettingsView.swift */; };
+		A1000112 /* NotesPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000212 /* NotesPanel.swift */; };
+		A1000113 /* ExportSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000213 /* ExportSheet.swift */; };
+		A1000114 /* OnboardingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000214 /* OnboardingView.swift */; };
+		A1000115 /* OllamaSetupHelper.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000215 /* OllamaSetupHelper.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		A1000201 /* LuminaApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LuminaApp.swift; sourceTree = "<group>"; };
+		A1000202 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
+		A1000203 /* ReaderView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderView.swift; sourceTree = "<group>"; };
+		A1000204 /* CoreClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoreClient.swift; sourceTree = "<group>"; };
+		A1000205 /* SidecarManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SidecarManager.swift; sourceTree = "<group>"; };
+		A1000206 /* DesignSystem.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignSystem.swift; sourceTree = "<group>"; };
+		A1000207 /* ThemeManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ThemeManager.swift; sourceTree = "<group>"; };
+		A1000208 /* SearchView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SearchView.swift; sourceTree = "<group>"; };
+		A1000209 /* NewsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NewsView.swift; sourceTree = "<group>"; };
+		A1000210 /* NewsArticleView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NewsArticleView.swift; sourceTree = "<group>"; };
+		A1000211 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
+		A1000212 /* NotesPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotesPanel.swift; sourceTree = "<group>"; };
+		A1000213 /* ExportSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExportSheet.swift; sourceTree = "<group>"; };
+		A1000214 /* OnboardingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingView.swift; sourceTree = "<group>"; };
+		A1000215 /* OllamaSetupHelper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OllamaSetupHelper.swift; sourceTree = "<group>"; };
+		A1000301 /* Lumina.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Lumina.app; sourceTree = BUILT_PRODUCTS_DIR; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		A1000401 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		A1000501 = {
+			isa = PBXGroup;
+			children = (
+				A1000502 /* Lumina */,
+				A1000503 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		A1000502 /* Lumina */ = {
+			isa = PBXGroup;
+			children = (
+				A1000201 /* LuminaApp.swift */,
+				A1000202 /* ContentView.swift */,
+				A1000507 /* Design */,
+				A1000504 /* Features */,
+				A1000505 /* Services */,
+			);
+			path = Lumina;
+			sourceTree = "<group>";
+		};
+		A1000503 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				A1000301 /* Lumina.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		A1000504 /* Features */ = {
+			isa = PBXGroup;
+			children = (
+				A1000506 /* Reader */,
+				A1000508 /* News */,
+				A1000509 /* Search */,
+				A1000510 /* Settings */,
+				A1000511 /* Onboarding */,
+			);
+			path = Features;
+			sourceTree = "<group>";
+		};
+		A1000505 /* Services */ = {
+			isa = PBXGroup;
+			children = (
+				A1000204 /* CoreClient.swift */,
+				A1000205 /* SidecarManager.swift */,
+				A1000215 /* OllamaSetupHelper.swift */,
+			);
+			path = Services;
+			sourceTree = "<group>";
+		};
+		A1000506 /* Reader */ = {
+			isa = PBXGroup;
+			children = (
+				A1000203 /* ReaderView.swift */,
+				A1000212 /* NotesPanel.swift */,
+				A1000213 /* ExportSheet.swift */,
+			);
+			path = Reader;
+			sourceTree = "<group>";
+		};
+		A1000507 /* Design */ = {
+			isa = PBXGroup;
+			children = (
+				A1000206 /* DesignSystem.swift */,
+				A1000207 /* ThemeManager.swift */,
+			);
+			path = Design;
+			sourceTree = "<group>";
+		};
+		A1000508 /* News */ = {
+			isa = PBXGroup;
+			children = (
+				A1000209 /* NewsView.swift */,
+				A1000210 /* NewsArticleView.swift */,
+			);
+			path = News;
+			sourceTree = "<group>";
+		};
+		A1000509 /* Search */ = {
+			isa = PBXGroup;
+			children = (
+				A1000208 /* SearchView.swift */,
+			);
+			path = Search;
+			sourceTree = "<group>";
+		};
+		A1000510 /* Settings */ = {
+			isa = PBXGroup;
+			children = (
+				A1000211 /* SettingsView.swift */,
+			);
+			path = Settings;
+			sourceTree = "<group>";
+		};
+		A1000511 /* Onboarding */ = {
+			isa = PBXGroup;
+			children = (
+				A1000214 /* OnboardingView.swift */,
+			);
+			path = Onboarding;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		A1000601 /* Lumina */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = A1000703 /* Build configuration list for PBXNativeTarget "Lumina" */;
+			buildPhases = (
+				A1000801 /* Sources */,
+				A1000401 /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = Lumina;
+			productName = Lumina;
+			productReference = A1000301 /* Lumina.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		A1000901 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 1500;
+				LastUpgradeCheck = 1500;
+				TargetAttributes = {
+					A1000601 = {
+						CreatedOnToolsVersion = 15.0;
+					};
+				};
+			};
+			buildConfigurationList = A1000701 /* Build configuration list for PBXProject "Lumina" */;
+			compatibilityVersion = "Xcode 14.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = A1000501;
+			productRefGroup = A1000503 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				A1000601 /* Lumina */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXSourcesBuildPhase section */
+		A1000801 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A1000101 /* LuminaApp.swift in Sources */,
+				A1000102 /* ContentView.swift in Sources */,
+				A1000103 /* ReaderView.swift in Sources */,
+				A1000104 /* CoreClient.swift in Sources */,
+				A1000105 /* SidecarManager.swift in Sources */,
+				A1000106 /* DesignSystem.swift in Sources */,
+				A1000107 /* ThemeManager.swift in Sources */,
+				A1000108 /* SearchView.swift in Sources */,
+				A1000109 /* NewsView.swift in Sources */,
+				A1000110 /* NewsArticleView.swift in Sources */,
+				A1000111 /* SettingsView.swift in Sources */,
+				A1000112 /* NotesPanel.swift in Sources */,
+				A1000113 /* ExportSheet.swift in Sources */,
+				A1000114 /* OnboardingView.swift in Sources */,
+				A1000115 /* OllamaSetupHelper.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		A1000A01 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"DEBUG=1",
+					"$(inherited)",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				ONLY_ACTIVE_ARCH = YES;
+				SDKROOT = macosx;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)";
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+			};
+			name = Debug;
+		};
+		A1000A02 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_OPTIMIZATION_LEVEL = s;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				SDKROOT = macosx;
+				SWIFT_COMPILATION_MODE = wholemodule;
+			};
+			name = Release;
+		};
+		A1000A03 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_IDENTITY = "-";
+				CODE_SIGN_STYLE = Automatic;
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = "";
+				ENABLE_APP_SANDBOX = NO;
+				ENABLE_HARDENED_RUNTIME = NO;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.lumina.app;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		A1000A04 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_IDENTITY = "-";
+				CODE_SIGN_STYLE = Automatic;
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = "";
+				ENABLE_APP_SANDBOX = NO;
+				ENABLE_HARDENED_RUNTIME = NO;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.lumina.app;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		A1000701 /* Build configuration list for PBXProject "Lumina" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A1000A01 /* Debug */,
+				A1000A02 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		A1000703 /* Build configuration list for PBXNativeTarget "Lumina" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A1000A03 /* Debug */,
+				A1000A04 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = A1000901 /* Project object */;
+}

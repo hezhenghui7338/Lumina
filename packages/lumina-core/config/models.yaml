@@ -1,0 +1,20 @@
+chat:
+  provider: ollama
+  model: qwen3.5:4b
+  base_url: http://localhost:11434
+
+summarize:
+  provider: ollama
+  model: qwen3.5:4b
+  base_url: http://localhost:11434
+
+translate:
+  provider: ollama
+  model: qwen3.5:4b
+  base_url: http://localhost:11434
+
+job_concurrency:
+  ocr: 1
+  segment: 1
+  ollama: 1
+  cloud: 4
