@@ -16,7 +16,7 @@
 |------|------|------|
 | macOS 14+（Apple Silicon / Intel） | 约 200 MB 安装包 + 首次 AI 模型 ~3 GB | **[GitHub Releases 下载 DMG](https://github.com/hezhenghui7338/Lumina/releases/latest)** |
 
-若链接尚未发布，请让维护者运行 `./scripts/build-release.sh` 生成 `dist/Lumina-*-macOS.dmg` 后上传。
+Release 页提供 **Lumina-0.1.0-macOS.dmg**（由 GitHub Actions 自动构建）。若尚未上传 DMG，见下方「维护者构建」。
 
 ### 安装（两步）
 
@@ -105,14 +105,26 @@ just test-live     # 需本机 Ollama
 
 ### 打开发布包（给普通用户）
 
-在**有 Xcode 的机器**上执行：
+**推荐：GitHub Actions（无需本机 Xcode）**
+
+1. 打开仓库 **Actions → Release → Run workflow**
+2. 输入版本号（如 `0.1.0`）运行
+3. 在 Artifacts 或 tag Release 中下载 DMG
+
+**本机构建（需与 macOS 版本匹配的 Xcode）**
+
+macOS 15 用户：**不要**从 App Store 装最新 Xcode（可能要求 macOS 26+）。请从 [Apple 开发者下载页](https://developer.apple.com/download/all/) 安装 **Xcode 16.x**（支持 macOS 15）。
 
 ```bash
 ./scripts/build-release.sh
 # 产出：dist/Lumina-0.1.0-macOS.dmg 与 .zip
 ```
 
-脚本会：PyInstaller 打包 `lumina-core` → Release 编译 `Lumina.app` → 内嵌引擎 → 生成 DMG/ZIP。详见 [docs/RELEASE.md](docs/RELEASE.md)。
+打 tag 推送后会自动构建并上传到 Release：
+
+```bash
+git tag v0.1.1 && git push origin v0.1.1
+```
 
 ### 文档
 
