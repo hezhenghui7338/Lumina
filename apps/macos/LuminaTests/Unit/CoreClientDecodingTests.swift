@@ -101,6 +101,7 @@ final class CoreClientDecodingTests: XCTestCase {
         let data = try loadFixture("settings_default")
         let settings = try JSONDecoder().decode(AppSettings.self, from: data)
         XCTAssertEqual(settings.target_language, "zh-CN")
+        XCTAssertFalse(settings.debug_mode)
         XCTAssertEqual(settings.models.resource(id: "ollama")?.model, "qwen3.5:4b")
         XCTAssertEqual(settings.models.resource(id: "openai")?.base_url, "https://api.openai.com/v1")
         XCTAssertEqual(settings.models.chat.priority, ["openai", "ollama"])
@@ -144,5 +145,60 @@ final class CoreClientDecodingTests: XCTestCase {
         XCTAssertEqual(result.warnings.count, 1)
         XCTAssertEqual(result.body_text, "推理成本显著下降。云厂商集体降价。")
         XCTAssertTrue(result.body_complete)
+    }
+
+    func testBookSummary_decodesSummarizeActiveAndSegmentMetrics() throws {
+        let json = """
+        {
+          "books": [{
+            "id": "b1",
+            "title": "Sample",
+            "status": "reading",
+            "segment_count": 5,
+            "summary_ready_count": 2,
+            "summary_total_count": 5,
+            "summarize_active": {
+              "segment_idx": 2,
+              "started_at": "2026-07-29T12:00:00+00:00",
+              "llm_attempt": 2,
+              "max_llm_attempts": 2
+            }
+          }]
+        }
+        """
+        let resp = try JSONDecoder().decode(BooksListResponse.self, from: json.data(using: .utf8)!)
+        XCTAssertEqual(resp.books[0].summarize_active?.segment_idx, 2)
+        XCTAssertEqual(resp.books[0].summarize_active?.llm_attempt, 2)
+        XCTAssertEqual(resp.books[0].summarize_active?.max_llm_attempts, 2)
+        XCTAssertNotNil(resp.books[0].summarize_active?.startedAtDate)
+    }
+
+    func testSegmentRow_decodesSummaryMetrics() throws {
+        let json = """
+        {
+          "id": "s1",
+          "idx": 0,
+          "summary_status": "ready",
+          "retry_count": 0,
+          "summary_duration_s": 62.5,
+          "summary_llm_attempts": 2
+        }
+        """
+        let segment = try JSONDecoder().decode(SegmentRow.self, from: json.data(using: .utf8)!)
+        XCTAssertEqual(segment.summary_duration_s, 62.5)
+        XCTAssertEqual(segment.summary_llm_attempts, 2)
+    }
+
+    func testSummaryMetricsFormatter_formatsDurationAndAttempts() {
+        XCTAssertEqual(SummaryMetricsFormatter.duration(seconds: 45), "45s")
+        XCTAssertEqual(SummaryMetricsFormatter.duration(seconds: 62), "1m 2s")
+        XCTAssertEqual(
+            SummaryMetricsFormatter.attemptLabel(attempt: 2, maxAttempts: 2),
+            "第 2/2 次尝试"
+        )
+        XCTAssertEqual(
+            SummaryMetricsFormatter.completedMetricsLabel(durationS: 62, llmAttempts: 2),
+            "1m 2s · 2 次尝试"
+        )
     }
 }

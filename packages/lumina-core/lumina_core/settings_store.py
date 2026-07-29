@@ -88,6 +88,7 @@ def settings_public_dict(settings: Settings) -> dict[str, Any]:
         "target_language": settings.target_language,
         "web_search_provider": normalize_web_search_provider(settings.web_search_provider),
         "tavily_api_key": API_KEY_MASK if settings.tavily_api_key else None,
+        "debug_mode": settings.debug_mode,
     }
 
 

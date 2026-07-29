@@ -161,14 +161,14 @@ class BookRepo:
 _SEGMENT_META_COLUMNS = (
     "id, book_id, idx, chapter, page_range, anchor_label, char_count, "
     "summary_json, label, summary_status, retry_count, "
-    "summary_provider, summary_model"
+    "summary_provider, summary_model, summary_duration_s, summary_llm_attempts"
 )
 
 # Export: summary + translation without loading raw_text.
 _SEGMENT_EXPORT_COLUMNS = (
     "id, book_id, idx, chapter, page_range, anchor_label, char_count, "
     "summary_json, label, summary_status, retry_count, "
-    "summary_provider, summary_model, translation"
+    "summary_provider, summary_model, summary_duration_s, summary_llm_attempts, translation"
 )
 
 
@@ -255,12 +255,15 @@ class SegmentRepo:
         status: str = "ready",
         summary_provider: str | None = None,
         summary_model: str | None = None,
+        summary_duration_s: float | None = None,
+        summary_llm_attempts: int | None = None,
     ) -> None:
         self.conn.execute(
             """
             UPDATE segments SET summary_json = ?, label = ?, anchor_label = COALESCE(?, anchor_label),
             summary_status = ?, retry_count = 0,
-            summary_provider = ?, summary_model = ?
+            summary_provider = ?, summary_model = ?,
+            summary_duration_s = ?, summary_llm_attempts = ?
             WHERE id = ?
             """,
             (
@@ -270,6 +273,8 @@ class SegmentRepo:
                 status,
                 summary_provider,
                 summary_model,
+                summary_duration_s,
+                summary_llm_attempts,
                 segment_id,
             ),
         )

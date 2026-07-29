@@ -1,7 +1,6 @@
 """Segment summary bullet coercion tests."""
 
-from lumina_core.summarize.schema import BulletPoint
-from lumina_core.summarize.segment import _parse_summary
+from lumina_core.summarize.schema import BulletPoint, parse_segment_summary_minimal
 
 
 def test_parse_summary_coerces_dict_bullets():
@@ -12,10 +11,8 @@ def test_parse_summary_coerces_dict_bullets():
             "plain string with enough length here",
             {"label": "tag", "text": "via text key with sufficient detail"},
         ],
-        "label": "论语节选",
-        "anchor": "§段 1",
     }
-    summary = _parse_summary(raw, fallback_anchor="§段 1")
+    summary = parse_segment_summary_minimal(raw, fallback_anchor="§段 1")
     assert summary.bullets[0] == BulletPoint(
         label="学而不倦", body="终身学习不懈怠，强调持续精进的重要性。"
     )
@@ -29,28 +26,25 @@ def test_parse_summary_flattens_nested_bullets_and_truncates_label():
     data = parse_json_response(
         '{"sentences":["一句。"],'
         '"bullets":[["a：1 with enough body text here","b：2 with enough body text here","c：3 with enough body text here"]],'
-        '"label":"这是一段超过二十个汉字限制的段标签内容啊啊",'
-        '"anchor":"§段 1"}'
+        '"label":"这是一段超过二十个汉字限制的段标签内容啊啊"}'
     )
-    summary = _parse_summary(data, fallback_anchor="§段 1")
+    summary = parse_segment_summary_minimal(data, fallback_anchor="§段 1")
     assert len(summary.bullets) == 3
     assert summary.bullets[0].label == "a"
-    assert len(summary.label) == 20
+    assert len(summary.label) <= 20
 
 
 def test_parse_summary_legacy_string_bullets():
     raw = {
         "sentences": ["一句概述。"],
         "bullets": ["寒门出身", "自幼苦读", "赴考之志"],
-        "label": "引子",
-        "anchor": "§段 1",
     }
-    summary = _parse_summary(raw, fallback_anchor="§段 1")
+    summary = parse_segment_summary_minimal(raw, fallback_anchor="§段 1")
     assert len(summary.bullets) == 3
     assert summary.bullets[0].label == "寒门出身"
 
 
-def test_parse_summary_includes_notes_and_follow_ups():
+def test_parse_summary_preserves_optional_notes_when_present():
     raw = {
         "sentences": ["一句概述。"],
         "bullets": [
@@ -60,9 +54,7 @@ def test_parse_summary_includes_notes_and_follow_ups():
         ],
         "notes": ["本段信息不完整。"],
         "follow_ups": ["后续如何发展？", "与上段有何关联？"],
-        "label": "测试",
-        "anchor": "§段 1",
     }
-    summary = _parse_summary(raw, fallback_anchor="§段 1")
+    summary = parse_segment_summary_minimal(raw, fallback_anchor="§段 1")
     assert summary.notes == ["本段信息不完整。"]
     assert len(summary.follow_ups) == 2

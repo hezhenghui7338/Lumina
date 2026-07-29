@@ -8,6 +8,7 @@ from lumina_core.app_state import (
     BESTBLOGS_AI_EN,
     BESTBLOGS_AI_ZH,
     DEFAULT_NEWS_SOURCES,
+    OBSOLETE_NEWS_SOURCE_URLS,
     bestblogs_rss_url,
     default_rss_sources,
 )
@@ -45,7 +46,7 @@ AI 初评: 88  来源: ExampleBlog  作者: Alice  字数: 1200
 
 def test_bestblogs_default_sources_zh():
     urls = default_rss_sources("zh-CN")
-    assert len(urls) == len(DEFAULT_NEWS_SOURCES) == 16
+    assert len(urls) == len(DEFAULT_NEWS_SOURCES) == 3
     url_set = {u for u, _ in urls}
     assert BESTBLOGS_AI_ZH in url_set
     assert BESTBLOGS_AI_EN in url_set
@@ -71,7 +72,19 @@ def test_ensure_defaults_inserts_and_updates_titles(conn):
 def test_ensure_defaults_bulk_inserts_preset_sources(conn):
     repo = NewsSourceRepo(conn)
     repo.ensure_defaults(default_rss_sources())
-    assert len(repo.list_sources()) == 16
+    assert len(repo.list_sources()) == 3
+
+
+def test_prune_obsolete_presets_keeps_custom(conn):
+    repo = NewsSourceRepo(conn)
+    obsolete_url = next(iter(OBSOLETE_NEWS_SOURCE_URLS))
+    repo.add_source(obsolete_url, "Hacker News")
+    custom = repo.add_source("https://example.com/custom.xml", "My Feed")
+    repo.ensure_defaults(default_rss_sources())
+    urls = {r["url"] for r in repo.list_sources()}
+    assert obsolete_url not in urls
+    assert custom["url"] in urls
+    assert len(urls) == 4  # 3 BestBlogs presets + 1 custom
 
 
 def test_restore_defaults_keeps_custom_sources(conn):
@@ -80,13 +93,13 @@ def test_restore_defaults_keeps_custom_sources(conn):
     custom = repo.add_source("https://example.com/custom.xml", "My Feed")
     preset_id = repo.list_sources()[0]["id"]
     repo.delete_source(preset_id)
-    assert len(repo.list_sources()) == 16  # 15 presets + 1 custom
+    assert len(repo.list_sources()) == 3  # 2 presets + 1 custom
 
     restored = repo.restore_defaults(default_rss_sources())
     assert restored >= 1
     urls = {r["url"] for r in repo.list_sources()}
     assert custom["url"] in urls
-    assert len(urls) == 17
+    assert len(urls) == 4
 
 
 def test_parse_rss_summary_bestblogs_sections():

@@ -17,12 +17,13 @@ struct BookSummary: Codable, Identifiable, Hashable {
     var chunker_version: String?
     var language: String?
     var target_language: String?
+    var summarize_active: SummarizeActive?
 
     enum CodingKeys: String, CodingKey {
         case id, title, status, segment_count, is_favorite, category
         case last_opened_at, current_segment_index, author, created_at
         case total_char_count, summary_ready_count, summary_total_count, chunker_version
-        case language, target_language
+        case language, target_language, summarize_active
     }
 
     init(
@@ -41,7 +42,8 @@ struct BookSummary: Codable, Identifiable, Hashable {
         summary_total_count: Int? = nil,
         chunker_version: String? = nil,
         language: String? = nil,
-        target_language: String? = nil
+        target_language: String? = nil,
+        summarize_active: SummarizeActive? = nil
     ) {
         self.id = id
         self.title = title
@@ -59,6 +61,7 @@ struct BookSummary: Codable, Identifiable, Hashable {
         self.chunker_version = chunker_version
         self.language = language
         self.target_language = target_language
+        self.summarize_active = summarize_active
     }
 
     init(from decoder: Decoder) throws {
@@ -87,6 +90,7 @@ struct BookSummary: Codable, Identifiable, Hashable {
         chunker_version = try c.decodeIfPresent(String.self, forKey: .chunker_version)
         language = try c.decodeIfPresent(String.self, forKey: .language)
         target_language = try c.decodeIfPresent(String.self, forKey: .target_language)
+        summarize_active = try c.decodeIfPresent(SummarizeActive.self, forKey: .summarize_active)
     }
 
     var isFavorite: Bool { is_favorite ?? false }
@@ -101,7 +105,12 @@ struct BookSummary: Codable, Identifiable, Hashable {
         guard total > 0 else { return statusLabel }
         let ready = summaryReady
         if ready >= total { return "已摘要" }
-        return "\(statusLabel) · 摘要 \(ready)/\(total)"
+        var label = "\(statusLabel) · 摘要 \(ready)/\(total)"
+        if let active = summarize_active,
+           let activeLabel = SummaryMetricsFormatter.bookActiveLabel(active: active) {
+            label += " · \(activeLabel)"
+        }
+        return label
     }
 
     var isProcessing: Bool { status == "processing" }
@@ -180,6 +189,9 @@ struct SegmentRow: Codable, Identifiable, Hashable {
     var summary_provider: String?
     var summary_model: String?
     var char_count: Int?
+    var retry_count: Int?
+    var summary_duration_s: Double?
+    var summary_llm_attempts: Int?
 }
 
 struct ChatCitation: Codable {
@@ -227,6 +239,91 @@ struct ResourceStatus: Codable {
         let trimmed = message?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         return trimmed.isEmpty ? (ready ? "已就绪" : "未就绪") : trimmed
     }
+}
+
+// MARK: - Ops / DEBUG task management
+
+struct OpsTaskCounts: Codable {
+    let queued: Int
+    let running: Int
+    let paused: Int?
+    let completed: Int
+    let failed: Int
+    let cancelled: Int
+}
+
+struct OpsJobQueueDiagnostics: Codable {
+    let queue_depth: Int
+    let active_jobs: [OpsActiveJob]
+    let paused_backlog_depth: Int?
+    let worker_count: Int
+    let worker_target: Int
+    let chat_preempted: Bool
+    let user_paused_all: Bool
+    let user_paused_books: [String]
+}
+
+struct OpsActiveJob: Codable, Identifiable {
+    var id: String { job_key ?? "\(book_id)-\(segment_idx)-\(kind)" }
+    let book_id: String
+    let segment_idx: Int
+    let kind: String
+    let job_key: String?
+}
+
+struct OpsLastCall: Codable {
+    let resource_id: String?
+    let profile: String?
+    let started_at: String?
+    let duration_ms: Int?
+    let ok: Bool?
+    let error: String?
+}
+
+struct OpsOverview: Codable {
+    let task_counts: OpsTaskCounts
+    let job_queue: OpsJobQueueDiagnostics
+    let resource_runtime: [ResourceRuntimeRow]
+    let last_call: OpsLastCall?
+}
+
+struct OpsTask: Codable, Identifiable {
+    let id: String
+    let kind: String
+    let status: String
+    let subject_type: String
+    let subject_id: String
+    let subject_label: String
+    let detail: String
+    let resource_id: String?
+    let profile: String?
+    let started_at: String
+    let updated_at: String
+    let error: String?
+    let cancellable: Bool
+    let job_key: String?
+    let llm_attempt: Int?
+    let max_llm_attempts: Int?
+    let duration_s: Double?
+}
+
+struct OpsTasksResponse: Codable {
+    let tasks: [OpsTask]
+    let counts: OpsTaskCounts
+}
+
+struct ResourceRuntimeRow: Codable, Identifiable {
+    var id: String { resource_id }
+    let resource_id: String
+    let limit: Int
+    let in_use: Int
+    let available: Int
+    let probe: ResourceStatus?
+}
+
+struct ResourceRuntimeResponse: Codable {
+    let resources: [ResourceRuntimeRow]
+    let last_call: OpsLastCall?
 }
 
 struct SearchHit: Codable, Identifiable, Hashable {
@@ -629,12 +726,14 @@ final class CoreClient: ObservableObject {
         targetLanguage: String,
         webSearchProvider: String,
         tavilyAPIKey: String? = nil,
+        debugMode: Bool? = nil,
         models: ModelsSettings? = nil
     ) async throws -> AppSettings {
         struct Body: Codable {
             let target_language: String
             let web_search_provider: String
             let tavily_api_key: String?
+            let debug_mode: Bool?
             let models: ModelsSettings?
         }
         let body = try JSONEncoder().encode(
@@ -642,6 +741,7 @@ final class CoreClient: ObservableObject {
                 target_language: targetLanguage,
                 web_search_provider: webSearchProvider,
                 tavily_api_key: tavilyAPIKey,
+                debug_mode: debugMode,
                 models: models
             )
         )
@@ -663,6 +763,29 @@ final class CoreClient: ObservableObject {
     func fetchResourceStatus(resourceId: String) async throws -> ResourceStatus {
         let data = try await get(path: "/settings/resources/\(resourceId)/status")
         return try await Self.decode(ResourceStatus.self, from: data)
+    }
+
+    func fetchOpsOverview() async throws -> OpsOverview {
+        let data = try await get(path: "/ops/overview")
+        return try await Self.decode(OpsOverview.self, from: data)
+    }
+
+    func fetchOpsTasks(status: String? = nil) async throws -> OpsTasksResponse {
+        var path = "/ops/tasks"
+        if let status, !status.isEmpty {
+            path += "?status=\(status.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? status)"
+        }
+        let data = try await get(path: path)
+        return try await Self.decode(OpsTasksResponse.self, from: data)
+    }
+
+    func cancelOpsTask(id: String) async throws {
+        _ = try await post(path: "/ops/tasks/\(id)/cancel", body: Data("{}".utf8))
+    }
+
+    func fetchResourceRuntime() async throws -> ResourceRuntimeResponse {
+        let data = try await get(path: "/ops/resources/runtime")
+        return try await Self.decode(ResourceRuntimeResponse.self, from: data)
     }
 
     func fetchNewsArticle(id: String) async throws -> NewsArticleDetail {

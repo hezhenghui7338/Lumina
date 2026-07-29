@@ -92,7 +92,7 @@ async def test_gate_same_provider_resources_are_independent():
 
 
 @pytest.mark.asyncio
-async def test_router_ollama_busy_falls_back_to_cursor():
+async def test_router_summarize_waits_for_ollama_slot_instead_of_busy_fallback():
     models = ModelsConfig(
         resources=[
             ModelResource(
@@ -105,6 +105,7 @@ async def test_router_ollama_busy_falls_back_to_cursor():
             ModelResource(
                 id="cursor",
                 provider="cursor",
+                base_url="https://cursor-proxy.example/v1",
                 model="composer-2.5",
                 api_key="test-key",
                 concurrency=8,
@@ -118,18 +119,18 @@ async def test_router_ollama_busy_falls_back_to_cursor():
         await asyncio.sleep(0.3)
         return "ollama-response"
 
-    async def cursor_complete(*args, **kwargs) -> str:
+    async def openai_complete(*args, **kwargs) -> str:
         return "cursor-response"
 
     router._ollama_complete = slow_ollama  # type: ignore[method-assign]
-    router._cursor_complete = cursor_complete  # type: ignore[method-assign]
+    router._openai_complete = openai_complete  # type: ignore[method-assign]
 
     first = asyncio.create_task(router.complete("prompt-a", profile="summarize"))
     await asyncio.sleep(0.02)
     second = await router.complete("prompt-b", profile="summarize")
 
-    assert second == "cursor-response"
-    assert router.last_resource_id == "cursor"
+    assert second == "ollama-response"
+    assert router.last_resource_id == "ollama"
     await first
 
 
@@ -138,7 +139,7 @@ def test_effective_concurrency_defaults():
     cursor = ModelResource(id="cursor", provider="cursor", model="composer-2.5")
     openai = ModelResource(id="openai", provider="openai", base_url="https://api.openai.com/v1", model="gpt")
 
-    assert effective_concurrency(ollama) == 2
+    assert effective_concurrency(ollama) == 1
     assert effective_concurrency(cursor) == 8
     assert effective_concurrency(openai) == 4
     assert default_concurrency_for_provider("openrouter") == 4

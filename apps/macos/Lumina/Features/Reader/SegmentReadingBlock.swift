@@ -21,6 +21,8 @@ struct SegmentReadingBlock: View {
     let isSourceLoading: Bool
     let isSourceRefreshing: Bool
     let needsTranslation: Bool
+    var summaryProgressMessage: String?
+    var runningMetrics: SegmentRunningMetrics?
     var onToggleSource: () -> Void
     var onToggleSummary: () -> Void
     var onFollowUp: (String) -> Void
@@ -208,6 +210,8 @@ struct SegmentReadingBlock: View {
                 segmentIndex: segment.idx,
                 segmentTotal: segmentTotal,
                 fallbackAnchor: segment.anchor_label,
+                summaryDurationS: segment.summary_duration_s,
+                summaryLlmAttempts: segment.summary_llm_attempts,
                 onFollowUp: onFollowUp,
                 showsBackground: showsBackground
             )
@@ -224,9 +228,10 @@ struct SegmentReadingBlock: View {
                 HStack(spacing: 6) {
                     ProgressView()
                         .controlSize(.mini)
-                    Text("摘要生成中…")
+                    progressStatusView
                         .font(.system(size: LuminaTheme.summaryLabelSize - 1))
                         .foregroundStyle(LuminaTheme.textSecondary)
+                        .lineLimit(2)
                 }
             }
             if let count = effectiveCharCount, count > 0 {
@@ -238,11 +243,47 @@ struct SegmentReadingBlock: View {
         }
     }
 
+    @ViewBuilder
+    private var progressStatusView: some View {
+        if isSummaryInProgress, runningMetrics != nil {
+            TimelineView(.periodic(from: .now, by: 1)) { context in
+                Text(progressText(at: context.date))
+            }
+        } else {
+            Text(progressText(at: Date()))
+        }
+    }
+
+    private func progressText(at now: Date) -> String {
+        if let summaryProgressMessage, !summaryProgressMessage.isEmpty {
+            return summaryProgressMessage
+        }
+        if let runningMetrics {
+            return SummaryMetricsFormatter.inProgressLabel(
+                startedAt: runningMetrics.startedAt,
+                llmAttempt: runningMetrics.llmAttempt,
+                maxLlmAttempts: runningMetrics.maxLlmAttempts,
+                now: now
+            )
+        }
+        return "摘要生成中…"
+    }
+
     private var isSummaryInProgress: Bool {
         switch segment.summary_status {
         case "pending", "running": true
         default: false
         }
+    }
+
+    private var failureMessage: String {
+        if let summaryProgressMessage, !summaryProgressMessage.isEmpty {
+            return summaryProgressMessage
+        }
+        return SummaryMetricsFormatter.failureLabel(
+            durationS: segment.summary_duration_s,
+            retryCount: segment.retry_count
+        )
     }
 
     private var effectiveCharCount: Int? {
@@ -269,17 +310,19 @@ struct SegmentReadingBlock: View {
                 case "running", "pending":
                     ProgressView()
                         .controlSize(.small)
-                    Text("摘要生成中…")
+                    progressStatusView
                         .font(.system(size: LuminaTheme.summaryBulletSize))
                         .foregroundStyle(LuminaTheme.textSecondary)
+                        .lineLimit(3)
                 case "failed", "error":
                     VStack(alignment: .leading, spacing: 8) {
                         HStack(spacing: 10) {
                             Image(systemName: "exclamationmark.circle")
                                 .foregroundStyle(.red)
-                            Text("摘要超时或失败，请重试")
+                            Text(failureMessage)
                                 .font(.system(size: LuminaTheme.summaryBulletSize))
                                 .foregroundStyle(LuminaTheme.textSecondary)
+                                .lineLimit(3)
                         }
                         Button("重试", action: onRetrySummary)
                             .buttonStyle(.bordered)

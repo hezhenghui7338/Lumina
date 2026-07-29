@@ -251,7 +251,7 @@ AI 初评: 91  字数: 800
 
     conn = client.app.state.lumina.conn  # type: ignore[attr-defined]
     sources = NewsSourceRepo(conn).list_sources()
-    assert len(sources) == 16
+    assert len(sources) == 3
     assert any("bestblogs.dev/zh/" in s["url"] for s in sources)
     assert any("bestblogs.dev/en/" in s["url"] for s in sources)
 

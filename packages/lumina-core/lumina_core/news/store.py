@@ -172,6 +172,31 @@ class NewsSourceRepo:
         self.conn.execute("DELETE FROM news_sources WHERE id = ?", (source_id,))
         self.conn.commit()
 
+    def prune_obsolete_presets(self, obsolete_urls: frozenset[str]) -> int:
+        """Delete retired preset sources and their articles. Custom URLs untouched."""
+        if not obsolete_urls:
+            return 0
+        placeholders = ",".join("?" * len(obsolete_urls))
+        rows = self.conn.execute(
+            f"SELECT id FROM news_sources WHERE url IN ({placeholders})",
+            tuple(obsolete_urls),
+        ).fetchall()
+        pruned = 0
+        for row in rows:
+            source_id = row["id"]
+            self.conn.execute(
+                "DELETE FROM news_articles WHERE source_id = ?",
+                (source_id,),
+            )
+            self.conn.execute(
+                "DELETE FROM news_sources WHERE id = ?",
+                (source_id,),
+            )
+            pruned += 1
+        if pruned:
+            self.conn.commit()
+        return pruned
+
     def restore_defaults(self, urls: list[tuple[str, str]]) -> int:
         """Insert missing preset URLs and refresh preset titles. Returns change count."""
         restored = 0
@@ -192,3 +217,6 @@ class NewsSourceRepo:
 
     def ensure_defaults(self, urls: list[tuple[str, str]]) -> None:
         self.restore_defaults(urls)
+        from lumina_core.app_state import OBSOLETE_NEWS_SOURCE_URLS
+
+        self.prune_obsolete_presets(OBSOLETE_NEWS_SOURCE_URLS)

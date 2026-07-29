@@ -9,6 +9,8 @@ struct SummaryBlock: View {
     var segmentIndex: Int?
     var segmentTotal: Int?
     var fallbackAnchor: String?
+    var summaryDurationS: Double?
+    var summaryLlmAttempts: Int?
     var onFollowUp: ((String) -> Void)?
     var showsBackground: Bool = true
 
@@ -198,7 +200,14 @@ struct SummaryBlock: View {
     private var summaryAttribution: String? {
         guard let provider, !provider.isEmpty,
               let model, !model.isEmpty else { return nil }
-        return "摘要 · \(Self.providerLabel(provider)) · \(model)"
+        var parts = ["摘要 · \(Self.providerLabel(provider)) · \(model)"]
+        if let metrics = SummaryMetricsFormatter.completedMetricsLabel(
+            durationS: summaryDurationS,
+            llmAttempts: summaryLlmAttempts
+        ) {
+            parts.append(metrics)
+        }
+        return parts.joined(separator: " · ")
     }
 
     private static func providerLabel(_ provider: String) -> String {

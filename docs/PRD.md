@@ -523,7 +523,7 @@ LocalAgent 段列表仅显示段序号，信息太少。Lumina 段列表应让�
 
 | 项 | v1.0 |
 |----|------|
-| **API 资源池** | 预设 Ollama / OpenAI / OpenRouter / Cursor / AiPing；可增自定义 OpenAI 兼容 endpoint |
+| **API 资源池** | 预设 Ollama / OpenAI / OpenRouter / Cursor / AiPing；可增自定义 OpenAI 兼容 endpoint；**Cursor** 预设走 OpenAI 兼容代理（需配置 Base URL） |
 | **深聊优先级链** | 有序 resource id 列表；失败或超时 fallback 到下一资源（默认 OpenAI → Ollama） |
 | **摘要优先级链** | 翻译跟随摘要；默认 Ollama → Cursor → OpenRouter |
 | Ollama 专属 UI | 仅在编辑 ollama 资源时出现（安装引导、连通性、模型选择） |

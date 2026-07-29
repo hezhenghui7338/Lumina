@@ -51,7 +51,7 @@ struct NewsSourcesSettingsView: View {
 
             Section("自定义信源 (\(customSources.count))") {
                 if customSources.isEmpty {
-                    Text("暂无自定义源。删除预置后可点「恢复默认信源」补回。")
+                    Text("暂无自定义源。删除预置后可点「恢复默认信源」补回 BestBlogs 源。")
                         .foregroundStyle(LuminaTheme.textSecondary)
                 } else {
                     ForEach(customSources) { source in
@@ -66,7 +66,7 @@ struct NewsSourcesSettingsView: View {
                 }
                 .disabled(busy)
             } footer: {
-                Text("补回 16 个预置 Tech RSS，并更新预置名称；不会删除你的自定义源。")
+                Text("补回 3 个 BestBlogs 预置源并更新预置名称；不会删除你的自定义源。")
             }
 
             if let error {

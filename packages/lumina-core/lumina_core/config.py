@@ -21,8 +21,9 @@ CHUNK_TARGET_CHARS = READING_TARGET_CHARS
 READING_HARD_MAX = 6000
 CHUNK_MAX_CHARS = READING_HARD_MAX
 CHUNK_MIN_CHARS = int(READING_TARGET_CHARS * 0.6)
-OLLAMA_CHUNK_TARGET = 3000
-OLLAMA_CHUNK_MAX = 3600
+OLLAMA_CHUNK_TARGET = 2500
+OLLAMA_CHUNK_MAX = 3000
+OLLAMA_KEEP_ALIVE = os.getenv("LUMINA_OLLAMA_KEEP_ALIVE", "30m")
 CLOUD_CHUNK_TARGET = 4000
 CLOUD_CHUNK_MAX = 6000
 SEGMENT_CACHE_QUOTA_BYTES = 2 * 1024 * 1024 * 1024  # 2GB
@@ -115,7 +116,7 @@ def resolve_chunk_budget(models: ModelsConfig | None = None) -> ChunkBudget:
 def default_concurrency_for_provider(provider: str) -> int:
     normalized = provider.strip().lower()
     if normalized == "ollama":
-        return 2
+        return 1
     if normalized == "cursor":
         return 8
     return 4
@@ -166,7 +167,7 @@ def default_resources() -> list[ModelResource]:
             provider="ollama",
             base_url="http://127.0.0.1:11434",
             model="qwen3.5:4b",
-            concurrency=2,
+            concurrency=1,
         ),
         ModelResource(
             id="openai",
@@ -307,7 +308,7 @@ def migrate_legacy_models(raw: dict[str, Any], *, base: dict[str, Any] | None = 
 def _legacy_concurrency_for_provider(provider: str, job_concurrency: dict[str, Any]) -> int:
     normalized = provider.strip().lower()
     if normalized == "ollama":
-        return max(1, int(job_concurrency.get("ollama", 2)))
+        return max(1, int(job_concurrency.get("ollama", 1)))
     if normalized == "cursor":
         return max(1, int(job_concurrency.get("cursor", 8)))
     return max(1, int(job_concurrency.get("cloud", 4)))
@@ -357,6 +358,7 @@ class Settings(BaseSettings):
     target_language: str = "zh-CN"
     web_search_provider: str = "ddgs"  # ddgs | tavily
     tavily_api_key: str | None = None
+    debug_mode: bool = False
 
     class Config:
         env_prefix = "LUMINA_"

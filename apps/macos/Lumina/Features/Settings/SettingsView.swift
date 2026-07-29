@@ -58,7 +58,20 @@ struct SettingsView: View {
                 } header: {
                     Text("资讯")
                 } footer: {
-                    Text("管理订阅源；可添加 RSSHub 等自定义 RSS 地址。")
+                    Text("默认 BestBlogs 预置源；可添加自定义 RSS 地址。")
+                }
+
+                Section {
+                    Toggle("调试模式", isOn: boolBinding(\.debug_mode))
+                    if settings.debug_mode {
+                        NavigationLink("后台任务") {
+                            TaskManagerView()
+                        }
+                    }
+                } header: {
+                    Text("高级")
+                } footer: {
+                    Text("开启后可查看与管理 LLM 摘要、深聊、资讯精读等后台任务及 API 资源占用。默认关闭。")
                 }
 
                 Section("关于") {
@@ -74,7 +87,7 @@ struct SettingsView: View {
                             Text("Local AI Reading Companion")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
-                            Text("版本 \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.2.0")")
+                            Text("版本 \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.3.0")")
                                 .font(.caption2)
                                 .foregroundStyle(.secondary)
                         }
@@ -98,6 +111,7 @@ struct SettingsView: View {
         .refreshable { await refreshResourceStatuses() }
         .onChange(of: settings?.target_language) { _, _ in Task { await save() } }
         .onChange(of: settings?.web_search_provider) { _, _ in Task { await save() } }
+        .onChange(of: settings?.debug_mode) { _, _ in Task { await save() } }
         .sheet(item: $editingResource) { resource in
             ResourceEditorSheet(
                 resource: resourceBinding(for: resource.id),
@@ -310,6 +324,13 @@ struct SettingsView: View {
         )
     }
 
+    private func boolBinding(_ keyPath: WritableKeyPath<AppSettings, Bool>) -> Binding<Bool> {
+        Binding(
+            get: { settings?[keyPath: keyPath] ?? false },
+            set: { settings?[keyPath: keyPath] = $0 }
+        )
+    }
+
     private func resourceDisplayName(_ resource: ModelResourceSettings) -> String {
         ModelProviderKind.from(provider: resource.provider, baseURL: resource.base_url).label
             + " (\(resource.id))"
@@ -439,6 +460,7 @@ struct SettingsView: View {
                 targetLanguage: settings.target_language,
                 webSearchProvider: settings.web_search_provider,
                 tavilyAPIKey: tavilyToSend,
+                debugMode: settings.debug_mode,
                 models: settings.models
             )
             self.settings = updated
@@ -684,17 +706,20 @@ struct AppSettings: Codable {
     var target_language: String
     var web_search_provider: String
     var tavily_api_key: String?
+    var debug_mode: Bool
     var models: ModelsSettings
 
     init(
         target_language: String,
         web_search_provider: String = "ddgs",
         tavily_api_key: String? = nil,
+        debug_mode: Bool = false,
         models: ModelsSettings = .defaults
     ) {
         self.target_language = target_language
         self.web_search_provider = web_search_provider
         self.tavily_api_key = tavily_api_key
+        self.debug_mode = debug_mode
         self.models = models
     }
 
@@ -703,6 +728,7 @@ struct AppSettings: Codable {
         target_language = try c.decode(String.self, forKey: .target_language)
         web_search_provider = try c.decodeIfPresent(String.self, forKey: .web_search_provider) ?? "ddgs"
         tavily_api_key = try c.decodeIfPresent(String.self, forKey: .tavily_api_key)
+        debug_mode = try c.decodeIfPresent(Bool.self, forKey: .debug_mode) ?? false
         models = try c.decodeIfPresent(ModelsSettings.self, forKey: .models) ?? .defaults
     }
 
@@ -711,11 +737,12 @@ struct AppSettings: Codable {
         try c.encode(target_language, forKey: .target_language)
         try c.encode(web_search_provider, forKey: .web_search_provider)
         try c.encodeIfPresent(tavily_api_key, forKey: .tavily_api_key)
+        try c.encode(debug_mode, forKey: .debug_mode)
         try c.encode(models, forKey: .models)
     }
 
     enum CodingKeys: String, CodingKey {
-        case target_language, web_search_provider, tavily_api_key, models
+        case target_language, web_search_provider, tavily_api_key, debug_mode, models
     }
 }
 
@@ -863,7 +890,7 @@ enum ModelProviderKind: String, CaseIterable, Identifiable {
     }
 
     var showsBaseURL: Bool {
-        self == .ollama || self == .custom
+        self == .ollama || self == .custom || self == .cursor
     }
 
     var needsAPIKey: Bool {
@@ -891,7 +918,7 @@ enum ModelProviderKind: String, CaseIterable, Identifiable {
         case .ollama:
             return "并发建议 ≤ 本机 Ollama 的 OLLAMA_NUM_PARALLEL。内存吃紧时调回 1。"
         case .cursor:
-            return "Cursor Agent 并发；fallback 到 Cursor 时可跑满。"
+            return "OpenAI 兼容 API 并发；需配置 Cursor 代理 Base URL。"
         default:
             return "OpenAI、OpenRouter 等 OpenAI 兼容 API 的并发上限。"
         }

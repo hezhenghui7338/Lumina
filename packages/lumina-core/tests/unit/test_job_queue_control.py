@@ -254,13 +254,13 @@ async def test_refresh_workers_scales_workers_up(conn):
 
 
 @pytest.mark.asyncio
-async def test_worker_target_uses_max_of_summarize_chain(conn):
+async def test_worker_target_uses_ollama_concurrency_when_primary_ollama(conn):
     models = ModelsConfig(
         summarize=ProfileRoute(priority=["ollama", "cursor"]),
     )
     router = MockModelRouter(responses={"summarize": SUMMARY, "translate": "译文"}, models=models)
     q = JobQueue(conn, router)
-    assert q._worker_target() == 8
+    assert q._worker_target() == 1
 
 
 @pytest.mark.asyncio
@@ -389,3 +389,239 @@ async def test_translate_when_different_language(conn):
 
     seg = SegmentRepo(conn).list_for_book(book_id)[0]
     assert seg["translation"] == "译文"
+
+
+@pytest.mark.asyncio
+async def test_enqueue_registers_task_in_registry(conn):
+    from lumina_core.ops.task_registry import TaskRegistry
+
+    registry = TaskRegistry()
+    router = SlowMockRouter(
+        delay=0.05,
+        responses={"summarize": SUMMARY, "translate": "译文"},
+    )
+    q = JobQueue(conn, router, task_registry=registry)
+    book_id = _seed_book(conn, n_segments=1)
+    await q.enqueue_book_prefetch(book_id)
+    await asyncio.sleep(0.02)
+    snap = registry.snapshot()
+    assert any(t["kind"] == "summarize" for t in snap)
+    assert snap[0]["subject_label"] == "Test"
+
+
+@pytest.mark.asyncio
+async def test_stop_book_pauses_queued_registry_tasks(conn):
+    from lumina_core.ops.task_registry import TaskRegistry
+
+    registry = TaskRegistry()
+    router = SlowMockRouter(
+        delay=1.0,
+        responses={"summarize": SUMMARY, "translate": "译文"},
+    )
+    q = JobQueue(conn, router, task_registry=registry)
+    book_id = _seed_book(conn, n_segments=5)
+    await q.enqueue_book_prefetch(book_id)
+    await asyncio.sleep(0.05)
+
+    queued = [t for t in registry.snapshot() if t["status"] == "queued"]
+    assert len(queued) >= 2
+
+    await q.stop_book(book_id)
+
+    paused = [t for t in registry.snapshot() if t["status"] == "paused"]
+    assert len(paused) >= 2
+    assert all(t["duration_s"] is None for t in paused)
+    assert registry.counts()["queued"] == 0
+    assert len(q._paused_backlog) >= 2
+
+
+@pytest.mark.asyncio
+async def test_stop_book_clears_summarize_active(conn):
+    router = SlowMockRouter(
+        delay=0.8,
+        responses={"summarize": SUMMARY, "translate": "译文"},
+    )
+    q = JobQueue(conn, router)
+    book_id = _seed_book(conn, n_segments=2)
+    await q.enqueue_book_prefetch(book_id)
+
+    for _ in range(40):
+        if q.summarize_active_for_book(book_id) is not None:
+            break
+        await asyncio.sleep(0.05)
+    else:
+        pytest.fail("summarize never became active")
+
+    await q.stop_book(book_id)
+    assert q.summarize_active_for_book(book_id) is None
+
+
+@pytest.mark.asyncio
+async def test_stop_all_clears_summarize_active(conn):
+    router = SlowMockRouter(
+        delay=0.8,
+        responses={"summarize": SUMMARY, "translate": "译文"},
+    )
+    q = JobQueue(conn, router)
+    book_id = _seed_book(conn, n_segments=1)
+    await q.enqueue_book_prefetch(book_id)
+
+    for _ in range(40):
+        if q.summarize_active_for_book(book_id) is not None:
+            break
+        await asyncio.sleep(0.05)
+    else:
+        pytest.fail("summarize never became active")
+
+    await q.stop_all()
+    assert q.summarize_active_for_book(book_id) is None
+
+
+@pytest.mark.asyncio
+async def test_mark_running_starts_timer_from_zero(conn):
+    from lumina_core.ops.task_registry import TaskRegistry
+
+    registry = TaskRegistry()
+    router = SlowMockRouter(
+        delay=0.3,
+        responses={"summarize": SUMMARY, "translate": "译文"},
+    )
+    q = JobQueue(conn, router, task_registry=registry)
+    book_id = _seed_book(conn, n_segments=1)
+    await q.enqueue_book_prefetch(book_id)
+
+    queued_started_at = None
+    for _ in range(40):
+        snap = registry.snapshot(status="queued")
+        if snap:
+            queued_started_at = snap[0]["started_at"]
+            break
+        await asyncio.sleep(0.02)
+    assert queued_started_at is not None
+
+    running_started_at = None
+    for _ in range(40):
+        snap = registry.snapshot(status="running")
+        if snap:
+            running_started_at = snap[0]["started_at"]
+            break
+        await asyncio.sleep(0.05)
+    assert running_started_at is not None
+    assert running_started_at >= queued_started_at
+
+
+@pytest.mark.asyncio
+async def test_stop_moves_queued_to_paused_backlog(conn):
+    router = SlowMockRouter(
+        delay=1.0,
+        responses={"summarize": SUMMARY, "translate": "译文"},
+    )
+    q = JobQueue(conn, router)
+    book_id = _seed_book(conn, n_segments=5)
+    await q.enqueue_book_prefetch(book_id)
+    await asyncio.sleep(0.05)
+    await q.stop_book(book_id)
+
+    assert q.is_user_paused(book_id)
+    assert q._queue.qsize() == 0
+    assert len(q._paused_backlog) >= 3
+
+
+@pytest.mark.asyncio
+async def test_stop_moves_running_to_paused_backlog(conn):
+    router = SlowMockRouter(
+        delay=0.8,
+        responses={"summarize": SUMMARY, "translate": "译文"},
+    )
+    q = JobQueue(conn, router)
+    book_id = _seed_book(conn, n_segments=2)
+    await q.enqueue_book_prefetch(book_id)
+
+    for _ in range(40):
+        segs = SegmentRepo(conn).list_for_book(book_id)
+        if any(s["summary_status"] == "running" for s in segs):
+            break
+        await asyncio.sleep(0.05)
+    else:
+        pytest.fail("segment never reached running")
+
+    await q.stop_book(book_id)
+    assert any(item.book_id == book_id for item in q._paused_backlog.values())
+
+
+@pytest.mark.asyncio
+async def test_resume_restores_backlog_to_queue(conn):
+    router = SlowMockRouter(
+        delay=1.0,
+        responses={"summarize": SUMMARY, "translate": "译文"},
+    )
+    q = JobQueue(conn, router)
+    book_id = _seed_book(conn, n_segments=3)
+    await q.enqueue_book_prefetch(book_id)
+    await asyncio.sleep(0.05)
+    await q.stop_book(book_id)
+    assert len(q._paused_backlog) >= 2
+
+    await q.start_book(book_id)
+    assert len(q._paused_backlog) == 0
+    assert not q.is_user_paused(book_id)
+
+    for _ in range(80):
+        segs = SegmentRepo(conn).list_for_book(book_id)
+        if all(s["summary_status"] == "ready" for s in segs):
+            break
+        await asyncio.sleep(0.1)
+    else:
+        pytest.fail("resume did not complete summaries from backlog")
+
+
+@pytest.mark.asyncio
+async def test_resume_no_duplicate_jobs(conn):
+    router = SlowMockRouter(
+        delay=1.0,
+        responses={"summarize": SUMMARY, "translate": "译文"},
+    )
+    q = JobQueue(conn, router)
+    book_id = _seed_book(conn, n_segments=2)
+    await q.enqueue_book_prefetch(book_id)
+    await asyncio.sleep(0.05)
+    await q.stop_book(book_id)
+    backlog_size = len(q._paused_backlog)
+    assert backlog_size >= 1
+
+    await q.start_book(book_id)
+
+    for _ in range(60):
+        segs = SegmentRepo(conn).list_for_book(book_id)
+        if all(s["summary_status"] == "ready" for s in segs):
+            break
+        await asyncio.sleep(0.1)
+    else:
+        pytest.fail("resume did not complete all segments")
+
+    segs = SegmentRepo(conn).list_for_book(book_id)
+    ready_count = sum(1 for s in segs if s["summary_status"] == "ready")
+    assert ready_count == len(segs)
+
+
+@pytest.mark.asyncio
+async def test_registry_paused_not_cancelled(conn):
+    from lumina_core.ops.task_registry import TaskRegistry
+
+    registry = TaskRegistry()
+    router = SlowMockRouter(
+        delay=1.0,
+        responses={"summarize": SUMMARY, "translate": "译文"},
+    )
+    q = JobQueue(conn, router, task_registry=registry)
+    book_id = _seed_book(conn, n_segments=3)
+    await q.enqueue_book_prefetch(book_id)
+    await asyncio.sleep(0.05)
+
+    await q.stop_book(book_id)
+
+    counts = registry.counts()
+    assert counts["paused"] >= 2
+    assert counts["cancelled"] == 0
+    paused_tasks = registry.snapshot(status="paused")
+    assert all(t["status"] == "paused" for t in paused_tasks)

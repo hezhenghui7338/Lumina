@@ -12,6 +12,7 @@ from lumina_core.db.schema import init_db
 from lumina_core.jobs.queue import JobQueue
 from lumina_core.models.router import ProfileModelRouter
 from lumina_core.news.store import NewsSourceRepo
+from lumina_core.ops.task_registry import TaskRegistry
 from lumina_core.settings_store import load_models, load_settings
 
 BESTBLOGS_AI_ZH = (
@@ -24,41 +25,31 @@ BESTBLOGS_AI_EN = (
     "?category=ai&minScore=85&timeFilter=1d"
 )
 
-# Community RSS proxies (sites without stable official feeds).
-ANTHROPIC_NEWS_PROXY = (
-    "https://raw.githubusercontent.com/0xSMW/rss-feeds/main/feeds/feed_anthropic_news.xml"
-)
-TLDR_AI_PROXY = (
-    "https://raw.githubusercontent.com/alan-turing-institute/ai-rss-feeds/"
-    "refs/heads/main/feeds/tldr-ai.xml"
-)
-
 DEFAULT_NEWS_SOURCES: list[tuple[str, str]] = [
-    # Tier S — BestBlogs structured summaries (zh + en always on)
     (BESTBLOGS_AI_ZH, "BestBlogs AI · 中文"),
     (BESTBLOGS_DAILY_BRIEF, "BestBlogs 每日早报"),
     (BESTBLOGS_AI_EN, "BestBlogs AI · English"),
-    # Tier A — Chinese
-    ("https://www.jiqizhixin.com/rss", "机器之心"),
-    # Tier A — English community & media
-    ("https://hnrss.org/frontpage", "Hacker News"),
-    ("https://hnrss.org/newest?q=AI&count=30", "HN · AI"),
-    ("https://feeds.arstechnica.com/arstechnica/index", "Ars Technica"),
-    ("https://simonwillison.net/atom/everything/", "Simon Willison"),
-    ("https://techcrunch.com/category/artificial-intelligence/feed/", "TechCrunch AI"),
-    ("https://www.theverge.com/rss/ai-artificial-intelligence/index.xml", "The Verge AI"),
-    (
-        "https://www.technologyreview.com/topic/artificial-intelligence/feed/",
-        "MIT Technology Review AI",
-    ),
-    # Tier A/B — Lab official & proxies
-    ("https://deepmind.google/blog/rss.xml", "DeepMind Blog"),
-    ("https://blog.google/technology/ai/rss/", "Google AI Blog"),
-    (ANTHROPIC_NEWS_PROXY, "Anthropic News"),
-    # Tier B — digests & analysis
-    (TLDR_AI_PROXY, "TLDR AI"),
-    ("https://www.interconnects.ai/feed", "Interconnects.ai"),
 ]
+
+# Retired preset URLs — pruned on startup; custom sources are never matched here.
+OBSOLETE_NEWS_SOURCE_URLS: frozenset[str] = frozenset(
+    {
+        "https://www.jiqizhixin.com/rss",
+        "https://hnrss.org/frontpage",
+        "https://hnrss.org/newest?q=AI&count=30",
+        "https://feeds.arstechnica.com/arstechnica/index",
+        "https://simonwillison.net/atom/everything/",
+        "https://techcrunch.com/category/artificial-intelligence/feed/",
+        "https://www.theverge.com/rss/ai-artificial-intelligence/index.xml",
+        "https://www.technologyreview.com/topic/artificial-intelligence/feed/",
+        "https://deepmind.google/blog/rss.xml",
+        "https://blog.google/technology/ai/rss/",
+        "https://raw.githubusercontent.com/0xSMW/rss-feeds/main/feeds/feed_anthropic_news.xml",
+        "https://raw.githubusercontent.com/alan-turing-institute/ai-rss-feeds/"
+        "refs/heads/main/feeds/tldr-ai.xml",
+        "https://www.interconnects.ai/feed",
+    }
+)
 
 
 def bestblogs_rss_url(target_language: str = "zh-CN") -> str:
@@ -69,7 +60,7 @@ def bestblogs_rss_url(target_language: str = "zh-CN") -> str:
 
 
 def default_rss_sources(target_language: str = "zh-CN") -> list[tuple[str, str]]:
-    """Balanced zh+en preset feeds; target_language kept for API compatibility."""
+    """BestBlogs preset feeds; target_language kept for API compatibility."""
     _ = target_language
     return list(DEFAULT_NEWS_SOURCES)
 
@@ -85,6 +76,7 @@ class AppState:
     conn: sqlite3.Connection
     router: ProfileModelRouter
     job_queue: JobQueue
+    task_registry: TaskRegistry
     event_subscribers: dict[str, list[asyncio.Queue]] = field(default_factory=dict)
 
     @property
@@ -105,10 +97,12 @@ def create_app_state(settings: Settings | None = None) -> AppState:
     conn = init_db(settings.data_dir / "lumina.db")
     NewsSourceRepo(conn).ensure_defaults(default_rss_sources(settings.target_language))
     router = ProfileModelRouter(models)
+    task_registry = TaskRegistry()
     job_queue = JobQueue(
         conn,
         router,
         target_language=settings.target_language,
+        task_registry=task_registry,
     )
     return AppState(
         settings=settings,
@@ -116,4 +110,5 @@ def create_app_state(settings: Settings | None = None) -> AppState:
         conn=conn,
         router=router,
         job_queue=job_queue,
+        task_registry=task_registry,
     )

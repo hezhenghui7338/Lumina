@@ -134,6 +134,29 @@ def parse_segment_summary(raw: str | dict) -> SegmentSummary:
     return SegmentSummary.model_validate(normalized)
 
 
+def finalize_minimal_summary(data: dict, *, fallback_anchor: str) -> dict:
+    """Fill schema-required fields not requested from Ollama minimal JSON."""
+    out = normalize_summary_data(data)
+    anchor = out.get("anchor")
+    if not isinstance(anchor, str) or not anchor.strip():
+        out["anchor"] = fallback_anchor
+    label = out.get("label")
+    if not isinstance(label, str) or not label.strip():
+        sentences = out.get("sentences") or []
+        first = str(sentences[0]) if sentences else fallback_anchor
+        out["label"] = _infer_label(first)[:20]
+    out.setdefault("notes", [])
+    out.setdefault("follow_ups", [])
+    return out
+
+
+def parse_segment_summary_minimal(raw: str | dict, *, fallback_anchor: str) -> SegmentSummary:
+    """Parse Ollama minimal JSON (sentences + bullets only) with server-side field fill."""
+    data = parse_json_response(raw) if isinstance(raw, str) else raw
+    normalized = finalize_minimal_summary(data, fallback_anchor=fallback_anchor)
+    return SegmentSummary.model_validate(normalized)
+
+
 def format_bullet(b: BulletPoint) -> str:
     if b.label:
         return f"{b.label}：{b.body}"

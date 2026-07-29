@@ -37,6 +37,13 @@ from lumina_core.news.store import NewsSourceRepo, NewsStore
 from lumina_core.news.sync import sync_all
 from lumina_core.search.fts import index_book, index_note, search
 from lumina_core.resource_probe import probe_resource
+from lumina_core.ops.helpers import (
+    book_title,
+    register_article_task,
+    register_book_task,
+    track_async_task,
+    track_stream_events,
+)
 from lumina_core.secrets_store import persist_secrets
 from lumina_core.settings_store import (
     merge_incoming_models,
@@ -93,6 +100,7 @@ class SettingsUpdate(BaseModel):
     target_language: str | None = None
     web_search_provider: str | None = None
     tavily_api_key: str | None = None
+    debug_mode: bool | None = None
     models: ModelsConfig | None = None
 
 
@@ -154,7 +162,12 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def book_public_dict(row: dict[str, Any], *, conn: sqlite3.Connection | None = None) -> dict[str, Any]:
+def book_public_dict(
+    row: dict[str, Any],
+    *,
+    conn: sqlite3.Connection | None = None,
+    summarize_active: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Normalize book row for JSON (SQLite stores is_favorite as INTEGER)."""
     out = dict(row)
     if "is_favorite" in out and out["is_favorite"] is not None:
@@ -176,6 +189,9 @@ def book_public_dict(row: dict[str, Any], *, conn: sqlite3.Connection | None = N
         out.setdefault("summary_ready_count", 0)
         out.setdefault("summary_total_count", out.get("segment_count") or 0)
 
+    if summarize_active is not None:
+        out["summarize_active"] = summarize_active
+
     return out
 
 
@@ -185,14 +201,31 @@ async def _emit_book_event(state: AppState, book_id: str, payload: dict[str, Any
 
 
 def _schedule_classify(state: AppState, book_id: str) -> None:
+    title = book_title(state.conn, book_id)
+
     async def _run() -> None:
-        category = await run_classify_book(state.conn, state.router, book_id)
-        if category:
-            await _emit_book_event(
-                state,
-                book_id,
-                {"type": "book_classified", "category": category},
-            )
+        record = register_book_task(
+            state.task_registry,
+            kind="classify",
+            book_id=book_id,
+            subject_label=title,
+            detail="LLM 分类",
+            profile="summarize",
+            status="queued",
+        )
+        state.task_registry.mark_running(record.id)
+        try:
+            category = await run_classify_book(state.conn, state.router, book_id)
+            if category:
+                state.task_registry.update_resource(record.id, state.router.last_resource_id)
+                await _emit_book_event(
+                    state,
+                    book_id,
+                    {"type": "book_classified", "category": category},
+                )
+            state.task_registry.complete(record.id)
+        except Exception as exc:
+            state.task_registry.fail(record.id, str(exc))
 
     asyncio.create_task(_run())
 
@@ -308,10 +341,21 @@ async def list_books(
     collection: str = Query("all"),
     sort: str = Query("recent"),
 ) -> dict[str, Any]:
-    conn = _state(request).conn
+    state = _state(request)
+    conn = state.conn
     try:
         books = BookRepo(conn).list_books(collection=collection, sort=sort)
-        return {"books": [book_public_dict(b, conn=conn) for b in books]}
+        active_by_book = state.job_queue.summarize_active_by_book()
+        return {
+            "books": [
+                book_public_dict(
+                    b,
+                    conn=conn,
+                    summarize_active=active_by_book.get(b["id"]),
+                )
+                for b in books
+            ]
+        }
     except sqlite3.OperationalError as e:
         raise HTTPException(503, _SCHEMA_STALE_DETAIL) from e
 
@@ -563,34 +607,23 @@ async def book_chat(book_id: str, body: ChatRequest, request: Request):
     if body.stream:
         return await book_chat_stream(book_id, body, request)
 
+    title = book.get("title") or book_id
+    segment_detail = f"深聊 · 段 {body.segment_index + 1}"
+    record = register_book_task(
+        state.task_registry,
+        kind="book_chat",
+        book_id=book_id,
+        subject_label=title,
+        detail=segment_detail,
+        profile="chat",
+        status="running",
+    )
     state.job_queue.pause_ollama()
     try:
-        result = await chat_with_book(
-            state.router,
-            ChatRepo(state.conn),
-            SegmentRepo(state.conn),
-            book=book,
-            message=body.message,
-            current_segment_idx=body.segment_index,
-            quote=body.quote,
-            web_search_provider=state.settings.web_search_provider,
-            tavily_api_key=state.settings.tavily_api_key,
-        )
-    finally:
-        state.job_queue.resume_ollama()
-    return result
-
-
-async def book_chat_stream(book_id: str, body: ChatRequest, request: Request) -> StreamingResponse:
-    state = _state(request)
-    book = BookRepo(state.conn).get(book_id)
-    if not book:
-        raise HTTPException(404, "Book not found")
-
-    async def stream():
-        state.job_queue.pause_ollama()
-        try:
-            async for event in stream_chat_with_book(
+        return await track_async_task(
+            state.task_registry,
+            record,
+            chat_with_book(
                 state.router,
                 ChatRepo(state.conn),
                 SegmentRepo(state.conn),
@@ -600,6 +633,54 @@ async def book_chat_stream(book_id: str, body: ChatRequest, request: Request) ->
                 quote=body.quote,
                 web_search_provider=state.settings.web_search_provider,
                 tavily_api_key=state.settings.tavily_api_key,
+            ),
+            router_resource=lambda: state.router.last_resource_id,
+        )
+    finally:
+        state.job_queue.resume_ollama()
+
+
+async def book_chat_stream(book_id: str, body: ChatRequest, request: Request) -> StreamingResponse:
+    state = _state(request)
+    book = BookRepo(state.conn).get(book_id)
+    if not book:
+        raise HTTPException(404, "Book not found")
+
+    title = book.get("title") or book_id
+    segment_detail = f"深聊 · 段 {body.segment_index + 1}"
+    cancel_event = asyncio.Event()
+    record = register_book_task(
+        state.task_registry,
+        kind="book_chat",
+        book_id=book_id,
+        subject_label=title,
+        detail=segment_detail,
+        profile="chat",
+        cancellable=True,
+        cancel_fn=cancel_event.set,
+        status="running",
+    )
+
+    async def stream():
+        state.job_queue.pause_ollama()
+        try:
+            event_stream = stream_chat_with_book(
+                state.router,
+                ChatRepo(state.conn),
+                SegmentRepo(state.conn),
+                book=book,
+                message=body.message,
+                current_segment_idx=body.segment_index,
+                quote=body.quote,
+                web_search_provider=state.settings.web_search_provider,
+                tavily_api_key=state.settings.tavily_api_key,
+            )
+            async for event in track_stream_events(
+                state.task_registry,
+                record,
+                event_stream,
+                cancel_event=cancel_event,
+                router_resource=lambda: state.router.last_resource_id,
             ):
                 yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
         except Exception as exc:
@@ -658,6 +739,8 @@ async def update_settings(body: SettingsUpdate, request: Request) -> dict[str, A
         state.settings.tavily_api_key = merge_tavily_api_key(
             body.tavily_api_key, state.settings.tavily_api_key
         )
+    if body.debug_mode is not None:
+        state.settings.debug_mode = body.debug_mode
     if body.models is not None:
         merged = merge_incoming_models(body.models, state.models)
         state.models = merged
@@ -885,15 +968,37 @@ async def news_article_read(
         }
 
     cache_dir = state.settings.data_dir / "news_cache"
-    # News must not pause library summarize/translate (independent workflows).
-    result = await read_article(
-        state.conn,
-        state.router,
-        article_id,
-        cache_dir=cache_dir,
-        force_refetch=force,
-        use_llm=True,
+    article_title = article.get("title") or article_id
+    cancel_event = asyncio.Event()
+    record = register_article_task(
+        state.task_registry,
+        kind="news_read",
+        article_id=article_id,
+        subject_label=article_title,
+        detail="资讯精读",
+        profile="summarize",
+        cancellable=True,
+        cancel_fn=cancel_event.set,
     )
+    # News must not pause library summarize/translate (independent workflows).
+    try:
+        result = await track_async_task(
+            state.task_registry,
+            record,
+            read_article(
+                state.conn,
+                state.router,
+                article_id,
+                cache_dir=cache_dir,
+                force_refetch=force,
+                use_llm=True,
+            ),
+            router_resource=lambda: state.router.last_resource_id,
+        )
+    except Exception:
+        if cancel_event.is_set():
+            raise HTTPException(499, "Task cancelled")
+        raise
 
     if result.error and not result.summary_markdown:
         raise HTTPException(502, result.error)
@@ -918,17 +1023,29 @@ async def news_article_chat(article_id: str, body: NewsChatRequest, request: Req
     if body.stream:
         return await news_article_chat_stream(article_id, body, request)
 
-    # News chat must not pause library JobQueue.
-    result = await chat_with_article(
-        state.router,
-        NewsChatRepo(state.conn),
-        article=article,
-        message=body.message,
-        quote=body.quote,
-        web_search_provider=state.settings.web_search_provider,
-        tavily_api_key=state.settings.tavily_api_key,
+    article_title = article.get("title") or article_id
+    record = register_article_task(
+        state.task_registry,
+        kind="news_chat",
+        article_id=article_id,
+        subject_label=article_title,
+        detail="资讯深聊",
+        profile="chat",
     )
-    return result
+    return await track_async_task(
+        state.task_registry,
+        record,
+        chat_with_article(
+            state.router,
+            NewsChatRepo(state.conn),
+            article=article,
+            message=body.message,
+            quote=body.quote,
+            web_search_provider=state.settings.web_search_provider,
+            tavily_api_key=state.settings.tavily_api_key,
+        ),
+        router_resource=lambda: state.router.last_resource_id,
+    )
 
 
 async def news_article_chat_stream(
@@ -939,10 +1056,22 @@ async def news_article_chat_stream(
     if not article:
         raise HTTPException(404, "Article not found")
 
+    article_title = article.get("title") or article_id
+    cancel_event = asyncio.Event()
+    record = register_article_task(
+        state.task_registry,
+        kind="news_chat",
+        article_id=article_id,
+        subject_label=article_title,
+        detail="资讯深聊",
+        profile="chat",
+        cancellable=True,
+        cancel_fn=cancel_event.set,
+    )
+
     async def stream():
-        # News chat must not pause library JobQueue.
         try:
-            async for event in stream_chat_with_article(
+            event_stream = stream_chat_with_article(
                 state.router,
                 NewsChatRepo(state.conn),
                 article=article,
@@ -950,6 +1079,13 @@ async def news_article_chat_stream(
                 quote=body.quote,
                 web_search_provider=state.settings.web_search_provider,
                 tavily_api_key=state.settings.tavily_api_key,
+            )
+            async for event in track_stream_events(
+                state.task_registry,
+                record,
+                event_stream,
+                cancel_event=cancel_event,
+                router_resource=lambda: state.router.last_resource_id,
             ):
                 yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
         except Exception as exc:

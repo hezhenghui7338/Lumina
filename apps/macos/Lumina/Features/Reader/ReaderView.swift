@@ -51,6 +51,8 @@ struct ReaderView: View {
     @State private var showExport = false
     @State private var exportIncludeNotes = false
     @State private var exportSuccessURL: URL?
+    @State private var pendingExport: PendingBookExport?
+    @State private var showExportCancelled = false
     @State private var notesRefreshToken = 0
     @State private var noteError: String?
     @State private var actionError: String?
@@ -122,15 +124,26 @@ struct ReaderView: View {
                     includeNotes: $exportIncludeNotes,
                     summaryReadyCount: viewModel.summaryReadyCount,
                     summaryTotalCount: viewModel.summaryTotalCount,
-                    onExport: {
-                        try await viewModel.exportMarkdown(
+                    onFetchMarkdown: {
+                        try await viewModel.fetchExportMarkdown(
                             core: core,
                             includeNotes: exportIncludeNotes
                         )
                     },
-                    onSaved: { exportSuccessURL = $0 },
+                    onMarkdownReady: { markdown in
+                        pendingExport = PendingBookExport(
+                            markdown: markdown,
+                            bookTitle: viewModel.exportBookTitle
+                        )
+                    },
                     onError: { actionError = $0 }
                 )
+            }
+            .onChange(of: showExport) { _, isShowing in
+                guard !isShowing else { return }
+                guard let pending = pendingExport else { return }
+                pendingExport = nil
+                Task { await finishExportSave(pending) }
             }
             .alert("导出成功", isPresented: exportSuccessPresented) {
                 Button("在 Finder 中显示") {
@@ -156,6 +169,27 @@ struct ReaderView: View {
             } message: {
                 Text(actionError ?? "")
             }
+            .alert("已取消保存", isPresented: $showExportCancelled) {
+                Button("好", role: .cancel) {}
+            }
+    }
+
+    @MainActor
+    private func finishExportSave(_ pending: PendingBookExport) async {
+        try? await Task.sleep(nanoseconds: 150_000_000)
+        do {
+            switch try await BookMarkdownExporter.presentSavePanel(
+                markdown: pending.markdown,
+                bookTitle: pending.bookTitle
+            ) {
+            case .saved(let url):
+                exportSuccessURL = url
+            case .cancelled:
+                showExportCancelled = true
+            }
+        } catch {
+            actionError = error.localizedDescription
+        }
     }
 
     private var noteErrorPresented: Binding<Bool> {
@@ -533,6 +567,8 @@ struct ReaderView: View {
             isSourceLoading: viewModel.isSourceLoading(idx: idx),
             isSourceRefreshing: viewModel.isSourceRefreshing(idx: idx),
             needsTranslation: viewModel.needsTranslation(for: cachedSource?.rawText),
+            summaryProgressMessage: viewModel.segmentProgressMessage(for: idx),
+            runningMetrics: viewModel.segmentRunningMetrics[idx],
             onToggleSource: { toggleSource(for: idx) },
             onToggleSummary: { toggleSummary(for: idx) },
             onFollowUp: { question in
@@ -658,6 +694,15 @@ struct ReaderView: View {
                     .controlSize(.small)
                     .tint(LuminaTheme.accent)
                 }
+
+                Button("导出摘要…") {
+                    exportIncludeNotes = false
+                    showExport = true
+                }
+                .font(.caption)
+                .buttonStyle(.plain)
+                .foregroundStyle(LuminaTheme.accent)
+                .disabled(viewModel.summaryReadyCount == 0)
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 8)
@@ -838,7 +883,10 @@ struct ReaderView: View {
             }
 
             statusIcon(for: seg)
-            SegmentSidebarRow(segment: seg)
+            SegmentSidebarRow(
+                segment: seg,
+                runningMetrics: viewModel.segmentRunningMetrics[seg.idx]
+            )
         }
         .contentShape(Rectangle())
 
@@ -1049,6 +1097,8 @@ struct ReaderView: View {
                 segmentListPeeking = false
             } else if chromeMode != .hidden {
                 collapseAllChrome()
+            } else {
+                setChromeMode(.revealed)
             }
         }
     }
@@ -1140,6 +1190,7 @@ struct ReaderView: View {
 
 struct SegmentSidebarRow: View {
     let segment: SegmentRow
+    var runningMetrics: SegmentRunningMetrics?
 
     private var chapterTitle: String {
         if let ch = segment.chapter, !ch.isEmpty { return ch }
@@ -1149,10 +1200,28 @@ struct SegmentSidebarRow: View {
     private var outlineLabel: String? {
         if let label = segment.label, !label.isEmpty { return label }
         switch segment.summary_status {
-        case "running": return "摘要生成中…"
-        case "failed", "error": return "摘要失败"
-        default: return nil
+        case "running", "pending":
+            return statusCaption(at: Date())
+        case "failed", "error":
+            return SummaryMetricsFormatter.failureLabel(
+                durationS: segment.summary_duration_s,
+                retryCount: segment.retry_count
+            )
+        default:
+            return nil
         }
+    }
+
+    private func statusCaption(at now: Date) -> String {
+        if let runningMetrics {
+            return SummaryMetricsFormatter.inProgressLabel(
+                startedAt: runningMetrics.startedAt,
+                llmAttempt: runningMetrics.llmAttempt,
+                maxLlmAttempts: runningMetrics.maxLlmAttempts,
+                now: now
+            )
+        }
+        return "摘要生成中…"
     }
 
     private var bulletsPreview: String? {
@@ -1167,10 +1236,19 @@ struct SegmentSidebarRow: View {
                 .font(.subheadline)
                 .lineLimit(1)
             if let outline = outlineLabel {
-                Text(outline)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
+                if segment.summary_status == "running" || segment.summary_status == "pending" {
+                    TimelineView(.periodic(from: .now, by: 1)) { context in
+                        Text(statusCaption(at: context.date))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(2)
+                    }
+                } else {
+                    Text(outline)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                }
             }
             if let preview = bulletsPreview {
                 Text(preview)
@@ -1420,6 +1498,7 @@ final class ReaderViewModel: ObservableObject {
     @Published var messages: [ChatMessage] = []
     @Published var summaryReadyCount = 0
     @Published var summaryTotalCount = 0
+    @Published var segmentRunningMetrics: [Int: SegmentRunningMetrics] = [:]
     @Published var totalCharCount: Int?
     @Published private(set) var bookStatus = "unread"
     @Published var loadError: String?
@@ -1781,23 +1860,77 @@ final class ReaderViewModel: ObservableObject {
         )
     }
 
-    func exportMarkdown(core: CoreClient, includeNotes: Bool) async throws -> BookExportOutcome {
-        try await BookMarkdownExporter.export(
+    var exportBookTitle: String {
+        bookTitle ?? "summary"
+    }
+
+    func fetchExportMarkdown(core: CoreClient, includeNotes: Bool) async throws -> String {
+        try await BookMarkdownExporter.fetchMarkdown(
             core: core,
             bookId: bookId,
-            bookTitle: bookTitle ?? "summary",
             summaryReadyCount: summaryReadyCount,
             includeNotes: includeNotes
         )
     }
 
-    private func applySegmentStatus(idx: Int, status: String, label: String? = nil) {
+    func segmentProgressMessage(for idx: Int, at now: Date = Date()) -> String? {
+        guard let segment = segments.first(where: { $0.idx == idx }) else { return nil }
+        switch segment.summary_status {
+        case "pending", "running":
+            if let metrics = segmentRunningMetrics[idx] {
+                return SummaryMetricsFormatter.inProgressLabel(
+                    startedAt: metrics.startedAt,
+                    llmAttempt: metrics.llmAttempt,
+                    maxLlmAttempts: metrics.maxLlmAttempts,
+                    now: now
+                )
+            }
+            return "摘要生成中…"
+        case "failed", "error":
+            return SummaryMetricsFormatter.failureLabel(
+                durationS: segment.summary_duration_s,
+                retryCount: segment.retry_count
+            )
+        default:
+            return nil
+        }
+    }
+
+    private func applySegmentStatus(idx: Int, status: String, label: String? = nil, event: [String: Any]? = nil) {
         guard let i = segments.firstIndex(where: { $0.idx == idx }) else { return }
         var updated = segments[i]
         updated.summary_status = status
         if let label { updated.label = label }
+        if let retry = event?["retry_count"] as? Int {
+            updated.retry_count = retry
+        }
+        if let duration = event?["summary_duration_s"] as? Double {
+            updated.summary_duration_s = duration
+        } else if let duration = event?["summary_duration_s"] as? Int {
+            updated.summary_duration_s = Double(duration)
+        }
         segments[i] = updated
         syncCurrentSegment(from: updated)
+        if status == "running" {
+            let startedAt: Date
+            if let startedAtStr = event?["started_at"] as? String,
+               let parsed = SummaryMetricsFormatter.parseISO8601(startedAtStr) {
+                startedAt = parsed
+            } else {
+                startedAt = Date()
+            }
+            segmentRunningMetrics[idx] = SegmentRunningMetrics(
+                startedAt: startedAt,
+                llmAttempt: 1,
+                maxLlmAttempts: nil
+            )
+        } else if status == "ready" {
+            segmentRunningMetrics.removeValue(forKey: idx)
+        } else if status == "pending" {
+            segmentRunningMetrics.removeValue(forKey: idx)
+        } else if status == "failed" || status == "error" {
+            segmentRunningMetrics.removeValue(forKey: idx)
+        }
     }
 
     private func applySegmentReady(idx: Int, event: [String: Any]) {
@@ -1813,8 +1946,17 @@ final class ReaderViewModel: ObservableObject {
         }
         if let provider = event["summary_provider"] as? String { updated.summary_provider = provider }
         if let model = event["summary_model"] as? String { updated.summary_model = model }
+        if let duration = event["summary_duration_s"] as? Double {
+            updated.summary_duration_s = duration
+        } else if let duration = event["summary_duration_s"] as? Int {
+            updated.summary_duration_s = Double(duration)
+        }
+        if let attempts = event["summary_llm_attempts"] as? Int {
+            updated.summary_llm_attempts = attempts
+        }
         segments[i] = updated
         syncCurrentSegment(from: updated)
+        segmentRunningMetrics.removeValue(forKey: idx)
     }
 
     private func syncCurrentSegment(from segment: SegmentRow) {
@@ -1847,7 +1989,25 @@ final class ReaderViewModel: ObservableObject {
         case "segment_status":
             guard let idx = SegmentReadyEventParser.eventIndex(from: event),
                   let status = event["status"] as? String else { return }
-            applySegmentStatus(idx: idx, status: status)
+            applySegmentStatus(idx: idx, status: status, event: event)
+        case "segment_summarize_progress", "segment_summary_progress":
+            guard let idx = SegmentReadyEventParser.eventIndex(from: event) else { return }
+            var metrics = segmentRunningMetrics[idx] ?? SegmentRunningMetrics(
+                startedAt: Date(),
+                llmAttempt: 1,
+                maxLlmAttempts: nil
+            )
+            if let attempt = event["llm_attempt"] as? Int {
+                metrics.llmAttempt = attempt
+            } else if let attempt = event["attempt"] as? Int {
+                metrics.llmAttempt = attempt
+            }
+            if let maxAttempts = event["max_llm_attempts"] as? Int {
+                metrics.maxLlmAttempts = maxAttempts
+            } else if let maxAttempts = event["max_attempts"] as? Int {
+                metrics.maxLlmAttempts = maxAttempts
+            }
+            segmentRunningMetrics[idx] = metrics
         case "segment_ready":
             guard let idx = SegmentReadyEventParser.eventIndex(from: event) else { return }
             applySegmentReady(idx: idx, event: event)

@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from unittest.mock import patch
-
 import httpx
 import pytest
 
@@ -98,7 +96,7 @@ async def test_ollama_probe_without_chain_gate(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
-async def test_cursor_probe_key_only() -> None:
+async def test_cursor_probe_missing_base_url() -> None:
     resource = ModelResource(
         id="cursor",
         provider="cursor",
@@ -106,26 +104,32 @@ async def test_cursor_probe_key_only() -> None:
         model="composer-2.5",
         api_key="cursor-key",
     )
-    with patch("lumina_core.resource_probe._cursor_sdk_available", return_value=True):
-        status = await probe_resource(resource)
-    assert status.ready is True
-    assert status.probe_ok is True
-    assert status.key_configured is True
+    status = await probe_resource(resource)
+    assert status.ready is False
+    assert status.probe_ok is False
+    assert "Base URL" in status.message
 
 
 @pytest.mark.asyncio
-async def test_cursor_probe_sdk_missing() -> None:
+async def test_cursor_probe_ready(monkeypatch) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path.endswith("/models")
+        assert request.headers.get("Authorization") == "Bearer cursor-key"
+        return httpx.Response(200, json={"data": [{"id": "composer-2.5"}]})
+
+    monkeypatch.setattr(httpx, "AsyncClient", _client_factory(handler))
     resource = ModelResource(
         id="cursor",
         provider="cursor",
-        base_url="",
+        base_url="https://cursor-proxy.example/v1",
         model="composer-2.5",
         api_key="cursor-key",
     )
-    with patch("lumina_core.resource_probe._cursor_sdk_available", return_value=False):
-        status = await probe_resource(resource)
-    assert status.ready is False
-    assert "cursor-sdk" in status.message
+    status = await probe_resource(resource)
+    assert status.ready is True
+    assert status.probe_ok is True
+    assert status.key_configured is True
+    assert "composer-2.5" in status.available_models
 
 
 @pytest.mark.asyncio
@@ -133,7 +137,7 @@ async def test_cursor_probe_missing_key() -> None:
     resource = ModelResource(
         id="cursor",
         provider="cursor",
-        base_url="",
+        base_url="https://cursor-proxy.example/v1",
         model="composer-2.5",
         api_key=None,
     )

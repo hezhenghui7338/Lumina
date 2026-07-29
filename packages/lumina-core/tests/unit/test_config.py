@@ -26,7 +26,7 @@ def test_load_models_config_from_dev_tree():
     assert openai.provider == "openai"
     assert cfg.summarize.priority == ["ollama", "openrouter"]
     assert cfg.chat.priority == ["openai", "ollama"]
-    assert effective_concurrency(cfg.resource_by_id("ollama")) == 2
+    assert effective_concurrency(cfg.resource_by_id("ollama")) == 1
     assert effective_concurrency(cfg.resource_by_id("cursor")) == 8
 
 
