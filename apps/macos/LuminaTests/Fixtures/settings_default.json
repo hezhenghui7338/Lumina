@@ -1,0 +1,61 @@
+{
+  "target_language": "zh-CN",
+  "web_search_provider": "ddgs",
+  "tavily_api_key": null,
+  "models": {
+    "resources": [
+      {
+        "id": "ollama",
+        "provider": "ollama",
+        "model": "qwen3.5:4b",
+        "base_url": "http://127.0.0.1:11434",
+        "api_key": null,
+        "chat_timeout": 12,
+        "concurrency": 2
+      },
+      {
+        "id": "openai",
+        "provider": "openai",
+        "model": "gpt-4o-mini",
+        "base_url": "https://api.openai.com/v1",
+        "api_key": "***",
+        "chat_timeout": 12,
+        "concurrency": 4
+      },
+      {
+        "id": "openrouter",
+        "provider": "openrouter",
+        "model": "anthropic/claude-sonnet-4",
+        "base_url": "https://openrouter.ai/api/v1",
+        "api_key": null,
+        "chat_timeout": 12,
+        "concurrency": 4
+      },
+      {
+        "id": "cursor",
+        "provider": "cursor",
+        "model": "composer-2.5",
+        "base_url": "",
+        "api_key": null,
+        "chat_timeout": 12,
+        "concurrency": 8
+      },
+      {
+        "id": "aiping",
+        "provider": "aiping",
+        "model": "GLM-5.2",
+        "base_url": "https://aiping.cn/api/v1",
+        "api_key": null,
+        "chat_timeout": 12,
+        "concurrency": 4
+      }
+    ],
+    "chat": {
+      "priority": ["openai", "ollama"]
+    },
+    "summarize": {
+      "priority": ["ollama", "openrouter"]
+    },
+    "translate": null
+  }
+}

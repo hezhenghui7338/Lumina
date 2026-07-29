@@ -16,3 +16,7 @@ packages/lumina-core/tests/output/
 *.xcuserstate
 xcuserdata/
 **/__Snapshots__/**/*-diff.png
+.cursor/
+.derivedData/
+apps/macos/.build/
+apps/macos/.derivedData/

@@ -11,12 +11,21 @@ struct OnboardingView: View {
     var body: some View {
         VStack(spacing: 24) {
             Spacer()
-            Image(systemName: icon)
-                .font(.system(size: 56))
-                .foregroundStyle(LuminaTheme.accent)
+            if step == 0 {
+                Image("LuminaLogo")
+                    .resizable()
+                    .scaledToFit()
+                    .frame(maxWidth: 320)
+                    .accessibilityLabel("Lumina")
+            } else {
+                Image(systemName: icon)
+                    .font(.system(size: 56))
+                    .foregroundStyle(LuminaTheme.accent)
 
-            Text(title)
-                .font(.title.bold())
+                Text(title)
+                    .font(.title.bold())
+            }
+
             Text(subtitle)
                 .font(.body)
                 .foregroundStyle(LuminaTheme.textSecondary)
@@ -33,6 +42,10 @@ struct OnboardingView: View {
                 Button("我已安装，检查状态") {
                     Task { await refreshOllamaStatus() }
                 }
+                Button("跳过，稍后配置") {
+                    step += 1
+                }
+                .font(.caption)
             }
 
             if let err = sidecar.launchError {
@@ -60,7 +73,9 @@ struct OnboardingView: View {
         .frame(width: 540, height: 460)
         .task {
             await sidecar.ensureRunning()
-            await refreshOllamaStatus()
+            if step >= 1 {
+                await refreshOllamaStatus()
+            }
         }
     }
 
@@ -74,7 +89,9 @@ struct OnboardingView: View {
             if step >= 1 {
                 statusLine(
                     ok: ollamaReady,
-                    label: ollamaReady ? "AI 模型服务已就绪" : "需要安装 Ollama（本地 AI，免费）"
+                    label: ollamaReady
+                        ? "本机 Ollama 已就绪（默认摘要资源）"
+                        : "可选：安装 Ollama 零账单摘要，或在设置中添加外部 API"
                 )
             }
         }
@@ -93,7 +110,7 @@ struct OnboardingView: View {
     private var primaryButtonTitle: String {
         switch step {
         case 0: return "下一步"
-        case 1: return ollamaReady ? "下一步" : "稍后设置"
+        case 1: return ollamaReady ? "下一步" : "跳过，稍后配置"
         case 2: return "开始使用"
         default: return "下一步"
         }
@@ -111,9 +128,16 @@ struct OnboardingView: View {
     private func refreshOllamaStatus() async {
         checkingOllama = true
         defer { checkingOllama = false }
-        if let status = try? await core.fetchOllamaStatus() {
+        if let status = try? await core.fetchOllamaStatus(resourceId: "ollama") {
+            if status.skipped {
+                ollamaReady = OllamaSetupHelper.isInstalled()
+                return
+            }
             ollamaReady = status.ready
-            if status.ready == false, OllamaSetupHelper.isInstalled(), status.served {
+            if status.ready == false,
+               OllamaSetupHelper.isInstalled(),
+               status.probe_ok || status.served,
+               status.installed_models.isEmpty {
                 OllamaSetupHelper.pullRecommendedModel(model: status.model)
             }
         } else {
@@ -132,7 +156,7 @@ struct OnboardingView: View {
     private var title: String {
         switch step {
         case 0: return "欢迎使用 Lumina"
-        case 1: return "启用本地 AI"
+        case 1: return "配置 AI"
         default: return "导入第一本书"
         }
     }
@@ -142,7 +166,7 @@ struct OnboardingView: View {
         case 0:
             return "AI 伴读助手：分段摘要、深聊、自动翻译。书籍与笔记都在你的 Mac 上，无需编程或命令行。"
         case 1:
-            return "Lumina 通过 Ollama 在本机运行 AI（约 3 GB 模型，仅首次下载）。安装后菜单栏会出现 Llama 图标。"
+            return "默认使用本机 Ollama 做摘要（免费）。也可稍后在设置中添加 OpenAI / OpenRouter 等外部 API，并为深聊与摘要分别配置优先级链。"
         default:
             return "支持 PDF、EPUB、MOBI、TXT。点书库「导入」选文件即可；第一段准备好就能开始读。"
         }

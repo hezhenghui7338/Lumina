@@ -14,6 +14,8 @@ uv run lumina-core
 # http://127.0.0.1:17432/health
 ```
 
+`dev` / `release` 已包含 OCR 依赖（`rapidocr` · `onnxruntime` · `pymupdf`）。仅装 OCR：`uv sync --extra ocr`。
+
 ### 测试
 
 ```bash

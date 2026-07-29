@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -33,9 +34,11 @@ def llm_fixtures_dir() -> Path:
 @pytest.fixture
 def output_dir(tmp_path: Path) -> Path:
     """Prefer repo tests/output when writable; else pytest tmp."""
+    worker = os.environ.get("PYTEST_XDIST_WORKER")
     try:
-        REPO_OUTPUT.mkdir(parents=True, exist_ok=True)
-        return REPO_OUTPUT
+        base = REPO_OUTPUT / worker if worker else REPO_OUTPUT
+        base.mkdir(parents=True, exist_ok=True)
+        return base
     except OSError:
         return tmp_path / "output"
 

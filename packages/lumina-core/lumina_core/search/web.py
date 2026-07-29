@@ -2,12 +2,18 @@
 
 from __future__ import annotations
 
+import asyncio
+import json
 import re
 from dataclasses import dataclass
 from typing import Literal
 from urllib.parse import quote_plus
 
 import httpx
+
+from lumina_core.settings_store import resolve_web_search_provider
+
+_USER_AGENT = "Lumina/0.1 (https://github.com/hezhenghui7338/Lumina; bot@lumina.ai)"
 
 Domain = Literal["general", "academic", "books", "code"]
 
@@ -59,12 +65,26 @@ def assess_evidence_sufficiency(
     return True
 
 
-async def search_web(query: str, domain: Domain | None = None) -> list[WebResult]:
+def _query_has_cjk(text: str) -> bool:
+    return any("\u4e00" <= ch <= "\u9fff" for ch in text)
+
+
+async def search_web(
+    query: str,
+    domain: Domain | None = None,
+    *,
+    provider: str = "ddgs",
+    tavily_api_key: str | None = None,
+) -> list[WebResult]:
     domain = domain or classify_domain(query)
     results: list[WebResult] = []
+    resolved = resolve_web_search_provider(provider, tavily_api_key)
 
     if domain in ("general", "academic", "books", "code"):
-        results.extend(await _search_ddg(query))
+        if resolved == "tavily":
+            results.extend(await _search_tavily(query, tavily_api_key or ""))
+        else:
+            results.extend(await _search_ddgs(query))
 
     if domain == "academic":
         results.extend(await _search_arxiv(query))
@@ -78,38 +98,74 @@ async def search_web(query: str, domain: Domain | None = None) -> list[WebResult
     seen: set[str] = set()
     deduped: list[WebResult] = []
     for r in results:
-        if r.url in seen:
+        if not r.url or r.url in seen:
             continue
         seen.add(r.url)
         deduped.append(r)
     return deduped[:5]
 
 
-async def _search_ddg(query: str) -> list[WebResult]:
-    url = f"https://html.duckduckgo.com/html/?q={quote_plus(query)}"
-    try:
-        async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
-            resp = await client.get(url, headers={"User-Agent": "Lumina/0.1"})
-            if resp.status_code != 200:
-                return []
-            html = resp.text
-    except httpx.HTTPError:
-        return []
+async def _search_ddgs(query: str, *, max_results: int = 3) -> list[WebResult]:
+    def _run() -> list[WebResult]:
+        try:
+            from ddgs import DDGS
+        except ImportError:
+            return []
+        kwargs: dict = {"max_results": max_results}
+        if _query_has_cjk(query):
+            kwargs["region"] = "cn-zh"
+        try:
+            with DDGS() as ddgs:
+                raw = list(ddgs.text(query, **kwargs))
+        except Exception:
+            return []
+        out: list[WebResult] = []
+        for item in raw:
+            url = item.get("href") or item.get("url") or ""
+            if not url:
+                continue
+            out.append(
+                WebResult(
+                    title=(item.get("title") or "").strip(),
+                    url=url,
+                    snippet=(item.get("body") or "")[:200],
+                    source="ddgs",
+                )
+            )
+        return out
 
-    results: list[WebResult] = []
-    matches = list(
-        re.finditer(
-            r'class="result__a"[^>]*href="([^"]+)"[^>]*>(.*?)</a>',
-            html,
-            re.DOTALL,
+    return await asyncio.to_thread(_run)
+
+
+async def _search_tavily(query: str, api_key: str, *, max_results: int = 5) -> list[WebResult]:
+    if not api_key.strip():
+        return []
+    payload = {
+        "api_key": api_key,
+        "query": query,
+        "max_results": max_results,
+    }
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post("https://api.tavily.com/search", json=payload)
+            resp.raise_for_status()
+            data = resp.json()
+    except (httpx.HTTPError, KeyError, json.JSONDecodeError):
+        return []
+    out: list[WebResult] = []
+    for item in data.get("results") or []:
+        url = item.get("url") or ""
+        if not url:
+            continue
+        out.append(
+            WebResult(
+                title=(item.get("title") or "").strip(),
+                url=url,
+                snippet=(item.get("content") or "")[:200],
+                source="Tavily",
+            )
         )
-    )[:3]
-    for match in matches:
-        href, title = match.group(1), re.sub(r"<[^>]+>", "", match.group(2))
-        results.append(
-            WebResult(title=title.strip(), url=href, snippet="", source="DuckDuckGo")
-        )
-    return results
+    return out[:max_results]
 
 
 async def _search_wikipedia(query: str) -> list[WebResult]:
@@ -123,9 +179,15 @@ async def _search_wikipedia(query: str) -> list[WebResult]:
     }
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.get(api, params=params)
+            resp = await client.get(
+                api,
+                params=params,
+                headers={"User-Agent": _USER_AGENT},
+            )
+            if resp.status_code != 200:
+                return []
             data = resp.json()
-    except (httpx.HTTPError, KeyError):
+    except (httpx.HTTPError, KeyError, json.JSONDecodeError):
         return []
     out: list[WebResult] = []
     for item in data.get("query", {}).get("search", [])[:2]:
@@ -194,7 +256,10 @@ async def _search_github(query: str) -> list[WebResult]:
         async with httpx.AsyncClient(timeout=10.0) as client:
             resp = await client.get(
                 url,
-                headers={"Accept": "application/vnd.github+json", "User-Agent": "Lumina"},
+                headers={
+                    "Accept": "application/vnd.github+json",
+                    "User-Agent": _USER_AGENT,
+                },
             )
             items = resp.json().get("items", [])
     except (httpx.HTTPError, KeyError):

@@ -3,18 +3,50 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-VERSION="${LUMINA_VERSION:-0.1.0}"
+VERSION="${LUMINA_VERSION:-0.2.0}"
 DIST="$ROOT/dist"
 DERIVED="$ROOT/build/DerivedData"
 CORE_PKG="$ROOT/packages/lumina-core"
 MACOS="$ROOT/apps/macos"
+MAX_SIDECAR_MB=520
+MAX_APP_MB=500
+MAX_DMG_MB=300
+
+assert_max_dir_mb() {
+  local path="$1"
+  local max_mb="$2"
+  local label="$3"
+  local size_mb
+  size_mb=$(du -sm "$path" | cut -f1)
+  if (( size_mb > max_mb )); then
+    echo "ERROR: $label too large: ${size_mb}MB (max ${max_mb}MB): $path" >&2
+    exit 1
+  fi
+}
+
+assert_max_file_mb() {
+  local path="$1"
+  local max_mb="$2"
+  local label="$3"
+  local size_mb
+  size_mb=$(($(stat -f%z "$path") / 1024 / 1024))
+  if (( size_mb > max_mb )); then
+    echo "ERROR: $label too large: ${size_mb}MB (max ${max_mb}MB): $path" >&2
+    exit 1
+  fi
+}
 
 echo "==> Lumina release build v${VERSION}"
+
+# --- 0. Release tests (must pass before build) ---
+echo "==> Running release tests (must pass)…"
+bash "$ROOT/scripts/run-release-tests.sh"
 
 # --- 1. Bundle lumina-core with PyInstaller ---
 echo "==> Building lumina-core bundle…"
 cd "$CORE_PKG"
-uv sync --extra release
+# Prefetch default OCR models so collect_all(rapidocr) embeds them (no runtime modelscope download).
+uv run python scripts/prefetch_ocr_models.py
 uv run pyinstaller lumina-core.spec --noconfirm --clean
 
 SIDECAR_SRC="$CORE_PKG/dist/lumina-core"
@@ -22,6 +54,9 @@ if [[ ! -x "$SIDECAR_SRC/lumina-core" ]]; then
   echo "ERROR: PyInstaller output missing: $SIDECAR_SRC/lumina-core" >&2
   exit 1
 fi
+
+bash "$ROOT/scripts/prune-sidecar.sh" "$SIDECAR_SRC"
+assert_max_dir_mb "$SIDECAR_SRC" "$MAX_SIDECAR_MB" "Pruned sidecar"
 
 # --- 2. Build Lumina.app (Release) ---
 echo "==> Building Lumina.app (Release)…"
@@ -56,6 +91,33 @@ mkdir -p "$RES"
 ditto "$SIDECAR_SRC/" "$RES/"
 chmod +x "$RES/lumina-core"
 
+echo "==> Sidecar startup smoke (embedded binary)…"
+SMOKE_PORT=17433
+SMOKE_PID=""
+cleanup_smoke() {
+  if [[ -n "${SMOKE_PID:-}" ]] && kill -0 "$SMOKE_PID" 2>/dev/null; then
+    kill "$SMOKE_PID" 2>/dev/null || true
+    wait "$SMOKE_PID" 2>/dev/null || true
+  fi
+}
+trap cleanup_smoke EXIT
+"$RES/lumina-core" --host 127.0.0.1 --port "$SMOKE_PORT" &
+SMOKE_PID=$!
+SMOKE_OK=0
+for _ in $(seq 1 60); do
+  if curl -sf "http://127.0.0.1:${SMOKE_PORT}/health" >/dev/null; then
+    SMOKE_OK=1
+    break
+  fi
+  sleep 0.5
+done
+if [[ "$SMOKE_OK" -ne 1 ]]; then
+  echo "ERROR: Embedded sidecar failed /health smoke within 30s" >&2
+  exit 1
+fi
+cleanup_smoke
+trap - EXIT
+
 # --- 4. Stage release artifacts ---
 echo "==> Staging release artifacts…"
 mkdir -p "$DIST"
@@ -88,10 +150,13 @@ EOF
 hdiutil create -volname "Lumina ${VERSION}" -srcfolder "$STAGE" -ov -format UDZO "$DMG"
 rm -rf "$STAGE"
 
+assert_max_dir_mb "$RELEASE_APP" "$MAX_APP_MB" "Lumina.app"
+assert_max_file_mb "$DMG" "$MAX_DMG_MB" "DMG"
+
 echo ""
 echo "✅ Release ready:"
-echo "   App:  $RELEASE_APP"
-echo "   ZIP:  $ZIP"
-echo "   DMG:  $DMG"
+echo "   App:  $RELEASE_APP ($(du -sh "$RELEASE_APP" | cut -f1))"
+echo "   ZIP:  $ZIP ($(du -sh "$ZIP" | cut -f1))"
+echo "   DMG:  $DMG ($(du -sh "$DMG" | cut -f1))"
 echo ""
 echo "Upload DMG/ZIP to GitHub Releases for users to download."

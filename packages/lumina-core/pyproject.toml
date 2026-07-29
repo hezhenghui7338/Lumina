@@ -1,6 +1,6 @@
 [project]
 name = "lumina-core"
-version = "0.1.0"
+version = "0.2.0"
 description = "Lumina local AI reading engine sidecar"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -17,12 +17,37 @@ dependencies = [
     "ebooklib>=0.18",
     "feedparser>=6.0.0",
     "mobi>=0.3.3",
+    "trafilatura>=2.0.0",
+    "ddgs>=9.0.0",
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8.3.0", "pytest-asyncio>=0.24.0"]
-ocr = ["pymupdf>=1.24.0", "rapidocr-onnxruntime>=1.4.0"]
-release = ["pyinstaller>=6.11.0"]
+cursor = [
+    "cursor-sdk>=0.1.9",
+]
+ocr = [
+    "rapidocr>=3.9.0",
+    "onnxruntime>=1.18.0",
+    "pymupdf>=1.24.0",
+    "opencv-python-headless>=4.8.0",
+]
+dev = [
+    "pytest>=8.3.0",
+    "pytest-asyncio>=0.24.0",
+    "pytest-xdist>=3.6.0",
+    "pytest-timeout>=2.3.0",
+    "rapidocr>=3.9.0",
+    "onnxruntime>=1.18.0",
+    "pymupdf>=1.24.0",
+    "opencv-python-headless>=4.8.0",
+]
+release = [
+    "pyinstaller>=6.11.0",
+    "rapidocr>=3.9.0",
+    "onnxruntime>=1.18.0",
+    "pymupdf>=1.24.0",
+    "opencv-python-headless>=4.8.0",
+]
 
 [project.scripts]
 lumina-core = "lumina_core.main:cli"
@@ -42,6 +67,7 @@ markers = [
     "e2e: API end-to-end tests with Mock LLM",
     "live: tests requiring real Ollama (nightly)",
     "live_chunk: long-text chunking + summarize seg 0/1 with real Ollama",
+    "release_live: release gate smoke with truncated fixtures + real Ollama",
     "perf: performance benchmarks",
 ]
 filterwarnings = ["ignore::DeprecationWarning"]

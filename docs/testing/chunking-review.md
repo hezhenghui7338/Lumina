@@ -59,7 +59,7 @@ fixture 长文本
 | A1 | 段数 ≥ 2 | 长文 fixture 必为多段 |
 | A2 | 段 0/1 `summary_status == ready` | Ollama 摘要成功 |
 | A3 | 每段 `raw_text` 长度 ∈ [2400, 9600] | 目标 3000–8000 字，±20% |
-| A4 | 段 0 与段 1 字符 offset **无重叠** | `end_0 <= start_1` |
+| A4 | 段 0 与段 1 字符 offset **无重叠且无 gap** | `end_0 == start_1` |
 | A5 | 摘要 JSON schema 合法 | 见下表 |
 | A6 | `label` 长度 ≤ 20 字（Unicode 字符数） | PRD §5.3 |
 | A7 | `anchor` 含段序号 | 如 `段 1` |
