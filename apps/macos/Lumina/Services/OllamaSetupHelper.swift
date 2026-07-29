@@ -7,12 +7,27 @@ enum OllamaSetupHelper {
 
     static func isInstalled() -> Bool {
         let paths = ["/usr/local/bin/ollama", "/opt/homebrew/bin/ollama"]
-        return paths.contains { FileManager.default.isExecutableFile(atPath: $0) }
-            || shellWhich("ollama") != nil
+        if paths.contains(where: { FileManager.default.isExecutableFile(atPath: $0) }) {
+            return true
+        }
+        if shellWhich("ollama") != nil { return true }
+        return FileManager.default.fileExists(atPath: "/Applications/Ollama.app")
     }
 
     static func openDownloadPage() {
         NSWorkspace.shared.open(downloadURL)
+    }
+
+    /// Open the Ollama macOS app; fall back to the download page if missing.
+    @discardableResult
+    static func openOllamaApp() -> Bool {
+        let appURL = URL(fileURLWithPath: "/Applications/Ollama.app")
+        if FileManager.default.fileExists(atPath: appURL.path) {
+            NSWorkspace.shared.open(appURL)
+            return true
+        }
+        openDownloadPage()
+        return false
     }
 
     /// Pull recommended model after Ollama is installed (best-effort, background).
@@ -28,10 +43,12 @@ enum OllamaSetupHelper {
 
     private static func resolveOllamaPath() -> String? {
         if let p = shellWhich("ollama") { return p }
-        for p in ["/usr/local/bin/ollama", "/opt/homebrew/bin/ollama"] {
-            if FileManager.default.isExecutableFile(atPath: p) { return p }
-        }
-        return nil
+        let candidates = [
+            "/usr/local/bin/ollama",
+            "/opt/homebrew/bin/ollama",
+            "/Applications/Ollama.app/Contents/Resources/ollama",
+        ]
+        return candidates.first { FileManager.default.isExecutableFile(atPath: $0) }
     }
 
     private static func shellWhich(_ name: String) -> String? {

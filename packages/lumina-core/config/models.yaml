@@ -1,20 +1,36 @@
+resources:
+  - id: ollama
+    provider: ollama
+    base_url: http://127.0.0.1:11434
+    model: qwen3.5:4b
+    chat_timeout: 12
+    concurrency: 2
+  - id: openai
+    provider: openai
+    base_url: https://api.openai.com/v1
+    model: gpt-4o-mini
+    concurrency: 4
+  - id: openrouter
+    provider: openrouter
+    base_url: https://openrouter.ai/api/v1
+    model: anthropic/claude-sonnet-4
+    concurrency: 4
+  - id: cursor
+    provider: cursor
+    model: composer-2.5
+    concurrency: 8
+  - id: aiping
+    provider: aiping
+    base_url: https://aiping.cn/api/v1
+    model: GLM-5.2
+    concurrency: 4
+
 chat:
-  provider: ollama
-  model: qwen3.5:4b
-  base_url: http://localhost:11434
+  priority:
+    - openai
+    - ollama
 
 summarize:
-  provider: ollama
-  model: qwen3.5:4b
-  base_url: http://localhost:11434
-
-translate:
-  provider: ollama
-  model: qwen3.5:4b
-  base_url: http://localhost:11434
-
-job_concurrency:
-  ocr: 1
-  segment: 1
-  ollama: 1
-  cloud: 4
+  priority:
+    - ollama
+    - openrouter

@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from lumina_core.chunker.chunker import ChunkSegment
-from lumina_core.summarize.schema import SegmentSummary
+from lumina_core.summarize.schema import SegmentSummary, format_bullet
 
 
 def write_chunking_report(
@@ -55,7 +55,7 @@ def write_chunking_report(
                     "- **Summary sentences**:",
                     *[f"  {i + 1}. {s}" for i, s in enumerate(summary.sentences)],
                     "- **Bullets**:",
-                    *[f"  - {b}" for b in summary.bullets],
+                    *[f"  - {format_bullet(b)}" for b in summary.bullets],
                 ]
             )
         preview = seg.raw_text[:200].replace("\n", " ")

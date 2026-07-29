@@ -15,8 +15,12 @@ from lumina_core.config import Settings
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    yield
     state: AppState = app.state.lumina
+    from lumina_core.api.routes import _wire_job_events
+
+    _wire_job_events(state)
+    await state.job_queue.recover_on_startup()
+    yield
     await state.router.aclose()
 
 

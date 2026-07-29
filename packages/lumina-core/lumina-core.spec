@@ -12,7 +12,7 @@ root = Path(SPECPATH)
 datas = [(str(root / "config" / "models.yaml"), "config")]
 
 hiddenimports = collect_submodules("lumina_core")
-for pkg in ("uvicorn", "fastapi", "starlette", "pydantic", "email"):
+for pkg in ("uvicorn", "fastapi", "starlette", "pydantic", "email", "rapidocr", "onnxruntime", "fitz"):
     try:
         _datas, _binaries, _hidden = collect_all(pkg)
         datas += _datas
@@ -35,6 +35,7 @@ hiddenimports += [
     "uvicorn.lifespan.off",
     "multipart",
     "multipart.multipart",
+    "numpy",
 ]
 
 a = Analysis(
@@ -63,7 +64,7 @@ exe = EXE(
     name="lumina-core",
     debug=False,
     bootloader_ignore_signals=False,
-    strip=False,
+    strip=True,
     upx=False,
     console=True,
     disable_windowed_traceback=False,
@@ -78,7 +79,7 @@ coll = COLLECT(
     a.binaries,
     a.zipfiles,
     a.datas,
-    strip=False,
+    strip=True,
     upx=False,
     upx_exclude=[],
     name="lumina-core",

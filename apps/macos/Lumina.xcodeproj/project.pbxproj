@@ -10,41 +10,120 @@
 		A1000101 /* LuminaApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000201 /* LuminaApp.swift */; };
 		A1000102 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000202 /* ContentView.swift */; };
 		A1000103 /* ReaderView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000203 /* ReaderView.swift */; };
+		A1000119 /* SummaryReadingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000219 /* SummaryReadingView.swift */; };
+		A1000138 /* LazyParagraphText.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000233 /* LazyParagraphText.swift */; };
+		A1000139 /* SegmentReadingBlock.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000235 /* SegmentReadingBlock.swift */; };
 		A1000104 /* CoreClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000204 /* CoreClient.swift */; };
 		A1000105 /* SidecarManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000205 /* SidecarManager.swift */; };
 		A1000106 /* DesignSystem.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000206 /* DesignSystem.swift */; };
 		A1000107 /* ThemeManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000207 /* ThemeManager.swift */; };
+		A1000124 /* DoubleClickHandler.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000224 /* DoubleClickHandler.swift */; };
 		A1000108 /* SearchView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000208 /* SearchView.swift */; };
 		A1000109 /* NewsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000209 /* NewsView.swift */; };
 		A1000110 /* NewsArticleView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000210 /* NewsArticleView.swift */; };
 		A1000111 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000211 /* SettingsView.swift */; };
 		A1000112 /* NotesPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000212 /* NotesPanel.swift */; };
+		A1000120 /* AllNotesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000220 /* AllNotesView.swift */; };
+		A1000121 /* LibraryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000221 /* LibraryView.swift */; };
+		A1000122 /* BookRow.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000222 /* BookRow.swift */; };
+		A1000123 /* LibraryViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000223 /* LibraryViewModel.swift */; };
 		A1000113 /* ExportSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000213 /* ExportSheet.swift */; };
 		A1000114 /* OnboardingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000214 /* OnboardingView.swift */; };
 		A1000115 /* OllamaSetupHelper.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000215 /* OllamaSetupHelper.swift */; };
+		A1000117 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A1000218 /* Assets.xcassets */; };
+		A1000130 /* CoreClientDecodingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000225 /* CoreClientDecodingTests.swift */; };
+		A1000131 /* books_list_favorite_bool.json in Resources */ = {isa = PBXBuildFile; fileRef = A1000226 /* books_list_favorite_bool.json */; };
+		A1000132 /* books_list_favorite_int.json in Resources */ = {isa = PBXBuildFile; fileRef = A1000227 /* books_list_favorite_int.json */; };
+		A1000133 /* settings_default.json in Resources */ = {isa = PBXBuildFile; fileRef = A1000228 /* settings_default.json */; };
+		A1000134 /* news_brief_empty.json in Resources */ = {isa = PBXBuildFile; fileRef = A1000229 /* news_brief_empty.json */; };
+		A1000135 /* NewsArticleViewModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000230 /* NewsArticleViewModelTests.swift */; };
+		A1000136 /* ThemeManagerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000231 /* ThemeManagerTests.swift */; };
+		A1000137 /* news_read_result_ready.json in Resources */ = {isa = PBXBuildFile; fileRef = A1000232 /* news_read_result_ready.json */; };
+		A1000140 /* news_brief_sample.json in Resources */ = {isa = PBXBuildFile; fileRef = A1000234 /* news_brief_sample.json */; };
+		A1000142 /* FollowUpChip.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000237 /* FollowUpChip.swift */; };
+		A1000143 /* NewsSummaryMarkdown.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000238 /* NewsSummaryMarkdown.swift */; };
+		A1000144 /* NewsSummaryMarkdownTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000239 /* NewsSummaryMarkdownTests.swift */; };
+		A1000145 /* NewsSourcesSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000240 /* NewsSourcesSettingsView.swift */; };
+		A1000146 /* news_sources_sample.json in Resources */ = {isa = PBXBuildFile; fileRef = A1000241 /* news_sources_sample.json */; };
+		A1000147 /* ReaderPreferences.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000242 /* ReaderPreferences.swift */; };
+		A1000148 /* EdgeHoverTracker.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000243 /* EdgeHoverTracker.swift */; };
+		A1000149 /* WindowToolbarVisibility.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000244 /* WindowToolbarVisibility.swift */; };
+		A1000150 /* ConnectionError.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000245 /* ConnectionError.swift */; };
+		A1000151 /* SidecarReadiness.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000246 /* SidecarReadiness.swift */; };
+		A1000152 /* SidecarReadinessTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000247 /* SidecarReadinessTests.swift */; };
+		A1000153 /* LibraryViewModelMergeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000248 /* LibraryViewModelMergeTests.swift */; };
+		A1000154 /* NewsStructuredSummaryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000250 /* NewsStructuredSummaryView.swift */; };
+		A1000155 /* SegmentReadyEventParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000249 /* SegmentReadyEventParser.swift */; };
+		A1000156 /* SegmentReadyEventTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000251 /* SegmentReadyEventTests.swift */; };
+		A1000157 /* BookMarkdownExporter.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000252 /* BookMarkdownExporter.swift */; };
+		A1000158 /* ReaderEdgeIcon.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000253 /* ReaderEdgeIcon.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
 		A1000201 /* LuminaApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LuminaApp.swift; sourceTree = "<group>"; };
 		A1000202 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		A1000203 /* ReaderView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderView.swift; sourceTree = "<group>"; };
+		A1000219 /* SummaryReadingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SummaryReadingView.swift; sourceTree = "<group>"; };
+		A1000233 /* LazyParagraphText.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LazyParagraphText.swift; sourceTree = "<group>"; };
+		A1000235 /* SegmentReadingBlock.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SegmentReadingBlock.swift; sourceTree = "<group>"; };
 		A1000204 /* CoreClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoreClient.swift; sourceTree = "<group>"; };
 		A1000205 /* SidecarManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SidecarManager.swift; sourceTree = "<group>"; };
 		A1000206 /* DesignSystem.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignSystem.swift; sourceTree = "<group>"; };
 		A1000207 /* ThemeManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ThemeManager.swift; sourceTree = "<group>"; };
+		A1000224 /* DoubleClickHandler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DoubleClickHandler.swift; sourceTree = "<group>"; };
 		A1000208 /* SearchView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SearchView.swift; sourceTree = "<group>"; };
 		A1000209 /* NewsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NewsView.swift; sourceTree = "<group>"; };
 		A1000210 /* NewsArticleView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NewsArticleView.swift; sourceTree = "<group>"; };
 		A1000211 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		A1000212 /* NotesPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotesPanel.swift; sourceTree = "<group>"; };
+		A1000220 /* AllNotesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AllNotesView.swift; sourceTree = "<group>"; };
+		A1000221 /* LibraryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryView.swift; sourceTree = "<group>"; };
+		A1000222 /* BookRow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BookRow.swift; sourceTree = "<group>"; };
+		A1000223 /* LibraryViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryViewModel.swift; sourceTree = "<group>"; };
 		A1000213 /* ExportSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExportSheet.swift; sourceTree = "<group>"; };
 		A1000214 /* OnboardingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingView.swift; sourceTree = "<group>"; };
 		A1000215 /* OllamaSetupHelper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OllamaSetupHelper.swift; sourceTree = "<group>"; };
+		A1000217 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		A1000218 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		A1000301 /* Lumina.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Lumina.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		A1000302 /* LuminaTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = LuminaTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		A1000225 /* CoreClientDecodingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoreClientDecodingTests.swift; sourceTree = "<group>"; };
+		A1000226 /* books_list_favorite_bool.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = books_list_favorite_bool.json; sourceTree = "<group>"; };
+		A1000227 /* books_list_favorite_int.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = books_list_favorite_int.json; sourceTree = "<group>"; };
+		A1000228 /* settings_default.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = settings_default.json; sourceTree = "<group>"; };
+		A1000229 /* news_brief_empty.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = news_brief_empty.json; sourceTree = "<group>"; };
+		A1000230 /* NewsArticleViewModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NewsArticleViewModelTests.swift; sourceTree = "<group>"; };
+		A1000231 /* ThemeManagerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ThemeManagerTests.swift; sourceTree = "<group>"; };
+		A1000232 /* news_read_result_ready.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = news_read_result_ready.json; sourceTree = "<group>"; };
+		A1000234 /* news_brief_sample.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = news_brief_sample.json; sourceTree = "<group>"; };
+		A1000237 /* FollowUpChip.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FollowUpChip.swift; sourceTree = "<group>"; };
+		A1000238 /* NewsSummaryMarkdown.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NewsSummaryMarkdown.swift; sourceTree = "<group>"; };
+		A1000239 /* NewsSummaryMarkdownTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NewsSummaryMarkdownTests.swift; sourceTree = "<group>"; };
+		A1000240 /* NewsSourcesSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NewsSourcesSettingsView.swift; sourceTree = "<group>"; };
+		A1000241 /* news_sources_sample.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = news_sources_sample.json; sourceTree = "<group>"; };
+		A1000242 /* ReaderPreferences.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderPreferences.swift; sourceTree = "<group>"; };
+		A1000243 /* EdgeHoverTracker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EdgeHoverTracker.swift; sourceTree = "<group>"; };
+		A1000244 /* WindowToolbarVisibility.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WindowToolbarVisibility.swift; sourceTree = "<group>"; };
+		A1000245 /* ConnectionError.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConnectionError.swift; sourceTree = "<group>"; };
+		A1000246 /* SidecarReadiness.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SidecarReadiness.swift; sourceTree = "<group>"; };
+		A1000247 /* SidecarReadinessTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SidecarReadinessTests.swift; sourceTree = "<group>"; };
+		A1000248 /* LibraryViewModelMergeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryViewModelMergeTests.swift; sourceTree = "<group>"; };
+		A1000250 /* NewsStructuredSummaryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NewsStructuredSummaryView.swift; sourceTree = "<group>"; };
+		A1000249 /* SegmentReadyEventParser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SegmentReadyEventParser.swift; sourceTree = "<group>"; };
+		A1000251 /* SegmentReadyEventTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SegmentReadyEventTests.swift; sourceTree = "<group>"; };
+		A1000252 /* BookMarkdownExporter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BookMarkdownExporter.swift; sourceTree = "<group>"; };
+		A1000253 /* ReaderEdgeIcon.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderEdgeIcon.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
 		A1000401 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		A1000402 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -58,6 +137,7 @@
 			isa = PBXGroup;
 			children = (
 				A1000502 /* Lumina */,
+				A1000514 /* LuminaTests */,
 				A1000503 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -67,6 +147,8 @@
 			children = (
 				A1000201 /* LuminaApp.swift */,
 				A1000202 /* ContentView.swift */,
+				A1000217 /* Info.plist */,
+				A1000218 /* Assets.xcassets */,
 				A1000507 /* Design */,
 				A1000504 /* Features */,
 				A1000505 /* Services */,
@@ -78,6 +160,7 @@
 			isa = PBXGroup;
 			children = (
 				A1000301 /* Lumina.app */,
+				A1000302 /* LuminaTests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -85,8 +168,11 @@
 		A1000504 /* Features */ = {
 			isa = PBXGroup;
 			children = (
+				A1000513 /* Library */,
 				A1000506 /* Reader */,
+				A1000512 /* Notes */,
 				A1000508 /* News */,
+				A1000517 /* Shared */,
 				A1000509 /* Search */,
 				A1000510 /* Settings */,
 				A1000511 /* Onboarding */,
@@ -99,7 +185,10 @@
 			children = (
 				A1000204 /* CoreClient.swift */,
 				A1000205 /* SidecarManager.swift */,
+				A1000245 /* ConnectionError.swift */,
+				A1000246 /* SidecarReadiness.swift */,
 				A1000215 /* OllamaSetupHelper.swift */,
+				A1000252 /* BookMarkdownExporter.swift */,
 			);
 			path = Services;
 			sourceTree = "<group>";
@@ -108,6 +197,11 @@
 			isa = PBXGroup;
 			children = (
 				A1000203 /* ReaderView.swift */,
+				A1000242 /* ReaderPreferences.swift */,
+				A1000249 /* SegmentReadyEventParser.swift */,
+				A1000219 /* SummaryReadingView.swift */,
+				A1000233 /* LazyParagraphText.swift */,
+				A1000235 /* SegmentReadingBlock.swift */,
 				A1000212 /* NotesPanel.swift */,
 				A1000213 /* ExportSheet.swift */,
 			);
@@ -119,6 +213,10 @@
 			children = (
 				A1000206 /* DesignSystem.swift */,
 				A1000207 /* ThemeManager.swift */,
+				A1000224 /* DoubleClickHandler.swift */,
+				A1000243 /* EdgeHoverTracker.swift */,
+				A1000244 /* WindowToolbarVisibility.swift */,
+				A1000253 /* ReaderEdgeIcon.swift */,
 			);
 			path = Design;
 			sourceTree = "<group>";
@@ -128,8 +226,19 @@
 			children = (
 				A1000209 /* NewsView.swift */,
 				A1000210 /* NewsArticleView.swift */,
+				A1000238 /* NewsSummaryMarkdown.swift */,
+				A1000250 /* NewsStructuredSummaryView.swift */,
+				A1000240 /* NewsSourcesSettingsView.swift */,
 			);
 			path = News;
+			sourceTree = "<group>";
+		};
+		A1000517 /* Shared */ = {
+			isa = PBXGroup;
+			children = (
+				A1000237 /* FollowUpChip.swift */,
+			);
+			path = Shared;
 			sourceTree = "<group>";
 		};
 		A1000509 /* Search */ = {
@@ -156,6 +265,61 @@
 			path = Onboarding;
 			sourceTree = "<group>";
 		};
+		A1000512 /* Notes */ = {
+			isa = PBXGroup;
+			children = (
+				A1000220 /* AllNotesView.swift */,
+			);
+			path = Notes;
+			sourceTree = "<group>";
+		};
+		A1000513 /* Library */ = {
+			isa = PBXGroup;
+			children = (
+				A1000221 /* LibraryView.swift */,
+				A1000222 /* BookRow.swift */,
+				A1000223 /* LibraryViewModel.swift */,
+			);
+			path = Library;
+			sourceTree = "<group>";
+		};
+		A1000514 /* LuminaTests */ = {
+			isa = PBXGroup;
+			children = (
+				A1000515 /* Unit */,
+				A1000516 /* Fixtures */,
+			);
+			path = LuminaTests;
+			sourceTree = "<group>";
+		};
+		A1000515 /* Unit */ = {
+			isa = PBXGroup;
+			children = (
+				A1000225 /* CoreClientDecodingTests.swift */,
+				A1000247 /* SidecarReadinessTests.swift */,
+				A1000230 /* NewsArticleViewModelTests.swift */,
+				A1000231 /* ThemeManagerTests.swift */,
+				A1000239 /* NewsSummaryMarkdownTests.swift */,
+				A1000248 /* LibraryViewModelMergeTests.swift */,
+				A1000251 /* SegmentReadyEventTests.swift */,
+			);
+			path = Unit;
+			sourceTree = "<group>";
+		};
+		A1000516 /* Fixtures */ = {
+			isa = PBXGroup;
+			children = (
+				A1000226 /* books_list_favorite_bool.json */,
+				A1000227 /* books_list_favorite_int.json */,
+				A1000228 /* settings_default.json */,
+				A1000229 /* news_brief_empty.json */,
+				A1000232 /* news_read_result_ready.json */,
+				A1000234 /* news_brief_sample.json */,
+				A1000241 /* news_sources_sample.json */,
+			);
+			path = Fixtures;
+			sourceTree = "<group>";
+		};
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
@@ -165,6 +329,7 @@
 			buildPhases = (
 				A1000801 /* Sources */,
 				A1000401 /* Frameworks */,
+				A1000802 /* Resources */,
 			);
 			buildRules = (
 			);
@@ -175,7 +340,43 @@
 			productReference = A1000301 /* Lumina.app */;
 			productType = "com.apple.product-type.application";
 		};
+		A1000602 /* LuminaTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = A1000704 /* Build configuration list for PBXNativeTarget "LuminaTests" */;
+			buildPhases = (
+				A1000803 /* Sources */,
+				A1000402 /* Frameworks */,
+				A1000804 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				A1000B01 /* PBXTargetDependency */,
+			);
+			name = LuminaTests;
+			productName = LuminaTests;
+			productReference = A1000302 /* LuminaTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
 /* End PBXNativeTarget section */
+
+/* Begin PBXContainerItemProxy section */
+		A1000B02 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = A1000901 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = A1000601;
+			remoteInfo = Lumina;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXTargetDependency section */
+		A1000B01 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = A1000601 /* Lumina */;
+			targetProxy = A1000B02 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
 
 /* Begin PBXProject section */
 		A1000901 /* Project object */ = {
@@ -187,6 +388,10 @@
 				TargetAttributes = {
 					A1000601 = {
 						CreatedOnToolsVersion = 15.0;
+					};
+					A1000602 = {
+						CreatedOnToolsVersion = 15.0;
+						TestTargetID = A1000601;
 					};
 				};
 			};
@@ -204,9 +409,35 @@
 			projectRoot = "";
 			targets = (
 				A1000601 /* Lumina */,
+				A1000602 /* LuminaTests */,
 			);
 		};
 /* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		A1000802 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A1000117 /* Assets.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		A1000804 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A1000131 /* books_list_favorite_bool.json in Resources */,
+				A1000132 /* books_list_favorite_int.json in Resources */,
+				A1000133 /* settings_default.json in Resources */,
+				A1000134 /* news_brief_empty.json in Resources */,
+				A1000137 /* news_read_result_ready.json in Resources */,
+				A1000140 /* news_brief_sample.json in Resources */,
+				A1000146 /* news_sources_sample.json in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
 		A1000801 /* Sources */ = {
@@ -216,18 +447,52 @@
 				A1000101 /* LuminaApp.swift in Sources */,
 				A1000102 /* ContentView.swift in Sources */,
 				A1000103 /* ReaderView.swift in Sources */,
+				A1000147 /* ReaderPreferences.swift in Sources */,
+				A1000155 /* SegmentReadyEventParser.swift in Sources */,
+				A1000119 /* SummaryReadingView.swift in Sources */,
+				A1000138 /* LazyParagraphText.swift in Sources */,
+				A1000139 /* SegmentReadingBlock.swift in Sources */,
 				A1000104 /* CoreClient.swift in Sources */,
+				A1000157 /* BookMarkdownExporter.swift in Sources */,
 				A1000105 /* SidecarManager.swift in Sources */,
+				A1000150 /* ConnectionError.swift in Sources */,
+				A1000151 /* SidecarReadiness.swift in Sources */,
 				A1000106 /* DesignSystem.swift in Sources */,
 				A1000107 /* ThemeManager.swift in Sources */,
+				A1000124 /* DoubleClickHandler.swift in Sources */,
+				A1000148 /* EdgeHoverTracker.swift in Sources */,
+				A1000149 /* WindowToolbarVisibility.swift in Sources */,
+				A1000158 /* ReaderEdgeIcon.swift in Sources */,
 				A1000108 /* SearchView.swift in Sources */,
 				A1000109 /* NewsView.swift in Sources */,
 				A1000110 /* NewsArticleView.swift in Sources */,
+				A1000142 /* FollowUpChip.swift in Sources */,
+				A1000143 /* NewsSummaryMarkdown.swift in Sources */,
+				A1000154 /* NewsStructuredSummaryView.swift in Sources */,
+				A1000145 /* NewsSourcesSettingsView.swift in Sources */,
 				A1000111 /* SettingsView.swift in Sources */,
 				A1000112 /* NotesPanel.swift in Sources */,
+				A1000120 /* AllNotesView.swift in Sources */,
+				A1000121 /* LibraryView.swift in Sources */,
+				A1000122 /* BookRow.swift in Sources */,
+				A1000123 /* LibraryViewModel.swift in Sources */,
 				A1000113 /* ExportSheet.swift in Sources */,
 				A1000114 /* OnboardingView.swift in Sources */,
 				A1000115 /* OllamaSetupHelper.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		A1000803 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A1000130 /* CoreClientDecodingTests.swift in Sources */,
+				A1000152 /* SidecarReadinessTests.swift in Sources */,
+				A1000135 /* NewsArticleViewModelTests.swift in Sources */,
+				A1000136 /* ThemeManagerTests.swift in Sources */,
+				A1000144 /* NewsSummaryMarkdownTests.swift in Sources */,
+				A1000153 /* LibraryViewModelMergeTests.swift in Sources */,
+				A1000156 /* SegmentReadyEventTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -286,6 +551,7 @@
 		A1000A03 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_IDENTITY = "-";
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
@@ -294,12 +560,13 @@
 				ENABLE_APP_SANDBOX = NO;
 				ENABLE_HARDENED_RUNTIME = NO;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = Lumina/Info.plist;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 0.1.0;
+				MARKETING_VERSION = 0.2.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.lumina.app;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
@@ -310,6 +577,7 @@
 		A1000A04 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_IDENTITY = "-";
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
@@ -318,16 +586,53 @@
 				ENABLE_APP_SANDBOX = NO;
 				ENABLE_HARDENED_RUNTIME = NO;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = Lumina/Info.plist;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 0.1.0;
+				MARKETING_VERSION = 0.2.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.lumina.app;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+		A1000A05 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = "";
+				GENERATE_INFOPLIST_FILE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MARKETING_VERSION = 0.2.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.lumina.app.tests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 5.0;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Lumina.app/Contents/MacOS/Lumina";
+			};
+			name = Debug;
+		};
+		A1000A06 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = "";
+				GENERATE_INFOPLIST_FILE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MARKETING_VERSION = 0.2.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.lumina.app.tests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 5.0;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Lumina.app/Contents/MacOS/Lumina";
 			};
 			name = Release;
 		};
@@ -348,6 +653,15 @@
 			buildConfigurations = (
 				A1000A03 /* Debug */,
 				A1000A04 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		A1000704 /* Build configuration list for PBXNativeTarget "LuminaTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A1000A05 /* Debug */,
+				A1000A06 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

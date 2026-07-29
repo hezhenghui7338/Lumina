@@ -10,10 +10,21 @@ from typing import Any, Literal
 Profile = Literal["chat", "summarize", "translate"]
 
 
+from lumina_core.config import ModelsConfig
+
+
 class MockModelRouter:
-    def __init__(self, responses: dict[str, Any] | None = None) -> None:
+    def __init__(
+        self,
+        responses: dict[str, Any] | None = None,
+        models: ModelsConfig | None = None,
+    ) -> None:
         self.responses = responses or {}
         self.calls: list[dict[str, Any]] = []
+        self.models = models or ModelsConfig()
+        self.last_resource_id: str | None = "ollama"
+        self.last_provider: str | None = "ollama"
+        self.last_model: str | None = self.models.resource_by_id("ollama").model if self.models.resource_by_id("ollama") else "qwen3.5:4b"
 
     def set_response(self, profile: Profile, value: Any) -> None:
         self.responses[profile] = value
@@ -54,6 +65,9 @@ class MockModelRouter:
         return text
 
     async def aclose(self) -> None:
+        return None
+
+    def update_resources(self, resources) -> None:
         return None
 
 

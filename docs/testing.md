@@ -55,17 +55,17 @@ flowchart TB
 
 ## 3. Mock vs Live 边界
 
-| 能力 | PR 默认 | 真实 Ollama | 说明 |
-|------|---------|-------------|------|
-| chunker 边界算法 | unit（纯逻辑） | — | 不依赖 LLM |
-| **长文切割 + 摘要段 0/1** | — | **`@live_chunk` 必跑** | [E2E-CHUNK-LIVE](#41-e2e-chunk-live) |
-| 段 2+ prefetch | Mock | nightly optional | |
-| 深聊 chat | Mock | nightly optional | |
-| 翻译 | Mock | nightly optional | |
-| 联网搜索 | Mock（mock ddgs） | nightly optional | |
-| 拒答行为 | Mock + corpus | nightly 抽检 5 条 | [refusal-corpus.md](testing/refusal-corpus.md) |
+| 能力 | PR 默认 | Release 打包 | 完整 live | 说明 |
+|------|---------|--------------|-----------|------|
+| chunker 边界算法 | unit（纯逻辑） | unit（同 PR） | — | 不依赖 LLM |
+| **长文切割 + 摘要段 0/1** | unit + mock e2e | **mock 全量（同 PR）** | **`@live_chunk` 全量** | [E2E-CHUNK-LIVE](#41-e2e-chunk-live) |
+| 段 2+ prefetch | Mock | Mock（同 PR） | nightly optional | |
+| 深聊 chat | Mock | Mock（同 PR） | nightly optional | |
+| 翻译 | Mock | Mock（同 PR） | nightly optional | |
+| 联网搜索 | Mock（mock ddgs） | Mock（同 PR） | nightly optional | |
+| 拒答行为 | Mock + corpus | Mock（同 PR） | nightly 抽检 5 条 | [refusal-corpus.md](testing/refusal-corpus.md) |
 
-**理由**：切割效果依赖真实文本结构与 LLM 摘要质量，Mock 无法验证「段是否切在合理位置、摘要是否覆盖本段主旨」。
+**理由**：Release 打包门禁与 PR 相同，走 Mock 以保证速度与确定性；长文切割 + 真实摘要质量须手动跑 `@live_chunk` 或 nightly 审阅（见 [chunking-review.md](testing/chunking-review.md)）。
 
 ---
 
@@ -73,9 +73,10 @@ flowchart TB
 
 | 层 | 工具 | Marker / 标签 |
 |----|------|---------------|
-| lumina-core 单测 | pytest + pytest-asyncio | 默认 |
+| lumina-core 单测 | pytest + pytest-asyncio + pytest-xdist | 默认 |
 | lumina-core API E2E | pytest + httpx `ASGITransport` | `@pytest.mark.e2e` |
-| 长文切割 live | pytest | `@pytest.mark.live_chunk` |
+| Release 切割 smoke（手动/nightly） | pytest | `@pytest.mark.release_live` |
+| 长文切割 live 全量 | pytest | `@pytest.mark.live_chunk` |
 | lumina-core 其他 live | pytest | `@pytest.mark.live` |
 | 性能 | pytest-benchmark / XCTest `measure` | `@pytest.mark.perf` |
 | Swift 单测 | XCTest / Swift Testing | — |
@@ -119,6 +120,17 @@ Lumina/
 ## 6. E2E 用例注册表
 
 命名规范：`test_e2e_{story_id}_{slug}` 或文档 ID `E2E-{ID}`。
+
+### 6.0 应用启动（P0）
+
+| ID | PRD | 场景 | 断言 | 层 | LLM |
+|----|-----|------|------|-----|-----|
+| **E2E-BOOT-01** | §3.4 | 启动时书库/设置/资讯三接口 JSON 契约 | `is_favorite` 为 JSON bool；Swift `BookSummary`/`AppSettings`/`NewsBrief` 可解码 | API unit + XCTest | Mock |
+| **E2E-BOOT-02** | §3.4 | Sidecar 启动就绪与连接错误映射 | `/health` 即时响应；lifespan 不阻塞 health；Swift 连接错误中文 fallback；Release sidecar 冒烟 | API unit + XCTest + release smoke | Mock |
+
+实现：`tests/unit/test_api_swift_contract.py` · `LuminaTests/Unit/CoreClientDecodingTests.swift`
+
+实现（E2E-BOOT-02）：`tests/unit/test_sidecar_startup.py` · `LuminaTests/Unit/SidecarReadinessTests.swift` · `scripts/build-release.sh` sidecar smoke
 
 ### 6.1 Wave 1 — 书库阅读核心（P0）
 
@@ -179,6 +191,8 @@ Lumina/
 
 | E2E | lumina-core unit | Swift unit / Snapshot |
 |-----|------------------|---------------------|
+| **E2E-BOOT-01** | `test_api_swift_contract` · `test_books_list_is_favorite_is_json_bool` | `CoreClientDecodingTests` |
+| **E2E-BOOT-02** | `test_sidecar_startup` · `test_e2e_boot_02d_health_responds_immediately` · `test_e2e_priv_01_settings_default_localhost` | `SidecarReadinessTests` |
 | **E2E-CHUNK-LIVE** | `test_chunker_chapter_boundary` · `test_chunker_max_segment_size` · `test_chunker_no_overlap_offsets` · `test_short_book_single_segment` · `test_summary_json_schema` | — |
 | **B1 导入** | `test_detect_format` · `test_extract_metadata_epub` · `test_copy_to_app_support` · `test_file_hash_dedup` | `LibraryViewModel_importProgress` |
 | **B2 段列表** | `test_summary_json_parse` · `test_label_max_20_chars` | `SegmentListGroupingTests` · Snapshot |
@@ -215,7 +229,15 @@ ollama pull qwen3.5:4b
 # 全量 mock 测试（PR 等价）
 just test
 # 或
-pytest -m "not live and not live_chunk and not perf" -q
+pytest -m "not live and not live_chunk and not release_live and not perf" -q
+
+# Release 门禁（纯 mock 并行，~20s，与 PR 等价）
+just test-release
+# 或
+./scripts/run-release-tests.sh
+
+# 长文切割 live smoke（手动，需 Ollama；非 release 门禁）
+pytest packages/lumina-core/tests/live -m release_live -v
 
 # lumina-core 单测
 pytest packages/lumina-core/tests/unit -q
@@ -253,6 +275,7 @@ markers = [
     "e2e: API end-to-end tests with Mock LLM",
     "live: tests requiring real Ollama (nightly)",
     "live_chunk: long-text chunking + summarize seg 0/1 with real Ollama",
+    "release_live: manual/nightly smoke with truncated fixtures + real Ollama",
     "perf: performance benchmarks",
 ]
 ```

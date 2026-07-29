@@ -6,6 +6,11 @@ import sqlite3
 from typing import Any
 
 
+def delete_book_from_fts(conn: sqlite3.Connection, book_id: str) -> None:
+    conn.execute("DELETE FROM search_fts WHERE book_id = ?", (book_id,))
+    conn.commit()
+
+
 def index_book(conn: sqlite3.Connection, book: dict[str, Any]) -> None:
     conn.execute("DELETE FROM search_fts WHERE book_id = ? AND kind = 'book'", (book["id"],))
     conn.execute(
@@ -41,8 +46,12 @@ def index_segment(conn: sqlite3.Connection, book: dict[str, Any], seg: dict[str,
     conn.commit()
 
 
+def delete_note_from_fts(conn: sqlite3.Connection, note_id: str) -> None:
+    conn.execute("DELETE FROM search_fts WHERE note_id = ?", (note_id,))
+
+
 def index_note(conn: sqlite3.Connection, book: dict[str, Any], note: dict[str, Any]) -> None:
-    conn.execute("DELETE FROM search_fts WHERE note_id = ?", (note["id"],))
+    delete_note_from_fts(conn, note["id"])
     conn.execute(
         """
         INSERT INTO search_fts (book_id, segment_id, note_id, kind, title, body)

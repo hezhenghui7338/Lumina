@@ -14,16 +14,43 @@
 
 | 平台 | 要求 | 下载 |
 |------|------|------|
-| macOS 14+（Apple Silicon / Intel） | 约 200 MB 安装包 + 首次 AI 模型 ~3 GB | **[GitHub Releases 下载 DMG](https://github.com/hezhenghui7338/Lumina/releases/latest)** |
+| macOS 14+（Apple Silicon / Intel） | 约 250 MB 安装包（安装后约 450 MB）+ 首次 AI 模型 ~3 GB | **[GitHub Releases 下载 DMG](https://github.com/hezhenghui7338/Lumina/releases/latest)** |
 
-Release 页提供 **Lumina-0.1.0-macOS.dmg**（由 GitHub Actions 自动构建）。若尚未上传 DMG，见下方「维护者构建」。
+Release 页提供 **Lumina-0.2.0-macOS.dmg**（由 GitHub Actions 自动构建）。若尚未上传 DMG，见下方「维护者构建」。
 
 ### 安装（两步）
 
 1. 打开下载的 **`.dmg`**，将 **Lumina** 拖入 **Applications（应用程序）** 文件夹  
 2. 从启动台或应用程序文件夹打开 **Lumina**
 
-首次打开若提示「无法验证开发者」：**系统设置 → 隐私与安全性 → 仍要打开**。
+### 首次打开：「无法验证 / 可能危害 Mac」
+
+这是 **正常现象**。v0.2 由 GitHub 自动构建，尚未经过 Apple 付费开发者签名与公证，macOS 会对**任何**未公证的本机应用显示此提示，**不代表有病毒**。
+
+任选一种方式即可打开（只需操作一次）：
+
+**方法 1（推荐）**
+
+1. 在「应用程序」里找到 **Lumina**
+2. **按住 Control 键点击**（或右键）→ 选 **「打开」**
+3. 弹窗中再点 **「打开」**
+
+**方法 2**
+
+1. 先双击 Lumina（会被拦截）
+2. 打开 **系统设置 → 隐私与安全性**
+3. 向下滚动，找到 **「已阻止使用 Lumina」** 或类似提示
+4. 点 **「仍要打开」**
+
+**方法 3（熟悉终端时）**
+
+```bash
+xattr -cr /Applications/Lumina.app
+```
+
+然后照常双击打开。
+
+> 后续版本若加入 Apple 开发者签名与公证，此提示将不再出现。
 
 ### 首次使用
 
@@ -40,11 +67,14 @@ Release 页提供 **Lumina-0.1.0-macOS.dmg**（由 GitHub Actions 自动构建�
 | 操作 | 方法 |
 |------|------|
 | 导入书 | 书库 → **导入** |
-| 阅读 / 深聊 | 选中书籍 → 左侧选段 → 下方输入问题 |
+| 阅读 / 深聊 | 选中书籍 → 左侧段列表 + 段摘要；触左段列表、触右笔记、触底提问（工具栏亦可收起段列表） |
+| 跨书笔记 | 书库 → **全部笔记** |
 | 跨书搜索 | **⌘K** |
 | 资讯 | 顶部 **资讯** Tab → **同步 RSS** |
 | 导出摘要 | 阅读器 → **导出** |
-| 设置 | **设置** Tab（语言、联网、深色模式） |
+| 设置 | **设置** Tab（语言、联网 provider、深色模式） |
+
+> **说明**：v0.2 精简安装包未内置 **Cursor** 联网 provider（可节省约 150 MB）。默认支持 Ollama、OpenAI、OpenRouter 等；Cursor 集成将在后续 Full 版或按需安装方案中提供。
 
 ### 数据在哪
 
@@ -56,6 +86,9 @@ Release 页提供 **Lumina-0.1.0-macOS.dmg**（由 GitHub Actions 自动构建�
 
 ### 常见问题
 
+**提示「Apple 无法验证 Lumina…」？**  
+见上方 [首次打开](#首次打开无法验证--可能危害-mac) 三种方法；推荐右键 → **打开**。
+
 **打不开 / 提示损坏？**  
 系统设置 → 隐私与安全性 → 仍要打开；或右键 Lumina → 打开。
 
@@ -65,8 +98,22 @@ Release 页提供 **Lumina-0.1.0-macOS.dmg**（由 GitHub Actions 自动构建�
 **内存较小？**  
 在 Ollama 中改用 `qwen3.5:2b` 或 `qwen3.5:0.8b`，并在 Lumina **设置** 中调整（若已配置模型）。
 
+**升级后云端 API Key 失效？**  
+旧版曾把密钥存在 macOS 钥匙串；新版改由本机 `~/Library/Application Support/Lumina/secrets.json` 保存。若升级后联网或云端模型不可用，请在 **设置** 中重新输入 API Key 并保存一次。
+
 **第一段摘要较慢？**  
 首次把模型载入内存需 30 秒～2 分钟，属正常现象。
+
+**想加快整书摘要？**  
+在 **设置 → API 资源** 中编辑 Ollama 资源，将「并发」调到 2–3（默认 2）。同时为本机 Ollama 设置 `OLLAMA_NUM_PARALLEL`（建议与并发一致），例如 Homebrew：
+
+```bash
+# ~/Library/LaunchAgents/homebrew.mxcl.ollama.plist 的 EnvironmentVariables 中加入
+# OLLAMA_NUM_PARALLEL=2
+# 然后重启 ollama serve
+```
+
+内存吃紧或单段延迟变差时调回 1。
 
 ---
 
@@ -78,7 +125,7 @@ Release 页提供 **Lumina-0.1.0-macOS.dmg**（由 GitHub Actions 自动构建�
 
 - macOS 14+
 - [Xcode 15+](https://developer.apple.com/xcode/)
-- [uv](https://docs.astral.sh/uv/)（Python 工具链）
+- [uv](https://docs.astral.sh/uv/)（Python **3.11+**）
 - [Ollama](https://ollama.com) + `qwen3.5:4b`
 
 ### 本地开发
@@ -100,7 +147,8 @@ just core
 
 ```bash
 just test          # 单元 + e2e（Mock LLM）
-just test-live     # 需本机 Ollama
+just test-live     # 完整长文 live_chunk（需本机 Ollama，人工审阅用）
+just test-release  # 发布门禁：纯 mock 并行（~20s，与 PR 等价）
 ```
 
 ### 打开发布包（给普通用户）
@@ -108,7 +156,7 @@ just test-live     # 需本机 Ollama
 **推荐：GitHub Actions（无需本机 Xcode）**
 
 1. 打开仓库 **Actions → Release → Run workflow**
-2. 输入版本号（如 `0.1.0`）运行
+2. 输入版本号（如 `0.2.0`）运行
 3. 在 Artifacts 或 tag Release 中下载 DMG
 
 **本机构建（需与 macOS 版本匹配的 Xcode）**
@@ -117,13 +165,14 @@ macOS 15 用户：**不要**从 App Store 装最新 Xcode（可能要求 macOS 2
 
 ```bash
 ./scripts/build-release.sh
-# 产出：dist/Lumina-0.1.0-macOS.dmg 与 .zip
+# 会先跑 just test-release 等价测试，通过后才打包
+# 产出：dist/Lumina-0.2.0-macOS.dmg 与 .zip
 ```
 
 打 tag 推送后会自动构建并上传到 Release：
 
 ```bash
-git tag v0.1.1 && git push origin v0.1.1
+git tag v0.2.0 && git push origin v0.2.0
 ```
 
 ### 文档

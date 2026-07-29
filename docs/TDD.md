@@ -10,7 +10,8 @@
 
 | 决策项 | v1.0 结论 | 理由 |
 |--------|-----------|------|
-| Mac UI | **SwiftUI 原生** | 浅色主界面、动效、阅读体验；PRD 原则 9 |
+| UI 响应性 | **永不卡住用户**（PRD 章程 0）：重活离事件循环 / 离 MainActor；列表 API 不含全文 | 最高原则 |
+| Mac UI | **SwiftUI 原生** | 浅色主界面、动效、阅读体验；PRD 原则 8 |
 | AI / 文档引擎 | **Python `lumina-core` 本地 sidecar** | 快速移植 LA 分段/摘要/联网算法；与 Swift UI 解耦 |
 | App ↔ Core 通信 | **localhost HTTP（JSON REST）** | 简单、可独立调试；后续可换 XPC |
 | 数据库 | **SQLite**（`GRDB` Swift 读 + Core 写，或 Core 独占） | PRD 数据模型；跨平台铺路 |
@@ -168,7 +169,9 @@ Lumina/
 │   └── segments/{book_id}/         # 段摘要 JSON 备份（可选，主存 DB）
 ├── news/
 │   └── articles.sqlite             # 资讯独立库（或合并 lumina.db）
-└── config.json                     # Ollama URL、模型、API keys（Keychain 存密钥）
+├── config.json                     # 非敏感 Settings（语言、联网 provider 等）
+├── models.json                     # 模型资源池与路由（不含 API Key）
+└── secrets.json                    # API Key / Tavily Key（0600，仅本机 core 读写）
 ```
 
 ### 3.2 SQLite Schema（v1.0）
@@ -209,11 +212,11 @@ CREATE TABLE segments (
   UNIQUE(book_id, idx)
 );
 
--- 笔记
+-- 笔记（必须挂段；孤儿笔记迁移时删除）
 CREATE TABLE notes (
   id          TEXT PRIMARY KEY,
   book_id     TEXT NOT NULL REFERENCES books(id),
-  segment_id  TEXT REFERENCES segments(id),
+  segment_id  TEXT NOT NULL REFERENCES segments(id),
   quote       TEXT,
   content     TEXT NOT NULL,
   type        TEXT NOT NULL,              -- manual|highlight|ai
@@ -293,7 +296,7 @@ sequenceDiagram
 | 重复检测 | 同 `file_hash` → App 弹窗**是否覆盖** |
 | 批量导入 | 10+ 本可同时提交；每本独立 job |
 | 分段时机 | **导入完成即开始**分段（不等打开书） |
-| OCR/分段并发 | 默认 **1**；按 `settings.job_concurrency` 与模型类型配置（云端可调高） |
+| OCR/分段并发 | 默认 **1**（内部常量，用户不可配） |
 
 **格式解析（Core）**
 
@@ -355,7 +358,7 @@ RapidOCR(params={
 ```
 annotate(text) → 注入 ## [§章节] / ## [p.N] 标记
   → 结构边界切分（Markdown # / LA 锚点行）
-  → RecursiveChunker（target 4000–6000 字，Ollama num_ctx 感知）
+  → RecursiveChunker（语义边界优先；Ollama target ~1000 字，云端 ~4000 字）
   → rebalance：过小 merge、过大句子级 split
   → DocumentSegment[] + chapter/page 元数据
 ```
@@ -364,9 +367,12 @@ annotate(text) → 注入 ## [§章节] / ## [p.N] 标记
 
 | 参数 | Ollama 本地 | 云端 API |
 |------|-------------|----------|
-| `reading_target_chars` | 4000 | 6000 |
-| prefetch workers | 1 | 4 |
+| `reading_target_chars` | 1000 | 4000 |
+| `reading_hard_max` | 1200 | 6000 |
+| prefetch workers | 2 | 4 |
 | 短书阈值 | ≤12000 字不切段 | 同 |
+
+环境变量覆盖：`LUMINA_CHUNK_TARGET_CHARS`、`LUMINA_CHUNK_MAX_CHARS`（见 `resolve_chunk_budget()`）。
 
 ### 4.3 段摘要 + Label
 
@@ -375,13 +381,17 @@ annotate(text) → 注入 ## [§章节] / ## [p.N] 标记
 ```json
 {
   "sentences": ["…", "…", "…"],
-  "bullets": ["…", "…"],
+  "bullets": [
+    {"label": "要点", "body": "1～2 句充实说明（40～120 字）…"}
+  ],
+  "notes": ["…"],
+  "follow_ups": ["引导问题 1？", "引导问题 2？"],
   "label": "王安石变法背景",
   "anchor": "§第三章 · 段 5 · p.42-48"
 }
 ```
 
-Prompt 约束：label ≤20 字；sentences ≤3；bullets 3–7 条。
+Prompt 约束：label ≤20 字；sentences ≤3；bullets 3–7 条（每条 label ≤8 字、body ≥20 字）；notes 0–3 条（可选）；follow_ups 0–3 条。
 
 **Prefetch 与失败策略（v1.0）**
 
@@ -390,7 +400,7 @@ pending → running → ready | error（重试≤3）→ failed
 ```
 
 - **导入即开始**：segment 切分完成后立即 queue 摘要 job；段 1 优先
-- 后台 JobQueue：Ollama **默认并发 1**（可配置）
+- 后台 JobQueue：按 provider Semaphore 限流（Ollama 默认 **2**、Cursor **8**、Cloud **4**）；worker 数 = 摘要链 max
 - 用户打开书时：若段 1 已 ready → 直接呈现；否则 skeleton 等待
 - 用户跳转未 ready 段：priority=high 插队
 - **失败重试**：每段最多 **3 次**；仍失败 → `summary_status=failed`，段列表显示 error，可手动重试
@@ -402,11 +412,17 @@ pending → running → ready | error（重试≤3）→ failed
 ```json
 {
   "sentences": ["…"],
-  "bullets": ["…"],
+  "bullets": [
+    {"label": "要点", "body": "充实说明…"}
+  ],
+  "notes": [],
+  "follow_ups": ["可追问的问题？"],
   "label": "王安石变法背景",
   "anchor": "§第三章 · 段 5 · p.42-48"
 }
 ```
+
+旧格式 `bullets: ["标签：内容"]` 仍可解析；新生成须为 `{label, body}` 对象数组。
 
 ### 4.4 自动翻译（用户无感知）
 
@@ -524,6 +540,8 @@ Swift：`SearchView` → `GET /search?q=…` → 跳转 `ReaderView(bookId, segm
 
 **不做**：`schedule` 定时 sync（v1.1）
 
+**并行**：书库后台摘要/翻译与资讯 sync · 精读 · 深聊互不抢占，可同时进行（共享本机 Ollama 并行度上限）。
+
 ---
 
 ## 5. HTTP API 概要（v1.0）
@@ -537,12 +555,19 @@ Sidecar 绑定 `127.0.0.1` only；无认证（本机进程）。
 | GET | `/health` | Sidecar 存活 |
 | POST | `/books/import` | 导入文件/文件夹；**409** + `{existing_book_id}` 若 `file_hash` 重复 |
 | POST | `/books/{id}/import/overwrite` | 用户确认覆盖后重新导入 |
-| GET | `/books` | 书库列表（支持 status 筛选） |
+| GET | `/books` | 书库列表；`?collection=all\|unread\|reading\|summarized`；`?sort=recent\|added\|title\|favorite` |
+| GET | `/books/categories` | 固定 LLM 主分类枚举 |
+| PATCH | `/books/{id}` | 更新收藏 / 分类 / 标题 |
+| DELETE | `/books/{id}` | 删除书及本地副本、摘要、笔记 |
+| POST | `/books/{id}/classify` | 后台 LLM 重新分类 |
 | GET | `/books/{id}` | 书籍详情 |
+| PATCH | `/books/{id}/reading-progress` | 更新当前段进度 |
 | GET | `/books/{id}/segments` | 段列表（含 label、summary_status） |
 | GET | `/books/{id}/segments/{idx}` | 单段详情 |
 | POST | `/books/{id}/open` | 打开书（订阅 SSE；**不触发**分段，导入时已 queue） |
-| POST | `/books/{id}/segments/{idx}/retry` | 手动重试 failed 段摘要 |
+| POST | `/books/{id}/segments/{idx}/retry` | 手动重试单段摘要 |
+| POST | `/books/{id}/segments/retry` | 批量重试段摘要（body: `{ indices: number[] }`） |
+| POST | `/books/{id}/summarize/regenerate` | 全书强制重新摘要（含 ready 段） |
 | GET | `/books/{id}/events` | SSE：段摘要/翻译 progress |
 
 ### 5.2 阅读与 AI
@@ -557,9 +582,12 @@ Sidecar 绑定 `127.0.0.1` only；无认证（本机进程）。
 
 | Method | Path | 说明 |
 |--------|------|------|
-| POST | `/notes` | 创建笔记 |
-| GET | `/notes?book_id=` | 笔记列表 |
+| POST | `/notes` | 创建笔记（`segment_id` 必填；须属于该书） |
+| GET | `/notes?book_id=&segment_id=` | 有 `book_id` → 书内列表（可按段筛）；无 → 跨书列表 |
+| DELETE | `/notes/{id}` | 删除单条笔记（同步清理 FTS） |
 | GET | `/search?q=` | 跨书 FTS |
+
+列表响应每条含 `segment_index`、`segment_label`；跨书时另含 `book_title`（不含 `raw_text`）。
 
 ### 5.4 资讯
 
@@ -574,7 +602,7 @@ Sidecar 绑定 `127.0.0.1` only；无认证（本机进程）。
 
 | Method | Path | 说明 |
 |--------|------|------|
-| GET/PUT | `/settings` | 三 Profile 模型、语言、web 开关、`job_concurrency` |
+| GET/PUT | `/settings` | 三 Profile 模型、语言、web 开关；各 API 资源含 `concurrency` |
 | GET | `/settings/ollama/status` | 连接检测 + RAM 分档推荐模型 + pull 状态 |
 | POST | `/settings/ollama/setup` | 参考 LA `la setup`：检测/安装/pull |
 
@@ -602,14 +630,15 @@ final class ReaderViewModel: ObservableObject {
 ### 6.2 布局映射 PRD §3.2
 
 ```
-NavigationSplitView
-├── Sidebar: SegmentListView（章节组 + label + 状态图标）
-└── Detail: VStack
+HStack（实现上等价 NavigationSplitView 侧栏）
+├── Sidebar: SegmentListView（默认展开；章节组 + label + 状态图标）
+└── Detail: ZStack
     ├── SegmentContentView（摘要 + 原文/译文）
-    ├── Divider
-    └── ChatView（常驻：消息列表 + 输入框）  ← ChatGPT 式
+    ├── NotesDrawer（渐进披露 · 右侧）
+    └── ChatDrawer（渐进披露 · 底部；非常驻）
 ```
 
+- 段列表默认常驻；边缘钉住/收起（AppStorage）；左缘在段列表不可见时显示（触发后保持显示，直至空白进入阅读态或点击收起）；选段后不收起。深聊 / 笔记仍为抽屉（与早期「常驻 Chat」草图不同，以 PRD §3.2 为准）
 - 段切换：`currentSegment` 更新；Chat 历史按 **book** 保留（PRD）
 - **Citation 跳转 + 整段闪高亮（v1.0）**：
   1. `selectSegment(idx)` 切换段列表与内容区
@@ -628,26 +657,27 @@ NavigationSplitView
 ### 7.1 三 Profile 配置（`config/models.yaml`）
 
 ```yaml
+resources:
+  - id: ollama
+    provider: ollama
+    model: qwen3.5:4b
+    base_url: http://localhost:11434
+    concurrency: 2                # 建议 ≤ OLLAMA_NUM_PARALLEL
+  - id: openrouter
+    provider: openrouter
+    model: anthropic/claude-sonnet-4
+    base_url: https://openrouter.ai/api/v1
+    concurrency: 4
+  - id: cursor
+    provider: cursor
+    model: composer-2.5
+    concurrency: 8
+
 chat:
-  provider: openrouter          # 推荐外部 API；可改 ollama
-  model: anthropic/claude-3.5-sonnet
-  base_url: https://openrouter.ai/api/v1
+  priority: [openrouter, ollama]
 
 summarize:
-  provider: ollama
-  model: qwen3.5:4b
-  base_url: http://localhost:11434
-
-translate:
-  provider: ollama
-  model: qwen3.5:4b
-  base_url: http://localhost:11434
-
-job_concurrency:
-  ocr: 1
-  segment: 1
-  ollama: 1                     # summarize + translate 共享
-  cloud: 4                      # chat 外部 API
+  priority: [ollama, openrouter]
 ```
 
 ### 7.2 ModelRouter（Core）
@@ -669,7 +699,7 @@ class ModelRouter:
 | `translate` | Ollama | 纯文本译文 |
 
 - Ollama 流式：SSE 解析 `message.content` delta
-- 外部 API：`httpx` + OpenAI-compatible；Key 由 Swift Keychain 注入 Core 环境
+- 外部 API：`httpx` + OpenAI-compatible；Key 由 core `secrets.json` 持久化，启动时加载；开发可用 `LUMINA_*_API_KEY` 环境变量覆盖
 
 ### 7.3 Ollama 首次体验（参考 LocalAgent `ollama_setup.py`）
 
@@ -695,13 +725,23 @@ App Onboarding → `GET /settings/ollama/status` → 必要时 `POST /settings/o
 
 ## 8. 后台任务与并发
 
+**硬约束（PRD 章程 0 · 永不卡住）**：
+
+- `async` HTTP handler **禁止**同步 CPU / 网络 / 大文件 I/O；必须 `asyncio.to_thread` 或投递 JobQueue。
+- `GET /books/{id}/segments` **默认不含** `raw_text`；原文仅 `GET .../segments/{idx}`。
+- `segment_ready` SSE 须携带 UI 所需摘要字段；客户端 **禁止** 为此再拉全量段表。
+- Swift：网络收发与大 JSON 解码不得堵 MainActor；切书请求须可取消。
+
 **三队列分池**：
 
 | 队列 | 任务 | 默认并发 | 优先级 |
 |------|------|----------|--------|
 | **CPU** | ingest · OCR · chunk | 1 | 中 |
-| **Ollama** | 段摘要 prefetch · 翻译 prefetch | **1**（可配置） | 摘要 > 翻译 |
-| **Cloud** | 深聊 chat | 4（外部 API） | **最高** |
+| **Ollama** | 段摘要 prefetch · 翻译 prefetch | **2**（可配置 1–4） | 摘要 > 翻译 |
+| **Cursor** | summarize fallback · Agent | **8**（可配置 1–8） | 摘要 fallback |
+| **Cloud** | OpenAI / OpenRouter 等 | 4 | 摘要 fallback |
+
+**Router 层 Semaphore**：chat、summarize、translate 经 `ProfileModelRouter` 的调用共享按 **resource id** 的并发槽。JobQueue worker 数 = 摘要链各资源 `concurrency` 的 **max**（默认 `max(2,8,4)=8`）；Ollama 槽满时立即 fallback Cursor，不再等 12s 超时。
 
 **优先级**（高 → 低）：`深聊 (chat) → 段摘要 (summarize) → 翻译 (translate)`
 
@@ -712,9 +752,9 @@ App Onboarding → `GET /settings/ollama/status` → 必要时 `POST /settings/o
 | 用户跳转未 ready 段 | priority=high 插队 |
 | 用户发起深聊 | **暂停** Ollama prefetch；chat 完成后恢复 |
 | 段摘要失败 | 重试 ≤3 次 → `failed`；`POST .../retry` 手动重试 |
-| 批量导入 10+ 本 | 每本独立 CPU job；Ollama 队列全局串行（默认） |
+| 批量导入 10+ 本 | 每本独立 CPU job；Ollama 资源默认并发 2（在 API 资源编辑中可调） |
 
-JobQueue：`asyncio.Queue` + worker pool；job 状态持久化 SQLite，Sidecar 重启可恢复。
+JobQueue：`asyncio.Queue` + worker pool；job 状态持久化 SQLite，Sidecar 重启可恢复。SQLite 启用 **WAL** + `busy_timeout`。
 
 ---
 
@@ -722,11 +762,12 @@ JobQueue：`asyncio.Queue` + worker pool；job 状态持久化 SQLite，Sidecar 
 
 | PRD 指标 | 技术方案 |
 |----------|----------|
+| **永不卡住用户** | 瘦段列表 API；增量 SSE；`to_thread`/JobQueue 保护事件循环；CoreClient 解码离 MainActor；请求可取消 |
 | 首段 ≤15s | 仅生成 segment[0] summary+label；短 prompt |
-| 段切换 ≤200ms | 段内容已缓存在 SQLite；Swift 本地读 |
-| 深聊首 token ≤3s | 流式 SSE；RAG 限制 top-k=3 |
+| 段切换 ≤200ms | 段内容已缓存在 SQLite；列表不含 raw_text，按需单段拉取 |
+| 深聊首 token ≤3s | 流式 SSE；RAG 限制 top-k=3；token 批处理刷新 UI |
 | 离线书库 | Core 无网时跳过 web_search |
-| 隐私 | Sidecar 只 bind 127.0.0.1；keys 存 Keychain |
+| 隐私 | Sidecar 只 bind 127.0.0.1；keys 存 `secrets.json`（0600） |
 
 ---
 
@@ -755,6 +796,7 @@ JobQueue：`asyncio.Queue` + worker pool；job 状态持久化 SQLite，Sidecar 
 
 - [x] 设置 Tab（目标语言、联网、Ollama 状态、浅色/深色/系统）
 - [x] 阅读器笔记侧栏 + 深聊「存为笔记」
+- [x] 笔记必须挂段；书内筛选跳段 + 书库全部笔记跨书列表
 - [x] 选区提问（剪贴板引用 + `quote` API）
 - [x] 导出可选含笔记
 - [x] 资讯精读视图 + 单篇深聊 SSE（`/news/articles/{id}/chat`）
@@ -869,6 +911,8 @@ JobQueue：`asyncio.Queue` + worker pool；job 状态持久化 SQLite，Sidecar 
 |------|------|------|
 | v1.0 检索 | ✅ | FTS5 |
 | 笔记索引 | ✅ | 写入即 FTS trigger |
+| 必须挂段 | ✅ | `segment_id` NOT NULL；创建校验归属 |
+| 书内 / 应用级列表 | ✅ | NotesPanel 当前段\|全部 + 书库全部笔记跨书；点击跳段 |
 
 ### B9 导出
 
@@ -886,7 +930,7 @@ JobQueue：`asyncio.Queue` + worker pool；job 状态持久化 SQLite，Sidecar 
 | 三套配置 | ✅ | chat / summarize / translate 分开 |
 | chat 推荐 | ✅ | **外部 API**；摘要/翻译 Ollama |
 | Ollama 引导 | ✅ | 参考 LA `ollama_setup.py` |
-| Job 抢占 | ✅ | 深聊暂停 prefetch |
+| Job 抢占 | ✅ | **仅书库深聊**暂停书库 prefetch；资讯精读/深聊/sync **不** pause 书库队列，两边可并行 |
 
 ### N1–N4 资讯 lite
 
@@ -899,7 +943,7 @@ JobQueue：`asyncio.Queue` + worker pool；job 状态持久化 SQLite，Sidecar 
 
 | 决策 | 状态 | 结论 |
 |------|------|------|
-| API Key | ✅ | Keychain → 启动注入 Core |
+| API Key | ✅ | `secrets.json` → core 启动加载；Swift 经 HTTP 读写 |
 | telemetry | ✅ | v1.0 无 |
 
 ---

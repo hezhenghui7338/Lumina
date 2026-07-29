@@ -10,6 +10,7 @@ import feedparser
 import httpx
 
 from lumina_core.news.store import NewsArticle, article_id_for_url
+from lumina_core.news.summary_parse import parse_rss_summary, score_hint_from_parsed
 
 _HTML_TAG = re.compile(r"<[^>]+>")
 
@@ -67,15 +68,27 @@ def parse_feed(raw: bytes, *, source_id: str) -> list[NewsArticle]:
                 except Exception:
                     published = str(raw_date)[:19]
                 break
+
+        plain = strip_html(summary)
+        parsed_sum = parse_rss_summary(plain)
+        one_liner = parsed_sum.one_liner
+        excerpt = one_liner or excerpt_from_summary(summary)
+        score_hint = score_hint_from_parsed(parsed_sum)
+        if not author and parsed_sum.meta.get("author"):
+            author = parsed_sum.meta["author"]
+
         articles.append(
             NewsArticle(
                 id=article_id_for_url(link),
                 source_id=source_id,
                 url=link,
                 title=strip_html(title),
-                excerpt=excerpt_from_summary(summary),
+                excerpt=excerpt,
                 author=author,
                 published_at=published,
+                rss_summary=plain,
+                one_liner=one_liner,
+                score_hint=score_hint,
             )
         )
     return articles

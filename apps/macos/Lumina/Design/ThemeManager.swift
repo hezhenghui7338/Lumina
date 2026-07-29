@@ -27,6 +27,10 @@ enum AppearanceMode: String, CaseIterable, Identifiable {
 @MainActor
 final class ThemeManager: ObservableObject {
     @AppStorage("lumina.appearance") var appearanceRaw: String = AppearanceMode.light.rawValue
+    @AppStorage("lumina.readingFontScale") var readingFontScale: Double = 1.0
+
+    /// Five reading size steps for news / skim surfaces.
+    static let readingFontScaleSteps: [Double] = [0.85, 1.0, 1.15, 1.3, 1.45]
 
     var appearance: AppearanceMode {
         get { AppearanceMode(rawValue: appearanceRaw) ?? .light }
@@ -34,6 +38,45 @@ final class ThemeManager: ObservableObject {
     }
 
     var colorScheme: ColorScheme? { appearance.colorScheme }
+
+    func scaled(_ base: CGFloat) -> CGFloat {
+        base * CGFloat(readingFontScale)
+    }
+
+    var canDecreaseReadingFont: Bool {
+        readingFontScale > Self.readingFontScaleSteps.first! + 0.001
+    }
+
+    var canIncreaseReadingFont: Bool {
+        readingFontScale < Self.readingFontScaleSteps.last! - 0.001
+    }
+
+    func decreaseReadingFont() {
+        guard let current = nearestScaleIndex, current > 0 else { return }
+        objectWillChange.send()
+        readingFontScale = Self.readingFontScaleSteps[current - 1]
+    }
+
+    func increaseReadingFont() {
+        guard let current = nearestScaleIndex, current < Self.readingFontScaleSteps.count - 1 else { return }
+        objectWillChange.send()
+        readingFontScale = Self.readingFontScaleSteps[current + 1]
+    }
+
+    private var nearestScaleIndex: Int? {
+        let steps = Self.readingFontScaleSteps
+        guard !steps.isEmpty else { return nil }
+        var best = 0
+        var bestDist = abs(steps[0] - readingFontScale)
+        for i in 1..<steps.count {
+            let d = abs(steps[i] - readingFontScale)
+            if d < bestDist {
+                bestDist = d
+                best = i
+            }
+        }
+        return best
+    }
 }
 
 extension LuminaTheme {

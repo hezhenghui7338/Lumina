@@ -31,14 +31,35 @@ def load_epub(path: Path) -> tuple[str, dict]:
     author = (book.get_metadata("DC", "creator") or [[None]])[0][0]
 
     parts: list[str] = []
-    for item in book.get_items():
-        if item.get_type() != ebooklib.ITEM_DOCUMENT:
+    skipped_chapters = 0
+    seen_hrefs: set[str] = set()
+
+    for spine_entry in book.spine:
+        href = spine_entry[0] if isinstance(spine_entry, tuple) else spine_entry
+        if href in seen_hrefs:
             continue
-        name = item.get_name() or "chapter"
+        seen_hrefs.add(href)
+
+        item = book.get_item_with_href(href)
+        if item is None or item.get_type() != ebooklib.ITEM_DOCUMENT:
+            continue
+
+        name = item.get_name() or href
         chapter_title = Path(name).stem.replace("_", " ")
-        body = _html_to_text(item.get_content().decode("utf-8", errors="replace"))
+        try:
+            raw_html = item.get_content().decode("utf-8", errors="replace")
+        except Exception:
+            skipped_chapters += 1
+            continue
+
+        body = _html_to_text(raw_html)
         if not body:
+            skipped_chapters += 1
             continue
         parts.append(f"## [§{chapter_title}]\n{body}")
 
-    return "\n\n".join(parts), {"title": title, "author": author}
+    metadata: dict = {"title": title, "author": author}
+    if skipped_chapters:
+        metadata["skipped_chapters"] = skipped_chapters
+
+    return "\n\n".join(parts), metadata

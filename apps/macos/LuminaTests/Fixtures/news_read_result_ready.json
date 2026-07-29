@@ -1,0 +1,19 @@
+{
+  "article": {
+    "id": "art-ready",
+    "title": "AI Cost Drop",
+    "excerpt": "推理成本显著下降。",
+    "one_liner": "推理成本显著下降。",
+    "url": "https://example.com/ai-cost",
+    "author": null,
+    "published_at": "2024-01-01T12:00:00Z",
+    "summary_markdown": "## 总结\n推理成本显著下降。",
+    "summary_status": "ready",
+    "score_hint": 91.0
+  },
+  "summary_markdown": "## 总结\n推理成本显著下降。",
+  "warnings": ["缓存正文过短，已重新抓取"],
+  "error": "",
+  "body_complete": true,
+  "body_text": "推理成本显著下降。云厂商集体降价。"
+}
