@@ -101,6 +101,7 @@ def test_settings_matches_swift_app_settings(client):
     body = client.get("/settings").json()
     assert isinstance(body["target_language"], str)
     assert isinstance(body["web_search_provider"], str)
+    assert body.get("debug_mode") is False
     models = body["models"]
     assert isinstance(models["resources"], list)
     for resource in models["resources"]:
@@ -144,7 +145,7 @@ def test_news_brief_limit_query_param(client):
 
 def test_news_sources_is_preset_and_restore(client):
     listed = client.get("/news/sources").json()
-    assert len(listed["sources"]) == 16
+    assert len(listed["sources"]) == 3
     assert all("is_preset" in s for s in listed["sources"])
     assert all(s["is_preset"] is True for s in listed["sources"])
 
@@ -171,7 +172,7 @@ def test_news_sources_is_preset_and_restore(client):
     assert restored.status_code == 200
     body = restored.json()
     assert body["restored"] >= 1
-    assert len(body["sources"]) == 17
+    assert len(body["sources"]) == 4
     assert any(s["url"] == listed["sources"][0]["url"] for s in body["sources"])
     assert any(s["url"] == "https://example.com/my-feed.xml" for s in body["sources"])
-    assert sum(1 for s in body["sources"] if s["is_preset"]) == 16
+    assert sum(1 for s in body["sources"] if s["is_preset"]) == 3

@@ -2,6 +2,7 @@
   "target_language": "zh-CN",
   "web_search_provider": "ddgs",
   "tavily_api_key": null,
+  "debug_mode": false,
   "models": {
     "resources": [
       {

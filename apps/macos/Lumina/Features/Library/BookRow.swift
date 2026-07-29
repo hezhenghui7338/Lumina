@@ -49,9 +49,17 @@ struct BookRow: View {
                         .font(.headline)
                         .lineLimit(2)
                 }
-                Text(statusText)
-                    .font(.caption)
-                    .foregroundStyle(LuminaTheme.textSecondary)
+                if book.summarize_active != nil {
+                    TimelineView(.periodic(from: .now, by: 1)) { context in
+                        Text(liveStatusText(at: context.date))
+                            .font(.caption)
+                            .foregroundStyle(LuminaTheme.textSecondary)
+                    }
+                } else {
+                    Text(statusText)
+                        .font(.caption)
+                        .foregroundStyle(LuminaTheme.textSecondary)
+                }
                 if book.isProcessing {
                     if let ingestProgress, ingestProgress.total > 0 {
                         ProgressView(
@@ -94,6 +102,19 @@ struct BookRow: View {
                 onDelete()
             }
         }
+    }
+
+    private func liveStatusText(at now: Date) -> String {
+        let total = book.summaryTotal
+        guard total > 0 else { return book.statusLabel }
+        let ready = book.summaryReady
+        if ready >= total { return "已摘要" }
+        var label = "\(book.statusLabel) · 摘要 \(ready)/\(total)"
+        if let active = book.summarize_active,
+           let activeLabel = SummaryMetricsFormatter.bookActiveLabel(active: active, now: now) {
+            label += " · \(activeLabel)"
+        }
+        return label
     }
 
     @ViewBuilder

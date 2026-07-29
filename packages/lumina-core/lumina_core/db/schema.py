@@ -43,6 +43,8 @@ CREATE TABLE IF NOT EXISTS segments (
   retry_count     INTEGER DEFAULT 0,
   summary_provider TEXT,
   summary_model    TEXT,
+  summary_duration_s REAL,
+  summary_llm_attempts INTEGER,
   UNIQUE(book_id, idx)
 );
 
@@ -151,6 +153,8 @@ _SEGMENT_COLUMNS = (
     ("summary_provider", "TEXT"),
     ("summary_model", "TEXT"),
     ("char_count", "INTEGER"),
+    ("summary_duration_s", "REAL"),
+    ("summary_llm_attempts", "INTEGER"),
 )
 
 _NOTE_COLUMNS = (("quote", "TEXT"),)

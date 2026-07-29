@@ -358,7 +358,7 @@ RapidOCR(params={
 ```
 annotate(text) → 注入 ## [§章节] / ## [p.N] 标记
   → 结构边界切分（Markdown # / LA 锚点行）
-  → RecursiveChunker（语义边界优先；Ollama target ~1000 字，云端 ~4000 字）
+  → RecursiveChunker（语义边界优先；Ollama target ~2500 字（60%–120% 浮动），云端 ~4000 字）
   → rebalance：过小 merge、过大句子级 split
   → DocumentSegment[] + chapter/page 元数据
 ```
@@ -367,9 +367,9 @@ annotate(text) → 注入 ## [§章节] / ## [p.N] 标记
 
 | 参数 | Ollama 本地 | 云端 API |
 |------|-------------|----------|
-| `reading_target_chars` | 1000 | 4000 |
-| `reading_hard_max` | 1200 | 6000 |
-| prefetch workers | 2 | 4 |
+| `reading_target_chars` | 2500 | 4000 |
+| `reading_hard_max` | 3000 | 6000 |
+| prefetch workers | 1 | 4 |
 | 短书阈值 | ≤12000 字不切段 | 同 |
 
 环境变量覆盖：`LUMINA_CHUNK_TARGET_CHARS`、`LUMINA_CHUNK_MAX_CHARS`（见 `resolve_chunk_budget()`）。
@@ -738,7 +738,7 @@ App Onboarding → `GET /settings/ollama/status` → 必要时 `POST /settings/o
 |------|------|----------|--------|
 | **CPU** | ingest · OCR · chunk | 1 | 中 |
 | **Ollama** | 段摘要 prefetch · 翻译 prefetch | **2**（可配置 1–4） | 摘要 > 翻译 |
-| **Cursor** | summarize fallback · Agent | **8**（可配置 1–8） | 摘要 fallback |
+| **Cursor** | summarize fallback · OpenAI 兼容 HTTP | **8**（可配置 1–8） | 摘要 fallback |
 | **Cloud** | OpenAI / OpenRouter 等 | 4 | 摘要 fallback |
 
 **Router 层 Semaphore**：chat、summarize、translate 经 `ProfileModelRouter` 的调用共享按 **resource id** 的并发槽。JobQueue worker 数 = 摘要链各资源 `concurrency` 的 **max**（默认 `max(2,8,4)=8`）；Ollama 槽满时立即 fallback Cursor，不再等 12s 超时。

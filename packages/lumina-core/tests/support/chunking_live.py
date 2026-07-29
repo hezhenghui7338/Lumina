@@ -62,14 +62,15 @@ async def run_chunk_live_gate(
 
     summaries: dict[int, object] = {}
     for idx in summarize_segments:
-        summaries[idx] = await summarize_segment(
+        result = await summarize_segment(
             router,
             raw_text=segments[idx].raw_text[:summarize_input_chars],
             anchor_label=f"§段 {idx + 1}",
             max_retries=retries,
             failure_dump_path=output_dir / f"{fixture_name}_seg{idx}_raw.txt",
         )
-        assert len(summaries[idx].label) <= 20
+        summaries[idx] = result.summary
+        assert len(result.summary.label) <= 20
 
     assert segments[0].end_offset == segments[1].start_offset
 

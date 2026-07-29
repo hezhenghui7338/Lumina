@@ -1,6 +1,6 @@
 [project]
 name = "lumina-core"
-version = "0.2.0"
+version = "0.3.0"
 description = "Lumina local AI reading engine sidecar"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -22,9 +22,6 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-cursor = [
-    "cursor-sdk>=0.1.9",
-]
 ocr = [
     "rapidocr>=3.9.0",
     "onnxruntime>=1.18.0",

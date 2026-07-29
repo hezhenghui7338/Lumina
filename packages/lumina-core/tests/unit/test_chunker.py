@@ -95,14 +95,20 @@ def test_ollama_budget_segments_within_max_chars():
         assert len(seg.raw_text) <= OLLAMA_CHUNK_MAX
 
 
-def test_ollama_budget_fewer_segments_than_legacy():
+def test_ollama_budget_defaults():
+    """Ollama chunk budget: target 2500, max 3000 (60%–120% 浮动)."""
+    assert OLLAMA_CHUNK_TARGET == 2500
+    assert OLLAMA_CHUNK_MAX == 3000
+
+
+def test_ollama_budget_more_segments_than_cloud():
     text = "第一章 开篇\n\n" + ("段落内容。" * 1500 + "\n\n") * 40
-    legacy = ChunkBudget(target_chars=1000, max_chars=1200, min_chars=600)
-    current = ChunkBudget(
+    ollama = ChunkBudget(
         target_chars=OLLAMA_CHUNK_TARGET,
         max_chars=OLLAMA_CHUNK_MAX,
         min_chars=int(OLLAMA_CHUNK_TARGET * 0.6),
     )
-    legacy_count = len(chunk_text(text, budget=legacy))
-    current_count = len(chunk_text(text, budget=current))
-    assert current_count < legacy_count
+    cloud = ChunkBudget(target_chars=4000, max_chars=6000, min_chars=2400)
+    ollama_count = len(chunk_text(text, budget=ollama))
+    cloud_count = len(chunk_text(text, budget=cloud))
+    assert ollama_count > cloud_count

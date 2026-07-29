@@ -2,18 +2,22 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import re
 import time
 from collections.abc import AsyncIterator
-from pathlib import Path
 from typing import Any, Literal
 
 import httpx
 
-from lumina_core.config import ModelResource, ModelsConfig, ProfileRoute
+from lumina_core.config import (
+    ModelResource,
+    ModelsConfig,
+    OLLAMA_KEEP_ALIVE,
+    ProfileRoute,
+    SUMMARY_SEGMENT_TIMEOUT_SECONDS,
+)
 from lumina_core.models.concurrency import ResourceBusyError, ResourceConcurrencyGate
 from lumina_core.ollama_setup import is_local_base_url
 
@@ -21,7 +25,6 @@ Profile = Literal["chat", "summarize", "translate"]
 
 _router: ProfileModelRouter | None = None
 logger = logging.getLogger(__name__)
-_CURSOR_MAX_RETRIES = 2
 
 
 def _format_chain_failure(
@@ -33,12 +36,12 @@ def _format_chain_failure(
     detail = str(last_error) if last_error else "未知错误"
     hints: list[str] = []
 
-    if "cursor-sdk not installed" in detail:
-        hints.append(
-            "Release 版不支持 Cursor provider，请在设置中将 cursor 移出深聊/摘要优先级链"
-        )
+    if "cursor base_url not set" in detail:
+        hints.append("Cursor 需配置 OpenAI 兼容 Base URL（官方暂无原生 chat/completions endpoint）")
     if "cursor api_key not set" in detail:
         hints.append("Cursor API Key 未配置")
+    if "base_url not set" in detail and "cursor base_url" not in detail:
+        hints.append("请在设置中配置对应资源的 Base URL")
     if "api_key not set" in detail and "cursor api_key" not in detail:
         hints.append("请在设置中配置对应资源的 API Key")
     if isinstance(last_error, httpx.ConnectError):
@@ -62,6 +65,7 @@ class ProfileModelRouter:
         self.last_resource_id: str | None = None
         self.last_provider: str | None = None
         self.last_model: str | None = None
+        self.last_call: dict[str, Any] | None = None
 
     def update_resources(self, resources: list[ModelResource]) -> None:
         self._gate.set_resources(resources)
@@ -138,13 +142,20 @@ class ProfileModelRouter:
         ollama_skipped = False
         ollama_fast_timed_out = False
         attempted: set[str] = set()
+        started = time.time()
 
         for index, resource in enumerate(resources):
+            if not self._resource_configured(resource):
+                continue
             attempted.add(resource.id)
-            has_fallback = index < len(resources) - 1
-            skip_if_busy = has_fallback
+            configured = [r for r in resources if self._resource_configured(r)]
+            has_fallback = resource.id != configured[-1].id if configured else False
+            # Summarize must wait for Ollama slots; busy-skip causes instant fallback
+            # to cloud providers (often unconfigured) and multi-minute retry storms.
+            skip_if_busy = has_fallback and profile != "summarize"
             # Summarize jobs routinely exceed 12s on local Ollama; never fast-fail them.
             fast_ollama_timeout = has_fallback and profile != "summarize"
+            resource_started = time.time()
             try:
                 text = await self._complete_resource(
                     resource,
@@ -152,22 +163,83 @@ class ProfileModelRouter:
                     json_mode=json_mode,
                     skip_if_busy=skip_if_busy,
                     fast_ollama_timeout=fast_ollama_timeout,
+                    profile=profile,
                 )
-                self._record_success(resource)
+                from lumina_core.debug_agent_log import agent_log
+
+                agent_log(
+                    hypothesis_id="C",
+                    location="router.py:_complete_with_fallback:ok",
+                    message="resource complete ok",
+                    data={
+                        "profile": profile,
+                        "resource_id": resource.id,
+                        "provider": resource.provider,
+                        "duration_s": round(time.time() - resource_started, 2),
+                        "prompt_chars": len(prompt),
+                        "fallback_index": index,
+                    },
+                )
+                self._record_success(resource, profile=profile)
+                self._record_call(
+                    resource_id=resource.id,
+                    profile=profile,
+                    started=started,
+                    ok=True,
+                )
                 return text
             except ResourceBusyError as exc:
+                from lumina_core.debug_agent_log import agent_log
+
+                agent_log(
+                    hypothesis_id="C",
+                    location="router.py:_complete_with_fallback:busy",
+                    message="resource busy, trying fallback",
+                    data={
+                        "profile": profile,
+                        "resource_id": resource.id,
+                        "wait_s": round(time.time() - resource_started, 2),
+                    },
+                )
                 if resource.provider == "ollama":
                     ollama_skipped = True
                 last_error = exc
                 logger.warning("resource %s busy: %s", resource.id, exc)
             except (httpx.TimeoutException, TimeoutError) as exc:
+                from lumina_core.debug_agent_log import agent_log
+
+                agent_log(
+                    hypothesis_id="C",
+                    location="router.py:_complete_with_fallback:timeout",
+                    message="resource timed out, trying fallback",
+                    data={
+                        "profile": profile,
+                        "resource_id": resource.id,
+                        "duration_s": round(time.time() - resource_started, 2),
+                        "fast_ollama": fast_ollama_timeout,
+                    },
+                )
                 if resource.provider == "ollama":
                     ollama_skipped = True
-                    if fast_ollama_timeout:
-                        ollama_fast_timed_out = True
+                if fast_ollama_timeout:
+                    ollama_fast_timed_out = True
                 last_error = exc
                 logger.warning("resource %s timed out: %s", resource.id, exc)
             except Exception as exc:
+                from lumina_core.debug_agent_log import agent_log
+
+                agent_log(
+                    hypothesis_id="C",
+                    location="router.py:_complete_with_fallback:error",
+                    message="resource failed, trying fallback",
+                    data={
+                        "profile": profile,
+                        "resource_id": resource.id,
+                        "duration_s": round(time.time() - resource_started, 2),
+                        "error_type": type(exc).__name__,
+                        "error": str(exc)[:300],
+                    },
+                )
                 last_error = exc
                 logger.warning("resource %s failed: %s", resource.id, exc)
 
@@ -182,13 +254,28 @@ class ProfileModelRouter:
                     json_mode=json_mode,
                     skip_if_busy=False,
                     fast_ollama_timeout=False,
+                    profile=profile,
                 )
-                self._record_success(retry)
+                self._record_success(retry, profile=profile)
+                self._record_call(
+                    resource_id=retry.id,
+                    profile=profile,
+                    started=started,
+                    ok=True,
+                )
                 return text
             except Exception as exc:
                 last_error = exc
 
-        raise RuntimeError(_format_chain_failure(resources, last_error))
+        err = _format_chain_failure(resources, last_error)
+        self._record_call(
+            resource_id=resources[-1].id if resources else None,
+            profile=profile,
+            started=started,
+            ok=False,
+            error=err,
+        )
+        raise RuntimeError(err)
 
     async def _chat_with_fallback(
         self,
@@ -201,6 +288,7 @@ class ProfileModelRouter:
         ollama_skipped = False
         ollama_fast_timed_out = False
         attempted: set[str] = set()
+        started = time.time()
 
         for index, resource in enumerate(resources):
             attempted.add(resource.id)
@@ -212,7 +300,13 @@ class ProfileModelRouter:
                     json_mode=json_mode,
                     fast_ollama=fast_ollama,
                 )
-                self._record_success(resource)
+                self._record_success(resource, profile="chat")
+                self._record_call(
+                    resource_id=resource.id,
+                    profile="chat",
+                    started=started,
+                    ok=True,
+                )
                 return text
             except ResourceBusyError as exc:
                 if resource.provider == "ollama":
@@ -241,12 +335,26 @@ class ProfileModelRouter:
                     json_mode=json_mode,
                     fast_ollama=False,
                 )
-                self._record_success(retry)
+                self._record_success(retry, profile="chat")
+                self._record_call(
+                    resource_id=retry.id,
+                    profile="chat",
+                    started=started,
+                    ok=True,
+                )
                 return text
             except Exception as exc:
                 last_error = exc
 
-        raise RuntimeError(_format_chain_failure(resources, last_error))
+        err = _format_chain_failure(resources, last_error)
+        self._record_call(
+            resource_id=resources[-1].id if resources else None,
+            profile="chat",
+            started=started,
+            ok=False,
+            error=err,
+        )
+        raise RuntimeError(err)
 
     async def _chat_stream_with_fallback(
         self,
@@ -259,6 +367,7 @@ class ProfileModelRouter:
         ollama_skipped = False
         ollama_fast_timed_out = False
         attempted: set[str] = set()
+        started = time.time()
 
         for index, resource in enumerate(resources):
             attempted.add(resource.id)
@@ -277,7 +386,13 @@ class ProfileModelRouter:
                     skip_if_busy=fast_ollama,
                 ):
                     if first:
-                        self._record_success(resource)
+                        self._record_success(resource, profile="chat")
+                        self._record_call(
+                            resource_id=resource.id,
+                            profile="chat",
+                            started=started,
+                            ok=True,
+                        )
                         first = False
                     yield chunk
                 if not first:
@@ -311,13 +426,27 @@ class ProfileModelRouter:
             first = True
             async for chunk in self._gate.wrap_stream(retry.id, stream, skip_if_busy=False):
                 if first:
-                    self._record_success(retry)
+                    self._record_success(retry, profile="chat")
+                    self._record_call(
+                        resource_id=retry.id,
+                        profile="chat",
+                        started=started,
+                        ok=True,
+                    )
                     first = False
                 yield chunk
             if not first:
                 return
 
-        raise RuntimeError(_format_chain_failure(resources, last_error))
+        err = _format_chain_failure(resources, last_error)
+        self._record_call(
+            resource_id=resources[-1].id if resources else None,
+            profile="chat",
+            started=started,
+            ok=False,
+            error=err,
+        )
+        raise RuntimeError(err)
 
     @staticmethod
     def _ollama_last_resort(
@@ -334,12 +463,49 @@ class ProfileModelRouter:
             return None
         return ollama
 
-    def _record_success(self, resource: ModelResource) -> None:
+    def _record_success(self, resource: ModelResource, *, profile: str = "summarize") -> None:
         self.last_resource_id = resource.id
         self.last_provider = resource.provider
         self.last_model = resource.model
 
-    def _timeout_for(self, resource: ModelResource, *, fast_ollama: bool) -> float:
+    def _record_call(
+        self,
+        *,
+        resource_id: str | None,
+        profile: str,
+        started: float,
+        ok: bool,
+        error: str | None = None,
+    ) -> None:
+        from datetime import datetime, timezone
+
+        self.last_call = {
+            "resource_id": resource_id,
+            "profile": profile,
+            "started_at": datetime.fromtimestamp(started, tz=timezone.utc).isoformat(),
+            "duration_ms": int((time.time() - started) * 1000),
+            "ok": ok,
+            "error": error,
+        }
+
+    def resource_runtime(self) -> list[dict[str, int | str]]:
+        return self._gate.snapshot()
+
+    @staticmethod
+    def _resource_configured(resource: ModelResource) -> bool:
+        if resource.provider == "ollama":
+            return True
+        return bool(resource.api_key)
+
+    def _timeout_for(
+        self,
+        resource: ModelResource,
+        *,
+        fast_ollama: bool,
+        profile: Profile = "summarize",
+    ) -> float:
+        if resource.provider == "ollama" and profile == "summarize":
+            return float(SUMMARY_SEGMENT_TIMEOUT_SECONDS)
         if resource.provider == "ollama" and fast_ollama:
             return max(1.0, float(resource.chat_timeout))
         return 120.0
@@ -352,23 +518,27 @@ class ProfileModelRouter:
         json_mode: bool,
         skip_if_busy: bool,
         fast_ollama_timeout: bool,
+        profile: Profile = "summarize",
     ) -> str:
         async with self._gate.use(resource.id, skip_if_busy=skip_if_busy):
+            timeout = self._timeout_for(
+                resource, fast_ollama=fast_ollama_timeout, profile=profile
+            )
             if resource.provider == "ollama":
                 return await self._ollama_complete(
                     resource,
                     prompt,
                     json_mode=json_mode,
-                    timeout=self._timeout_for(resource, fast_ollama=fast_ollama_timeout),
+                    timeout=timeout,
+                    profile=profile,
                 )
-            if resource.provider == "cursor":
-                return await self._cursor_complete(resource, prompt)
+            self._require_base_url(resource)
             self._require_api_key(resource)
             return await self._openai_complete(
                 resource,
                 prompt,
                 json_mode=json_mode,
-                timeout=self._timeout_for(resource, fast_ollama=fast_ollama_timeout),
+                timeout=timeout,
             )
 
     async def _chat_resource(
@@ -388,8 +558,7 @@ class ProfileModelRouter:
                     json_mode=json_mode,
                     timeout=timeout,
                 )
-            if resource.provider == "cursor":
-                return await self._cursor_chat(resource, messages)
+            self._require_base_url(resource)
             self._require_api_key(resource)
             return await self._openai_chat(
                 resource,
@@ -414,8 +583,7 @@ class ProfileModelRouter:
                 json_mode=json_mode,
                 timeout=timeout,
             )
-        if resource.provider == "cursor":
-            return self._cursor_chat_stream(resource, messages)
+        self._require_base_url(resource)
         self._require_api_key(resource)
         return self._openai_chat_stream(
             resource,
@@ -429,6 +597,11 @@ class ProfileModelRouter:
         if not resource.api_key:
             raise RuntimeError(f"{resource.provider} api_key not set")
 
+    @staticmethod
+    def _require_base_url(resource: ModelResource) -> None:
+        if not (resource.base_url or "").strip():
+            raise RuntimeError(f"{resource.provider} base_url not set")
+
     def _ollama_payload(
         self,
         resource: ModelResource,
@@ -436,15 +609,23 @@ class ProfileModelRouter:
         *,
         json_mode: bool,
         stream: bool,
+        profile: Profile | None = None,
     ) -> dict[str, Any]:
+        if profile == "summarize" and json_mode:
+            num_predict = 384
+        elif json_mode:
+            num_predict = 768
+        else:
+            num_predict = 1024
         payload: dict[str, Any] = {
             "model": resource.model,
             "messages": messages,
             "stream": stream,
             "think": False,
+            "keep_alive": OLLAMA_KEEP_ALIVE,
             "options": {
                 "num_ctx": 8192,
-                "num_predict": 768 if json_mode else 1024,
+                "num_predict": num_predict,
             },
         }
         if json_mode:
@@ -458,6 +639,7 @@ class ProfileModelRouter:
         *,
         json_mode: bool,
         timeout: float,
+        profile: Profile = "summarize",
     ) -> str:
         client = self._client_for(resource, timeout=timeout)
         payload = self._ollama_payload(
@@ -465,6 +647,7 @@ class ProfileModelRouter:
             [{"role": "user", "content": prompt}],
             json_mode=json_mode,
             stream=False,
+            profile=profile,
         )
         resp = await client.post("/api/chat", json=payload)
         resp.raise_for_status()
@@ -568,97 +751,10 @@ class ProfileModelRouter:
                 if delta:
                     yield delta
 
-    async def _cursor_complete(self, resource: ModelResource, prompt: str) -> str:
-        return await self._cursor_chat(
-            resource,
-            [{"role": "user", "content": prompt}],
-        )
-
-    async def _cursor_chat(
-        self, resource: ModelResource, messages: list[dict[str, str]]
-    ) -> str:
-        if not resource.api_key:
-            raise RuntimeError("cursor api_key not set")
-        return await asyncio.to_thread(
-            _cursor_prompt_sync,
-            resource.api_key,
-            resource.model,
-            messages,
-            _CURSOR_MAX_RETRIES,
-        )
-
-    async def _cursor_chat_stream(
-        self, resource: ModelResource, messages: list[dict[str, str]]
-    ) -> AsyncIterator[str]:
-        text = await self._cursor_chat(resource, messages)
-        if text:
-            yield text
-
     async def aclose(self) -> None:
         for client in self._clients.values():
             await client.aclose()
         self._clients.clear()
-
-
-def _format_messages_for_cursor(messages: list[dict[str, str]]) -> str:
-    """Render chat history into a single prompt for Cursor Agent."""
-    role_labels = {"system": "System", "user": "User", "assistant": "Assistant"}
-    parts: list[str] = [
-        "You are answering in a chat REPL. Reply directly to the latest user message.",
-        "Do not edit files or run tools unless explicitly asked.",
-    ]
-    for message in messages:
-        role = message.get("role", "user")
-        label = role_labels.get(role, role.title())
-        parts.append(f"{label}:\n{(message.get('content') or '').strip()}")
-    parts.append("Assistant:")
-    return "\n\n".join(parts)
-
-
-def _cursor_prompt_sync(
-    api_key: str,
-    model: str,
-    messages: list[dict[str, str]],
-    max_retries: int,
-) -> str:
-    try:
-        from cursor_sdk import Agent, AgentOptions, LocalAgentOptions
-    except ImportError as exc:
-        raise RuntimeError("cursor-sdk not installed; run: pip install cursor-sdk") from exc
-
-    prompt = _format_messages_for_cursor(messages)
-    cwd = str(Path.home())
-    last_error: Exception | None = None
-    for attempt in range(max_retries + 1):
-        try:
-            result = Agent.prompt(
-                prompt,
-                AgentOptions(
-                    api_key=api_key,
-                    model=model,
-                    local=LocalAgentOptions(cwd=cwd),
-                ),
-            )
-            if result.status != "finished":
-                raise RuntimeError(f"cursor agent run failed: status={result.status}")
-            text = (result.result or "").strip()
-            if not text:
-                raise RuntimeError("cursor agent returned empty response")
-            return text
-        except Exception as exc:
-            last_error = exc
-            if attempt < max_retries:
-                delay = min(2**attempt, 5)
-                logger.warning(
-                    "cursor attempt %d/%d failed: %s, retrying in %.0fs",
-                    attempt + 1,
-                    max_retries + 1,
-                    exc,
-                    delay,
-                )
-                time.sleep(delay)
-    assert last_error is not None
-    raise last_error
 
 
 class OllamaRouter(ProfileModelRouter):

@@ -265,9 +265,10 @@ async def summarize_document(
             label = chunk.chapter or f"段 {chunk.index + 1}"
             if use_llm:
                 try:
-                    summary = await summarize_segment(
+                    result = await summarize_segment(
                         router, raw_text=chunk.raw_text, anchor_label=label
                     )
+                    summary = result.summary
                     parts.append(
                         (
                             summary.label or label,

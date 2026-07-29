@@ -29,7 +29,7 @@ if [[ -d "$INTERNAL/cv2/.dylibs" ]]; then
   rm -f "$INTERNAL/cv2/.dylibs"/libsw*.dylib
 fi
 
-# Release bundle must not ship cursor-sdk (optional provider; ~150 MB Node runtime).
+# Guard against legacy cursor-sdk artifacts (~150 MB Node runtime) in release bundles.
 if [[ -d "$INTERNAL/cursor_sdk" ]]; then
   echo "ERROR: cursor_sdk must not be in release sidecar: $INTERNAL/cursor_sdk" >&2
   exit 1

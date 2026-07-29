@@ -9,6 +9,7 @@ import uvicorn
 from fastapi import FastAPI
 
 from lumina_core.api.routes import router
+from lumina_core.api.ops_routes import router as ops_router
 from lumina_core.app_state import AppState, create_app_state
 from lumina_core.config import Settings
 
@@ -30,6 +31,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app = FastAPI(title="lumina-core", version="0.1.0", lifespan=lifespan)
     app.state.lumina = state
     app.include_router(router)
+    app.include_router(ops_router)
     return app
 
 

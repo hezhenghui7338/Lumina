@@ -4,7 +4,7 @@ resources:
     base_url: http://127.0.0.1:11434
     model: qwen3.5:4b
     chat_timeout: 12
-    concurrency: 2
+    concurrency: 1
   - id: openai
     provider: openai
     base_url: https://api.openai.com/v1

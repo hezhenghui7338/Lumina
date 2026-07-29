@@ -29,6 +29,8 @@ REQUIRED_SEGMENT_COLUMNS = frozenset(
         "char_count",
         "summary_provider",
         "summary_model",
+        "summary_duration_s",
+        "summary_llm_attempts",
     }
 )
 

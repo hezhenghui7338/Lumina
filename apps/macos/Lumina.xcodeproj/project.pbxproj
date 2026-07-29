@@ -57,6 +57,10 @@
 		A1000156 /* SegmentReadyEventTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000251 /* SegmentReadyEventTests.swift */; };
 		A1000157 /* BookMarkdownExporter.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000252 /* BookMarkdownExporter.swift */; };
 		A1000158 /* ReaderEdgeIcon.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000253 /* ReaderEdgeIcon.swift */; };
+		A1000260 /* TaskManagerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000270 /* TaskManagerView.swift */; };
+		A1000261 /* TaskRowView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000271 /* TaskRowView.swift */; };
+		A1000262 /* ResourceRuntimeSection.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000272 /* ResourceRuntimeSection.swift */; };
+		A1000263 /* SummaryMetricsFormatter.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000273 /* SummaryMetricsFormatter.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -113,6 +117,10 @@
 		A1000251 /* SegmentReadyEventTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SegmentReadyEventTests.swift; sourceTree = "<group>"; };
 		A1000252 /* BookMarkdownExporter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BookMarkdownExporter.swift; sourceTree = "<group>"; };
 		A1000253 /* ReaderEdgeIcon.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderEdgeIcon.swift; sourceTree = "<group>"; };
+		A1000270 /* TaskManagerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TaskManagerView.swift; sourceTree = "<group>"; };
+		A1000271 /* TaskRowView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TaskRowView.swift; sourceTree = "<group>"; };
+		A1000272 /* ResourceRuntimeSection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ResourceRuntimeSection.swift; sourceTree = "<group>"; };
+		A1000273 /* SummaryMetricsFormatter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SummaryMetricsFormatter.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -175,6 +183,7 @@
 				A1000517 /* Shared */,
 				A1000509 /* Search */,
 				A1000510 /* Settings */,
+				A1000518 /* Tasks */,
 				A1000511 /* Onboarding */,
 			);
 			path = Features;
@@ -202,6 +211,7 @@
 				A1000219 /* SummaryReadingView.swift */,
 				A1000233 /* LazyParagraphText.swift */,
 				A1000235 /* SegmentReadingBlock.swift */,
+				A1000273 /* SummaryMetricsFormatter.swift */,
 				A1000212 /* NotesPanel.swift */,
 				A1000213 /* ExportSheet.swift */,
 			);
@@ -255,6 +265,16 @@
 				A1000211 /* SettingsView.swift */,
 			);
 			path = Settings;
+			sourceTree = "<group>";
+		};
+		A1000518 /* Tasks */ = {
+			isa = PBXGroup;
+			children = (
+				A1000270 /* TaskManagerView.swift */,
+				A1000271 /* TaskRowView.swift */,
+				A1000272 /* ResourceRuntimeSection.swift */,
+			);
+			path = Tasks;
 			sourceTree = "<group>";
 		};
 		A1000511 /* Onboarding */ = {
@@ -452,6 +472,7 @@
 				A1000119 /* SummaryReadingView.swift in Sources */,
 				A1000138 /* LazyParagraphText.swift in Sources */,
 				A1000139 /* SegmentReadingBlock.swift in Sources */,
+				A1000263 /* SummaryMetricsFormatter.swift in Sources */,
 				A1000104 /* CoreClient.swift in Sources */,
 				A1000157 /* BookMarkdownExporter.swift in Sources */,
 				A1000105 /* SidecarManager.swift in Sources */,
@@ -471,6 +492,9 @@
 				A1000154 /* NewsStructuredSummaryView.swift in Sources */,
 				A1000145 /* NewsSourcesSettingsView.swift in Sources */,
 				A1000111 /* SettingsView.swift in Sources */,
+				A1000260 /* TaskManagerView.swift in Sources */,
+				A1000261 /* TaskRowView.swift in Sources */,
+				A1000262 /* ResourceRuntimeSection.swift in Sources */,
 				A1000112 /* NotesPanel.swift in Sources */,
 				A1000120 /* AllNotesView.swift in Sources */,
 				A1000121 /* LibraryView.swift in Sources */,
@@ -566,7 +590,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 0.2.0;
+				MARKETING_VERSION = 0.3.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.lumina.app;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
@@ -592,7 +616,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 0.2.0;
+				MARKETING_VERSION = 0.3.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.lumina.app;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
@@ -609,7 +633,7 @@
 				DEVELOPMENT_TEAM = "";
 				GENERATE_INFOPLIST_FILE = YES;
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
-				MARKETING_VERSION = 0.2.0;
+				MARKETING_VERSION = 0.3.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.lumina.app.tests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = NO;
@@ -627,7 +651,7 @@
 				DEVELOPMENT_TEAM = "";
 				GENERATE_INFOPLIST_FILE = YES;
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
-				MARKETING_VERSION = 0.2.0;
+				MARKETING_VERSION = 0.3.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.lumina.app.tests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = NO;

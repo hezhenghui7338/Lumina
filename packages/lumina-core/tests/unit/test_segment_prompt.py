@@ -36,17 +36,27 @@ def _router(*, summarize_priority: list[str]) -> ProfileModelRouter:
 
 def test_segment_prompt_settings_ollama_primary():
     router = _router(summarize_priority=["ollama", "openai"])
-    template, text_limit, retries, min_body = _segment_prompt_settings(router)
+    template, text_limit, retries, min_body, is_ollama = _segment_prompt_settings(router)
     assert template is SUMMARY_PROMPT_OLLAMA
-    assert text_limit == 3600
+    assert text_limit == 3000
     assert retries == 2
     assert min_body == 12
+    assert is_ollama is True
+
+
+def test_ollama_minimal_prompt_only_sentences_and_bullets():
+    assert "notes" not in SUMMARY_PROMPT_OLLAMA
+    assert "follow_ups" not in SUMMARY_PROMPT_OLLAMA
+    assert "anchor" not in SUMMARY_PROMPT_OLLAMA
+    assert "sentences" in SUMMARY_PROMPT_OLLAMA
+    assert "bullets" in SUMMARY_PROMPT_OLLAMA
 
 
 def test_segment_prompt_settings_cloud_primary():
     router = _router(summarize_priority=["openai"])
-    template, text_limit, retries, min_body = _segment_prompt_settings(router)
+    template, text_limit, retries, min_body, is_ollama = _segment_prompt_settings(router)
     assert template is SUMMARY_PROMPT
     assert text_limit == 8000
     assert retries == 3
     assert min_body == 20
+    assert is_ollama is False

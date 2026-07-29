@@ -19,7 +19,7 @@
 | `Lumina-{version}-macOS.dmg` | ≤ 300 MB | UDZO 压缩安装包 |
 | `Lumina.app` | ≤ 500 MB | 安装后磁盘占用 |
 
-Sidecar 已裁剪：`cursor-sdk`（含 Node ~150 MB）、冗余 OCR small 模型、非中英文 Babel 语言包；OpenCV 使用 headless 变体。构建脚本会在体积超限时失败。
+Sidecar 已裁剪：冗余 OCR small 模型、非中英文 Babel 语言包；OpenCV 使用 headless 变体。构建脚本会在体积超限时失败。Cursor provider 已改为 OpenAI 兼容 HTTP 路径，不再依赖 `cursor-sdk`；`prune-sidecar.sh` 仍会校验 sidecar 不含历史残留的 `cursor_sdk/` 目录。
 
 ## 前置条件
 
@@ -34,14 +34,14 @@ Sidecar 已裁剪：`cursor-sdk`（含 Node ~150 MB）、冗余 OCR small 模型
 ./scripts/build-release.sh
 
 # 指定版本号
-LUMINA_VERSION=0.2.0 ./scripts/build-release.sh
+LUMINA_VERSION=0.3.0 ./scripts/build-release.sh
 ```
 
 ## 构建步骤（脚本内部）
 
 0. `pytest -m "not perf"`（单元 + e2e + live；失败则中止，不进入打包）
 1. `uv sync --extra release` + PyInstaller → `packages/lumina-core/dist/lumina-core/`
-2. `scripts/prune-sidecar.sh` 裁剪冗余 sidecar 文件并校验不含 `cursor_sdk`
+2. `scripts/prune-sidecar.sh` 裁剪冗余 sidecar 文件并校验不含历史残留的 `cursor_sdk/`
 3. `xcodebuild -configuration Release` → `Lumina.app`
 4. 复制 sidecar 到 `Lumina.app/Contents/Resources/lumina-core/`
 5. 打包 ZIP + DMG；断言 App ≤ 500 MB、DMG ≤ 300 MB
@@ -50,7 +50,7 @@ LUMINA_VERSION=0.2.0 ./scripts/build-release.sh
 
 - [ ] 在未克隆仓库的 Mac 上，双击 DMG 安装后能打开 App
 - [ ] `Lumina.app` ≤ 500 MB，`Lumina-*-macOS.dmg` ≤ 300 MB
-- [ ] `Lumina.app/Contents/Resources/lumina-core/_internal/` 不含 `cursor_sdk/`
+- [ ] `Lumina.app/Contents/Resources/lumina-core/_internal/` 不含历史残留的 `cursor_sdk/`
 - [ ] 活动监视器中出现 `lumina-core` 进程（来自 App Resources）
 - [ ] `curl http://127.0.0.1:17432/health` 返回 `ok`
 - [ ] 安装 Ollama + 模型后可导入 TXT 并完成首段摘要
@@ -58,8 +58,8 @@ LUMINA_VERSION=0.2.0 ./scripts/build-release.sh
 
 ## GitHub Releases
 
-1. 打 tag：`git tag v0.2.0 && git push origin v0.2.0`
-2. 上传 `dist/Lumina-0.2.0-macOS.dmg` 与 `.zip`
+1. 打 tag：`git tag v0.3.0 && git push origin v0.3.0`
+2. 上传 `dist/Lumina-0.3.0-macOS.dmg` 与 `.zip`
 3. 更新 README 中的 Releases 链接
 
 ## 用户仍需 Ollama 的原因

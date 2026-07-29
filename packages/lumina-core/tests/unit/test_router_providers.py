@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import httpx
 import pytest
@@ -56,14 +55,19 @@ async def test_aiping_requires_api_key():
 
 @pytest.mark.asyncio
 async def test_cursor_requires_api_key():
-    cursor = ModelResource(id="cursor", provider="cursor", model="composer-2.5")
+    cursor = ModelResource(
+        id="cursor",
+        provider="cursor",
+        base_url="https://cursor-proxy.example/v1",
+        model="composer-2.5",
+    )
     router = _router(chat=[cursor])
     with pytest.raises(RuntimeError, match="优先级链全部失败"):
         await router.chat([{"role": "user", "content": "hi"}], profile="chat")
 
 
 @pytest.mark.asyncio
-async def test_cursor_chat_uses_sdk():
+async def test_cursor_requires_base_url():
     cursor = ModelResource(
         id="cursor",
         provider="cursor",
@@ -71,50 +75,49 @@ async def test_cursor_chat_uses_sdk():
         api_key="cursor-test-key",
     )
     router = _router(chat=[cursor])
-    fake_result = SimpleNamespace(status="finished", result='{"answer":"hello"}')
-    mock_agent = MagicMock()
-    mock_agent.prompt.return_value = fake_result
+    with pytest.raises(RuntimeError, match="base_url not set"):
+        await router.chat([{"role": "user", "content": "hi"}], profile="chat")
 
-    with patch.dict(
-        "sys.modules",
-        {
-            "cursor_sdk": MagicMock(
-                Agent=mock_agent,
-                AgentOptions=MagicMock(),
-                LocalAgentOptions=MagicMock(),
-            )
-        },
-    ):
+
+@pytest.mark.asyncio
+async def test_cursor_chat_uses_openai_path():
+    cursor = ModelResource(
+        id="cursor",
+        provider="cursor",
+        base_url="https://cursor-proxy.example/v1",
+        model="composer-2.5",
+        api_key="cursor-test-key",
+    )
+    router = _router(chat=[cursor])
+
+    async def fake_openai(resource, messages, *, json_mode, timeout):
+        assert resource.id == "cursor"
+        assert messages == [{"role": "user", "content": "hi"}]
+        return '{"answer":"hello"}'
+
+    with patch.object(router, "_openai_chat", side_effect=fake_openai):
         raw = await router.chat([{"role": "user", "content": "hi"}], profile="chat")
 
     assert raw == '{"answer":"hello"}'
-    mock_agent.prompt.assert_called_once()
     assert router.last_resource_id == "cursor"
 
 
 @pytest.mark.asyncio
-async def test_cursor_stream_yields_single_chunk():
+async def test_cursor_stream_uses_openai_path():
     cursor = ModelResource(
         id="cursor",
         provider="cursor",
+        base_url="https://cursor-proxy.example/v1",
         model="composer-2.5",
         api_key="cursor-test-key",
     )
     router = _router(chat=[cursor])
-    fake_result = SimpleNamespace(status="finished", result="streamed answer")
-    mock_agent = MagicMock()
-    mock_agent.prompt.return_value = fake_result
 
-    with patch.dict(
-        "sys.modules",
-        {
-            "cursor_sdk": MagicMock(
-                Agent=mock_agent,
-                AgentOptions=MagicMock(),
-                LocalAgentOptions=MagicMock(),
-            )
-        },
-    ):
+    async def fake_stream(resource, messages, *, json_mode, timeout):
+        yield "streamed "
+        yield "answer"
+
+    with patch.object(router, "_openai_chat_stream", side_effect=fake_stream):
         stream = await router.chat(
             [{"role": "user", "content": "hi"}],
             profile="chat",
@@ -122,18 +125,17 @@ async def test_cursor_stream_yields_single_chunk():
         )
         chunks = [chunk async for chunk in stream]
 
-    assert chunks == ["streamed answer"]
+    assert chunks == ["streamed ", "answer"]
 
 
-def test_format_chain_failure_cursor_sdk_hint():
+def test_format_chain_failure_cursor_base_url_hint():
     resources = [ModelResource(id="cursor", provider="cursor", model="composer-2.5")]
     msg = _format_chain_failure(
         resources,
-        RuntimeError("cursor-sdk not installed; run: pip install cursor-sdk"),
+        RuntimeError("cursor base_url not set"),
     )
     assert "已尝试：cursor" in msg
-    assert "cursor-sdk" in msg
-    assert "Release 版不支持 Cursor provider" in msg
+    assert "OpenAI 兼容 Base URL" in msg
 
 
 def test_format_chain_failure_connect_error_hint():
@@ -163,6 +165,19 @@ def test_ollama_payload_disables_thinking():
     assert payload["options"]["num_predict"] == 1024
 
 
+def test_ollama_payload_includes_keep_alive():
+    router = _router()
+    ollama = router.models.resource_by_id("ollama")
+    assert ollama is not None
+    payload = router._ollama_payload(
+        ollama,
+        [{"role": "user", "content": "hi"}],
+        json_mode=False,
+        stream=False,
+    )
+    assert payload["keep_alive"] == "30m"
+
+
 def test_ollama_payload_json_mode_uses_lower_num_predict():
     router = _router()
     ollama = router.models.resource_by_id("ollama")
@@ -174,6 +189,21 @@ def test_ollama_payload_json_mode_uses_lower_num_predict():
         stream=False,
     )
     assert payload["options"]["num_predict"] == 768
+
+
+def test_ollama_payload_summarize_json_uses_384_num_predict():
+    router = _router()
+    ollama = router.models.resource_by_id("ollama")
+    assert ollama is not None
+    payload = router._ollama_payload(
+        ollama,
+        [{"role": "user", "content": "hi"}],
+        json_mode=True,
+        stream=False,
+        profile="summarize",
+    )
+    assert payload["format"] == "json"
+    assert payload["options"]["num_predict"] == 384
 
 
 @pytest.mark.asyncio
@@ -195,14 +225,14 @@ async def test_summarize_complete_uses_full_ollama_timeout():
     router = _router(summarize=[ollama, openrouter])
     seen_timeouts: list[float] = []
 
-    async def fake_ollama_complete(resource, prompt, *, json_mode, timeout):
+    async def fake_ollama_complete(resource, prompt, *, json_mode, timeout, profile="summarize"):
         seen_timeouts.append(timeout)
         return '{"sentences":["a"],"bullets":[{"label":"a","body":"body one with enough length here"},{"label":"b","body":"body two with enough length here"},{"label":"c","body":"body three with enough length here"}],"label":"标签","anchor":"段 1"}'
 
     with patch.object(router, "_ollama_complete", side_effect=fake_ollama_complete):
         await router.complete("summarize this", profile="summarize", json_mode=True)
 
-    assert seen_timeouts == [120.0]
+    assert seen_timeouts == [180.0]
 
 
 @pytest.mark.asyncio

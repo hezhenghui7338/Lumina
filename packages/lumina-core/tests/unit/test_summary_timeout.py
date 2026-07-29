@@ -63,7 +63,7 @@ async def test_summarize_timeout_marks_error_then_retries(conn):
     seg = segs[0]
 
     with patch(
-        "lumina_core.jobs.queue.SUMMARY_SEGMENT_TIMEOUT_SECONDS",
+        "lumina_core.config.SUMMARY_SEGMENT_TIMEOUT_SECONDS",
         0.15,
     ):
         await q.enqueue_summarize(book_id, seg["id"], seg["idx"], high=True)

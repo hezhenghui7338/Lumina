@@ -5,6 +5,7 @@ from lumina_core.summarize.schema import (
     BulletPoint,
     SegmentSummary,
     parse_segment_summary,
+    parse_segment_summary_minimal,
     validate_summary_richness,
 )
 
@@ -103,6 +104,40 @@ def test_legacy_string_bullets_still_parse():
         "anchor": "段 1",
     }))
     assert len(summary.bullets) == 3
+
+
+def test_parse_summary_with_prose_wrapped_json():
+    raw = """说明文字在前。
+{
+  "sentences": ["一句概述。"],
+  "bullets": [
+    {"label": "要点一", "body": "第一条要点的充实说明，包含足够细节内容。"},
+    {"label": "要点二", "body": "第二条要点的充实说明，包含足够细节内容。"},
+    {"label": "要点三", "body": "第三条要点的充实说明，包含足够细节内容。"}
+  ]
+}
+后面还有说明。"""
+    summary = parse_segment_summary_minimal(raw, fallback_anchor="§段 1")
+    assert summary.anchor == "§段 1"
+    assert summary.notes == []
+    assert summary.follow_ups == []
+
+
+def test_parse_segment_summary_minimal_fills_label_and_anchor():
+    raw = {
+        "sentences": ["本段交代主角寒门出身与赴考之志。"],
+        "bullets": [
+            {"label": "寒门出身", "body": "主角生于贫苦农家。"},
+            {"label": "赴考之志", "body": "段末誓要金榜题名。"},
+            {"label": "邻里关系", "body": "邻里敬其向学。"},
+        ],
+    }
+    summary = parse_segment_summary_minimal(raw, fallback_anchor="§第一章 · 段 1")
+    assert summary.anchor == "§第一章 · 段 1"
+    assert summary.label.startswith("本段")
+    assert len(summary.label) <= 20
+    assert summary.notes == []
+    assert summary.follow_ups == []
 
 
 @pytest.mark.asyncio

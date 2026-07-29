@@ -12,14 +12,7 @@ from lumina_core.ollama_setup import check_ollama_status, is_local_base_url
 from lumina_core.ollama_setup import recommended_tiers as ollama_recommended_tiers
 
 
-def _cursor_sdk_available() -> bool:
-    try:
-        import cursor_sdk  # noqa: F401
-    except ImportError:
-        return False
-    return True
-
-_CLOUD_PROVIDERS = frozenset({"openai", "openrouter", "aiping", "custom"})
+_CLOUD_PROVIDERS = frozenset({"openai", "openrouter", "cursor", "aiping", "custom"})
 _KEY_REQUIRED_PROVIDERS = frozenset({"openai", "openrouter", "cursor", "aiping", "custom"})
 
 
@@ -60,26 +53,6 @@ async def probe_resource(resource: ModelResource) -> ResourceProbeResult:
 
     if provider == "ollama":
         return await _probe_ollama(resource)
-    if provider == "cursor":
-        sdk_ok = _cursor_sdk_available()
-        ready = key_ok and model_ok and sdk_ok
-        message = ""
-        if not key_ok:
-            message = "Cursor API Key 未配置"
-        elif not model_ok:
-            message = "未设置模型"
-        elif not sdk_ok:
-            message = "cursor-sdk 未安装（Release 版不支持 Cursor provider）"
-        return ResourceProbeResult(
-            resource_id=resource.id,
-            provider=provider,
-            ready=ready,
-            probe_ok=ready,
-            key_configured=key_ok,
-            model_ready=model_ok,
-            message=message,
-            base_url=resource.base_url or "",
-        )
     if provider in _CLOUD_PROVIDERS:
         return await _probe_openai_compatible(resource, key_ok=key_ok, model_ok=model_ok)
 

@@ -15,6 +15,8 @@ struct LibraryView: View {
     @State private var showExport = false
     @State private var exportIncludeNotes = false
     @State private var exportSuccessURL: URL?
+    @State private var pendingExport: PendingBookExport?
+    @State private var showExportCancelled = false
 
     var onImport: () -> Void
     var onSearch: () -> Void
@@ -153,6 +155,9 @@ struct LibraryView: View {
                 Text("已保存至\n\(url.path)")
             }
         }
+        .alert("已取消保存", isPresented: $showExportCancelled) {
+            Button("好", role: .cancel) {}
+        }
         .sheet(isPresented: $showExport) {
             if let book = bookPendingExport {
                 ExportSheet(
@@ -160,19 +165,47 @@ struct LibraryView: View {
                     includeNotes: $exportIncludeNotes,
                     summaryReadyCount: book.summaryReady,
                     summaryTotalCount: book.summaryTotal,
-                    onExport: {
-                        try await BookMarkdownExporter.export(
+                    onFetchMarkdown: {
+                        try await BookMarkdownExporter.fetchMarkdown(
                             core: core,
                             bookId: book.id,
-                            bookTitle: book.title,
                             summaryReadyCount: book.summaryReady,
                             includeNotes: exportIncludeNotes
                         )
                     },
-                    onSaved: { exportSuccessURL = $0 },
+                    onMarkdownReady: { markdown in
+                        pendingExport = PendingBookExport(
+                            markdown: markdown,
+                            bookTitle: book.title
+                        )
+                    },
                     onError: { actionError = $0 }
                 )
             }
+        }
+        .onChange(of: showExport) { _, isShowing in
+            guard !isShowing else { return }
+            guard let pending = pendingExport else { return }
+            pendingExport = nil
+            Task { await finishExportSave(pending) }
+        }
+    }
+
+    @MainActor
+    private func finishExportSave(_ pending: PendingBookExport) async {
+        try? await Task.sleep(nanoseconds: 150_000_000)
+        do {
+            switch try await BookMarkdownExporter.presentSavePanel(
+                markdown: pending.markdown,
+                bookTitle: pending.bookTitle
+            ) {
+            case .saved(let url):
+                exportSuccessURL = url
+            case .cancelled:
+                showExportCancelled = true
+            }
+        } catch {
+            actionError = error.localizedDescription
         }
     }
 
