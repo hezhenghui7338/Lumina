@@ -194,6 +194,18 @@ struct SegmentRow: Codable, Identifiable, Hashable {
     var summary_llm_attempts: Int?
 }
 
+struct SegmentSummaryDetail: Codable {
+    let idx: Int
+    var summary_json: String?
+    var label: String?
+    var anchor_label: String?
+    var summary_status: String?
+    var summary_provider: String?
+    var summary_model: String?
+    var summary_duration_s: Double?
+    var summary_llm_attempts: Int?
+}
+
 struct ChatCitation: Codable {
     let segment_index: Int
     let label: String
@@ -560,6 +572,11 @@ final class CoreClient: ObservableObject {
     func getSegment(bookId: String, idx: Int) async throws -> SegmentRow {
         let data = try await get(path: "/books/\(bookId)/segments/\(idx)")
         return try await Self.decode(SegmentRow.self, from: data)
+    }
+
+    func fetchSegmentSummary(bookId: String, idx: Int) async throws -> SegmentSummaryDetail {
+        let data = try await get(path: "/books/\(bookId)/segments/\(idx)/summary")
+        return try await Self.decode(SegmentSummaryDetail.self, from: data)
     }
 
     func startSummarizeAll() async throws {

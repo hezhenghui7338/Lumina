@@ -61,4 +61,17 @@ final class SegmentReadyEventTests: XCTestCase {
         let event: [String: Any] = ["idx": NSNumber(value: 4)]
         XCTAssertEqual(SegmentReadyEventParser.eventIndex(from: event), 4)
     }
+
+    func testParseBatch_offMainThread() {
+        let json = sampleSummaryJSON
+        let parsed = ParsedSummary.parseBatch([(0, json), (1, json)])
+        XCTAssertEqual(parsed.count, 2)
+        XCTAssertNotNil(parsed[0])
+        XCTAssertEqual(parsed[0]?.bullets.count, 3)
+    }
+
+    func testBulletPreviewLine() {
+        let parsed = ParsedSummary(json: sampleSummaryJSON)
+        XCTAssertEqual(parsed?.bulletPreviewLine, "寒门出身：主角生于贫苦农家，父亲早逝，母亲靠纺织维生；邻里虽敬其向学，却无力资助书卷。")
+    }
 }

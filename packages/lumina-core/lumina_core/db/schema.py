@@ -5,6 +5,8 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
+from lumina_core.db.connection import attach_db_lock
+
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS books (
   id            TEXT PRIMARY KEY,
@@ -249,4 +251,5 @@ def init_db(db_path: Path) -> sqlite3.Connection:
     _migrate_segments(conn)
     _migrate_notes_require_segment(conn)
     conn.commit()
+    attach_db_lock(conn)
     return conn

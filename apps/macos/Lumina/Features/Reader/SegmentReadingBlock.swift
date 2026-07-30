@@ -9,7 +9,7 @@ private struct SegmentPanelContentHeightKey: PreferenceKey {
 }
 
 /// Single segment in the continuous reading feed: summary, placeholder, and optional source text.
-struct SegmentReadingBlock: View {
+struct SegmentReadingBlock: View, Equatable {
     let contentMode: ReaderContentMode
     let segment: SegmentRow
     let segmentTotal: Int
@@ -21,6 +21,8 @@ struct SegmentReadingBlock: View {
     let isSourceLoading: Bool
     let isSourceRefreshing: Bool
     let needsTranslation: Bool
+    var parsedSummary: ParsedSummary?
+    var isSummaryLoading: Bool = false
     var summaryProgressMessage: String?
     var runningMetrics: SegmentRunningMetrics?
     var onToggleSource: () -> Void
@@ -28,6 +30,7 @@ struct SegmentReadingBlock: View {
     var onFollowUp: (String) -> Void
     var onRetrySummary: () -> Void
     var onSourceAppear: (() -> Void)?
+    var onSummaryAppear: (() -> Void)?
 
     @State private var lockedViewportHeight: CGFloat?
     @State private var measuredContentHeight: CGFloat = LuminaTheme.segmentContentMinHeight
@@ -53,6 +56,8 @@ struct SegmentReadingBlock: View {
         .onAppear {
             if contentMode == .original {
                 onSourceAppear?()
+            } else {
+                onSummaryAppear?()
             }
         }
 
@@ -201,9 +206,27 @@ struct SegmentReadingBlock: View {
 
     @ViewBuilder
     private func summaryContent(showsBackground: Bool) -> some View {
-        if let summary = segment.summary_json, !summary.isEmpty {
+        if let parsedSummary {
             SummaryBlock(
-                json: summary,
+                parsedSummary: parsedSummary,
+                rawJSON: segment.summary_json,
+                provider: segment.summary_provider,
+                model: segment.summary_model,
+                charCount: effectiveCharCount,
+                segmentIndex: segment.idx,
+                segmentTotal: segmentTotal,
+                fallbackAnchor: segment.anchor_label,
+                summaryDurationS: segment.summary_duration_s,
+                summaryLlmAttempts: segment.summary_llm_attempts,
+                onFollowUp: onFollowUp,
+                showsBackground: showsBackground
+            )
+        } else if isSummaryLoading {
+            summaryLoadingSkeleton
+        } else if let summary = segment.summary_json, !summary.isEmpty {
+            SummaryBlock(
+                parsedSummary: nil,
+                rawJSON: summary,
                 provider: segment.summary_provider,
                 model: segment.summary_model,
                 charCount: effectiveCharCount,
@@ -218,6 +241,17 @@ struct SegmentReadingBlock: View {
         } else {
             summaryPlaceholder
         }
+    }
+
+    private var summaryLoadingMinHeight: CGFloat {
+        guard let count = effectiveCharCount, count > 0 else { return 200 }
+        return min(max(CGFloat(count) / 6, 200), 600)
+    }
+
+    private var summaryLoadingSkeleton: some View {
+        SourceTextSkeleton(lineCount: 5)
+            .frame(minHeight: summaryLoadingMinHeight, alignment: .top)
+            .accessibilityLabel("摘要加载中")
     }
 
     @ViewBuilder
@@ -391,5 +425,23 @@ struct SegmentReadingBlock: View {
         let formatter = NumberFormatter()
         formatter.numberStyle = .decimal
         return formatter.string(from: NSNumber(value: count)) ?? "\(count)"
+    }
+
+    static func == (lhs: SegmentReadingBlock, rhs: SegmentReadingBlock) -> Bool {
+        lhs.contentMode == rhs.contentMode
+            && lhs.segment == rhs.segment
+            && lhs.segmentTotal == rhs.segmentTotal
+            && lhs.isLast == rhs.isLast
+            && lhs.isHighlighted == rhs.isHighlighted
+            && lhs.isSourceExpanded == rhs.isSourceExpanded
+            && lhs.isSummaryExpanded == rhs.isSummaryExpanded
+            && lhs.sourceBody == rhs.sourceBody
+            && lhs.isSourceLoading == rhs.isSourceLoading
+            && lhs.isSourceRefreshing == rhs.isSourceRefreshing
+            && lhs.needsTranslation == rhs.needsTranslation
+            && lhs.parsedSummary == rhs.parsedSummary
+            && lhs.isSummaryLoading == rhs.isSummaryLoading
+            && lhs.summaryProgressMessage == rhs.summaryProgressMessage
+            && lhs.runningMetrics == rhs.runningMetrics
     }
 }

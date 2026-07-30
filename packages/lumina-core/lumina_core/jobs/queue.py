@@ -15,6 +15,7 @@ from lumina_core.config import (
     SUMMARY_JOB_MAX_RETRIES,
     SUMMARY_SEGMENT_TIMEOUT_SECONDS,
 )
+from lumina_core.db.connection import db_transaction
 from lumina_core.db.repos import BookRepo, SegmentRepo
 from lumina_core.models.router import ProfileModelRouter
 from lumina_core.ops.task_registry import TaskRegistry
@@ -306,9 +307,9 @@ class JobQueue:
             return False
         text_sample: str | None = None
         if not book.get("language"):
-            segments = self._segments_repo.list_for_book(book_id, include_body=True)
-            if segments:
-                text_sample = (segments[0].get("raw_text") or "")[:2000]
+            first = self._segments_repo.get_by_index(book_id, 0)
+            if first:
+                text_sample = (first.get("raw_text") or "")[:2000]
         return book_needs_translation(
             book_language=book.get("language"),
             book_target_language=book.get("target_language"),
@@ -342,7 +343,7 @@ class JobQueue:
         if self.is_user_paused(book_id):
             return
         await self._recover_stale_running(book_id)
-        segments = self._segments_repo.list_for_book(book_id)
+        segments = self._segments_repo.list_for_book(book_id, include_body=False)
         for seg in segments:
             if seg["summary_status"] in ("pending", "failed", "error"):
                 await self.enqueue_summarize(
@@ -359,7 +360,7 @@ class JobQueue:
     async def enqueue_book_regenerate(self, book_id: str) -> int:
         """Force re-summarize every segment (including ready)."""
         self.unpause_book(book_id)
-        segments = self._segments_repo.list_for_book(book_id)
+        segments = self._segments_repo.list_for_book(book_id, include_body=False)
         for seg in segments:
             self._segments_repo.set_status(seg["id"], "pending", retry_count=0)
             await self.enqueue_summarize(
@@ -458,7 +459,7 @@ class JobQueue:
             self.ensure_workers()
 
     async def _reset_running_segments(self, book_id: str) -> None:
-        for seg in self._segments_repo.list_for_book(book_id):
+        for seg in self._segments_repo.list_for_book(book_id, include_body=False):
             if seg["summary_status"] == "running":
                 self._segments_repo.set_status(seg["id"], "pending")
                 await self._emit_segment_event(
@@ -472,7 +473,7 @@ class JobQueue:
 
     async def _reset_segments_for_user_resume(self, book_id: str) -> None:
         """Reset failed/error segments so start_summarize gets a fresh retry budget."""
-        for seg in self._segments_repo.list_for_book(book_id):
+        for seg in self._segments_repo.list_for_book(book_id, include_body=False):
             if seg["summary_status"] not in ("failed", "error"):
                 continue
             self._segments_repo.set_status(seg["id"], "pending", retry_count=0)
@@ -487,7 +488,7 @@ class JobQueue:
 
     async def _recover_stale_running(self, book_id: str) -> None:
         """Reset running segments with no active worker (crash/restart orphans)."""
-        for seg in self._segments_repo.list_for_book(book_id):
+        for seg in self._segments_repo.list_for_book(book_id, include_body=False):
             if seg["summary_status"] != "running":
                 continue
             key = f"{book_id}:{seg['id']}:{JobKind.SUMMARIZE.value}"
@@ -766,11 +767,11 @@ class JobQueue:
             )
             if self._was_cancelled(item):
                 return
-            self.conn.execute(
-                "UPDATE segments SET translation = ? WHERE id = ?",
-                (translation, seg["id"]),
-            )
-            self.conn.commit()
+            with db_transaction(self.conn):
+                self.conn.execute(
+                    "UPDATE segments SET translation = ? WHERE id = ?",
+                    (translation, seg["id"]),
+                )
             await self.emit(
                 item.book_id,
                 {

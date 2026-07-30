@@ -50,9 +50,57 @@ def test_list_segments_excludes_raw_text(client):
     assert segs
     assert "raw_text" not in segs[0]
     assert "translation" not in segs[0]
+    assert "summary_json" not in segs[0]
 
     detail = client.get(f"/books/{book_id}/segments/0").json()
     assert detail.get("raw_text")
+
+
+def test_get_segment_summary(tmp_path, client):
+    conn = init_db(tmp_path / "t3.db")
+    conn.execute(
+        "INSERT INTO books (id, title, format, file_path, created_at, updated_at) "
+        "VALUES ('b3', 't', 'txt', '/x', 'now', 'now')"
+    )
+    SegmentRepo(conn).insert_many(
+        [
+            {
+                "id": "s3",
+                "book_id": "b3",
+                "idx": 0,
+                "chapter": None,
+                "page_range": None,
+                "anchor_label": "a",
+                "raw_text": "hello",
+                "summary_status": "ready",
+                "retry_count": 0,
+            }
+        ]
+    )
+    repo = SegmentRepo(conn)
+    repo.update_summary(
+        "s3",
+        summary_json='{"sentences":["x"],"bullets":[],"label":"a","anchor":"b"}',
+        label="a",
+        status="ready",
+    )
+    summary = repo.get_summary_by_index("b3", 0)
+    assert summary is not None
+    assert summary["summary_json"]
+    assert "raw_text" not in summary
+    conn.close()
+
+    book_id = import_sample_book(client)
+    import time
+
+    for _ in range(50):
+        api_summary = client.get(f"/books/{book_id}/segments/0/summary").json()
+        if api_summary.get("summary_json"):
+            break
+        time.sleep(0.05)
+    assert api_summary.get("summary_json")
+    assert "raw_text" not in api_summary
+    assert api_summary["idx"] == 0
 
 
 def test_list_for_book_include_body_flag(tmp_path):
@@ -80,6 +128,7 @@ def test_list_for_book_include_body_flag(tmp_path):
     full = SegmentRepo(conn).list_for_book("b1", include_body=True)
     assert "raw_text" not in meta[0]
     assert "translation" not in meta[0]
+    assert "summary_json" not in meta[0]
     assert "summary_provider" in meta[0]
     assert "summary_model" in meta[0]
     assert full[0]["raw_text"].startswith("hello")

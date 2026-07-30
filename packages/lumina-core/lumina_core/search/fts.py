@@ -5,45 +5,47 @@ from __future__ import annotations
 import sqlite3
 from typing import Any
 
+from lumina_core.db.connection import db_transaction
+
 
 def delete_book_from_fts(conn: sqlite3.Connection, book_id: str) -> None:
-    conn.execute("DELETE FROM search_fts WHERE book_id = ?", (book_id,))
-    conn.commit()
+    with db_transaction(conn):
+        conn.execute("DELETE FROM search_fts WHERE book_id = ?", (book_id,))
 
 
 def index_book(conn: sqlite3.Connection, book: dict[str, Any]) -> None:
-    conn.execute("DELETE FROM search_fts WHERE book_id = ? AND kind = 'book'", (book["id"],))
-    conn.execute(
-        """
-        INSERT INTO search_fts (book_id, segment_id, note_id, kind, title, body)
-        VALUES (?, NULL, NULL, 'book', ?, ?)
-        """,
-        (book["id"], book.get("title") or "", book.get("author") or ""),
-    )
-    conn.commit()
+    with db_transaction(conn):
+        conn.execute("DELETE FROM search_fts WHERE book_id = ? AND kind = 'book'", (book["id"],))
+        conn.execute(
+            """
+            INSERT INTO search_fts (book_id, segment_id, note_id, kind, title, body)
+            VALUES (?, NULL, NULL, 'book', ?, ?)
+            """,
+            (book["id"], book.get("title") or "", book.get("author") or ""),
+        )
 
 
 def index_segment(conn: sqlite3.Connection, book: dict[str, Any], seg: dict[str, Any]) -> None:
-    conn.execute("DELETE FROM search_fts WHERE segment_id = ?", (seg["id"],))
     body_parts = [
         seg.get("label") or "",
         seg.get("summary_json") or "",
         (seg.get("raw_text") or "")[:4000],
         seg.get("translation") or "",
     ]
-    conn.execute(
-        """
-        INSERT INTO search_fts (book_id, segment_id, note_id, kind, title, body)
-        VALUES (?, ?, NULL, 'segment', ?, ?)
-        """,
-        (
-            seg["book_id"],
-            seg["id"],
-            f"{book.get('title', '')} · 段 {seg['idx'] + 1}",
-            "\n".join(body_parts),
-        ),
-    )
-    conn.commit()
+    with db_transaction(conn):
+        conn.execute("DELETE FROM search_fts WHERE segment_id = ?", (seg["id"],))
+        conn.execute(
+            """
+            INSERT INTO search_fts (book_id, segment_id, note_id, kind, title, body)
+            VALUES (?, ?, NULL, 'segment', ?, ?)
+            """,
+            (
+                seg["book_id"],
+                seg["id"],
+                f"{book.get('title', '')} · 段 {seg['idx'] + 1}",
+                "\n".join(body_parts),
+            ),
+        )
 
 
 def delete_note_from_fts(conn: sqlite3.Connection, note_id: str) -> None:
@@ -51,21 +53,21 @@ def delete_note_from_fts(conn: sqlite3.Connection, note_id: str) -> None:
 
 
 def index_note(conn: sqlite3.Connection, book: dict[str, Any], note: dict[str, Any]) -> None:
-    delete_note_from_fts(conn, note["id"])
-    conn.execute(
-        """
-        INSERT INTO search_fts (book_id, segment_id, note_id, kind, title, body)
-        VALUES (?, ?, ?, 'note', ?, ?)
-        """,
-        (
-            note["book_id"],
-            note.get("segment_id"),
-            note["id"],
-            f"笔记 · {book.get('title', '')}",
-            f"{note.get('quote') or ''}\n{note.get('content') or ''}",
-        ),
-    )
-    conn.commit()
+    with db_transaction(conn):
+        delete_note_from_fts(conn, note["id"])
+        conn.execute(
+            """
+            INSERT INTO search_fts (book_id, segment_id, note_id, kind, title, body)
+            VALUES (?, ?, ?, 'note', ?, ?)
+            """,
+            (
+                note["book_id"],
+                note.get("segment_id"),
+                note["id"],
+                f"笔记 · {book.get('title', '')}",
+                f"{note.get('quote') or ''}\n{note.get('content') or ''}",
+            ),
+        )
 
 
 def search(conn: sqlite3.Connection, query: str, *, limit: int = 30) -> list[dict[str, Any]]:
