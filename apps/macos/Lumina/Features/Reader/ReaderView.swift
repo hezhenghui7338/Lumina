@@ -60,6 +60,9 @@ struct ReaderView: View {
     @State private var readerSize: CGSize = .zero
     @State private var pendingEdge: ReaderEdgeTarget? = nil
     @State private var dwellTask: Task<Void, Never>? = nil
+    @State private var userScrollingFeed = false
+    @State private var scrollSelectionDebounceTask: Task<Void, Never>?
+    @State private var prefetchDebounceTask: Task<Void, Never>?
     @State private var chromeMode: ReaderChromeMode = .hidden
     @FocusState private var chatFocused: Bool
     @FocusState private var readerContentFocused: Bool
@@ -361,24 +364,46 @@ struct ReaderView: View {
             guard let idx else { return }
             viewModel.selectSegment(idx)
             viewModel.scheduleProgressSave(idx, core: core)
-            guard !suppressScrollSync else { return }
-            syncScrollToSelectedSegment(idx)
+            if contentMode == .summary {
+                viewModel.prefetchSummaries(around: idx, core: core)
+            }
+            guard !suppressScrollSync, !userScrollingFeed else { return }
+            Task { @MainActor in
+                await Task.yield()
+                syncScrollToSelectedSegment(idx)
+            }
         }
         .onChange(of: scrollPosition) { _, idx in
             guard !suppressScrollSync, let idx else { return }
-            if viewModel.selectedIdx != idx {
-                viewModel.selectedIdx = idx
+            userScrollingFeed = true
+            scrollSelectionDebounceTask?.cancel()
+            scrollSelectionDebounceTask = Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 120_000_000)
+                guard !Task.isCancelled else { return }
+                userScrollingFeed = false
+                if viewModel.selectedIdx != idx {
+                    viewModel.selectedIdx = idx
+                }
             }
-            if contentMode == .original {
-                viewModel.prefetchSources(around: idx, core: core, radius: 3)
+            prefetchDebounceTask?.cancel()
+            prefetchDebounceTask = Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 150_000_000)
+                guard !Task.isCancelled else { return }
+                if contentMode == .original {
+                    viewModel.prefetchSources(around: idx, core: core, radius: 3)
+                } else {
+                    viewModel.prefetchSummaries(around: idx, core: core)
+                }
             }
         }
         .onChange(of: contentMode) { _, mode in
             ReaderPreferences.setContentMode(mode, for: bookId)
             viewModel.setContentMode(mode)
+            let idx = scrollPosition ?? viewModel.selectedIdx ?? viewModel.segments.first?.idx ?? 0
             if mode == .original {
-                let idx = scrollPosition ?? viewModel.selectedIdx ?? viewModel.segments.first?.idx ?? 0
                 viewModel.prefetchSources(around: idx, core: core, radius: 5)
+            } else {
+                viewModel.prefetchSummaries(around: idx, core: core)
             }
         }
         .task(id: bookId) {
@@ -395,11 +420,17 @@ struct ReaderView: View {
             await viewModel.load(bookId: bookId, core: core, initialSegmentIndex: initialSegmentIndex)
             scrollPosition = viewModel.selectedIdx
             readerContentFocused = true
-            if contentMode == .original, let idx = viewModel.selectedIdx {
-                viewModel.prefetchSources(around: idx, core: core, radius: 5)
+            if let idx = viewModel.selectedIdx {
+                if contentMode == .original {
+                    viewModel.prefetchSources(around: idx, core: core, radius: 5)
+                } else {
+                    viewModel.prefetchSummaries(around: idx, core: core)
+                }
             }
         }
         .onDisappear {
+            scrollSelectionDebounceTask?.cancel()
+            prefetchDebounceTask?.cancel()
             viewModel.flushProgressSave(core: core)
             viewModel.cancelAllTasks()
         }
@@ -464,8 +495,9 @@ struct ReaderView: View {
                         .frame(maxWidth: .infinity)
                         .padding(LuminaTheme.summaryPadding)
                 } else {
-                    ForEach(Array(viewModel.segments.enumerated()), id: \.element.id) { index, seg in
-                        segmentBlock(for: seg, at: index)
+                    ForEach(viewModel.segments) { seg in
+                        segmentBlock(for: seg)
+                            .id(seg.idx)
                     }
                 }
             }
@@ -547,26 +579,24 @@ struct ReaderView: View {
         }
     }
 
-    private func toggleContentMode() {
-        contentMode = contentMode == .summary ? .original : .summary
-    }
-
     @ViewBuilder
-    private func segmentBlock(for seg: SegmentRow, at index: Int) -> some View {
-        let cachedSource = viewModel.cachedSource(for: seg.idx)
+    private func segmentBlock(for seg: SegmentRow) -> some View {
+        let sourceBody = viewModel.source(for: seg.idx)
         let idx = seg.idx
         SegmentReadingBlock(
             contentMode: contentMode,
             segment: seg,
             segmentTotal: viewModel.segments.count,
-            isLast: index == viewModel.segments.count - 1,
+            isLast: viewModel.arrayIndex(forSegmentIdx: idx).map { $0 == viewModel.segments.count - 1 } ?? false,
             isHighlighted: highlightSegment == idx,
             isSourceExpanded: contentMode == .original || expandedSourceSegments.contains(idx),
             isSummaryExpanded: expandedSummarySegments.contains(idx),
-            sourceBody: cachedSource,
+            sourceBody: sourceBody,
             isSourceLoading: viewModel.isSourceLoading(idx: idx),
             isSourceRefreshing: viewModel.isSourceRefreshing(idx: idx),
-            needsTranslation: viewModel.needsTranslation(for: cachedSource?.rawText),
+            needsTranslation: viewModel.needsTranslation(for: sourceBody?.rawText),
+            parsedSummary: viewModel.parsedSummary(for: idx),
+            isSummaryLoading: viewModel.isSummaryLoading(idx: idx),
             summaryProgressMessage: viewModel.segmentProgressMessage(for: idx),
             runningMetrics: viewModel.segmentRunningMetrics[idx],
             onToggleSource: { toggleSource(for: idx) },
@@ -583,9 +613,12 @@ struct ReaderView: View {
             },
             onSourceAppear: contentMode == .original
                 ? { viewModel.fetchSource(idx: idx, core: core) }
+                : nil,
+            onSummaryAppear: contentMode == .summary
+                ? { viewModel.ensureSummaryLoaded(idx: idx, core: core) }
                 : nil
         )
-        .id(idx)
+        .equatable()
     }
 
     private func syncScrollToSelectedSegment(_ idx: Int, force: Bool = false) {
@@ -594,7 +627,17 @@ struct ReaderView: View {
         if force, scrollPosition == idx {
             scrollPosition = nil
         }
-        withAnimation(.easeInOut(duration: segmentSwitchDuration)) {
+        let delta = SegmentRenderWindow.segmentIndexDelta(
+            from: scrollPosition ?? viewModel.selectedIdx,
+            to: idx,
+            in: viewModel.segments
+        )
+        let animate = delta <= SegmentRenderWindow.scrollAnimateThreshold
+        if animate {
+            withAnimation(.easeInOut(duration: segmentSwitchDuration)) {
+                scrollPosition = idx
+            }
+        } else {
             scrollPosition = idx
         }
         Task {
@@ -606,13 +649,16 @@ struct ReaderView: View {
     private func navigateSegment(delta: Int) {
         guard overlay == .none, !chatFocused else { return }
         let current = viewModel.selectedIdx ?? scrollPosition
-        guard let current else { return }
-        let sorted = viewModel.segments.map(\.idx).sorted()
-        guard let pos = sorted.firstIndex(of: current) else { return }
+        guard let current,
+              let pos = viewModel.arrayIndex(forSegmentIdx: current) else { return }
         let newPos = pos + delta
-        guard newPos >= 0, newPos < sorted.count else { return }
-        viewModel.selectedIdx = sorted[newPos]
+        guard newPos >= 0, newPos < viewModel.segments.count else { return }
+        viewModel.selectedIdx = viewModel.segments[newPos].idx
         readerContentFocused = true
+    }
+
+    private func toggleContentMode() {
+        contentMode = contentMode == .summary ? .original : .summary
     }
 
     private func navigateToSegment(_ idx: Int) {
@@ -841,92 +887,28 @@ struct ReaderView: View {
     }
 
     private var segmentSidebar: some View {
-        ScrollViewReader { proxy in
-            List(viewModel.segments) { seg in
-                segmentSidebarRow(seg)
-            }
-            .listStyle(.sidebar)
-            .onChange(of: viewModel.selectedIdx) { _, idx in
-                guard let idx else { return }
-                withAnimation(.easeInOut(duration: segmentSwitchDuration)) {
-                    proxy.scrollTo(idx, anchor: .center)
+        SegmentSidebarView(
+            items: viewModel.sidebarItems,
+            selectedIdx: viewModel.selectedIdx,
+            isSelectionMode: viewModel.isSegmentSelectionMode,
+            checkedIndices: viewModel.checkedSegmentIndices,
+            runningMetrics: viewModel.segmentRunningMetrics,
+            segmentSwitchDuration: segmentSwitchDuration,
+            onSelect: { selectSidebarSegment($0) },
+            onToggleCheck: { viewModel.toggleCheck($0) },
+            onRetrySegment: { idx in
+                Task {
+                    do { try await viewModel.retrySegment(idx, core: core) }
+                    catch { actionError = error.localizedDescription }
+                }
+            },
+            onRetryChecked: {
+                Task {
+                    do { try await viewModel.retryCheckedSegments(core: core) }
+                    catch { actionError = error.localizedDescription }
                 }
             }
-            .onAppear {
-                if let idx = viewModel.selectedIdx {
-                    proxy.scrollTo(idx, anchor: .center)
-                }
-            }
-        }
-    }
-
-    @ViewBuilder
-    private func segmentSidebarRow(_ seg: SegmentRow) -> some View {
-        let rowContent = HStack(alignment: .top, spacing: 6) {
-            if viewModel.isSegmentSelectionMode {
-                Toggle(
-                    isOn: Binding(
-                        get: { viewModel.checkedSegmentIndices.contains(seg.idx) },
-                        set: { on in
-                            if on {
-                                viewModel.checkedSegmentIndices.insert(seg.idx)
-                            } else {
-                                viewModel.checkedSegmentIndices.remove(seg.idx)
-                            }
-                        }
-                    )
-                ) {
-                    EmptyView()
-                }
-                .toggleStyle(.checkbox)
-                .labelsHidden()
-            }
-
-            statusIcon(for: seg)
-            SegmentSidebarRow(
-                segment: seg,
-                runningMetrics: viewModel.segmentRunningMetrics[seg.idx]
-            )
-        }
-        .contentShape(Rectangle())
-
-        Group {
-            if viewModel.isSegmentSelectionMode {
-                rowContent
-                    .onTapGesture { viewModel.toggleCheck(seg.idx) }
-            } else {
-                Button {
-                    selectSidebarSegment(seg.idx)
-                } label: {
-                    rowContent
-                }
-                .buttonStyle(.plain)
-            }
-        }
-        .tag(seg.idx)
-        .listRowBackground(
-            viewModel.selectedIdx == seg.idx
-                ? LuminaTheme.accentMuted.opacity(0.45)
-                : Color.clear
         )
-        .contextMenu {
-            if viewModel.checkedSegmentIndices.contains(seg.idx),
-               viewModel.checkedSegmentIndices.count > 1 {
-                Button("重新摘要选中 (\(viewModel.checkedSegmentIndices.count))") {
-                    Task {
-                        do { try await viewModel.retryCheckedSegments(core: core) }
-                        catch { actionError = error.localizedDescription }
-                    }
-                }
-            } else {
-                Button("重新摘要") {
-                    Task {
-                        do { try await viewModel.retrySegment(seg.idx, core: core) }
-                        catch { actionError = error.localizedDescription }
-                    }
-                }
-            }
-        }
     }
 
     private var chatPanel: some View {
@@ -1167,121 +1149,6 @@ struct ReaderView: View {
             noteError = error.localizedDescription
         }
     }
-
-    @ViewBuilder
-    private func statusIcon(for seg: SegmentRow) -> some View {
-        if seg.idx == viewModel.selectedIdx {
-            Image(systemName: "largecircle.fill.circle")
-                .foregroundStyle(LuminaTheme.accent)
-        } else {
-            switch seg.summary_status {
-            case "ready":
-                Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
-            case "running":
-                Image(systemName: "circle.lefthalf.filled").foregroundStyle(LuminaTheme.accent)
-            case "failed", "error":
-                Image(systemName: "exclamationmark.circle").foregroundStyle(.red)
-            default:
-                Image(systemName: "circle").foregroundStyle(.secondary)
-            }
-        }
-    }
-}
-
-struct SegmentSidebarRow: View {
-    let segment: SegmentRow
-    var runningMetrics: SegmentRunningMetrics?
-
-    private var chapterTitle: String {
-        if let ch = segment.chapter, !ch.isEmpty { return ch }
-        return "段 \(segment.idx + 1)"
-    }
-
-    private var outlineLabel: String? {
-        if let label = segment.label, !label.isEmpty { return label }
-        switch segment.summary_status {
-        case "running", "pending":
-            return statusCaption(at: Date())
-        case "failed", "error":
-            return SummaryMetricsFormatter.failureLabel(
-                durationS: segment.summary_duration_s,
-                retryCount: segment.retry_count
-            )
-        default:
-            return nil
-        }
-    }
-
-    private func statusCaption(at now: Date) -> String {
-        if let runningMetrics {
-            return SummaryMetricsFormatter.inProgressLabel(
-                startedAt: runningMetrics.startedAt,
-                llmAttempt: runningMetrics.llmAttempt,
-                maxLlmAttempts: runningMetrics.maxLlmAttempts,
-                now: now
-            )
-        }
-        return "摘要生成中…"
-    }
-
-    private var bulletsPreview: String? {
-        let bullets = Self.parseBullets(segment.summary_json)
-        guard !bullets.isEmpty else { return nil }
-        return bullets.joined(separator: " · ")
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(chapterTitle)
-                .font(.subheadline)
-                .lineLimit(1)
-            if let outline = outlineLabel {
-                if segment.summary_status == "running" || segment.summary_status == "pending" {
-                    TimelineView(.periodic(from: .now, by: 1)) { context in
-                        Text(statusCaption(at: context.date))
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(2)
-                    }
-                } else {
-                    Text(outline)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(2)
-                }
-            }
-            if let preview = bulletsPreview {
-                Text(preview)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-            }
-        }
-    }
-
-    static func parseBullets(_ json: String?) -> [String] {
-        guard let json, let data = json.data(using: .utf8),
-              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let bullets = obj["bullets"] as? [Any]
-        else { return [] }
-        return bullets.compactMap { item in
-            if let text = item as? String, !text.isEmpty {
-                return text
-            }
-            if let dict = item as? [String: Any] {
-                let label = (dict["label"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
-                let body = (dict["body"] as? String ?? dict["content"] as? String)?
-                    .trimmingCharacters(in: .whitespacesAndNewlines)
-                if let body, !body.isEmpty {
-                    if let label, !label.isEmpty {
-                        return "\(label)：\(body)"
-                    }
-                    return body
-                }
-            }
-            return nil
-        }
-    }
 }
 
 /// Detects left-clicks on non-interactive reading areas to toggle chrome visibility.
@@ -1409,7 +1276,7 @@ extension Notification.Name {
     fileprivate static let luminaScrollContent = Notification.Name("luminaScrollContent")
 }
 
-struct SegmentSourceBody {
+struct SegmentSourceBody: Equatable {
     let idx: Int
     let rawText: String
     let translation: String
@@ -1485,6 +1352,12 @@ enum BookLanguageMatcher {
     }
 }
 
+private struct PendingSegmentUpdate {
+    var readyEvent: [String: Any]?
+    var status: String?
+    var statusEvent: [String: Any]?
+}
+
 @MainActor
 final class ReaderViewModel: ObservableObject {
     @Published var segments: [SegmentRow] = []
@@ -1503,6 +1376,9 @@ final class ReaderViewModel: ObservableObject {
     @Published private(set) var bookStatus = "unread"
     @Published var loadError: String?
     @Published var ingestProgress: IngestProgress?
+    @Published private(set) var parsedSummaryCache: [Int: ParsedSummary] = [:]
+    @Published private(set) var loadingSummaryIndices: Set<Int> = []
+    @Published private(set) var sidebarItems: [SidebarSegmentItem] = []
     private var bookLanguage: String?
     private var bookTargetLanguage: String?
     private var bookTitle: String?
@@ -1510,14 +1386,19 @@ final class ReaderViewModel: ObservableObject {
     private var bookId = ""
     private var eventTask: Task<Void, Never>?
     private var detailTasks: [Int: Task<Void, Never>] = [:]
+    private var summaryTasks: [Int: Task<Void, Never>] = [:]
     private var progressSaveTask: Task<Void, Never>?
+    private var segmentFlushTask: Task<Void, Never>?
+    private var pendingSegmentUpdates: [Int: PendingSegmentUpdate] = [:]
     private var pendingProgressIdx: Int?
     private var suppressProgressSave = false
     private var sourceCache: [Int: SegmentSourceBody] = [:]
     private var sourceCacheOrder: [Int] = []
+    private var segmentIdxToArrayIndex: [Int: Int] = [:]
     private var contentMode: ReaderContentMode = .summary
     private let summaryModeCacheLimit = 5
     private let originalModeCacheLimit = 12
+    private let summaryPrefetchRadius = 4
 
     private var effectiveCacheLimit: Int {
         contentMode == .original ? originalModeCacheLimit : summaryModeCacheLimit
@@ -1534,13 +1415,15 @@ final class ReaderViewModel: ObservableObject {
     }
 
     func prefetchSources(around idx: Int, core: CoreClient, radius: Int) {
-        let sorted = segments.map(\.idx).sorted()
-        guard let pos = sorted.firstIndex(of: idx) else { return }
+        guard let pos = arrayIndex(forSegmentIdx: idx) else { return }
         let start = max(0, pos - radius)
-        let end = min(sorted.count - 1, pos + radius)
+        let end = min(segments.count - 1, pos + radius)
         for i in start...end {
-            let segmentIdx = sorted[i]
-            if sourceCache[segmentIdx] != nil { continue }
+            let segmentIdx = segments[i].idx
+            if sourceCache[segmentIdx] != nil {
+                touchSourceCache(segmentIdx)
+                continue
+            }
             if loadingSourceIndices.contains(segmentIdx) { continue }
             fetchSource(idx: segmentIdx, core: core)
         }
@@ -1558,21 +1441,32 @@ final class ReaderViewModel: ObservableObject {
     func cancelAllTasks() {
         eventTask?.cancel()
         eventTask = nil
+        segmentFlushTask?.cancel()
+        segmentFlushTask = nil
+        pendingSegmentUpdates.removeAll()
         for task in detailTasks.values {
             task.cancel()
         }
         detailTasks.removeAll()
+        for task in summaryTasks.values {
+            task.cancel()
+        }
+        summaryTasks.removeAll()
         progressSaveTask?.cancel()
         progressSaveTask = nil
         loadingSourceIndices.removeAll()
         refreshingSourceIndices.removeAll()
+        loadingSummaryIndices.removeAll()
     }
 
     func load(bookId: String, core: CoreClient, initialSegmentIndex: Int? = nil) async {
         flushProgressSave(core: core)
         cancelAllTasks()
         clearAllSourceCache()
+        clearSummaryCache()
+        sidebarItems = []
         segments = []
+        segmentIdxToArrayIndex = [:]
         selectedIdx = nil
         checkedSegmentIndices = []
         isSegmentSelectionMode = false
@@ -1614,6 +1508,8 @@ final class ReaderViewModel: ObservableObject {
             let list = try await listTask
             try Task.checkCancellation()
             segments = list
+            warmSummaryCache(from: list)
+            rebuildSidebarItems()
             summaryReadyCount = book.summary_ready_count ?? list.filter { $0.summary_status == "ready" }.count
             summaryTotalCount = book.summary_total_count ?? list.count
             totalCharCount = book.total_char_count
@@ -1664,16 +1560,27 @@ final class ReaderViewModel: ObservableObject {
 
     /// Apply list meta only — never fetch or cache raw_text / translation in `segments[]`.
     func selectSegment(_ idx: Int) {
-        if let meta = segments.first(where: { $0.idx == idx }) {
-            currentSegment = meta
-        }
+        guard let i = arrayIndex(forSegmentIdx: idx), i < segments.count else { return }
+        currentSegment = segments[i]
+    }
+
+    func arrayIndex(forSegmentIdx idx: Int) -> Int? {
+        segmentIdxToArrayIndex[idx]
+    }
+
+    func source(for idx: Int) -> SegmentSourceBody? {
+        sourceCache[idx]
     }
 
     func cachedSource(for idx: Int) -> SegmentSourceBody? {
         guard let body = sourceCache[idx] else { return nil }
+        touchSourceCache(idx)
+        return body
+    }
+
+    private func touchSourceCache(_ idx: Int) {
         sourceCacheOrder.removeAll { $0 == idx }
         sourceCacheOrder.append(idx)
-        return body
     }
 
     func isSourceLoading(idx: Int) -> Bool {
@@ -1682,6 +1589,145 @@ final class ReaderViewModel: ObservableObject {
 
     func isSourceRefreshing(idx: Int) -> Bool {
         refreshingSourceIndices.contains(idx)
+    }
+
+    func parsedSummary(for idx: Int) -> ParsedSummary? {
+        parsedSummaryCache[idx]
+    }
+
+    func summaryBulletPreview(for idx: Int) -> String? {
+        parsedSummaryCache[idx]?.bulletPreviewLine
+    }
+
+    func isSummaryLoading(idx: Int) -> Bool {
+        loadingSummaryIndices.contains(idx)
+    }
+
+    func prefetchSummaries(around idx: Int, core: CoreClient, radius: Int? = nil) {
+        let effectiveRadius = radius ?? summaryPrefetchRadius
+        guard let pos = arrayIndex(forSegmentIdx: idx) else { return }
+        let start = max(0, pos - effectiveRadius)
+        let end = min(segments.count - 1, pos + effectiveRadius)
+        for i in start...end {
+            ensureSummaryLoaded(idx: segments[i].idx, core: core)
+        }
+    }
+
+    func rebuildSidebarItems() {
+        rebuildSegmentIndexMap()
+        sidebarItems = segments.map { makeSidebarItem(for: $0) }
+    }
+
+    func patchSidebarItems(atSegmentIndices indices: Set<Int>) {
+        for idx in indices {
+            guard let arrayIndex = segmentIdxToArrayIndex[idx],
+                  arrayIndex < segments.count,
+                  arrayIndex < sidebarItems.count else { continue }
+            sidebarItems[arrayIndex] = makeSidebarItem(for: segments[arrayIndex])
+        }
+    }
+
+    private func rebuildSegmentIndexMap() {
+        segmentIdxToArrayIndex = Dictionary(uniqueKeysWithValues: segments.enumerated().map { ($1.idx, $0) })
+    }
+
+    private func makeSidebarItem(for segment: SegmentRow) -> SidebarSegmentItem {
+        SidebarSegmentItem.make(
+            from: segment,
+            bulletPreview: parsedSummaryCache[segment.idx]?.bulletPreviewLine,
+            runningMetrics: segmentRunningMetrics[segment.idx]
+        )
+    }
+
+    func ensureSummaryLoaded(idx: Int, core: CoreClient) {
+        guard !bookId.isEmpty else { return }
+        if parsedSummaryCache[idx] != nil { return }
+        if loadingSummaryIndices.contains(idx) { return }
+        guard let i = arrayIndex(forSegmentIdx: idx), i < segments.count else { return }
+        guard segments[i].summary_status == "ready" else { return }
+
+        if let json = segments[i].summary_json, !json.isEmpty {
+            scheduleSummaryParse(idx: idx, json: json)
+            return
+        }
+
+        loadingSummaryIndices.insert(idx)
+        summaryTasks[idx]?.cancel()
+        let bookId = self.bookId
+        summaryTasks[idx] = Task { [weak self] in
+            defer {
+                Task { @MainActor in
+                    self?.loadingSummaryIndices.remove(idx)
+                    self?.summaryTasks.removeValue(forKey: idx)
+                }
+            }
+            do {
+                try Task.checkCancellation()
+                let detail = try await core.fetchSegmentSummary(bookId: bookId, idx: idx)
+                try Task.checkCancellation()
+                await MainActor.run {
+                    self?.applyFetchedSummary(idx: idx, detail: detail)
+                }
+            } catch is CancellationError {
+                return
+            } catch {
+                return
+            }
+        }
+    }
+
+    private func clearSummaryCache() {
+        for task in summaryTasks.values {
+            task.cancel()
+        }
+        summaryTasks.removeAll()
+        parsedSummaryCache = [:]
+        loadingSummaryIndices.removeAll()
+    }
+
+    private func warmSummaryCache(from list: [SegmentRow]) {
+        let items = list.compactMap { segment -> (Int, String)? in
+            guard let json = segment.summary_json, !json.isEmpty else { return nil }
+            return (segment.idx, json)
+        }
+        guard !items.isEmpty else { return }
+        Task.detached(priority: .utility) { [weak self] in
+            let parsed = ParsedSummary.parseBatch(items)
+            guard !parsed.isEmpty else { return }
+            await MainActor.run {
+                self?.parsedSummaryCache.merge(parsed) { _, new in new }
+                self?.patchSidebarItems(atSegmentIndices: Set(parsed.keys))
+            }
+        }
+    }
+
+    private func scheduleSummaryParse(idx: Int, json: String) {
+        Task.detached(priority: .utility) { [weak self] in
+            guard let parsed = ParsedSummary(json: json) else { return }
+            await MainActor.run {
+                self?.parsedSummaryCache[idx] = parsed
+                self?.patchSidebarItems(atSegmentIndices: [idx])
+            }
+        }
+    }
+
+    private func applyFetchedSummary(idx: Int, detail: SegmentSummaryDetail) {
+        guard let i = arrayIndex(forSegmentIdx: idx), i < segments.count else { return }
+        var updated = segments[i]
+        if let json = detail.summary_json, !json.isEmpty {
+            updated.summary_json = json
+            scheduleSummaryParse(idx: idx, json: json)
+        }
+        if let label = detail.label { updated.label = label }
+        if let anchor = detail.anchor_label { updated.anchor_label = anchor }
+        if let provider = detail.summary_provider { updated.summary_provider = provider }
+        if let model = detail.summary_model { updated.summary_model = model }
+        if let duration = detail.summary_duration_s { updated.summary_duration_s = duration }
+        if let attempts = detail.summary_llm_attempts { updated.summary_llm_attempts = attempts }
+        updated.summary_status = detail.summary_status ?? updated.summary_status
+        segments[i] = updated
+        syncCurrentSegment(from: updated)
+        patchSidebarItems(atSegmentIndices: [idx])
     }
 
     private func clearAllSourceCache() {
@@ -1709,7 +1755,10 @@ final class ReaderViewModel: ObservableObject {
 
     /// On-demand original text; results stay in per-segment cache (not `segments[]`).
     func fetchSource(idx: Int, core: CoreClient, force: Bool = false, translationOnly: Bool = false) {
-        if !force, cachedSource(for: idx) != nil { return }
+        if !force, source(for: idx) != nil {
+            touchSourceCache(idx)
+            return
+        }
 
         detailTasks[idx]?.cancel()
 
@@ -1897,7 +1946,7 @@ final class ReaderViewModel: ObservableObject {
     }
 
     private func applySegmentStatus(idx: Int, status: String, label: String? = nil, event: [String: Any]? = nil) {
-        guard let i = segments.firstIndex(where: { $0.idx == idx }) else { return }
+        guard let i = arrayIndex(forSegmentIdx: idx), i < segments.count else { return }
         var updated = segments[i]
         updated.summary_status = status
         if let label { updated.label = label }
@@ -1911,6 +1960,107 @@ final class ReaderViewModel: ObservableObject {
         }
         segments[i] = updated
         syncCurrentSegment(from: updated)
+        applyRunningMetrics(idx: idx, status: status, event: event)
+        patchSidebarItems(atSegmentIndices: [idx])
+    }
+
+    private func queueSegmentReady(idx: Int, event: [String: Any]) {
+        var pending = pendingSegmentUpdates[idx] ?? PendingSegmentUpdate()
+        pending.readyEvent = event
+        pendingSegmentUpdates[idx] = pending
+        scheduleSegmentFlush()
+    }
+
+    private func queueSegmentStatus(idx: Int, status: String, event: [String: Any]) {
+        var pending = pendingSegmentUpdates[idx] ?? PendingSegmentUpdate()
+        pending.status = status
+        pending.statusEvent = event
+        pendingSegmentUpdates[idx] = pending
+        scheduleSegmentFlush()
+    }
+
+    private func scheduleSegmentFlush() {
+        segmentFlushTask?.cancel()
+        segmentFlushTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 75_000_000)
+            guard !Task.isCancelled else { return }
+            await MainActor.run {
+                self?.flushPendingSegmentUpdates()
+            }
+        }
+    }
+
+    private func flushPendingSegmentUpdates() {
+        guard !pendingSegmentUpdates.isEmpty else { return }
+        let batch = pendingSegmentUpdates
+        pendingSegmentUpdates.removeAll()
+        segmentFlushTask = nil
+
+        var updatedSegments = segments
+        var jsonToParse: [(Int, String)] = []
+
+        for (idx, update) in batch {
+            guard let i = segmentIdxToArrayIndex[idx] ?? updatedSegments.firstIndex(where: { $0.idx == idx }) else { continue }
+            var row = updatedSegments[i]
+
+            if let event = update.readyEvent {
+                row.summary_status = (event["summary_status"] as? String) ?? "ready"
+                if let label = event["label"] as? String { row.label = label }
+                if let summaryJSON = SegmentReadyEventParser.extractSummaryJSON(from: event) {
+                    row.summary_json = summaryJSON
+                    jsonToParse.append((idx, summaryJSON))
+                }
+                if let anchor = (event["anchor_label"] as? String) ?? (event["anchor"] as? String) {
+                    row.anchor_label = anchor
+                }
+                if let provider = event["summary_provider"] as? String { row.summary_provider = provider }
+                if let model = event["summary_model"] as? String { row.summary_model = model }
+                if let duration = event["summary_duration_s"] as? Double {
+                    row.summary_duration_s = duration
+                } else if let duration = event["summary_duration_s"] as? Int {
+                    row.summary_duration_s = Double(duration)
+                }
+                if let attempts = event["summary_llm_attempts"] as? Int {
+                    row.summary_llm_attempts = attempts
+                }
+                segmentRunningMetrics.removeValue(forKey: idx)
+                loadingSummaryIndices.remove(idx)
+            } else if let status = update.status {
+                row.summary_status = status
+                if let label = update.statusEvent?["label"] as? String { row.label = label }
+                if let retry = update.statusEvent?["retry_count"] as? Int {
+                    row.retry_count = retry
+                }
+                if let duration = update.statusEvent?["summary_duration_s"] as? Double {
+                    row.summary_duration_s = duration
+                } else if let duration = update.statusEvent?["summary_duration_s"] as? Int {
+                    row.summary_duration_s = Double(duration)
+                }
+                applyRunningMetrics(idx: idx, status: status, event: update.statusEvent)
+            }
+
+            updatedSegments[i] = row
+            if selectedIdx == idx {
+                currentSegment = row
+            }
+        }
+
+        segments = updatedSegments
+        rebuildSegmentIndexMap()
+        patchSidebarItems(atSegmentIndices: Set(batch.keys))
+
+        guard !jsonToParse.isEmpty else { return }
+        Task.detached(priority: .utility) { [weak self] in
+            let parsed = ParsedSummary.parseBatch(jsonToParse)
+            guard !parsed.isEmpty else { return }
+            await MainActor.run {
+                self?.parsedSummaryCache.merge(parsed) { _, new in new }
+                self?.patchSidebarItems(atSegmentIndices: Set(parsed.keys))
+            }
+        }
+    }
+
+    private func applyRunningMetrics(idx: Int, status: String, event: [String: Any]?) {
         if status == "running" {
             let startedAt: Date
             if let startedAtStr = event?["started_at"] as? String,
@@ -1924,39 +2074,9 @@ final class ReaderViewModel: ObservableObject {
                 llmAttempt: 1,
                 maxLlmAttempts: nil
             )
-        } else if status == "ready" {
-            segmentRunningMetrics.removeValue(forKey: idx)
-        } else if status == "pending" {
-            segmentRunningMetrics.removeValue(forKey: idx)
-        } else if status == "failed" || status == "error" {
+        } else {
             segmentRunningMetrics.removeValue(forKey: idx)
         }
-    }
-
-    private func applySegmentReady(idx: Int, event: [String: Any]) {
-        guard let i = segments.firstIndex(where: { $0.idx == idx }) else { return }
-        var updated = segments[i]
-        updated.summary_status = (event["summary_status"] as? String) ?? "ready"
-        if let label = event["label"] as? String { updated.label = label }
-        if let summaryJSON = SegmentReadyEventParser.extractSummaryJSON(from: event) {
-            updated.summary_json = summaryJSON
-        }
-        if let anchor = (event["anchor_label"] as? String) ?? (event["anchor"] as? String) {
-            updated.anchor_label = anchor
-        }
-        if let provider = event["summary_provider"] as? String { updated.summary_provider = provider }
-        if let model = event["summary_model"] as? String { updated.summary_model = model }
-        if let duration = event["summary_duration_s"] as? Double {
-            updated.summary_duration_s = duration
-        } else if let duration = event["summary_duration_s"] as? Int {
-            updated.summary_duration_s = Double(duration)
-        }
-        if let attempts = event["summary_llm_attempts"] as? Int {
-            updated.summary_llm_attempts = attempts
-        }
-        segments[i] = updated
-        syncCurrentSegment(from: updated)
-        segmentRunningMetrics.removeValue(forKey: idx)
     }
 
     private func syncCurrentSegment(from segment: SegmentRow) {
@@ -1989,7 +2109,7 @@ final class ReaderViewModel: ObservableObject {
         case "segment_status":
             guard let idx = SegmentReadyEventParser.eventIndex(from: event),
                   let status = event["status"] as? String else { return }
-            applySegmentStatus(idx: idx, status: status, event: event)
+            queueSegmentStatus(idx: idx, status: status, event: event)
         case "segment_summarize_progress", "segment_summary_progress":
             guard let idx = SegmentReadyEventParser.eventIndex(from: event) else { return }
             var metrics = segmentRunningMetrics[idx] ?? SegmentRunningMetrics(
@@ -2010,7 +2130,7 @@ final class ReaderViewModel: ObservableObject {
             segmentRunningMetrics[idx] = metrics
         case "segment_ready":
             guard let idx = SegmentReadyEventParser.eventIndex(from: event) else { return }
-            applySegmentReady(idx: idx, event: event)
+            queueSegmentReady(idx: idx, event: event)
         case "translation_ready":
             guard let idx = SegmentReadyEventParser.eventIndex(from: event) else { return }
             if let translation = event["translation"] as? String {

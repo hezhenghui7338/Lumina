@@ -8,6 +8,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
+from lumina_core.db.connection import db_transaction
 from lumina_core.search.fts import delete_note_from_fts
 
 
@@ -69,30 +70,30 @@ class BookRepo:
     def insert(self, **fields: Any) -> dict[str, Any]:
         book_id = fields.get("id") or str(uuid.uuid4())
         now = _now()
-        self.conn.execute(
-            """
-            INSERT INTO books (
-              id, title, author, format, file_path, language, target_language,
-              segment_count, status, file_hash, metadata_json, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                book_id,
-                fields["title"],
-                fields.get("author"),
-                fields["format"],
-                fields["file_path"],
-                fields.get("language"),
-                fields.get("target_language"),
-                fields.get("segment_count", 0),
-                fields.get("status", "unread"),
-                fields.get("file_hash"),
-                json.dumps(fields.get("metadata_json") or {}, ensure_ascii=False),
-                now,
-                now,
-            ),
-        )
-        self.conn.commit()
+        with db_transaction(self.conn):
+            self.conn.execute(
+                """
+                INSERT INTO books (
+                  id, title, author, format, file_path, language, target_language,
+                  segment_count, status, file_hash, metadata_json, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    book_id,
+                    fields["title"],
+                    fields.get("author"),
+                    fields["format"],
+                    fields["file_path"],
+                    fields.get("language"),
+                    fields.get("target_language"),
+                    fields.get("segment_count", 0),
+                    fields.get("status", "unread"),
+                    fields.get("file_hash"),
+                    json.dumps(fields.get("metadata_json") or {}, ensure_ascii=False),
+                    now,
+                    now,
+                ),
+            )
         return self.get(book_id)  # type: ignore[return-value]
 
     def update(self, book_id: str, **fields: Any) -> None:
@@ -100,29 +101,29 @@ class BookRepo:
         if "metadata_json" in fields and isinstance(fields["metadata_json"], dict):
             fields["metadata_json"] = json.dumps(fields["metadata_json"], ensure_ascii=False)
         cols = ", ".join(f"{k} = ?" for k in fields)
-        self.conn.execute(
-            f"UPDATE books SET {cols} WHERE id = ?",
-            (*fields.values(), book_id),
-        )
-        self.conn.commit()
+        with db_transaction(self.conn):
+            self.conn.execute(
+                f"UPDATE books SET {cols} WHERE id = ?",
+                (*fields.values(), book_id),
+            )
 
     def delete(self, book_id: str) -> None:
-        self.conn.execute("DELETE FROM notes WHERE book_id = ?", (book_id,))
-        self.conn.execute(
-            """
-            DELETE FROM chat_messages
-            WHERE session_id IN (
-                SELECT id FROM chat_sessions WHERE book_id = ?
+        with db_transaction(self.conn):
+            self.conn.execute("DELETE FROM notes WHERE book_id = ?", (book_id,))
+            self.conn.execute(
+                """
+                DELETE FROM chat_messages
+                WHERE session_id IN (
+                    SELECT id FROM chat_sessions WHERE book_id = ?
+                )
+                """,
+                (book_id,),
             )
-            """,
-            (book_id,),
-        )
-        self.conn.execute("DELETE FROM chat_sessions WHERE book_id = ?", (book_id,))
-        self.conn.execute("DELETE FROM segments WHERE book_id = ?", (book_id,))
-        self.conn.execute("DELETE FROM jobs WHERE book_id = ?", (book_id,))
-        self.conn.execute("DELETE FROM search_fts WHERE book_id = ?", (book_id,))
-        self.conn.execute("DELETE FROM books WHERE id = ?", (book_id,))
-        self.conn.commit()
+            self.conn.execute("DELETE FROM chat_sessions WHERE book_id = ?", (book_id,))
+            self.conn.execute("DELETE FROM segments WHERE book_id = ?", (book_id,))
+            self.conn.execute("DELETE FROM jobs WHERE book_id = ?", (book_id,))
+            self.conn.execute("DELETE FROM search_fts WHERE book_id = ?", (book_id,))
+            self.conn.execute("DELETE FROM books WHERE id = ?", (book_id,))
 
     def maybe_mark_summarized(self, book_id: str) -> bool:
         """If every segment is ready, promote book status to summarized."""
@@ -157,10 +158,15 @@ class BookRepo:
         }
 
 
-# List API / UI sidebar: exclude raw_text + translation (fetch via get_by_index).
+# List API / UI sidebar: exclude raw_text, translation, and summary_json.
 _SEGMENT_META_COLUMNS = (
     "id, book_id, idx, chapter, page_range, anchor_label, char_count, "
-    "summary_json, label, summary_status, retry_count, "
+    "label, summary_status, retry_count, "
+    "summary_provider, summary_model, summary_duration_s, summary_llm_attempts"
+)
+
+_SEGMENT_SUMMARY_COLUMNS = (
+    "idx, summary_json, label, anchor_label, summary_status, "
     "summary_provider, summary_model, summary_duration_s, summary_llm_attempts"
 )
 
@@ -196,17 +202,29 @@ class SegmentRepo:
         return [dict(r) for r in rows]
 
     def _backfill_char_counts(self, book_id: str) -> None:
-        self.conn.execute(
+        row = self.conn.execute(
             """
-            UPDATE segments
-            SET char_count = LENGTH(raw_text)
+            SELECT 1 FROM segments
             WHERE book_id = ?
               AND raw_text IS NOT NULL
               AND (char_count IS NULL OR char_count = 0)
+            LIMIT 1
             """,
             (book_id,),
-        )
-        self.conn.commit()
+        ).fetchone()
+        if not row:
+            return
+        with db_transaction(self.conn):
+            self.conn.execute(
+                """
+                UPDATE segments
+                SET char_count = LENGTH(raw_text)
+                WHERE book_id = ?
+                  AND raw_text IS NOT NULL
+                  AND (char_count IS NULL OR char_count = 0)
+                """,
+                (book_id,),
+            )
 
     def get(self, segment_id: str) -> dict[str, Any] | None:
         row = self.conn.execute(
@@ -221,29 +239,40 @@ class SegmentRepo:
         ).fetchone()
         return dict(row) if row else None
 
+    def get_summary_by_index(self, book_id: str, idx: int) -> dict[str, Any] | None:
+        row = self.conn.execute(
+            f"SELECT {_SEGMENT_SUMMARY_COLUMNS} FROM segments WHERE book_id = ? AND idx = ?",
+            (book_id, idx),
+        ).fetchone()
+        return dict(row) if row else None
+
     def insert_many(self, segments: list[dict[str, Any]]) -> None:
-        for seg in segments:
-            self.conn.execute(
+        if not segments:
+            return
+        with db_transaction(self.conn):
+            self.conn.executemany(
                 """
                 INSERT INTO segments (
                   id, book_id, idx, chapter, page_range, anchor_label,
                   raw_text, char_count, summary_status, retry_count
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (
-                    seg["id"],
-                    seg["book_id"],
-                    seg["idx"],
-                    seg.get("chapter"),
-                    seg.get("page_range"),
-                    seg.get("anchor_label"),
-                    seg["raw_text"],
-                    seg.get("char_count", len(seg.get("raw_text") or "")),
-                    seg.get("summary_status", "pending"),
-                    seg.get("retry_count", 0),
-                ),
+                [
+                    (
+                        seg["id"],
+                        seg["book_id"],
+                        seg["idx"],
+                        seg.get("chapter"),
+                        seg.get("page_range"),
+                        seg.get("anchor_label"),
+                        seg["raw_text"],
+                        seg.get("char_count", len(seg.get("raw_text") or "")),
+                        seg.get("summary_status", "pending"),
+                        seg.get("retry_count", 0),
+                    )
+                    for seg in segments
+                ],
             )
-        self.conn.commit()
 
     def update_summary(
         self,
@@ -258,40 +287,40 @@ class SegmentRepo:
         summary_duration_s: float | None = None,
         summary_llm_attempts: int | None = None,
     ) -> None:
-        self.conn.execute(
-            """
-            UPDATE segments SET summary_json = ?, label = ?, anchor_label = COALESCE(?, anchor_label),
-            summary_status = ?, retry_count = 0,
-            summary_provider = ?, summary_model = ?,
-            summary_duration_s = ?, summary_llm_attempts = ?
-            WHERE id = ?
-            """,
-            (
-                summary_json,
-                label,
-                anchor_label,
-                status,
-                summary_provider,
-                summary_model,
-                summary_duration_s,
-                summary_llm_attempts,
-                segment_id,
-            ),
-        )
-        self.conn.commit()
+        with db_transaction(self.conn):
+            self.conn.execute(
+                """
+                UPDATE segments SET summary_json = ?, label = ?, anchor_label = COALESCE(?, anchor_label),
+                summary_status = ?, retry_count = 0,
+                summary_provider = ?, summary_model = ?,
+                summary_duration_s = ?, summary_llm_attempts = ?
+                WHERE id = ?
+                """,
+                (
+                    summary_json,
+                    label,
+                    anchor_label,
+                    status,
+                    summary_provider,
+                    summary_model,
+                    summary_duration_s,
+                    summary_llm_attempts,
+                    segment_id,
+                ),
+            )
 
     def set_status(self, segment_id: str, status: str, retry_count: int | None = None) -> None:
-        if retry_count is None:
-            self.conn.execute(
-                "UPDATE segments SET summary_status = ? WHERE id = ?",
-                (status, segment_id),
-            )
-        else:
-            self.conn.execute(
-                "UPDATE segments SET summary_status = ?, retry_count = ? WHERE id = ?",
-                (status, retry_count, segment_id),
-            )
-        self.conn.commit()
+        with db_transaction(self.conn):
+            if retry_count is None:
+                self.conn.execute(
+                    "UPDATE segments SET summary_status = ? WHERE id = ?",
+                    (status, segment_id),
+                )
+            else:
+                self.conn.execute(
+                    "UPDATE segments SET summary_status = ?, retry_count = ? WHERE id = ?",
+                    (status, retry_count, segment_id),
+                )
 
 
 class ChatRepo:
@@ -307,11 +336,11 @@ class ChatRepo:
             return dict(row)
         session_id = str(uuid.uuid4())
         now = _now()
-        self.conn.execute(
-            "INSERT INTO chat_sessions (id, book_id, scope, updated_at) VALUES (?, ?, ?, ?)",
-            (session_id, book_id, "book", now),
-        )
-        self.conn.commit()
+        with db_transaction(self.conn):
+            self.conn.execute(
+                "INSERT INTO chat_sessions (id, book_id, scope, updated_at) VALUES (?, ?, ?, ?)",
+                (session_id, book_id, "book", now),
+            )
         return {"id": session_id, "book_id": book_id, "scope": "book", "updated_at": now}
 
     def add_message(
@@ -325,18 +354,18 @@ class ChatRepo:
     ) -> dict[str, Any]:
         msg_id = str(uuid.uuid4())
         now = _now()
-        self.conn.execute(
-            """
-            INSERT INTO chat_messages (id, session_id, role, content, citations_json, web_refs_json, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            """,
-            (msg_id, session_id, role, content, citations_json, web_refs_json, now),
-        )
-        self.conn.execute(
-            "UPDATE chat_sessions SET updated_at = ? WHERE id = ?",
-            (now, session_id),
-        )
-        self.conn.commit()
+        with db_transaction(self.conn):
+            self.conn.execute(
+                """
+                INSERT INTO chat_messages (id, session_id, role, content, citations_json, web_refs_json, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (msg_id, session_id, role, content, citations_json, web_refs_json, now),
+            )
+            self.conn.execute(
+                "UPDATE chat_sessions SET updated_at = ? WHERE id = ?",
+                (now, session_id),
+            )
         return {
             "id": msg_id,
             "session_id": session_id,
@@ -382,14 +411,14 @@ class NoteRepo:
     ) -> dict[str, Any]:
         note_id = str(uuid.uuid4())
         now = _now()
-        self.conn.execute(
-            """
-            INSERT INTO notes (id, book_id, segment_id, quote, content, type, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            """,
-            (note_id, book_id, segment_id, quote, content, note_type, now),
-        )
-        self.conn.commit()
+        with db_transaction(self.conn):
+            self.conn.execute(
+                """
+                INSERT INTO notes (id, book_id, segment_id, quote, content, type, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (note_id, book_id, segment_id, quote, content, note_type, now),
+            )
         enriched = self._list(where="n.id = ?", params=(note_id,))
         return enriched[0]
 
@@ -411,11 +440,11 @@ class NoteRepo:
         return rows[0] if rows else None
 
     def delete(self, note_id: str) -> bool:
-        cur = self.conn.execute("DELETE FROM notes WHERE id = ?", (note_id,))
-        if cur.rowcount == 0:
-            return False
-        delete_note_from_fts(self.conn, note_id)
-        self.conn.commit()
+        with db_transaction(self.conn):
+            cur = self.conn.execute("DELETE FROM notes WHERE id = ?", (note_id,))
+            if cur.rowcount == 0:
+                return False
+            delete_note_from_fts(self.conn, note_id)
         return True
 
     def _list(self, *, where: str, params: tuple[Any, ...]) -> list[dict[str, Any]]:
@@ -447,14 +476,14 @@ class NewsChatRepo:
     ) -> dict[str, Any]:
         msg_id = str(uuid.uuid4())
         now = _now()
-        self.conn.execute(
-            """
-            INSERT INTO news_chat_messages (id, article_id, role, content, web_refs_json, created_at)
-            VALUES (?, ?, ?, ?, ?, ?)
-            """,
-            (msg_id, article_id, role, content, web_refs_json, now),
-        )
-        self.conn.commit()
+        with db_transaction(self.conn):
+            self.conn.execute(
+                """
+                INSERT INTO news_chat_messages (id, article_id, role, content, web_refs_json, created_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (msg_id, article_id, role, content, web_refs_json, now),
+            )
         return {
             "id": msg_id,
             "article_id": article_id,

@@ -42,6 +42,35 @@ def _finish_ingest_sync(
     return text, metadata, segments
 
 
+def _persist_ingest_sync(
+    conn,
+    *,
+    book_id: str,
+    src: Path,
+    metadata: dict[str, Any],
+    detected_language: str | None,
+    target_language: str,
+    segments: list[dict[str, Any]],
+    ingest_meta: dict[str, Any],
+) -> None:
+    """SQLite writes after extract/chunk — runs off the asyncio event loop."""
+    books_repo = BookRepo(conn)
+    books_repo.update(
+        book_id,
+        title=title_from_path(src, metadata),
+        author=author_from_metadata(metadata),
+        language=detected_language,
+        target_language=target_language,
+        segment_count=len(segments),
+        status="unread",
+        metadata_json=ingest_meta,
+    )
+    SegmentRepo(conn).insert_many(segments)
+    book_row = books_repo.get(book_id)
+    if book_row:
+        index_book(conn, book_row)
+
+
 async def run_ingest_job(
     *,
     book_id: str,
@@ -93,20 +122,17 @@ async def run_ingest_job(
         ingest_meta["chunker_version"] = CHUNKER_VERSION
         detected_language = infer_language(text)
 
-        books_repo.update(
-            book_id,
-            title=title_from_path(src, metadata),
-            author=author_from_metadata(metadata),
-            language=detected_language,
+        await asyncio.to_thread(
+            _persist_ingest_sync,
+            conn,
+            book_id=book_id,
+            src=src,
+            metadata=metadata,
+            detected_language=detected_language,
             target_language=target_language,
-            segment_count=len(segments),
-            status="unread",
-            metadata_json=ingest_meta,
+            segments=segments,
+            ingest_meta=ingest_meta,
         )
-        SegmentRepo(conn).insert_many(segments)
-        book_row = books_repo.get(book_id)
-        if book_row:
-            index_book(conn, book_row)
 
         await job_queue.enqueue_book_prefetch(book_id)
         schedule_classify(book_id)

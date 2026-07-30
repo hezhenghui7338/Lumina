@@ -2,7 +2,8 @@ import SwiftUI
 
 /// Segment summary reading surface: lead sentences on top, structured bullets below.
 struct SummaryBlock: View {
-    let json: String
+    let parsedSummary: ParsedSummary?
+    var rawJSON: String?
     var provider: String?
     var model: String?
     var charCount: Int?
@@ -14,14 +15,10 @@ struct SummaryBlock: View {
     var onFollowUp: ((String) -> Void)?
     var showsBackground: Bool = true
 
-    private var parsed: ParsedSummary? {
-        ParsedSummary(json: json)
-    }
-
     var body: some View {
-        if let parsed, parsed.hasContent {
-            content(parsed)
-        } else if !json.isEmpty {
+        if let parsedSummary, parsedSummary.hasContent {
+            content(parsedSummary)
+        } else if let rawJSON, !rawJSON.isEmpty {
             parseFailurePlaceholder
         }
     }
@@ -301,6 +298,27 @@ struct ParsedSummary: Equatable {
         } else {
             anchor = nil
         }
+    }
+
+    /// First bullet line for segment sidebar preview (no JSON re-parse in views).
+    var bulletPreviewLine: String? {
+        guard let first = bullets.first else { return nil }
+        if let label = first.label, !label.isEmpty {
+            return "\(label)：\(first.body)"
+        }
+        return first.body
+    }
+
+    /// Parse many summaries off the main thread.
+    static func parseBatch(_ items: [(idx: Int, json: String)]) -> [Int: ParsedSummary] {
+        var result: [Int: ParsedSummary] = [:]
+        result.reserveCapacity(items.count)
+        for (idx, json) in items {
+            if let parsed = ParsedSummary(json: json) {
+                result[idx] = parsed
+            }
+        }
+        return result
     }
 
     private static func parseStringArray(_ value: Any?) -> [String] {

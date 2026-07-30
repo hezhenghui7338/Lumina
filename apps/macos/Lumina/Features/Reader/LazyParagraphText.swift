@@ -1,7 +1,7 @@
 import SwiftUI
 
 enum TextChunkSplitter {
-    static func chunks(from text: String, maxChunkSize: Int = 1200) -> [String] {
+    static func chunks(from text: String, maxChunkSize: Int = 2400) -> [String] {
         guard !text.isEmpty else { return [] }
         let paragraphs = text.components(separatedBy: "\n\n")
         var result: [String] = []
@@ -55,20 +55,46 @@ struct LazyParagraphText: View {
     var lineSpacing: CGFloat = LuminaTheme.summaryBulletLineSpacing
     var foreground: Color = LuminaTheme.textSecondary
 
-    private var chunks: [String] {
-        TextChunkSplitter.chunks(from: text)
-    }
+    @State private var cachedChunks: [String] = []
+    @State private var chunkTask: Task<Void, Never>?
 
     var body: some View {
         LazyVStack(alignment: .leading, spacing: lineSpacing) {
-            ForEach(Array(chunks.enumerated()), id: \.offset) { _, chunk in
-                Text(chunk)
-                    .font(.system(size: fontSize))
-                    .foregroundStyle(foreground)
-                    .lineSpacing(lineSpacing)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .textSelection(.enabled)
+            if cachedChunks.isEmpty {
+                SourceTextSkeleton(lineCount: 3)
+            } else {
+                ForEach(Array(cachedChunks.enumerated()), id: \.offset) { _, chunk in
+                    Text(chunk)
+                        .font(.system(size: fontSize))
+                        .foregroundStyle(foreground)
+                        .lineSpacing(lineSpacing)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .textSelection(.enabled)
+                }
             }
+        }
+        .onAppear { rebuildChunks(for: text) }
+        .onChange(of: text) { _, newText in
+            rebuildChunks(for: newText)
+        }
+        .onDisappear {
+            chunkTask?.cancel()
+            chunkTask = nil
+        }
+    }
+
+    private func rebuildChunks(for source: String) {
+        chunkTask?.cancel()
+        if source.isEmpty {
+            cachedChunks = []
+            return
+        }
+        chunkTask = Task {
+            let chunks = await Task.detached(priority: .utility) {
+                TextChunkSplitter.chunks(from: source)
+            }.value
+            guard !Task.isCancelled else { return }
+            cachedChunks = chunks
         }
     }
 }

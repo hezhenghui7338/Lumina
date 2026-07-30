@@ -452,6 +452,16 @@ async def get_segment(book_id: str, idx: int, request: Request) -> dict[str, Any
     return seg
 
 
+@router.get("/books/{book_id}/segments/{idx}/summary")
+async def get_segment_summary(book_id: str, idx: int, request: Request) -> dict[str, Any]:
+    seg = await asyncio.to_thread(
+        SegmentRepo(_state(request).conn).get_summary_by_index, book_id, idx
+    )
+    if not seg:
+        raise HTTPException(404, "Segment not found")
+    return seg
+
+
 @router.post("/books/{book_id}/open")
 async def open_book(book_id: str, request: Request) -> dict[str, Any]:
     state = _state(request)
@@ -579,8 +589,10 @@ async def book_events(book_id: str, request: Request) -> StreamingResponse:
 
     async def stream():
         try:
-            segments = SegmentRepo(state.conn).list_for_book(
-                book_id, include_body=False
+            segments = await asyncio.to_thread(
+                SegmentRepo(state.conn).list_for_book,
+                book_id,
+                include_body=False,
             )
             yield f"data: {json.dumps({'type': 'snapshot', 'segments': [{'idx': s['idx'], 'summary_status': s['summary_status'], 'label': s.get('label')} for s in segments]}, ensure_ascii=False)}\n\n"
             while True:

@@ -87,7 +87,7 @@ struct SettingsView: View {
                             Text("Local AI Reading Companion")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
-                            Text("版本 \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.3.0")")
+                            Text("版本 \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.4.0")")
                                 .font(.caption2)
                                 .foregroundStyle(.secondary)
                         }

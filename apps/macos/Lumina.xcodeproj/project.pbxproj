@@ -13,6 +13,8 @@
 		A1000119 /* SummaryReadingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000219 /* SummaryReadingView.swift */; };
 		A1000138 /* LazyParagraphText.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000233 /* LazyParagraphText.swift */; };
 		A1000139 /* SegmentReadingBlock.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000235 /* SegmentReadingBlock.swift */; };
+		A1000275 /* SegmentSidebarModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000274 /* SegmentSidebarModels.swift */; };
+		A1000279 /* SegmentSidebarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000278 /* SegmentSidebarView.swift */; };
 		A1000104 /* CoreClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000204 /* CoreClient.swift */; };
 		A1000105 /* SidecarManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000205 /* SidecarManager.swift */; };
 		A1000106 /* DesignSystem.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000206 /* DesignSystem.swift */; };
@@ -61,6 +63,7 @@
 		A1000261 /* TaskRowView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000271 /* TaskRowView.swift */; };
 		A1000262 /* ResourceRuntimeSection.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000272 /* ResourceRuntimeSection.swift */; };
 		A1000263 /* SummaryMetricsFormatter.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000273 /* SummaryMetricsFormatter.swift */; };
+		A1000277 /* SegmentSidebarTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000276 /* SegmentSidebarTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -70,6 +73,8 @@
 		A1000219 /* SummaryReadingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SummaryReadingView.swift; sourceTree = "<group>"; };
 		A1000233 /* LazyParagraphText.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LazyParagraphText.swift; sourceTree = "<group>"; };
 		A1000235 /* SegmentReadingBlock.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SegmentReadingBlock.swift; sourceTree = "<group>"; };
+		A1000274 /* SegmentSidebarModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SegmentSidebarModels.swift; sourceTree = "<group>"; };
+		A1000278 /* SegmentSidebarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SegmentSidebarView.swift; sourceTree = "<group>"; };
 		A1000204 /* CoreClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoreClient.swift; sourceTree = "<group>"; };
 		A1000205 /* SidecarManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SidecarManager.swift; sourceTree = "<group>"; };
 		A1000206 /* DesignSystem.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignSystem.swift; sourceTree = "<group>"; };
@@ -115,6 +120,7 @@
 		A1000250 /* NewsStructuredSummaryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NewsStructuredSummaryView.swift; sourceTree = "<group>"; };
 		A1000249 /* SegmentReadyEventParser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SegmentReadyEventParser.swift; sourceTree = "<group>"; };
 		A1000251 /* SegmentReadyEventTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SegmentReadyEventTests.swift; sourceTree = "<group>"; };
+		A1000276 /* SegmentSidebarTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SegmentSidebarTests.swift; sourceTree = "<group>"; };
 		A1000252 /* BookMarkdownExporter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BookMarkdownExporter.swift; sourceTree = "<group>"; };
 		A1000253 /* ReaderEdgeIcon.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderEdgeIcon.swift; sourceTree = "<group>"; };
 		A1000270 /* TaskManagerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TaskManagerView.swift; sourceTree = "<group>"; };
@@ -211,6 +217,8 @@
 				A1000219 /* SummaryReadingView.swift */,
 				A1000233 /* LazyParagraphText.swift */,
 				A1000235 /* SegmentReadingBlock.swift */,
+				A1000274 /* SegmentSidebarModels.swift */,
+				A1000278 /* SegmentSidebarView.swift */,
 				A1000273 /* SummaryMetricsFormatter.swift */,
 				A1000212 /* NotesPanel.swift */,
 				A1000213 /* ExportSheet.swift */,
@@ -322,6 +330,7 @@
 				A1000239 /* NewsSummaryMarkdownTests.swift */,
 				A1000248 /* LibraryViewModelMergeTests.swift */,
 				A1000251 /* SegmentReadyEventTests.swift */,
+				A1000276 /* SegmentSidebarTests.swift */,
 			);
 			path = Unit;
 			sourceTree = "<group>";
@@ -472,6 +481,8 @@
 				A1000119 /* SummaryReadingView.swift in Sources */,
 				A1000138 /* LazyParagraphText.swift in Sources */,
 				A1000139 /* SegmentReadingBlock.swift in Sources */,
+				A1000275 /* SegmentSidebarModels.swift in Sources */,
+				A1000279 /* SegmentSidebarView.swift in Sources */,
 				A1000263 /* SummaryMetricsFormatter.swift in Sources */,
 				A1000104 /* CoreClient.swift in Sources */,
 				A1000157 /* BookMarkdownExporter.swift in Sources */,
@@ -517,6 +528,7 @@
 				A1000144 /* NewsSummaryMarkdownTests.swift in Sources */,
 				A1000153 /* LibraryViewModelMergeTests.swift in Sources */,
 				A1000156 /* SegmentReadyEventTests.swift in Sources */,
+				A1000277 /* SegmentSidebarTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -590,7 +602,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 0.3.0;
+				MARKETING_VERSION = 0.4.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.lumina.app;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
@@ -616,7 +628,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 0.3.0;
+				MARKETING_VERSION = 0.4.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.lumina.app;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
@@ -633,7 +645,7 @@
 				DEVELOPMENT_TEAM = "";
 				GENERATE_INFOPLIST_FILE = YES;
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
-				MARKETING_VERSION = 0.3.0;
+				MARKETING_VERSION = 0.4.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.lumina.app.tests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = NO;
@@ -651,7 +663,7 @@
 				DEVELOPMENT_TEAM = "";
 				GENERATE_INFOPLIST_FILE = YES;
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
-				MARKETING_VERSION = 0.3.0;
+				MARKETING_VERSION = 0.4.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.lumina.app.tests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = NO;
