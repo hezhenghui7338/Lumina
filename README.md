@@ -1,8 +1,52 @@
-# Lumina
+<p align="center">
+  <img src="docs/assets/lumina-logo.png" alt="Lumina — Local AI Reading Companion" width="480">
+</p>
 
-**Local AI Reading Companion · AI 伴读**
+<p align="center">
+  <strong>Local AI Reading Companion · AI 伴读</strong><br>
+  让阅读速度提升 5 倍，而理解深度提升 10 倍。
+</p>
 
-让阅读速度提升 5 倍，而理解深度提升 10 倍。
+<p align="center">
+  macOS 14+ · MIT · <a href="https://github.com/hezhenghui7338/Lumina/releases/latest">Latest Release</a>
+</p>
+
+<p align="center">
+  <a href="#功能特性">功能特性</a> ·
+  <a href="#最近更新">最近更新</a> ·
+  <a href="#普通用户--下载即用">下载安装</a> ·
+  <a href="#开发者">开发者</a>
+</p>
+
+---
+
+## 功能特性
+
+- **本地优先** — 默认 Ollama 本机跑通导入 → 摘要 → 深聊，书与笔记数据不出机
+- **多格式书库** — 支持 PDF / EPUB / MOBI / TXT，智能分段 + 三句摘要
+- **沉浸式阅读** — 贴边段列表 / 笔记 / 深聊，摘要 ↔ 原文一键切换
+- **深度理解** — 古文、外文自动翻译；段级 citation 可溯源；可选联网增强
+- **读书记忆** — 跨书笔记 + **⌘K** 全局搜索，随时找回读过的内容
+- **资讯** — RSS 同步、结构化简报与精读深聊
+- **可扩展** — 可选 OpenAI / OpenRouter / Cursor 兼容 API；整书摘要导出 Markdown
+
+---
+
+## 最近更新
+
+### v0.4 — 大文件阅读与导入更流畅
+
+- 段列表**按需加载**摘要，不必等全书生成即可开始阅读
+- 后台解析 + **批量 SSE 刷新**，导入与摘要不卡 UI
+- 滚动与预取**防抖**、Equatable 渲染，千万字长书更顺滑
+- 后端 SQLite 写锁与**瘦 API**，事件流不被阻塞
+
+### v0.3 — 本地 Ollama 摘要更稳更好
+
+- 针对小模型精简 prompt 与解析，**重试 + 进度指标**
+- **任务管理** UI：查看 / 取消进行中的导入与摘要
+- **资源并发**可调（设置 → API 资源），配合 `OLLAMA_NUM_PARALLEL`
+- Ops API 与可观测性增强
 
 ---
 
@@ -25,7 +69,7 @@ Release 页提供 **Lumina-0.3.0-macOS.dmg**（由 GitHub Actions 自动构建�
 
 ### 首次打开：「无法验证 / 可能危害 Mac」
 
-这是 **正常现象**。v0.2 由 GitHub 自动构建，尚未经过 Apple 付费开发者签名与公证，macOS 会对**任何**未公证的本机应用显示此提示，**不代表有病毒**。
+这是 **正常现象**。当前 Release 由 GitHub Actions 自动构建，尚未经过 Apple 付费开发者签名与公证，macOS 会对**任何**未公证的本机应用显示此提示，**不代表有病毒**。
 
 任选一种方式即可打开（只需操作一次）：
 
@@ -72,6 +116,7 @@ xattr -cr /Applications/Lumina.app
 | 跨书搜索 | **⌘K** |
 | 资讯 | 顶部 **资讯** Tab → **同步 RSS** |
 | 导出摘要 | 阅读器 → **导出** |
+| 任务管理 | **设置** Tab → 查看 / 取消进行中的导入与摘要 |
 | 设置 | **设置** Tab（语言、联网 provider、深色模式） |
 
 > **说明**：**Cursor** 预设资源走 OpenAI 兼容 HTTP 路径（`POST /v1/chat/completions`），需在设置中配置代理 Base URL 与 API Key（Cursor 官方暂无原生 chat/completions endpoint）。默认亦支持 Ollama、OpenAI、OpenRouter 等。
