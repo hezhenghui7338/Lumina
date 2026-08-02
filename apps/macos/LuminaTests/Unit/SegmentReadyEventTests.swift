@@ -76,10 +76,10 @@ final class SegmentReadyEventTests: XCTestCase {
     }
 
     func testFormatBulletsPreview_matchesParseBullets() {
-        let preview = SegmentSidebarRow.formatBulletsPreview(sampleSummaryJSON)
+        let preview = SegmentReadyEventParser.formatBulletsPreview(sampleSummaryJSON)
         XCTAssertNotNil(preview)
         XCTAssertTrue(preview?.contains("寒门出身") ?? false)
-        let bullets = SegmentSidebarRow.parseBullets(sampleSummaryJSON)
+        let bullets = SegmentReadyEventParser.parseBullets(sampleSummaryJSON)
         XCTAssertEqual(preview, bullets.joined(separator: " · "))
     }
 }

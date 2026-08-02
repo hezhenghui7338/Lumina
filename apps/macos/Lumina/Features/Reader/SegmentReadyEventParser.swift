@@ -73,4 +73,34 @@ enum SegmentReadyEventParser {
         }
         return json
     }
+
+    static func formatBulletsPreview(_ json: String?) -> String? {
+        let bullets = parseBullets(json)
+        guard !bullets.isEmpty else { return nil }
+        return bullets.joined(separator: " · ")
+    }
+
+    static func parseBullets(_ json: String?) -> [String] {
+        guard let json, let data = json.data(using: .utf8),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let bullets = obj["bullets"] as? [Any]
+        else { return [] }
+        return bullets.compactMap { item in
+            if let text = item as? String, !text.isEmpty {
+                return text
+            }
+            if let dict = item as? [String: Any] {
+                let label = (dict["label"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+                let body = (dict["body"] as? String ?? dict["content"] as? String)?
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                if let body, !body.isEmpty {
+                    if let label, !label.isEmpty {
+                        return "\(label)：\(body)"
+                    }
+                    return body
+                }
+            }
+            return nil
+        }
+    }
 }
