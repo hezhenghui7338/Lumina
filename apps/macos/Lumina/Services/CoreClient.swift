@@ -18,12 +18,15 @@ struct BookSummary: Codable, Identifiable, Hashable {
     var language: String?
     var target_language: String?
     var summarize_active: SummarizeActive?
+    var summarize_state: String?
+    var summarize_queued_count: Int?
 
     enum CodingKeys: String, CodingKey {
         case id, title, status, segment_count, is_favorite, category
         case last_opened_at, current_segment_index, author, created_at
         case total_char_count, summary_ready_count, summary_total_count, chunker_version
-        case language, target_language, summarize_active
+        case language, target_language, summarize_active, summarize_state
+        case summarize_queued_count
     }
 
     init(
@@ -43,7 +46,9 @@ struct BookSummary: Codable, Identifiable, Hashable {
         chunker_version: String? = nil,
         language: String? = nil,
         target_language: String? = nil,
-        summarize_active: SummarizeActive? = nil
+        summarize_active: SummarizeActive? = nil,
+        summarize_state: String? = nil,
+        summarize_queued_count: Int? = nil
     ) {
         self.id = id
         self.title = title
@@ -62,6 +67,8 @@ struct BookSummary: Codable, Identifiable, Hashable {
         self.language = language
         self.target_language = target_language
         self.summarize_active = summarize_active
+        self.summarize_state = summarize_state
+        self.summarize_queued_count = summarize_queued_count
     }
 
     init(from decoder: Decoder) throws {
@@ -91,6 +98,8 @@ struct BookSummary: Codable, Identifiable, Hashable {
         language = try c.decodeIfPresent(String.self, forKey: .language)
         target_language = try c.decodeIfPresent(String.self, forKey: .target_language)
         summarize_active = try c.decodeIfPresent(SummarizeActive.self, forKey: .summarize_active)
+        summarize_state = try c.decodeIfPresent(String.self, forKey: .summarize_state)
+        summarize_queued_count = try c.decodeIfPresent(Int.self, forKey: .summarize_queued_count)
     }
 
     var isFavorite: Bool { is_favorite ?? false }
@@ -115,6 +124,24 @@ struct BookSummary: Codable, Identifiable, Hashable {
 
     var isProcessing: Bool { status == "processing" }
 
+    var summarizeQueuedCount: Int { summarize_queued_count ?? 0 }
+
+    var canStartSummarize: Bool {
+        guard !isProcessing, summaryTotal > 0, summaryReady < summaryTotal else { return false }
+        switch summarize_state {
+        case "idle", "paused": return true
+        default: return false
+        }
+    }
+
+    var canStopSummarize: Bool {
+        guard !isProcessing else { return false }
+        switch summarize_state {
+        case "running", "queued", "paused": return true
+        default: return false
+        }
+    }
+
     var statusLabel: String {
         switch status {
         case "unread": return "未读"
@@ -123,6 +150,63 @@ struct BookSummary: Codable, Identifiable, Hashable {
         case "processing": return "处理中"
         case "error": return "导入失败"
         default: return status
+        }
+    }
+}
+
+struct SummarizeOverview: Codable {
+    struct Counts: Codable {
+        let running: Int
+        let queued: Int
+        let paused: Int
+        let idle: Int
+        let summarized: Int
+    }
+
+    let counts: Counts
+    let user_paused_all: Bool
+
+    var activeCount: Int { counts.running + counts.queued }
+}
+
+enum SummarizeStateFilter: String, CaseIterable, Identifiable {
+    case all, running, queued, idle, summarized
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .all: return "全部"
+        case .running: return "正在摘要"
+        case .queued: return "排队中"
+        case .idle: return "待摘要"
+        case .summarized: return "已摘要"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .all: return "square.stack.3d.up"
+        case .running: return "arrow.triangle.2.circlepath"
+        case .queued: return "clock"
+        case .idle: return "doc.text"
+        case .summarized: return "checkmark.circle"
+        }
+    }
+
+    func matches(_ book: BookSummary) -> Bool {
+        switch self {
+        case .all:
+            return true
+        case .running:
+            return book.summarize_state == "running"
+        case .queued:
+            return book.summarize_state == "queued"
+        case .idle:
+            return book.summarize_state == "idle" || book.summarize_state == "paused"
+        case .summarized:
+            return book.summarize_state == "summarized"
+                || (book.summaryTotal > 0 && book.summaryReady >= book.summaryTotal)
         }
     }
 }
@@ -155,6 +239,20 @@ struct LibraryFilter: Hashable, Identifiable {
         }
     }
 
+    var systemImage: String {
+        switch rawValue {
+        case "all": return "books.vertical"
+        case "文学": return "book"
+        case "历史": return "clock.arrow.circlepath"
+        case "科技": return "cpu"
+        case "哲学": return "brain.head.profile"
+        case "经济": return "chart.line.uptrend.xyaxis"
+        case "传记": return "person.text.rectangle"
+        case "其他": return "ellipsis.circle"
+        default: return "tag"
+        }
+    }
+
     var queryValue: String { rawValue }
 
     static func category(_ name: String) -> LibraryFilter {
@@ -162,9 +260,7 @@ struct LibraryFilter: Hashable, Identifiable {
     }
 
     static func standardFilters(categories: [String]) -> [LibraryFilter] {
-        var filters: [LibraryFilter] = [.all, .summarized]
-        filters.append(contentsOf: categories.map { category($0) })
-        return filters
+        [.all] + categories.map { category($0) }
     }
 
     init(rawValue: String) {
@@ -174,8 +270,8 @@ struct LibraryFilter: Hashable, Identifiable {
     /// Migrate legacy collection preferences (unread/reading → all).
     static func fromPersisted(_ raw: String) -> LibraryFilter {
         switch raw {
-        case "all", "summarized": return LibraryFilter(rawValue: raw)
-        case "unread", "reading": return .all
+        case "all": return .all
+        case "summarized", "unread", "reading": return .all
         default:
             if fallbackCategories.contains(raw) {
                 return category(raw)
@@ -624,6 +720,23 @@ final class CoreClient: ObservableObject {
         _ = try await post(path: "/books/summarize/stop", body: Data("{}".utf8))
     }
 
+    func startSummarize(bookIds: [String]) async throws {
+        struct Body: Codable { let book_ids: [String] }
+        let body = try JSONEncoder().encode(Body(book_ids: bookIds))
+        _ = try await post(path: "/books/summarize/start", body: body)
+    }
+
+    func stopSummarize(bookIds: [String]) async throws {
+        struct Body: Codable { let book_ids: [String] }
+        let body = try JSONEncoder().encode(Body(book_ids: bookIds))
+        _ = try await post(path: "/books/summarize/stop", body: body)
+    }
+
+    func fetchSummarizeOverview() async throws -> SummarizeOverview {
+        let data = try await get(path: "/books/summarize/overview")
+        return try await Self.decode(SummarizeOverview.self, from: data)
+    }
+
     func startSummarize(bookId: String) async throws {
         _ = try await post(path: "/books/\(bookId)/summarize/start", body: Data("{}".utf8))
     }
@@ -781,7 +894,8 @@ final class CoreClient: ObservableObject {
         webSearchProvider: String,
         tavilyAPIKey: String? = nil,
         debugMode: Bool? = nil,
-        models: ModelsSettings? = nil
+        models: ModelsSettings? = nil,
+        prompts: PromptsSettings? = nil
     ) async throws -> AppSettings {
         struct Body: Codable {
             let target_language: String
@@ -789,6 +903,7 @@ final class CoreClient: ObservableObject {
             let tavily_api_key: String?
             let debug_mode: Bool?
             let models: ModelsSettings?
+            let prompts: PromptsSettings?
         }
         let body = try JSONEncoder().encode(
             Body(
@@ -796,7 +911,8 @@ final class CoreClient: ObservableObject {
                 web_search_provider: webSearchProvider,
                 tavily_api_key: tavilyAPIKey,
                 debug_mode: debugMode,
-                models: models
+                models: models,
+                prompts: prompts
             )
         )
         let data = try await put(path: "/settings", body: body)

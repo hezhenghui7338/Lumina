@@ -2,13 +2,9 @@
 
 from __future__ import annotations
 
+from lumina_core.config import PromptsConfig, load_prompts_config
 from lumina_core.models.router import ProfileModelRouter
-
-TRANSLATE_PROMPT = """将以下文本翻译为{target_language}。保持术语一致，只输出译文。
-
----
-{text}
-"""
+from lumina_core.prompts_defaults import DEFAULT_TRANSLATE as TRANSLATE_PROMPT
 
 
 async def translate_segment(
@@ -16,8 +12,10 @@ async def translate_segment(
     *,
     raw_text: str,
     target_language: str,
+    prompts: PromptsConfig | None = None,
 ) -> str:
-    prompt = TRANSLATE_PROMPT.format(
+    template = (prompts or load_prompts_config()).translate
+    prompt = template.format(
         target_language=target_language,
         text=raw_text[:8000],
     )

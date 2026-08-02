@@ -172,7 +172,7 @@ struct SegmentSidebarRowView: View, Equatable {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
             isSelected
-                ? LuminaTheme.accentMuted.opacity(0.45)
+                ? LuminaTheme.listSelectionBackground
                 : Color.clear
         )
     }

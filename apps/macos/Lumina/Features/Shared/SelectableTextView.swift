@@ -98,7 +98,14 @@ struct LuminaSelectableText: NSViewRepresentable {
 
 // MARK: - AppKit views
 
+extension Notification.Name {
+    /// Posted when the user single-clicks selectable reading text (drag < 5pt).
+    static let luminaToggleReaderChrome = Notification.Name("luminaToggleReaderChrome")
+}
+
 final class LuminaSelectableTextView: NSTextView {
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
     override var intrinsicContentSize: NSSize {
         guard let layoutManager, let textContainer else {
             return super.intrinsicContentSize

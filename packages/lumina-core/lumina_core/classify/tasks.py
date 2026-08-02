@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import logging
-
 import sqlite3
+
+from lumina_core.config import PromptsConfig
 
 from lumina_core.classify.book import classify_book, normalize_category
 from lumina_core.db.repos import BookRepo, SegmentRepo
@@ -17,6 +18,7 @@ async def run_classify_book(
     conn: sqlite3.Connection,
     router: ProfileModelRouter,
     book_id: str,
+    prompts: PromptsConfig | None = None,
 ) -> str | None:
     books_repo = BookRepo(conn)
     segments_repo = SegmentRepo(conn)
@@ -35,6 +37,7 @@ async def run_classify_book(
             title=book.get("title") or "",
             author=book.get("author"),
             text_sample=sample,
+            prompts=prompts,
         )
     except Exception:
         logger.exception("book classify failed for %s", book_id)

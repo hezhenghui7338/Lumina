@@ -5,8 +5,11 @@ struct SettingsView: View {
     @EnvironmentObject private var sidecar: SidecarManager
     @EnvironmentObject private var theme: ThemeManager
     @State private var settings: AppSettings?
+    @State private var promptsDefaults: PromptsSettings?
     @State private var error: String?
     @State private var saving = false
+    @State private var pendingSave = false
+    @State private var autoSaveEnabled = false
     @State private var tavilyAPIKey = ""
     @State private var tavilyKeyConfigured = false
     @State private var resourceAPIKeys: [String: String] = [:]
@@ -24,9 +27,18 @@ struct SettingsView: View {
         .navigationTitle("设置")
         .task { await load() }
         .refreshable { await refreshResourceStatuses() }
-        .onChange(of: settings?.target_language) { _, _ in Task { await save() } }
-        .onChange(of: settings?.web_search_provider) { _, _ in Task { await save() } }
-        .onChange(of: settings?.debug_mode) { _, _ in Task { await save() } }
+        .onChange(of: settings?.target_language) { _, _ in
+            guard autoSaveEnabled else { return }
+            Task { await save() }
+        }
+        .onChange(of: settings?.web_search_provider) { _, _ in
+            guard autoSaveEnabled else { return }
+            Task { await save() }
+        }
+        .onChange(of: settings?.debug_mode) { _, _ in
+            guard autoSaveEnabled else { return }
+            Task { await save() }
+        }
         .sheet(item: $editingResource) { resource in
             ResourceEditorSheet(
                 resource: resourceBinding(for: resource.id),
@@ -76,6 +88,7 @@ struct SettingsView: View {
             route: summarizeRouteBinding,
             footer: "翻译与摘要共用此优先级链。靠前的资源优先使用。各资源的并发在 API 资源编辑中配置。"
         )
+        promptsSection(settings: settings)
         appearanceSection
         newsSection
         advancedSection(settings: settings)
@@ -91,6 +104,34 @@ struct SettingsView: View {
                 Text("日本語").tag("ja-JP")
             }
         }
+    }
+
+    @ViewBuilder
+    private func promptsSection(settings: AppSettings) -> some View {
+        if promptsDefaults != nil {
+            Section {
+                NavigationLink("Prompt 模板") {
+                    PromptsSettingsView(
+                        prompts: promptsBinding,
+                        defaultPrompts: promptsDefaults ?? settings.prompts_defaults,
+                        onSave: { await savePromptsOnly() }
+                    )
+                }
+            } header: {
+                Text("Prompt")
+            } footer: {
+                Text("自定义段摘要、深聊、翻译等 LLM 提示词。保存后立即生效，不影响已有摘要。")
+            }
+        }
+    }
+
+    private var promptsBinding: Binding<PromptsSettings> {
+        Binding(
+            get: { settings?.prompts ?? PromptsSettings(segment: "", document: "", chat: "", news_chat: "", translate: "", classify: "") },
+            set: { newValue in
+                settings?.prompts = newValue
+            }
+        )
     }
 
     @ViewBuilder
@@ -348,14 +389,22 @@ struct SettingsView: View {
     private func binding(_ keyPath: WritableKeyPath<AppSettings, String>) -> Binding<String> {
         Binding(
             get: { settings?[keyPath: keyPath] ?? "" },
-            set: { settings?[keyPath: keyPath] = $0 }
+            set: { newValue in
+                guard var s = settings else { return }
+                s[keyPath: keyPath] = newValue
+                settings = s
+            }
         )
     }
 
     private func boolBinding(_ keyPath: WritableKeyPath<AppSettings, Bool>) -> Binding<Bool> {
         Binding(
             get: { settings?[keyPath: keyPath] ?? false },
-            set: { settings?[keyPath: keyPath] = $0 }
+            set: { newValue in
+                guard var s = settings else { return }
+                s[keyPath: keyPath] = newValue
+                settings = s
+            }
         )
     }
 
@@ -436,15 +485,18 @@ struct SettingsView: View {
     }
 
     private func load() async {
+        autoSaveEnabled = false
         guard await sidecar.waitUntilReady() else { return }
         do {
             let loaded = try await core.fetchSettings()
             settings = loaded
+            promptsDefaults = loaded.prompts_defaults
             syncKeyState(from: loaded.models)
             tavilyKeyConfigured = loaded.tavily_api_key == "***"
             tavilyAPIKey = ""
             resourceAPIKeys = [:]
             await refreshResourceStatuses()
+            autoSaveEnabled = true
         } catch {
             self.error = error.localizedDescription
         }
@@ -474,11 +526,22 @@ struct SettingsView: View {
     }
 
     private func save() async {
-        guard var settings, !saving else { return }
+        if saving {
+            pendingSave = true
+            return
+        }
         saving = true
-        defer { saving = false }
+        defer {
+            saving = false
+            if pendingSave {
+                pendingSave = false
+                Task { await save() }
+            }
+        }
 
-        applyResourceKeys(to: &settings)
+        guard var snapshot = self.settings else { return }
+
+        applyResourceKeys(to: &snapshot)
 
         var tavilyToSend: String? = nil
         if !tavilyAPIKey.isEmpty {
@@ -490,18 +553,40 @@ struct SettingsView: View {
 
         do {
             let updated = try await core.updateSettings(
-                targetLanguage: settings.target_language,
-                webSearchProvider: settings.web_search_provider,
+                targetLanguage: snapshot.target_language,
+                webSearchProvider: snapshot.web_search_provider,
                 tavilyAPIKey: tavilyToSend,
-                debugMode: settings.debug_mode,
-                models: settings.models
+                debugMode: snapshot.debug_mode,
+                models: snapshot.models,
+                prompts: snapshot.prompts
             )
             self.settings = updated
+            promptsDefaults = updated.prompts_defaults
             syncKeyState(from: updated.models)
             tavilyAPIKey = ""
             resourceAPIKeys = [:]
             tavilyKeyConfigured = updated.tavily_api_key == "***"
             await refreshResourceStatuses()
+        } catch {
+            self.error = error.localizedDescription
+        }
+    }
+
+    private func savePromptsOnly() async {
+        guard var snapshot = settings else { return }
+        saving = true
+        defer { saving = false }
+        do {
+            let updated = try await core.updateSettings(
+                targetLanguage: snapshot.target_language,
+                webSearchProvider: snapshot.web_search_provider,
+                tavilyAPIKey: tavilyKeyConfigured ? "***" : nil,
+                debugMode: snapshot.debug_mode,
+                models: snapshot.models,
+                prompts: snapshot.prompts
+            )
+            settings = updated
+            promptsDefaults = updated.prompts_defaults
         } catch {
             self.error = error.localizedDescription
         }
@@ -551,6 +636,13 @@ private struct ResourceEditorSheet: View {
                 } footer: {
                     Text(kind.concurrencyHint)
                 }
+                Section {
+                    Stepper(value: chunkTargetBinding, in: kind.chunkTargetRange, step: 100) {
+                        Text(chunkTargetLabel)
+                    }
+                } footer: {
+                    Text(kind.chunkTargetHint)
+                }
                 probeControls
             }
             .navigationTitle(resource.id)
@@ -569,7 +661,27 @@ private struct ResourceEditorSheet: View {
                 await refreshResourceStatus()
             }
         }
-        .frame(minWidth: 420, minHeight: resource.provider == "ollama" ? 520 : 360)
+        .frame(minWidth: 420, minHeight: resource.provider == "ollama" ? 580 : 420)
+    }
+
+    private var chunkTargetLabel: String {
+        if resource.usesDefaultChunkTarget {
+            return "分段目标：默认（\(kind.defaultChunkTarget) 字）"
+        }
+        return "分段目标：\(resource.effectiveChunkTarget) 字"
+    }
+
+    private var chunkTargetBinding: Binding<Int> {
+        Binding(
+            get: { resource.effectiveChunkTarget },
+            set: { newValue in
+                if newValue == kind.defaultChunkTarget {
+                    resource.chunk_target_chars = 0
+                } else {
+                    resource.chunk_target_chars = newValue
+                }
+            }
+        )
     }
 
     private var concurrencyBinding: Binding<Int> {
@@ -741,19 +853,33 @@ struct AppSettings: Codable {
     var tavily_api_key: String?
     var debug_mode: Bool
     var models: ModelsSettings
+    var prompts: PromptsSettings
+    var prompts_defaults: PromptsSettings
 
     init(
         target_language: String,
         web_search_provider: String = "ddgs",
         tavily_api_key: String? = nil,
         debug_mode: Bool = false,
-        models: ModelsSettings = .defaults
+        models: ModelsSettings = .defaults,
+        prompts: PromptsSettings? = nil,
+        prompts_defaults: PromptsSettings? = nil
     ) {
         self.target_language = target_language
         self.web_search_provider = web_search_provider
         self.tavily_api_key = tavily_api_key
         self.debug_mode = debug_mode
         self.models = models
+        let empty = PromptsSettings(
+            segment: "",
+            document: "",
+            chat: "",
+            news_chat: "",
+            translate: "",
+            classify: ""
+        )
+        self.prompts = prompts ?? empty
+        self.prompts_defaults = prompts_defaults ?? empty
     }
 
     init(from decoder: Decoder) throws {
@@ -763,6 +889,16 @@ struct AppSettings: Codable {
         tavily_api_key = try c.decodeIfPresent(String.self, forKey: .tavily_api_key)
         debug_mode = try c.decodeIfPresent(Bool.self, forKey: .debug_mode) ?? false
         models = try c.decodeIfPresent(ModelsSettings.self, forKey: .models) ?? .defaults
+        let empty = PromptsSettings(
+            segment: "",
+            document: "",
+            chat: "",
+            news_chat: "",
+            translate: "",
+            classify: ""
+        )
+        prompts = try c.decodeIfPresent(PromptsSettings.self, forKey: .prompts) ?? empty
+        prompts_defaults = try c.decodeIfPresent(PromptsSettings.self, forKey: .prompts_defaults) ?? empty
     }
 
     func encode(to encoder: Encoder) throws {
@@ -772,10 +908,11 @@ struct AppSettings: Codable {
         try c.encodeIfPresent(tavily_api_key, forKey: .tavily_api_key)
         try c.encode(debug_mode, forKey: .debug_mode)
         try c.encode(models, forKey: .models)
+        try c.encode(prompts, forKey: .prompts)
     }
 
     enum CodingKeys: String, CodingKey {
-        case target_language, web_search_provider, tavily_api_key, debug_mode, models
+        case target_language, web_search_provider, tavily_api_key, debug_mode, models, prompts, prompts_defaults
     }
 }
 
@@ -822,6 +959,7 @@ struct ModelResourceSettings: Codable, Identifiable, Equatable {
     var api_key: String?
     var chat_timeout: Double?
     var concurrency: Int?
+    var chunk_target_chars: Int?
 
     init(
         id: String,
@@ -830,7 +968,8 @@ struct ModelResourceSettings: Codable, Identifiable, Equatable {
         model: String = "",
         api_key: String? = nil,
         chat_timeout: Double? = 12,
-        concurrency: Int? = nil
+        concurrency: Int? = nil,
+        chunk_target_chars: Int? = nil
     ) {
         self.id = id
         self.provider = provider
@@ -839,6 +978,7 @@ struct ModelResourceSettings: Codable, Identifiable, Equatable {
         self.api_key = api_key
         self.chat_timeout = chat_timeout
         self.concurrency = concurrency
+        self.chunk_target_chars = chunk_target_chars
     }
 
     var effectiveConcurrency: Int {
@@ -846,6 +986,17 @@ struct ModelResourceSettings: Codable, Identifiable, Equatable {
             return concurrency
         }
         return ModelProviderKind.from(provider: provider, baseURL: base_url).defaultConcurrency
+    }
+
+    var usesDefaultChunkTarget: Bool {
+        (chunk_target_chars ?? 0) <= 0
+    }
+
+    var effectiveChunkTarget: Int {
+        if let chunk_target_chars, chunk_target_chars > 0 {
+            return chunk_target_chars
+        }
+        return ModelProviderKind.from(provider: provider, baseURL: base_url).defaultChunkTarget
     }
 }
 
@@ -957,6 +1108,25 @@ enum ModelProviderKind: String, CaseIterable, Identifiable {
         case .openai, .aiping, .custom:
             return "OpenAI 兼容 API 的并发上限。"
         }
+    }
+
+    var defaultChunkTarget: Int {
+        switch self {
+        case .ollama: return 2500
+        case .openrouter: return 3500
+        case .openai, .cursor, .aiping, .custom: return 4000
+        }
+    }
+
+    var chunkTargetRange: ClosedRange<Int> {
+        switch self {
+        case .ollama: return 1500...4000
+        default: return 2000...8000
+        }
+    }
+
+    var chunkTargetHint: String {
+        "导入时长书按此目标字数分段；仅当该资源为摘要优先级首位时生效，且只影响新导入的书籍。"
     }
 
     static func from(provider: String, baseURL: String) -> ModelProviderKind {

@@ -106,6 +106,9 @@ final class CoreClientDecodingTests: XCTestCase {
         XCTAssertEqual(settings.models.resource(id: "openai")?.base_url, "https://api.openai.com/v1")
         XCTAssertEqual(settings.models.chat.priority, ["openai", "ollama"])
         XCTAssertEqual(settings.models.summarize.priority.first, "ollama")
+        XCTAssertFalse(settings.prompts.segment.isEmpty)
+        XCTAssertFalse(settings.prompts_defaults.segment.isEmpty)
+        XCTAssertTrue(settings.prompts.segment.contains("{text}"))
     }
 
     func testNewsBrief_decodesEmptyBrief() throws {
@@ -145,6 +148,47 @@ final class CoreClientDecodingTests: XCTestCase {
         XCTAssertEqual(result.warnings.count, 1)
         XCTAssertEqual(result.body_text, "推理成本显著下降。云厂商集体降价。")
         XCTAssertTrue(result.body_complete)
+    }
+
+    func testBookSummary_decodesSummarizeState() throws {
+        let json = """
+        {
+          "books": [{
+            "id": "b1",
+            "title": "Sample",
+            "status": "reading",
+            "segment_count": 5,
+            "summary_ready_count": 1,
+            "summary_total_count": 5,
+            "summarize_state": "queued",
+            "summarize_queued_count": 3
+          }]
+        }
+        """
+        let resp = try JSONDecoder().decode(BooksListResponse.self, from: json.data(using: .utf8)!)
+        XCTAssertEqual(resp.books[0].summarize_state, "queued")
+        XCTAssertEqual(resp.books[0].summarizeQueuedCount, 3)
+        XCTAssertTrue(resp.books[0].canStopSummarize)
+        XCTAssertFalse(resp.books[0].canStartSummarize)
+    }
+
+    func testSummarizeOverview_decodesCounts() throws {
+        let json = """
+        {
+          "counts": {
+            "running": 1,
+            "queued": 2,
+            "paused": 0,
+            "idle": 3,
+            "summarized": 4
+          },
+          "user_paused_all": false
+        }
+        """
+        let overview = try JSONDecoder().decode(SummarizeOverview.self, from: json.data(using: .utf8)!)
+        XCTAssertEqual(overview.activeCount, 3)
+        XCTAssertEqual(overview.counts.idle, 3)
+        XCTAssertFalse(overview.user_paused_all)
     }
 
     func testBookSummary_decodesSummarizeActiveAndSegmentMetrics() throws {

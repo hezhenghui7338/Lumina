@@ -9,6 +9,7 @@ from typing import Any
 
 import sqlite3
 
+from lumina_core.config import PromptsConfig
 from lumina_core.models.router import ProfileModelRouter
 from lumina_core.news.fetch import FetchResult, body_quality_ok, fetch_article
 from lumina_core.news.store import NewsStore
@@ -111,6 +112,7 @@ async def read_article(
     cache_dir: Path,
     force_refetch: bool = False,
     use_llm: bool = True,
+    prompts: PromptsConfig | None = None,
 ) -> ReadResult:
     store = NewsStore(conn)
     article = store.get(article_id)
@@ -204,6 +206,7 @@ async def read_article(
             title=title or article_id,
             use_llm=use_llm,
             allow_long=True,
+            prompts=prompts,
         )
     except Exception as exc:
         store.update_fields(article_id, summary_status="failed")

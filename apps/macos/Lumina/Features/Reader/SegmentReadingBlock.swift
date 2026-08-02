@@ -83,7 +83,10 @@ struct SegmentReadingBlock: View, Equatable {
     }
 
     private var viewportHeight: CGFloat {
-        lockedViewportHeight ?? clampHeight(measuredContentHeight)
+        ReaderSegmentPanelHeight.boxedViewportHeight(
+            measured: measuredContentHeight,
+            locked: lockedViewportHeight
+        )
     }
 
     @ViewBuilder
@@ -147,20 +150,22 @@ struct SegmentReadingBlock: View, Equatable {
     }
 
     private var panelToggleButton: some View {
-        Button(action: togglePanelContent) {
-            Text(toggleTitle(showingSource: showingSource))
-                .font(.system(size: LuminaTheme.summaryLabelSize, weight: .semibold))
-                .foregroundStyle(LuminaTheme.textSecondary)
-                .tracking(0.6)
-                .frame(maxWidth: .infinity, alignment: .leading)
+        HStack(spacing: 0) {
+            Button(action: togglePanelContent) {
+                Text(toggleTitle(showingSource: showingSource))
+                    .font(.system(size: LuminaTheme.summaryLabelSize, weight: .semibold))
+                    .foregroundStyle(LuminaTheme.textSecondary)
+                    .tracking(0.6)
+            }
+            .buttonStyle(.plain)
+            Spacer(minLength: 0)
         }
-        .buttonStyle(.plain)
     }
 
     private func handleSummaryHeightChange(_ height: CGFloat) {
         guard height > 0, shouldMeasureSummaryHeight else { return }
         measuredContentHeight = height
-        lockedViewportHeight = clampHeight(height)
+        lockedViewportHeight = ReaderSegmentPanelHeight.clamp(height)
     }
 
     @ViewBuilder
@@ -185,13 +190,6 @@ struct SegmentReadingBlock: View, Equatable {
         showingSource ? "切换摘要" : "切换原文"
     }
 
-    private func clampHeight(_ height: CGFloat) -> CGFloat {
-        min(
-            max(height, LuminaTheme.segmentContentMinHeight),
-            LuminaTheme.segmentContentMaxHeight
-        )
-    }
-
     @ViewBuilder
     private func summaryContent(showsBackground: Bool) -> some View {
         if let parsedSummary {
@@ -207,7 +205,8 @@ struct SegmentReadingBlock: View, Equatable {
                 summaryDurationS: segment.summary_duration_s,
                 summaryLlmAttempts: segment.summary_llm_attempts,
                 onFollowUp: onFollowUp,
-                showsBackground: showsBackground
+                showsBackground: showsBackground,
+                showsHeader: false
             )
         } else if isSummaryLoading {
             summaryLoadingSkeleton

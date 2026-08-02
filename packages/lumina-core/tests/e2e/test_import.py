@@ -263,6 +263,7 @@ def test_settings_secrets_persist_across_reload(client, tmp_path):
 
     reloaded_settings = load_settings(tmp_path)
     reloaded_models = load_models(tmp_path)
+    assert reloaded_settings.web_search_provider == "tavily"
     assert reloaded_settings.tavily_api_key == "tvly-persist"
     openai = reloaded_models.resource_by_id("openai")
     assert openai is not None

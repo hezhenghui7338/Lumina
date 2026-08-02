@@ -6,17 +6,12 @@ import json
 from collections.abc import AsyncIterator
 from typing import Any
 
+from lumina_core.config import PromptsConfig, load_prompts_config
 from lumina_core.db.repos import ChatRepo, SegmentRepo
-from lumina_core.summarize.schema import format_summary_text, parse_segment_summary
 from lumina_core.models.router import ProfileModelRouter, parse_chat_response
+from lumina_core.prompts_defaults import DEFAULT_CHAT as CHAT_SYSTEM
 from lumina_core.search.web import assess_evidence_sufficiency, search_web
-
-CHAT_SYSTEM = """你是 Lumina 阅读助手。基于提供的书籍上下文回答问题。
-- 书中事实必须引用 [段 N]
-- 联网信息标注 [网]
-- 书中未提及且无法从联网确认时，明确拒答
-输出 JSON：{"answer": "...", "citations": [{"segment_index": 0, "label": "[段 1]"}], "web_refs": [{"title": "...", "url": "..."}], "evidence_sufficient": true}
-"""
+from lumina_core.summarize.schema import format_summary_text, parse_segment_summary
 
 
 def build_dca_context(
@@ -70,6 +65,7 @@ async def prepare_chat(
     quote: str | None = None,
     web_search_provider: str = "ddgs",
     tavily_api_key: str | None = None,
+    prompts: PromptsConfig | None = None,
 ) -> tuple[list[dict[str, str]], list[dict[str, str]], str]:
     segments = segment_repo.list_for_book(book["id"])
     context = build_dca_context(book, segments, current_segment_idx)
@@ -89,7 +85,8 @@ async def prepare_chat(
     if quote and quote.strip():
         user_question = f"用户选中的原文:\n「{quote.strip()}」\n\n问题: {message}"
 
-    messages: list[dict[str, str]] = [{"role": "system", "content": CHAT_SYSTEM}]
+    chat_system = (prompts or load_prompts_config()).chat
+    messages: list[dict[str, str]] = [{"role": "system", "content": chat_system}]
     messages.append(
         {
             "role": "user",
@@ -110,6 +107,7 @@ async def chat_with_book(
     quote: str | None = None,
     web_search_provider: str = "ddgs",
     tavily_api_key: str | None = None,
+    prompts: PromptsConfig | None = None,
 ) -> dict[str, Any]:
     session = chat_repo.get_or_create_session(book["id"])
     history = chat_repo.list_messages(session["id"])[-6:]
@@ -122,6 +120,7 @@ async def chat_with_book(
         quote=quote,
         web_search_provider=web_search_provider,
         tavily_api_key=tavily_api_key,
+        prompts=prompts,
     )
     messages = [base_messages[0]]
     for msg in history:
@@ -163,6 +162,7 @@ async def stream_chat_with_book(
     quote: str | None = None,
     web_search_provider: str = "ddgs",
     tavily_api_key: str | None = None,
+    prompts: PromptsConfig | None = None,
 ) -> AsyncIterator[dict[str, Any]]:
     try:
         session = chat_repo.get_or_create_session(book["id"])
@@ -176,6 +176,7 @@ async def stream_chat_with_book(
             quote=quote,
             web_search_provider=web_search_provider,
             tavily_api_key=tavily_api_key,
+            prompts=prompts,
         )
         messages = [base_messages[0]]
         for msg in history:

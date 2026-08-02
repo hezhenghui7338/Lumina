@@ -140,6 +140,23 @@ def test_parse_segment_summary_minimal_fills_label_and_anchor():
     assert summary.follow_ups == []
 
 
+def test_parse_segment_summary_minimal_preserves_follow_ups():
+    raw = {
+        "sentences": ["本段交代主角寒门出身与赴考之志。"],
+        "bullets": [
+            {"label": "寒门出身", "body": "主角生于贫苦农家。"},
+            {"label": "赴考之志", "body": "段末誓要金榜题名。"},
+            {"label": "邻里关系", "body": "邻里敬其向学。"},
+        ],
+        "follow_ups": ["主角与邻里期望之间有何张力？", "赴考之志在后文如何遭遇挫折？"],
+    }
+    summary = parse_segment_summary_minimal(raw, fallback_anchor="§第一章 · 段 1")
+    assert summary.follow_ups == [
+        "主角与邻里期望之间有何张力？",
+        "赴考之志在后文如何遭遇挫折？",
+    ]
+
+
 @pytest.mark.asyncio
 async def test_summarize_segment_dumps_raw_on_failure(tmp_path):
     from lumina_core.summarize.segment import summarize_segment

@@ -75,6 +75,20 @@ def test_summarize_stop_and_start_all(client):
     _wait_ready(client, book_id)
 
 
+def test_summarize_batch_stop_and_start(client):
+    book_id = import_sample_book(client)
+
+    stop = client.post("/books/summarize/stop", json={"book_ids": [book_id]})
+    assert stop.status_code == 200
+    assert stop.json()["scope"] == "batch"
+    assert stop.json()["affected_count"] == 1
+
+    start = client.post("/books/summarize/start", json={"book_ids": [book_id]})
+    assert start.status_code == 200
+    assert start.json()["scope"] == "batch"
+    _wait_ready(client, book_id)
+
+
 def test_retry_segment_after_stop(client):
     book_id = import_sample_book(client)
     assert client.post(f"/books/{book_id}/summarize/stop").status_code == 200

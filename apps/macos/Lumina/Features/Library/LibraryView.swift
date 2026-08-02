@@ -19,6 +19,7 @@ struct LibraryView: View {
     @State private var exportFallbackBookTitle = ""
     @State private var shouldPresentFileExporter = false
     @State private var exportFeedback: ExportFeedback?
+    @State private var summarizeActionInFlight = false
 
     var onImport: () -> Void
     var onSearch: () -> Void
@@ -44,6 +45,25 @@ struct LibraryView: View {
                 .foregroundStyle(LuminaTheme.accent)
             }
             ToolbarItemGroup(placement: .automatic) {
+                if let overview = viewModel.summarizeOverview, overview.activeCount > 0 {
+                    Text("\(overview.counts.running) 进行中 · \(overview.counts.queued) 排队")
+                        .font(.caption2)
+                        .foregroundStyle(LuminaTheme.textSecondary)
+
+                    Button {
+                        Task { await stopAllSummarize() }
+                    } label: {
+                        if summarizeActionInFlight {
+                            ProgressView()
+                                .controlSize(.small)
+                        } else {
+                            Label("停止全部摘要", systemImage: "stop.fill")
+                        }
+                    }
+                    .disabled(summarizeActionInFlight)
+                    .help("停止所有正在摘要和排队中的任务")
+                }
+
                 if !viewModel.books.isEmpty {
                     Button {
                         toggleSelectionMode()
@@ -88,7 +108,7 @@ struct LibraryView: View {
             await viewModel.loadCategories(using: core)
             await refreshBooks()
         }
-        .task(id: viewModel.books.map(\.id)) {
+        .task(id: viewModel.needsSummarizePolling) {
             await pollSummaryProgress()
         }
         .onReceive(NotificationCenter.default.publisher(for: .luminaLibraryRefresh)) { _ in
@@ -233,69 +253,57 @@ struct LibraryView: View {
     }
 
     private var selectionToolbar: some View {
-        HStack(spacing: 8) {
-            Button("删除 (\(checkedBookIds.count))") {
-                batchDeleteCount = checkedBookIds.count
-            }
-            .font(.caption)
-            .buttonStyle(.bordered)
-            .controlSize(.small)
-            .disabled(checkedBookIds.isEmpty)
-
-            Button("收藏 (\(checkedBookIds.count))") {
-                Task { await batchSetFavorite(isFavorite: true) }
-            }
-            .font(.caption)
-            .buttonStyle(.bordered)
-            .controlSize(.small)
-            .disabled(checkedBookIds.isEmpty)
-
-            Button("取消收藏 (\(checkedBookIds.count))") {
-                Task { await batchSetFavorite(isFavorite: false) }
-            }
-            .font(.caption)
-            .buttonStyle(.bordered)
-            .controlSize(.small)
-            .disabled(checkedBookIds.isEmpty)
-
-            Spacer(minLength: 0)
-
-            Button("全选") {
-                checkedBookIds = Set(viewModel.books.map(\.id))
-            }
-            .font(.caption)
-            .buttonStyle(.plain)
-
-            Button("完成") {
-                exitSelectionMode()
-            }
-            .font(.caption)
-            .buttonStyle(.plain)
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
+        LibrarySelectionToolbar(
+            selectedCount: checkedBookIds.count,
+            startableCount: startableCheckedCount,
+            stoppableCount: stoppableCheckedCount,
+            summarizeActionInFlight: summarizeActionInFlight,
+            onStartSummarize: { Task { await batchStartSummarize() } },
+            onStopSummarize: { Task { await batchStopSummarize() } },
+            onDelete: { batchDeleteCount = checkedBookIds.count },
+            onFavorite: { Task { await batchSetFavorite(isFavorite: true) } },
+            onUnfavorite: { Task { await batchSetFavorite(isFavorite: false) } },
+            onSelectActive: { selectActiveSummarizeBooks() },
+            onSelectStartable: { selectStartableBooks() },
+            onSelectAll: { checkedBookIds = Set(viewModel.displayedBooks.map(\.id)) },
+            onDone: { exitSelectionMode() }
+        )
     }
 
     private var libraryControls: some View {
         HStack(spacing: 8) {
             filterPicker
+            summarizeStateFilterPicker
             sortPicker
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
     }
 
-    private var filterPicker: some View {
-        Picker("筛选", selection: $viewModel.filter) {
-            ForEach(viewModel.filterOptions) { item in
-                Text(item.label).tag(item)
+    private var summarizeStateFilterPicker: some View {
+        Picker("摘要状态", selection: $viewModel.summarizeStateFilter) {
+            ForEach(SummarizeStateFilter.allCases) { item in
+                Label(item.label, systemImage: item.systemImage).tag(item)
             }
         }
         .pickerStyle(.menu)
         .labelsHidden()
         .frame(maxWidth: .infinity, alignment: .leading)
         .layoutPriority(1)
-        .help("筛选：\(viewModel.filter.label)")
+        .help("摘要状态：\(viewModel.summarizeStateFilter.label)")
+    }
+
+    private var filterPicker: some View {
+        Picker("书籍类型", selection: $viewModel.filter) {
+            ForEach(viewModel.filterOptions) { item in
+                Label(item.label, systemImage: item.systemImage).tag(item)
+            }
+        }
+        .pickerStyle(.menu)
+        .labelsHidden()
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .layoutPriority(1)
+        .help("书籍类型：\(viewModel.filter.label)")
         .onChange(of: viewModel.filter) { _, new in
             Task {
                 do { try await viewModel.setFilter(new, using: core) }
@@ -331,22 +339,18 @@ struct LibraryView: View {
 
     @ViewBuilder
     private var bookList: some View {
-        if isSelectionMode {
-            List(viewModel.books) { book in
-                bookRow(book, selectionMode: true)
+        List {
+            ForEach(viewModel.displayedBooks) { book in
+                bookRow(book, selectionMode: isSelectionMode)
+                    .tag(book.id)
             }
-            .listStyle(.sidebar)
-        } else {
-            List(viewModel.books, selection: $selectedBookId) { book in
-                bookRow(book, selectionMode: false)
-                    .tag(book.id as String?)
-            }
-            .listStyle(.sidebar)
         }
+        .listStyle(.plain)
     }
 
     @ViewBuilder
     private func bookRow(_ book: BookSummary, selectionMode: Bool) -> some View {
+        let isSelected = !selectionMode && book.id == selectedBookId
         let row = BookRow(
             book: book,
             isClassifying: viewModel.classifyingIds.contains(book.id),
@@ -371,16 +375,32 @@ struct LibraryView: View {
             },
             onDelete: {
                 bookPendingDelete = book
+            },
+            onStartSummarize: {
+                Task { await startSummarize(for: book.id) }
+            },
+            onStopSummarize: {
+                Task { await stopSummarize(for: book.id) }
             }
         )
 
-        if selectionMode {
-            row
-                .contentShape(Rectangle())
-                .onTapGesture { toggleCheck(book.id) }
-        } else {
-            row
+        Group {
+            if selectionMode {
+                row
+                    .contentShape(Rectangle())
+                    .onTapGesture { toggleCheck(book.id) }
+            } else {
+                Button {
+                    selectedBookId = book.id
+                } label: {
+                    row
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
         }
+        .listRowBackground(isSelected ? LuminaTheme.libraryRowSelectionBackground : Color.clear)
+        .listRowInsets(EdgeInsets(top: 6, leading: 10, bottom: 6, trailing: 10))
     }
 
     func refreshBooks(preserveOrder: Bool = false) async {
@@ -401,13 +421,95 @@ struct LibraryView: View {
         }
     }
 
+    private var startableCheckedCount: Int {
+        checkedStartableBookIds.count
+    }
+
+    private var stoppableCheckedCount: Int {
+        checkedStoppableBookIds.count
+    }
+
+    private var checkedStartableBookIds: [String] {
+        viewModel.books
+            .filter { checkedBookIds.contains($0.id) && $0.canStartSummarize }
+            .map(\.id)
+    }
+
+    private var checkedStoppableBookIds: [String] {
+        viewModel.books
+            .filter { checkedBookIds.contains($0.id) && $0.canStopSummarize }
+            .map(\.id)
+    }
+
     private func pollSummaryProgress() async {
         while !Task.isCancelled {
-            guard viewModel.hasIncompleteSummaries else { return }
+            guard viewModel.needsSummarizePolling else { return }
             try? await Task.sleep(nanoseconds: 3_000_000_000)
-            guard !Task.isCancelled, viewModel.hasIncompleteSummaries else { return }
+            guard !Task.isCancelled, viewModel.needsSummarizePolling else { return }
             await refreshBooks(preserveOrder: true)
         }
+    }
+
+    private func stopAllSummarize() async {
+        guard !summarizeActionInFlight else { return }
+        summarizeActionInFlight = true
+        defer { summarizeActionInFlight = false }
+        do {
+            try await core.stopSummarizeAll()
+            await refreshBooks(preserveOrder: true)
+        } catch {
+            setActionError(from: error)
+        }
+    }
+
+    private func batchStartSummarize() async {
+        let ids = checkedStartableBookIds
+        guard !ids.isEmpty else { return }
+        await runSummarizeBatch(ids: ids, start: true)
+    }
+
+    private func batchStopSummarize() async {
+        let ids = checkedStoppableBookIds
+        guard !ids.isEmpty else { return }
+        await runSummarizeBatch(ids: ids, start: false)
+    }
+
+    private func startSummarize(for bookId: String) async {
+        await runSummarizeBatch(ids: [bookId], start: true)
+    }
+
+    private func stopSummarize(for bookId: String) async {
+        await runSummarizeBatch(ids: [bookId], start: false)
+    }
+
+    private func runSummarizeBatch(ids: [String], start: Bool) async {
+        guard !summarizeActionInFlight else { return }
+        summarizeActionInFlight = true
+        defer { summarizeActionInFlight = false }
+        do {
+            if start {
+                try await core.startSummarize(bookIds: ids)
+            } else {
+                try await core.stopSummarize(bookIds: ids)
+            }
+            await refreshBooks(preserveOrder: true)
+        } catch {
+            setActionError(from: error)
+        }
+    }
+
+    private func selectActiveSummarizeBooks() {
+        let ids = viewModel.displayedBooks
+            .filter(\.canStopSummarize)
+            .map(\.id)
+        checkedBookIds.formUnion(ids)
+    }
+
+    private func selectStartableBooks() {
+        let ids = viewModel.displayedBooks
+            .filter(\.canStartSummarize)
+            .map(\.id)
+        checkedBookIds.formUnion(ids)
     }
 
     private func confirmDelete(_ book: BookSummary) async {

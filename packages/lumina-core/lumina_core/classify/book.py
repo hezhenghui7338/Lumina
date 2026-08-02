@@ -7,23 +7,13 @@ import logging
 
 from pydantic import BaseModel, field_validator
 
+from lumina_core.config import PromptsConfig, load_prompts_config
 from lumina_core.models.router import ProfileModelRouter, parse_json_response
 
 logger = logging.getLogger(__name__)
 
 BOOK_CATEGORIES: tuple[str, ...] = ("文学", "历史", "科技", "哲学", "经济", "传记", "其他")
 DEFAULT_CATEGORY = "其他"
-
-CLASSIFY_PROMPT = """你是图书分类助手。根据书名、作者与正文样本，将书籍归入以下唯一主类之一：
-{categories}
-
-只输出 JSON，不要其他文字。示例：{{"category": "历史"}}
-
-书名：{title}
-作者：{author}
-正文样本：
-{text}
-"""
 
 
 class BookCategoryResult(BaseModel):
@@ -50,8 +40,10 @@ async def classify_book(
     title: str,
     author: str | None,
     text_sample: str,
+    prompts: PromptsConfig | None = None,
 ) -> str:
-    prompt = CLASSIFY_PROMPT.format(
+    template = (prompts or load_prompts_config()).classify
+    prompt = template.format(
         categories=" · ".join(BOOK_CATEGORIES),
         title=title or "未知",
         author=author or "未知",

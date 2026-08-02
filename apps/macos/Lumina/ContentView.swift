@@ -259,37 +259,17 @@ private struct LibraryTabView<EmptyDetail: View>: View {
 
     private let libraryWidth: CGFloat = 260
 
-    private var librarySidebarVisible: Bool {
-        selectedBookId == nil || librarySidebarPinned
-    }
-
     private var windowToolbarVisible: Bool {
         selectedBookId == nil || readerChromeVisible || librarySidebarPinned
     }
 
     var body: some View {
-        Group {
-            if librarySidebarVisible {
-                NavigationSplitView(columnVisibility: libraryColumnVisibility) {
-                    librarySidebarContent
-                } detail: {
-                    detailContent
-                }
-                .navigationSplitViewStyle(.balanced)
-            } else {
-                NavigationStack {
-                    detailContent
-                }
-                .toolbar {
-                    ToolbarItem(placement: .automatic) {
-                        Button { librarySidebarPinned = true } label: {
-                            Label("书库", systemImage: "sidebar.left")
-                        }
-                        .help("展开书库")
-                    }
-                }
-            }
+        NavigationSplitView(columnVisibility: libraryColumnVisibility) {
+            librarySidebarContent
+        } detail: {
+            detailContent
         }
+        .navigationSplitViewStyle(.balanced)
         .animation(.easeInOut(duration: 0.25), value: librarySidebarPinned)
         .background {
             WindowToolbarVisibility(visible: windowToolbarVisible)
@@ -305,10 +285,12 @@ private struct LibraryTabView<EmptyDetail: View>: View {
 
     private var libraryColumnVisibility: Binding<NavigationSplitViewVisibility> {
         Binding(
-            get: { .doubleColumn },
+            get: {
+                selectedBookId == nil || librarySidebarPinned ? .doubleColumn : .detailOnly
+            },
             set: { newValue in
-                guard selectedBookId != nil, newValue == .detailOnly else { return }
-                librarySidebarPinned = false
+                guard selectedBookId != nil else { return }
+                librarySidebarPinned = (newValue != .detailOnly)
             }
         )
     }
@@ -330,7 +312,8 @@ private struct LibraryTabView<EmptyDetail: View>: View {
                 initialSegmentIndex: jumpSegmentIndex,
                 segmentListPeeking: $segmentListPeeking,
                 readerOverlayActive: $readerOverlayActive,
-                readerChromeVisible: $readerChromeVisible
+                readerChromeVisible: $readerChromeVisible,
+                librarySidebarPinned: $librarySidebarPinned
             )
             .id(id)
             .onAppear { jumpSegmentIndex = nil }
@@ -354,6 +337,7 @@ private struct LibraryTabView<EmptyDetail: View>: View {
             onStopSummarize: onStopSummarize
         )
         .navigationSplitViewColumnWidth(min: libraryWidth, ideal: libraryWidth, max: 340)
+        .toolbar(removing: .sidebarToggle)
     }
 
 }

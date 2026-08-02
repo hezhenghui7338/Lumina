@@ -23,9 +23,11 @@ CHUNK_MAX_CHARS = READING_HARD_MAX
 CHUNK_MIN_CHARS = int(READING_TARGET_CHARS * 0.6)
 OLLAMA_CHUNK_TARGET = 2500
 OLLAMA_CHUNK_MAX = 3000
+OPENROUTER_CHUNK_TARGET = 3500
+OPENROUTER_CHUNK_MAX = 4200
 OLLAMA_KEEP_ALIVE = os.getenv("LUMINA_OLLAMA_KEEP_ALIVE", "30m")
 CLOUD_CHUNK_TARGET = 4000
-CLOUD_CHUNK_MAX = 6000
+CLOUD_CHUNK_MAX = 4800
 SEGMENT_CACHE_QUOTA_BYTES = 2 * 1024 * 1024 * 1024  # 2GB
 MAX_SUMMARY_RETRIES = 3
 OLLAMA_SUMMARY_MAX_RETRIES = 2
@@ -80,8 +82,37 @@ class ChunkBudget:
     min_chars: int
 
 
+def default_chunk_target_for_provider(provider: str) -> int:
+    normalized = provider.strip().lower()
+    if normalized == "ollama":
+        return OLLAMA_CHUNK_TARGET
+    if normalized == "openrouter":
+        return OPENROUTER_CHUNK_TARGET
+    return CLOUD_CHUNK_TARGET
+
+
+def _chunk_budget_from_target(target: int) -> ChunkBudget:
+    max_chars = max(target, int(target * 1.2))
+    min_chars = max(1, int(target * 0.6))
+    return ChunkBudget(
+        target_chars=target,
+        max_chars=max_chars,
+        min_chars=min_chars,
+    )
+
+
+def resolve_resource_chunk_budget(resource: ModelResource) -> ChunkBudget:
+    """Resolve segment chunk sizes for one API resource."""
+    target = (
+        resource.chunk_target_chars
+        if resource.chunk_target_chars > 0
+        else default_chunk_target_for_provider(resource.provider)
+    )
+    return _chunk_budget_from_target(target)
+
+
 def resolve_chunk_budget(models: ModelsConfig | None = None) -> ChunkBudget:
-    """Resolve segment chunk sizes from summarize provider or env overrides."""
+    """Resolve segment chunk sizes from summarize primary resource or env overrides."""
     env_target = os.getenv("LUMINA_CHUNK_TARGET_CHARS")
     env_max = os.getenv("LUMINA_CHUNK_MAX_CHARS")
 
@@ -95,22 +126,28 @@ def resolve_chunk_budget(models: ModelsConfig | None = None) -> ChunkBudget:
             min_chars=min_chars,
         )
 
-    if models is not None and models.primary_summarize_is_ollama():
-        target = OLLAMA_CHUNK_TARGET
-        max_chars = OLLAMA_CHUNK_MAX
-    else:
-        target = CLOUD_CHUNK_TARGET
-        max_chars = CLOUD_CHUNK_MAX
+    if models is not None:
+        resources = models.resources_for_profile("summarize")
+        if resources:
+            budget = resolve_resource_chunk_budget(resources[0])
+            if env_max:
+                max_chars = max(int(env_max), budget.target_chars)
+                return ChunkBudget(
+                    target_chars=budget.target_chars,
+                    max_chars=max_chars,
+                    min_chars=budget.min_chars,
+                )
+            return budget
 
+    budget = _chunk_budget_from_target(CLOUD_CHUNK_TARGET)
     if env_max:
-        max_chars = int(env_max)
-
-    min_chars = max(1, int(target * 0.6))
-    return ChunkBudget(
-        target_chars=target,
-        max_chars=max(max_chars, target),
-        min_chars=min_chars,
-    )
+        max_chars = max(int(env_max), budget.target_chars)
+        return ChunkBudget(
+            target_chars=budget.target_chars,
+            max_chars=max_chars,
+            min_chars=budget.min_chars,
+        )
+    return budget
 
 
 def default_concurrency_for_provider(provider: str) -> int:
@@ -136,6 +173,7 @@ class ModelResource(BaseModel):
     api_key: str | None = None
     chat_timeout: float = 12.0
     concurrency: int = 0  # 0 = use provider default
+    chunk_target_chars: int = 0  # 0 = use provider default
 
     @field_validator("id")
     @classmethod
@@ -355,6 +393,79 @@ def normalize_models_raw(raw: dict[str, Any]) -> dict[str, Any]:
     return raw
 
 
+PROMPT_PLACEHOLDERS: dict[str, tuple[str, ...]] = {
+    "segment": ("{text}", "{anchor}"),
+    "segment_ollama": ("{text}",),
+    "segment_cloud": ("{text}",),
+    "document": ("{filename}", "{annotated}"),
+    "translate": ("{target_language}", "{text}"),
+    "classify": ("{categories}", "{title}", "{author}", "{text}"),
+    "chat": (),
+    "news_chat": (),
+}
+
+
+class PromptsConfig(BaseModel):
+    segment: str
+    segment_ollama: str | None = None
+    segment_cloud: str | None = None
+    document: str
+    chat: str
+    news_chat: str
+    translate: str
+    classify: str
+
+    def validate_placeholders(self) -> None:
+        errors: list[str] = []
+        for field, required in PROMPT_PLACEHOLDERS.items():
+            value = getattr(self, field)
+            if value is None:
+                if field in ("segment_ollama", "segment_cloud"):
+                    continue
+                errors.append(f"{field}: missing value")
+                continue
+            for placeholder in required:
+                if placeholder not in value:
+                    errors.append(f"{field}: missing placeholder {placeholder}")
+        if errors:
+            raise ValueError("; ".join(errors))
+
+
+def load_prompts_config(path: Path | None = None) -> PromptsConfig:
+    from lumina_core.prompts_defaults import (
+        DEFAULT_CHAT,
+        DEFAULT_CLASSIFY,
+        DEFAULT_DOCUMENT,
+        DEFAULT_NEWS_CHAT,
+        DEFAULT_SEGMENT,
+        DEFAULT_SEGMENT_CLOUD,
+        DEFAULT_SEGMENT_OLLAMA,
+        DEFAULT_TRANSLATE,
+    )
+
+    if path is None:
+        root = bundle_root()
+        if root is not None:
+            path = root / "config" / "prompts.yaml"
+        else:
+            path = Path(__file__).resolve().parents[1] / "config" / "prompts.yaml"
+    if not path.exists():
+        return PromptsConfig(
+            segment=DEFAULT_SEGMENT,
+            segment_ollama=DEFAULT_SEGMENT_OLLAMA,
+            segment_cloud=DEFAULT_SEGMENT_CLOUD,
+            document=DEFAULT_DOCUMENT,
+            chat=DEFAULT_CHAT,
+            news_chat=DEFAULT_NEWS_CHAT,
+            translate=DEFAULT_TRANSLATE,
+            classify=DEFAULT_CLASSIFY,
+        )
+    raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    cfg = PromptsConfig.model_validate(raw)
+    cfg.validate_placeholders()
+    return cfg
+
+
 class Settings(BaseSettings):
     host: str = "127.0.0.1"
     port: int = 17432
@@ -365,6 +476,7 @@ class Settings(BaseSettings):
     web_search_provider: str = "ddgs"  # ddgs | tavily
     tavily_api_key: str | None = None
     debug_mode: bool = False
+    prompts: PromptsConfig | None = None
 
     class Config:
         env_prefix = "LUMINA_"
