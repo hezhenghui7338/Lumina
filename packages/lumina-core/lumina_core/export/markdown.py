@@ -5,11 +5,18 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 from typing import Any
+from urllib.parse import quote
 
 from pydantic import ValidationError
 
 from lumina_core.models.router import parse_json_response
 from lumina_core.summarize.schema import BulletPoint, format_bullet, normalize_summary_data
+
+
+def content_disposition_attachment(filename: str) -> str:
+    """RFC 5987: ASCII fallback + UTF-8 filename* (safe for HTTP latin-1 headers)."""
+    ascii_name = filename.encode("ascii", "ignore").decode().strip("._- ") or "summary.md"
+    return f"attachment; filename=\"{ascii_name}\"; filename*=UTF-8''{quote(filename)}"
 
 
 def render_segment_summary_for_export(raw: str | dict) -> list[str]:

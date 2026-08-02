@@ -69,6 +69,7 @@ def _persist_ingest_sync(
     book_row = books_repo.get(book_id)
     if book_row:
         index_book(conn, book_row)
+    SegmentRepo(conn).backfill_char_counts(book_id)
 
 
 async def run_ingest_job(

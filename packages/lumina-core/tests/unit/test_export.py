@@ -2,7 +2,30 @@
 
 import json
 
-from lumina_core.export.markdown import export_book_markdown, render_segment_summary_for_export
+from starlette.responses import PlainTextResponse
+
+from lumina_core.export.markdown import (
+    content_disposition_attachment,
+    export_book_markdown,
+    render_segment_summary_for_export,
+)
+
+
+def test_content_disposition_attachment_latin1_safe():
+    header = content_disposition_attachment("三体-summary.md")
+    header.encode("latin-1")
+    assert 'filename="summary.md"' in header
+    assert "filename*=UTF-8''" in header
+    assert "%E4%B8%89%E4%BD%93" in header
+
+
+def test_content_disposition_plaintext_response_with_chinese_title():
+    filename = "三体-summary.md"
+    response = PlainTextResponse(
+        "test",
+        headers={"Content-Disposition": content_disposition_attachment(filename)},
+    )
+    assert response.headers["Content-Disposition"].encode("latin-1")
 
 
 def test_export_includes_translation_by_default():

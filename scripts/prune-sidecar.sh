@@ -23,10 +23,21 @@ if [[ -d "$INTERNAL/babel/locale-data" ]]; then
     ! -name "zh*" ! -name "en*" -delete
 fi
 
-# opencv-python-headless should omit FFmpeg; strip leftovers if present.
+# OpenCV (cv2) dylibs must stay intact — cv2.abi3.so links libavif/libav* at runtime.
+# Do NOT prune cv2/.dylibs; PyInstaller symlinks under _internal/ break if targets are removed.
+
 if [[ -d "$INTERNAL/cv2/.dylibs" ]]; then
-  rm -f "$INTERNAL/cv2/.dylibs"/libav*.dylib
-  rm -f "$INTERNAL/cv2/.dylibs"/libsw*.dylib
+  if ! compgen -G "$INTERNAL/cv2/.dylibs/libavif"*.dylib > /dev/null; then
+    echo "ERROR: OpenCV libavif dylib missing under $INTERNAL/cv2/.dylibs" >&2
+    exit 1
+  fi
+fi
+
+broken_links="$(find "$INTERNAL" -maxdepth 1 -type l ! -exec test -e {} \; -print 2>/dev/null || true)"
+if [[ -n "$broken_links" ]]; then
+  echo "ERROR: broken symlinks in sidecar _internal (OpenCV deps?):" >&2
+  echo "$broken_links" >&2
+  exit 1
 fi
 
 # Guard against legacy cursor-sdk artifacts (~150 MB Node runtime) in release bundles.

@@ -8,6 +8,7 @@ from typing import Any
 import httpx
 
 from lumina_core.config import ModelResource
+from lumina_core.models.openai_compat import openai_compat_client_base, openai_compat_paths
 from lumina_core.ollama_setup import check_ollama_status, is_local_base_url
 from lumina_core.ollama_setup import recommended_tiers as ollama_recommended_tiers
 
@@ -152,15 +153,16 @@ async def _probe_openai_compatible(
     probe_ok = False
     message = ""
     available_models: list[str] = []
+    models_path, _ = openai_compat_paths(base_url)
 
     try:
         async with httpx.AsyncClient(
-            base_url=base_url,
+            base_url=openai_compat_client_base(base_url),
             headers=headers,
             timeout=5.0,
             trust_env=not is_local_base_url(base_url),
         ) as client:
-            resp = await client.get("/models")
+            resp = await client.get(models_path)
             if resp.status_code == 200:
                 probe_ok = True
                 payload = resp.json()

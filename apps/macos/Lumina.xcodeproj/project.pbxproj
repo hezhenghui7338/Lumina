@@ -64,6 +64,8 @@
 		A1000262 /* ResourceRuntimeSection.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000272 /* ResourceRuntimeSection.swift */; };
 		A1000263 /* SummaryMetricsFormatter.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000273 /* SummaryMetricsFormatter.swift */; };
 		A1000277 /* SegmentSidebarTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000276 /* SegmentSidebarTests.swift */; };
+		A1000281 /* SummaryProgressBanner.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000280 /* SummaryProgressBanner.swift */; };
+		A1000283 /* SelectableTextView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000282 /* SelectableTextView.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -127,6 +129,8 @@
 		A1000271 /* TaskRowView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TaskRowView.swift; sourceTree = "<group>"; };
 		A1000272 /* ResourceRuntimeSection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ResourceRuntimeSection.swift; sourceTree = "<group>"; };
 		A1000273 /* SummaryMetricsFormatter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SummaryMetricsFormatter.swift; sourceTree = "<group>"; };
+		A1000280 /* SummaryProgressBanner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SummaryProgressBanner.swift; sourceTree = "<group>"; };
+		A1000282 /* SelectableTextView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SelectableTextView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -220,6 +224,7 @@
 				A1000274 /* SegmentSidebarModels.swift */,
 				A1000278 /* SegmentSidebarView.swift */,
 				A1000273 /* SummaryMetricsFormatter.swift */,
+				A1000280 /* SummaryProgressBanner.swift */,
 				A1000212 /* NotesPanel.swift */,
 				A1000213 /* ExportSheet.swift */,
 			);
@@ -255,6 +260,7 @@
 			isa = PBXGroup;
 			children = (
 				A1000237 /* FollowUpChip.swift */,
+				A1000282 /* SelectableTextView.swift */,
 			);
 			path = Shared;
 			sourceTree = "<group>";
@@ -484,6 +490,7 @@
 				A1000275 /* SegmentSidebarModels.swift in Sources */,
 				A1000279 /* SegmentSidebarView.swift in Sources */,
 				A1000263 /* SummaryMetricsFormatter.swift in Sources */,
+				A1000281 /* SummaryProgressBanner.swift in Sources */,
 				A1000104 /* CoreClient.swift in Sources */,
 				A1000157 /* BookMarkdownExporter.swift in Sources */,
 				A1000105 /* SidecarManager.swift in Sources */,
@@ -499,6 +506,7 @@
 				A1000109 /* NewsView.swift in Sources */,
 				A1000110 /* NewsArticleView.swift in Sources */,
 				A1000142 /* FollowUpChip.swift in Sources */,
+				A1000283 /* SelectableTextView.swift in Sources */,
 				A1000143 /* NewsSummaryMarkdown.swift in Sources */,
 				A1000154 /* NewsStructuredSummaryView.swift in Sources */,
 				A1000145 /* NewsSourcesSettingsView.swift in Sources */,
@@ -602,7 +610,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 0.4.0;
+				MARKETING_VERSION = 0.5.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.lumina.app;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
@@ -628,7 +636,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 0.4.0;
+				MARKETING_VERSION = 0.5.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.lumina.app;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
@@ -645,7 +653,7 @@
 				DEVELOPMENT_TEAM = "";
 				GENERATE_INFOPLIST_FILE = YES;
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
-				MARKETING_VERSION = 0.4.0;
+				MARKETING_VERSION = 0.5.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.lumina.app.tests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = NO;
@@ -663,7 +671,7 @@
 				DEVELOPMENT_TEAM = "";
 				GENERATE_INFOPLIST_FILE = YES;
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
-				MARKETING_VERSION = 0.4.0;
+				MARKETING_VERSION = 0.5.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.lumina.app.tests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = NO;

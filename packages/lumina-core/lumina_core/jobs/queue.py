@@ -177,14 +177,12 @@ class JobQueue:
             self._worker_count += 1
 
     def _worker_target(self) -> int:
-        models = self.router.models
-        if models.primary_summarize_is_ollama():
-            for resource in models.resources:
-                if resource.provider == "ollama":
-                    from lumina_core.config import effective_concurrency
+        from lumina_core.config import effective_concurrency
 
-                    return max(1, effective_concurrency(resource))
-        return models.max_concurrency_for_profile("summarize")
+        resources = self.router.models.resources_for_profile("summarize")
+        if not resources:
+            return 1
+        return max(1, effective_concurrency(resources[0]))
 
     def pause_ollama(self) -> None:
         from lumina_core.debug_agent_log import agent_log
@@ -579,25 +577,35 @@ class JobQueue:
             },
         )
         started_at = _utc_now()
-        self._set_active_summarize(
-            item.book_id,
-            item.segment_idx,
-            started_at=started_at,
-        )
-        self._segments_repo.set_status(seg["id"], "running")
-        await self._emit_segment_event(
-            item.book_id,
-            {
-                "type": "segment_status",
-                "idx": item.segment_idx,
-                "status": "running",
-                "started_at": started_at,
-            },
-        )
+        running_marked = False
+
+        async def _mark_running() -> None:
+            nonlocal running_marked
+            if running_marked:
+                return
+            running_marked = True
+            self._set_active_summarize(
+                item.book_id,
+                item.segment_idx,
+                started_at=started_at,
+            )
+            self._segments_repo.set_status(seg["id"], "running")
+            await self._emit_segment_event(
+                item.book_id,
+                {
+                    "type": "segment_status",
+                    "idx": item.segment_idx,
+                    "status": "running",
+                    "started_at": started_at,
+                },
+            )
+
         job_timeout = summarize_job_timeout_seconds(self.router)
         try:
             async def _on_progress(payload: dict[str, Any]) -> None:
                 payload.setdefault("idx", item.segment_idx)
+                if payload.get("phase") == "llm_start":
+                    await _mark_running()
                 llm_attempt = payload.get("llm_attempt")
                 max_llm_attempts = payload.get("max_llm_attempts")
                 if llm_attempt is not None or max_llm_attempts is not None:

@@ -50,8 +50,8 @@ def test_list_books_filter_and_patch_favorite(client):
     book_id = _import_sample(client)
     client.post(f"/books/{book_id}/open")
 
-    reading = client.get("/books", params={"collection": "reading"}).json()["books"]
-    assert any(b["id"] == book_id for b in reading)
+    all_books = client.get("/books", params={"filter": "all"}).json()["books"]
+    assert any(b["id"] == book_id for b in all_books)
 
     patched = client.patch(
         f"/books/{book_id}",
@@ -64,6 +64,26 @@ def test_list_books_filter_and_patch_favorite(client):
 
     favorites = client.get("/books", params={"sort": "favorite"}).json()["books"]
     assert favorites[0]["id"] == book_id
+
+
+def test_list_books_filter_by_category(client):
+    book_id = _import_sample(client)
+    assert client.post(f"/books/{book_id}/classify").status_code == 200
+
+    category = None
+    for _ in range(30):
+        book = client.get(f"/books/{book_id}").json()
+        category = book.get("category")
+        if category:
+            break
+        time.sleep(0.05)
+    assert category == "文学"
+
+    literature = client.get("/books", params={"filter": "文学"}).json()["books"]
+    assert any(b["id"] == book_id for b in literature)
+
+    history = client.get("/books", params={"filter": "历史"}).json()["books"]
+    assert not any(b["id"] == book_id for b in history)
 
 
 def test_classify_and_delete_book(client, tmp_path):
@@ -118,7 +138,7 @@ def test_open_book_preserves_summarized(client):
     assert book["status"] == "summarized"
     assert book["last_opened_at"] is not None
 
-    summarized = client.get("/books", params={"collection": "summarized"}).json()["books"]
+    summarized = client.get("/books", params={"filter": "summarized"}).json()["books"]
     assert any(b["id"] == book_id for b in summarized)
 
 
@@ -149,3 +169,4 @@ def test_reader_bootstrap_flow(client):
     assert "char_count" in first
     assert "summary_provider" in first
     assert "summary_model" in first
+    assert "summary_json" not in first

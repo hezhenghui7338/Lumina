@@ -54,7 +54,6 @@ struct ExportSheet: View {
                         do {
                             let markdown = try await onFetchMarkdown()
                             onMarkdownReady(markdown)
-                            isPresented = false
                         } catch {
                             onError(error.localizedDescription)
                         }

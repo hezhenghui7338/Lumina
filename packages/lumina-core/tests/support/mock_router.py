@@ -35,7 +35,10 @@ class MockModelRouter:
         *,
         profile: Profile = "summarize",
         json_mode: bool = False,
+        on_slot_acquired=None,
     ) -> str:
+        if on_slot_acquired is not None:
+            await on_slot_acquired()
         self.calls.append({"method": "complete", "profile": profile, "prompt": prompt})
         raw = self.responses.get(profile, self.responses.get("summarize", "{}"))
         if isinstance(raw, (dict, list)):

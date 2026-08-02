@@ -174,3 +174,57 @@ def test_migrate_preserves_existing_resource_concurrency():
     }
     migrated = migrate_job_concurrency_to_resources(raw)
     assert migrated["resources"][0]["concurrency"] == 1
+
+
+@pytest.mark.asyncio
+async def test_gate_set_resources_preserves_in_flight_and_lowers_limit():
+    resources = [
+        ModelResource(
+            id="ollama",
+            provider="ollama",
+            base_url="http://127.0.0.1:11434",
+            model="m",
+            concurrency=2,
+        ),
+    ]
+    gate = ResourceConcurrencyGate(resources)
+    hold = asyncio.Event()
+    release = asyncio.Event()
+
+    async def holder() -> None:
+        async with gate.use("ollama"):
+            hold.set()
+            await release.wait()
+
+    task = asyncio.create_task(holder())
+    await asyncio.wait_for(hold.wait(), timeout=1.0)
+
+    gate.set_resources(
+        [
+            ModelResource(
+                id="ollama",
+                provider="ollama",
+                base_url="http://127.0.0.1:11434",
+                model="m",
+                concurrency=1,
+            )
+        ]
+    )
+
+    peak = 0
+    lock = asyncio.Lock()
+
+    async def probe() -> None:
+        nonlocal peak
+        async with gate.use("ollama"):
+            async with lock:
+                peak = max(peak, gate.snapshot()[0]["in_use"])
+
+    probe_task = asyncio.create_task(probe())
+    await asyncio.sleep(0.05)
+    assert not probe_task.done()
+
+    release.set()
+    await task
+    await probe_task
+    assert peak <= 1

@@ -10,6 +10,7 @@ from pathlib import Path
 from lumina_core.config import ModelsConfig, Settings, default_data_dir
 from lumina_core.db.schema import init_db
 from lumina_core.jobs.queue import JobQueue
+from lumina_core.models.concurrency import ResourceConcurrencyGate
 from lumina_core.models.router import ProfileModelRouter
 from lumina_core.news.store import NewsSourceRepo
 from lumina_core.ops.task_registry import TaskRegistry
@@ -74,6 +75,7 @@ class AppState:
     settings: Settings
     models: ModelsConfig
     conn: sqlite3.Connection
+    concurrency_gate: ResourceConcurrencyGate
     router: ProfileModelRouter
     job_queue: JobQueue
     task_registry: TaskRegistry
@@ -96,7 +98,8 @@ def create_app_state(settings: Settings | None = None) -> AppState:
     models = load_models(settings.data_dir)
     conn = init_db(settings.data_dir / "lumina.db")
     NewsSourceRepo(conn).ensure_defaults(default_rss_sources(settings.target_language))
-    router = ProfileModelRouter(models)
+    concurrency_gate = ResourceConcurrencyGate(models.resources)
+    router = ProfileModelRouter(models, gate=concurrency_gate)
     task_registry = TaskRegistry()
     job_queue = JobQueue(
         conn,
@@ -108,6 +111,7 @@ def create_app_state(settings: Settings | None = None) -> AppState:
         settings=settings,
         models=models,
         conn=conn,
+        concurrency_gate=concurrency_gate,
         router=router,
         job_queue=job_queue,
         task_registry=task_registry,
