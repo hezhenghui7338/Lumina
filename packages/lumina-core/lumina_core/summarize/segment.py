@@ -6,17 +6,24 @@ import json
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import ValidationError
 
 from lumina_core.config import (
     MAX_SUMMARY_RETRIES,
-    OLLAMA_CHUNK_MAX,
     OLLAMA_SUMMARY_MAX_RETRIES,
     OLLAMA_SUMMARY_MIN_BODY_CHARS,
+    PromptsConfig,
+    load_prompts_config,
+    resolve_chunk_budget,
 )
 from lumina_core.models.router import ProfileModelRouter
+from lumina_core.prompts_defaults import (
+    DEFAULT_SEGMENT as SUMMARY_PROMPT,
+    DEFAULT_SEGMENT_CLOUD as SUMMARY_PROMPT_CLOUD,
+    DEFAULT_SEGMENT_OLLAMA as SUMMARY_PROMPT_OLLAMA,
+)
 from lumina_core.summarize.schema import (
     SegmentSummary,
     parse_segment_summary,
@@ -26,60 +33,16 @@ from lumina_core.summarize.schema import (
 
 SummaryProgressCallback = Callable[[dict[str, Any]], Awaitable[None]]
 
-SUMMARY_PROMPT = """你是阅读助手。为以下段落生成 JSON 摘要（速读卡）。
-
-硬性规则：
-- sentences: 1～最多 3 句概述；能一句说清就一句，禁止注水凑满三条
-- bullets: 3～7 条结构化要点；每条为 {{"label":"…","body":"…"}}
-  - label: ≤8 字的精炼小标题，仅作扫读索引
-  - body: 1～2 句充实说明（40～120 字），交代人物/事件/因果/论据；禁止只写标签或短语
-- notes: 0～3 条「需要注意」；仅在有局限、免责、反方观点、信息不完整时写，否则 []
-- follow_ups: 2～3 个短问题；必须基于本段已覆盖内容、可继续深聊；禁止编造原文未涉及的细节；导语/过短段落可 []
-- label: ≤20 字的段列表导航标签（浓缩本段主题）
-- anchor: 锚点字符串，格式如「§章节 · 段 N」
-
-只输出 JSON，不要其他文字。示例：
-{{"sentences":["本段交代主角寒门出身与赴考之志。"],"bullets":[{{"label":"寒门出身","body":"主角生于贫苦农家，父亲早逝，母亲靠纺织维生；邻里虽敬其向学，却无力资助书卷。"}},{{"label":"赴考之志","body":"段末以誓要金榜题名收束，将个人命运与科举制度绑定，暗示后文赶考与权谋冲突。"}}],"notes":["本段为叙述性引子，尚未展开科举制度细节。"],"follow_ups":["主角与邻里期望之间有何张力？","赴考之志在后文如何遭遇挫折？"],"label":"引子：寒门赴考","anchor":"§第一章 · 段 1"}}
-
-段落锚点：{anchor}
----
-{text}
-"""
-
-SUMMARY_PROMPT_OLLAMA = """你是阅读助手。阅读以下段落，只输出 JSON，不要任何其他文字。
-
-字段（仅这两个）：
-- sentences: 1～3 句概述
-- bullets: 3～7 条要点，每条 {{"label":"≤8字小标题","body":"1～2句说明"}}
-
-示例：
-{{"sentences":["本段交代主角寒门出身。"],"bullets":[{{"label":"寒门出身","body":"主角生于贫苦农家，父亲早逝。"}},{{"label":"赴考之志","body":"段末誓要金榜题名。"}},{{"label":"邻里关系","body":"邻里敬其向学但无力资助。"}}]}}
-
----
-{text}
-"""
-
-SUMMARY_PROMPT_CLOUD = """你是阅读助手。阅读以下段落，只输出 JSON，不要任何其他文字。
-
-字段（仅这两个）：
-- sentences: 1～3 句概述
-- bullets: 3～7 条要点，每条 {{"label":"≤8字小标题","body":"1～2句说明（40～120字）"}}
-
-示例：
-{{"sentences":["本段交代主角寒门出身与赴考之志。"],"bullets":[{{"label":"寒门出身","body":"主角生于贫苦农家，父亲早逝，母亲靠纺织维生。"}},{{"label":"赴考之志","body":"段末以誓要金榜题名收束，将个人命运与科举制度绑定。"}},{{"label":"邻里关系","body":"邻里虽敬其向学，却无力资助书卷。"}}]}}
-
----
-{text}
-"""
+ProviderKind = Literal["ollama", "cloud", "full"]
 
 _OLLAMA_RETRY_SUFFIX = (
     '\n\n上次输出不是合法 JSON。请只输出 '
-    '{{"sentences":["…"],"bullets":[{{"label":"…","body":"…"}}]}}，不要其他文字。'
+    '{{"sentences":["…"],"bullets":[{{"label":"…","body":"…"}}],"follow_ups":["…"]}}，不要其他文字。'
 )
 
 _CLOUD_RETRY_SUFFIX = (
     '\n\n上次输出不是合法 JSON。请只输出 '
-    '{{"sentences":["…"],"bullets":[{{"label":"…","body":"…"}}]}}，不要其他文字。'
+    '{{"sentences":["…"],"bullets":[{{"label":"…","body":"…"}}],"follow_ups":["…"]}}，不要其他文字。'
 )
 
 
@@ -92,28 +55,42 @@ class SummarizeResult:
 
 def _segment_prompt_settings(
     router: ProfileModelRouter,
-) -> tuple[str, int, int, int, bool, bool]:
-    """Return prompt template, text limit, retries, min body chars, text-only, minimal parse."""
+    prompts: PromptsConfig,
+) -> tuple[str, int, int, int, bool, bool, ProviderKind]:
+    """Return prompt template, text limit, retries, min body chars, text-only, minimal parse, provider kind."""
     models = getattr(router, "models", None)
+    text_limit = resolve_chunk_budget(models).max_chars
     if models is not None and models.primary_summarize_is_ollama():
+        template = prompts.segment_ollama or prompts.segment
         return (
-            SUMMARY_PROMPT_OLLAMA,
-            OLLAMA_CHUNK_MAX,
+            template,
+            text_limit,
             OLLAMA_SUMMARY_MAX_RETRIES,
             OLLAMA_SUMMARY_MIN_BODY_CHARS,
+            "{anchor}" not in template,
             True,
-            True,
+            "ollama",
         )
     if models is not None and models.primary_summarize_is_cloud():
+        template = prompts.segment_cloud or prompts.segment
         return (
-            SUMMARY_PROMPT_CLOUD,
-            8000,
+            template,
+            text_limit,
             MAX_SUMMARY_RETRIES,
             OLLAMA_SUMMARY_MIN_BODY_CHARS,
+            "{anchor}" not in template,
             True,
-            True,
+            "cloud",
         )
-    return SUMMARY_PROMPT, 8000, MAX_SUMMARY_RETRIES, 20, False, False
+    return (
+        prompts.segment,
+        text_limit,
+        MAX_SUMMARY_RETRIES,
+        20,
+        False,
+        False,
+        "full",
+    )
 
 
 def _format_base_prompt(
@@ -128,11 +105,15 @@ def _format_base_prompt(
     return template.format(anchor=anchor_label, text=text)
 
 
-def summarize_job_timeout_seconds(router: ProfileModelRouter) -> int:
+def summarize_job_timeout_seconds(
+    router: ProfileModelRouter,
+    prompts: PromptsConfig | None = None,
+) -> int:
     """Wall-clock budget for one summarize job (each LLM attempt may use full segment timeout)."""
     from lumina_core import config
 
-    _, _, llm_retries, _, _, _ = _segment_prompt_settings(router)
+    resolved = prompts or load_prompts_config()
+    _, _, llm_retries, _, _, _, _ = _segment_prompt_settings(router, resolved)
     return config.SUMMARY_SEGMENT_TIMEOUT_SECONDS * max(1, llm_retries)
 
 
@@ -144,9 +125,11 @@ async def summarize_segment(
     max_retries: int | None = None,
     failure_dump_path: Path | None = None,
     on_progress: SummaryProgressCallback | None = None,
+    prompts: PromptsConfig | None = None,
 ) -> SummarizeResult:
-    prompt_template, text_limit, default_retries, min_body_chars, text_only, use_minimal_parse = (
-        _segment_prompt_settings(router)
+    resolved = prompts or load_prompts_config()
+    prompt_template, text_limit, default_retries, min_body_chars, text_only, use_minimal_parse, provider_kind = (
+        _segment_prompt_settings(router, resolved)
     )
     segment_text = raw_text[:text_limit]
     base_prompt = _format_base_prompt(
@@ -250,7 +233,7 @@ async def summarize_segment(
             )
         if attempt + 1 < retries and last_err is not None:
             if use_minimal_parse:
-                suffix = _OLLAMA_RETRY_SUFFIX if text_only and prompt_template is SUMMARY_PROMPT_OLLAMA else _CLOUD_RETRY_SUFFIX
+                suffix = _OLLAMA_RETRY_SUFFIX if provider_kind == "ollama" else _CLOUD_RETRY_SUFFIX
                 prompt = base_prompt + suffix
             elif isinstance(last_err, json.JSONDecodeError):
                 prompt = (

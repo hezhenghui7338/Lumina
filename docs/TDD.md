@@ -365,14 +365,16 @@ annotate(text) → 注入 ## [§章节] / ## [p.N] 标记
 
 **Lumina 参数（v1.0 默认）**
 
-| 参数 | Ollama 本地 | 云端 API |
-|------|-------------|----------|
-| `reading_target_chars` | 2500 | 4000 |
-| `reading_hard_max` | 3000 | 6000 |
-| prefetch workers | 1 | 4 |
-| 短书阈值 | ≤12000 字不切段 | 同 |
+| 参数 | Ollama | OpenRouter | 其他云端 API |
+|------|--------|------------|--------------|
+| `reading_target_chars` | 2500 | 3500 | 4000 |
+| `reading_hard_max`（target×1.2） | 3000 | 4200 | 4800 |
+| prefetch workers | 1 | 4 | 4 |
+| 短书阈值 | ≤12000 字不切段 | 同 | 同 |
 
-环境变量覆盖：`LUMINA_CHUNK_TARGET_CHARS`、`LUMINA_CHUNK_MAX_CHARS`（见 `resolve_chunk_budget()`）。
+每个 API 资源可在 `models.json` 中设置 `chunk_target_chars`（`0` = 使用该 resource 的 provider 默认值）。导入分段与段摘要输入上限均取 **summarize 优先级链首资源** 的 budget；仅对新导入书籍生效。
+
+环境变量覆盖（全局最高优先级）：`LUMINA_CHUNK_TARGET_CHARS`、`LUMINA_CHUNK_MAX_CHARS`（见 `resolve_chunk_budget()`）。
 
 ### 4.3 段摘要 + Label
 

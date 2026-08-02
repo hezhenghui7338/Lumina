@@ -1,13 +1,13 @@
 """Segment summarize prompt selection tests."""
 
-from lumina_core.config import ModelResource, ModelsConfig, ProfileRoute
+from lumina_core.config import ModelResource, ModelsConfig, ProfileRoute, load_prompts_config
 from lumina_core.models.router import ProfileModelRouter
-from lumina_core.summarize.segment import (
-    SUMMARY_PROMPT,
-    SUMMARY_PROMPT_CLOUD,
-    SUMMARY_PROMPT_OLLAMA,
-    _segment_prompt_settings,
+from lumina_core.prompts_defaults import (
+    DEFAULT_SEGMENT as SUMMARY_PROMPT,
+    DEFAULT_SEGMENT_CLOUD as SUMMARY_PROMPT_CLOUD,
+    DEFAULT_SEGMENT_OLLAMA as SUMMARY_PROMPT_OLLAMA,
 )
+from lumina_core.summarize.segment import _segment_prompt_settings
 
 
 def _router(*, summarize_priority: list[str]) -> ProfileModelRouter:
@@ -44,8 +44,12 @@ def _router(*, summarize_priority: list[str]) -> ProfileModelRouter:
 
 def test_segment_prompt_settings_ollama_primary():
     router = _router(summarize_priority=["ollama", "openai"])
-    template, text_limit, retries, min_body, text_only, minimal = _segment_prompt_settings(router)
-    assert template is SUMMARY_PROMPT_OLLAMA
+    prompts = load_prompts_config()
+    template, text_limit, retries, min_body, text_only, minimal, _ = _segment_prompt_settings(
+        router, prompts
+    )
+    assert template == (prompts.segment_ollama or prompts.segment)
+    assert template == SUMMARY_PROMPT_OLLAMA
     assert text_limit == 3000
     assert retries == 2
     assert min_body == 12
@@ -53,9 +57,9 @@ def test_segment_prompt_settings_ollama_primary():
     assert minimal is True
 
 
-def test_ollama_minimal_prompt_only_sentences_and_bullets():
+def test_ollama_minimal_prompt_includes_follow_ups():
     assert "notes" not in SUMMARY_PROMPT_OLLAMA
-    assert "follow_ups" not in SUMMARY_PROMPT_OLLAMA
+    assert "follow_ups" in SUMMARY_PROMPT_OLLAMA
     assert "anchor" not in SUMMARY_PROMPT_OLLAMA
     assert "sentences" in SUMMARY_PROMPT_OLLAMA
     assert "bullets" in SUMMARY_PROMPT_OLLAMA
@@ -63,9 +67,13 @@ def test_ollama_minimal_prompt_only_sentences_and_bullets():
 
 def test_segment_prompt_settings_cloud_primary_openai():
     router = _router(summarize_priority=["openai"])
-    template, text_limit, retries, min_body, text_only, minimal = _segment_prompt_settings(router)
-    assert template is SUMMARY_PROMPT_CLOUD
-    assert text_limit == 8000
+    prompts = load_prompts_config()
+    template, text_limit, retries, min_body, text_only, minimal, _ = _segment_prompt_settings(
+        router, prompts
+    )
+    assert template == (prompts.segment_cloud or prompts.segment)
+    assert template == SUMMARY_PROMPT_CLOUD
+    assert text_limit == 4800
     assert retries == 3
     assert min_body == 12
     assert text_only is True
@@ -74,7 +82,10 @@ def test_segment_prompt_settings_cloud_primary_openai():
 
 def test_segment_prompt_settings_cloud_primary_openrouter():
     router = _router(summarize_priority=["openrouter", "ollama"])
-    template, _, _, _, text_only, minimal = _segment_prompt_settings(router)
-    assert template is SUMMARY_PROMPT_CLOUD
+    prompts = load_prompts_config()
+    template, text_limit, _, _, text_only, minimal, _ = _segment_prompt_settings(router, prompts)
+    assert template == (prompts.segment_cloud or prompts.segment)
+    assert template == SUMMARY_PROMPT_CLOUD
+    assert text_limit == 4200
     assert text_only is True
     assert minimal is True

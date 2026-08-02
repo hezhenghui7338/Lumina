@@ -20,6 +20,7 @@ struct ReaderView: View {
     @Binding var segmentListPeeking: Bool
     @Binding var readerOverlayActive: Bool
     @Binding var readerChromeVisible: Bool
+    @Binding var librarySidebarPinned: Bool
     @EnvironmentObject private var core: CoreClient
 
     @StateObject private var viewModel = ReaderViewModel()
@@ -30,13 +31,15 @@ struct ReaderView: View {
         initialSegmentIndex: Int? = nil,
         segmentListPeeking: Binding<Bool> = .constant(false),
         readerOverlayActive: Binding<Bool> = .constant(false),
-        readerChromeVisible: Binding<Bool> = .constant(false)
+        readerChromeVisible: Binding<Bool> = .constant(false),
+        librarySidebarPinned: Binding<Bool> = .constant(false)
     ) {
         self.bookId = bookId
         self.initialSegmentIndex = initialSegmentIndex
         _segmentListPeeking = segmentListPeeking
         _readerOverlayActive = readerOverlayActive
         _readerChromeVisible = readerChromeVisible
+        _librarySidebarPinned = librarySidebarPinned
     }
     @State private var expandedSourceSegments: Set<Int> = []
     @State private var expandedSummarySegments: Set<Int> = []
@@ -63,7 +66,7 @@ struct ReaderView: View {
     @State private var readerSize: CGSize = .zero
     @State private var pendingEdge: ReaderEdgeTarget? = nil
     @State private var dwellTask: Task<Void, Never>? = nil
-    @State private var chromeMode: ReaderChromeMode = .hidden
+    @State private var chromeMode: ReaderChromeMode = .revealed
     @FocusState private var chatFocused: Bool
     @FocusState private var readerContentFocused: Bool
 
@@ -91,7 +94,7 @@ struct ReaderView: View {
     }
 
     private var segmentListInlineVisible: Bool {
-        segmentListPinned && chromeVisible
+        segmentListPinned
     }
 
     private var segmentListAnyVisible: Bool {
@@ -101,6 +104,7 @@ struct ReaderView: View {
     private var shouldShowContentSummaryProgress: Bool {
         viewModel.summaryTotalCount > 0
             && viewModel.summaryReadyCount < viewModel.summaryTotalCount
+            && !librarySidebarPinned
             && !segmentListAnyVisible
     }
 
@@ -221,7 +225,15 @@ struct ReaderView: View {
 
     @ToolbarContentBuilder
     private var readerToolbar: some ToolbarContent {
-        ToolbarItemGroup {
+        ToolbarItemGroup(placement: .navigation) {
+            Button {
+                librarySidebarPinned.toggle()
+            } label: {
+                Label("书库", systemImage: "sidebar.left")
+                    .symbolVariant(librarySidebarPinned ? .fill : .none)
+            }
+            .help(librarySidebarPinned ? "收起书库" : "展开书库")
+
             Button {
                 toggleSegmentList()
             } label: {
@@ -230,7 +242,9 @@ struct ReaderView: View {
                     .foregroundStyle(segmentListAnyVisible ? LuminaTheme.accent : .primary)
             }
             .help(segmentListAnyVisible ? "收起段列表" : "展开段列表")
+        }
 
+        ToolbarItemGroup {
             Picker("阅读模式", selection: $contentMode) {
                 ForEach(ReaderContentMode.allCases, id: \.self) { mode in
                     Text(mode.label).tag(mode)
@@ -391,8 +405,8 @@ struct ReaderView: View {
             overlay = .none
             overlayEngaged = false
             segmentListPeeking = false
-            chromeMode = .hidden
-            readerChromeVisible = false
+            chromeMode = .revealed
+            readerChromeVisible = true
             expandedSourceSegments = []
             expandedSummarySegments = []
             contentMode = ReaderPreferences.contentMode(for: bookId)
@@ -465,6 +479,8 @@ struct ReaderView: View {
     private var segmentContent: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: segmentFeedGap) {
+                ReaderScrollViewMarker()
+                    .frame(width: 0, height: 0)
                 if let error = viewModel.loadError {
                     loadErrorContent(error)
                 } else if viewModel.bookStatus == "processing" {
@@ -484,6 +500,7 @@ struct ReaderView: View {
             .readingColumn()
             .padding(.horizontal, LuminaTheme.summaryPadding)
             .padding(.vertical, LuminaTheme.summaryPadding)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
         .safeAreaInset(edge: .top, spacing: 0) {
             if shouldShowContentSummaryProgress {
@@ -507,6 +524,9 @@ struct ReaderView: View {
             ) {
                 toggleChromeOnBlankClick()
             }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .luminaToggleReaderChrome)) { _ in
+            toggleChromeOnBlankClick()
         }
             .scrollPosition(id: $scrollPosition, anchor: .top)
         .animation(.easeOut(duration: 0.2), value: contentMode)
@@ -559,6 +579,7 @@ struct ReaderView: View {
             }
             viewModel.fetchSource(idx: idx, core: core)
         }
+        reanchorScrollAfterPanelToggle(at: idx)
     }
 
     private func toggleSummary(for idx: Int) {
@@ -569,6 +590,7 @@ struct ReaderView: View {
                 expandedSummarySegments.insert(idx)
             }
         }
+        reanchorScrollAfterPanelToggle(at: idx)
     }
 
     private func toggleContentMode() {
@@ -591,6 +613,8 @@ struct ReaderView: View {
             isSourceLoading: viewModel.isSourceLoading(idx: idx),
             isSourceRefreshing: viewModel.isSourceRefreshing(idx: idx),
             needsTranslation: viewModel.needsTranslation(for: cachedSource?.rawText),
+            parsedSummary: viewModel.parsedSummary(for: idx),
+            isSummaryLoading: viewModel.isSummaryLoading(for: idx),
             summaryProgressMessage: viewModel.segmentProgressMessage(for: idx),
             runningMetrics: viewModel.segmentRunningMetrics[idx],
             onToggleSource: { toggleSource(for: idx) },
@@ -634,6 +658,23 @@ struct ReaderView: View {
         Task {
             try? await Task.sleep(nanoseconds: 150_000_000)
             suppressScrollSync = false
+        }
+    }
+
+    /// Re-anchor scroll after in-segment summary/source toggle so offset does not overshoot
+    /// when trailing segment height changes near the bottom of the book.
+    private func reanchorScrollAfterPanelToggle(at idx: Int) {
+        beginSuppressScrollSync()
+        Task { @MainActor in
+            await Task.yield()
+            var transaction = Transaction()
+            transaction.disablesAnimations = true
+            withTransaction(transaction) {
+                if scrollPosition == idx {
+                    scrollPosition = nil
+                }
+                scrollPosition = idx
+            }
         }
     }
 
@@ -800,8 +841,8 @@ struct ReaderView: View {
             Button {
                 withAnimation(.easeInOut(duration: 0.25)) {
                     segmentListPinned = true
-                    segmentListPeeking = false
                     setChromeMode(.revealed)
+                    segmentListPeeking = false
                 }
             } label: {
                 Image(systemName: "pin")
@@ -870,7 +911,7 @@ struct ReaderView: View {
     private var segmentSidebar: some View {
         ScrollViewReader { proxy in
             ScrollView {
-                LazyVStack(spacing: 0) {
+                LazyVStack(alignment: .leading, spacing: 0) {
                     ForEach(viewModel.segments) { seg in
                         segmentSidebarRow(seg)
                             .id(seg.idx)
@@ -930,9 +971,10 @@ struct ReaderView: View {
         .contentShape(Rectangle())
         .padding(.horizontal, 8)
         .padding(.vertical, 4)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .background(
             viewModel.selectedIdx == seg.idx
-                ? LuminaTheme.accentMuted.opacity(0.45)
+                ? LuminaTheme.listSelectionBackground
                 : Color.clear
         )
 
@@ -1098,8 +1140,7 @@ struct ReaderView: View {
     }
 
     private func isPointerInSegmentList(_ point: CGPoint, size: CGSize) -> Bool {
-        guard point.y > topEdgeExclusionZone else { return false }
-        return point.x <= segmentsWidth
+        ReaderSegmentListGeometry.isPointerInSegmentList(point, segmentsWidth: segmentsWidth)
     }
 
     private func isPointerInLeftEdge(_ point: CGPoint) -> Bool {
@@ -1116,30 +1157,51 @@ struct ReaderView: View {
         }
     }
 
+    /// Detaches scrollPosition during toolbar chrome changes so SwiftUI does not
+    /// re-anchor the current segment to `.top`, then restores AppKit scroll offset.
+    private func performChromeLayoutChange(_ changes: () -> Void) {
+        let savedOrigin = ScrollViewKeyNSView.currentScrollOrigin()
+        beginSuppressScrollSync()
+        scrollPosition = nil
+        changes()
+        if let savedOrigin {
+            ScrollViewKeyNSView.scheduleScrollOriginRestore(
+                savedOrigin,
+                delays: [0, 0.05, 0.15, 0.3, 0.4]
+            )
+        }
+    }
+
     private func setChromeMode(_ mode: ReaderChromeMode) {
         guard chromeMode != mode else { return }
-        withAnimation(.easeInOut(duration: 0.25)) {
-            chromeMode = mode
+        performChromeLayoutChange {
+            withAnimation(.easeInOut(duration: 0.25)) {
+                chromeMode = mode
+            }
         }
     }
 
     private func collapseAllChrome() {
-        chromeMode = .hidden
-        segmentListPeeking = false
-        overlay = .none
-        overlayEngaged = false
+        performChromeLayoutChange {
+            withAnimation(.easeInOut(duration: 0.25)) {
+                chromeMode = .hidden
+                segmentListPeeking = false
+                overlay = .none
+                overlayEngaged = false
+            }
+        }
     }
 
     private func toggleChromeOnBlankClick() {
         guard overlay == .none else { return }
-        withAnimation(.easeInOut(duration: 0.25)) {
-            if segmentListOverlayVisible {
+        if segmentListOverlayVisible {
+            withAnimation(.easeInOut(duration: 0.25)) {
                 segmentListPeeking = false
-            } else if chromeMode != .hidden {
-                collapseAllChrome()
-            } else {
-                setChromeMode(.revealed)
             }
+        } else if chromeMode != .hidden {
+            collapseAllChrome()
+        } else {
+            setChromeMode(.revealed)
         }
     }
 
@@ -1210,21 +1272,24 @@ struct ReaderView: View {
 
     @ViewBuilder
     private func statusIcon(for seg: SegmentRow) -> some View {
-        if seg.idx == viewModel.selectedIdx {
-            Image(systemName: "largecircle.fill.circle")
-                .foregroundStyle(LuminaTheme.accent)
-        } else {
-            switch seg.summary_status {
-            case "ready":
-                Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
-            case "running":
-                Image(systemName: "circle.lefthalf.filled").foregroundStyle(LuminaTheme.accent)
-            case "failed", "error":
-                Image(systemName: "exclamationmark.circle").foregroundStyle(.red)
-            default:
-                Image(systemName: "circle").foregroundStyle(.secondary)
+        Group {
+            if seg.idx == viewModel.selectedIdx {
+                Image(systemName: "largecircle.fill.circle")
+                    .foregroundStyle(LuminaTheme.accent)
+            } else {
+                switch seg.summary_status {
+                case "ready":
+                    Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+                case "running":
+                    Image(systemName: "circle.lefthalf.filled").foregroundStyle(LuminaTheme.accent)
+                case "failed", "error":
+                    Image(systemName: "exclamationmark.circle").foregroundStyle(.red)
+                default:
+                    Image(systemName: "circle").foregroundStyle(.secondary)
+                }
             }
         }
+        .frame(width: 16, alignment: .center)
     }
 }
 
@@ -1287,7 +1352,24 @@ struct SegmentSidebarRow: View {
     }
 }
 
-/// Detects left-clicks on non-interactive reading areas to toggle chrome visibility.
+/// Binds the main reader NSScrollView for scroll-offset preservation and keyboard scroll.
+private struct ReaderScrollViewMarker: NSViewRepresentable {
+    func makeNSView(context: Context) -> ReaderScrollViewMarkerView {
+        ReaderScrollViewMarkerView()
+    }
+
+    func updateNSView(_ nsView: ReaderScrollViewMarkerView, context: Context) {}
+}
+
+private final class ReaderScrollViewMarkerView: NSView {
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        guard window != nil else { return }
+        ScrollViewKeyNSView.registerReaderScrollView(from: self)
+    }
+}
+
+/// Detects left-clicks on reading content (excluding controls and text) to toggle chrome visibility.
 private struct ChromeClickTracker: NSViewRepresentable {
     var enabled: Bool
     var onBlankClick: () -> Void
@@ -1308,43 +1390,126 @@ private struct ChromeClickTracker: NSViewRepresentable {
 private final class ChromeClickNSView: NSView {
     var onBlankClick: (() -> Void)?
     var isTrackingEnabled = true
-    private var monitor: Any?
+    private var monitors: [Any] = []
+    private var mouseDownPoint: NSPoint?
+    private var pendingBlankClick = false
+
+    private static let dragThreshold: CGFloat = 5
+
+    override func layout() {
+        super.layout()
+        if let superview {
+            frame = superview.bounds
+        }
+    }
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
-        removeMonitor()
+        removeMonitors()
         guard window != nil else { return }
-        monitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown) { [weak self] event in
-            guard let self, self.isTrackingEnabled, event.window == self.window else { return event }
-            let windowPoint = event.locationInWindow
-            let localPoint = self.convert(windowPoint, from: nil)
-            guard self.bounds.contains(localPoint) else { return event }
-            let hitView = self.window?.contentView?.hitTest(windowPoint)
-            if Self.isInteractive(hitView) { return event }
-            self.onBlankClick?()
+
+        let downMonitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown) { [weak self] event in
+            guard let self, self.isTrackingEnabled, let window = self.window, event.window == window else {
+                return event
+            }
+            let point = event.locationInWindow
+            self.mouseDownPoint = point
+            let hitView = window.contentView?.hitTest(point)
+            if Self.isControlHit(hitView) || Self.textSurfaceAt(window: window, point: point) != nil {
+                self.pendingBlankClick = false
+            } else {
+                self.pendingBlankClick = true
+            }
             return event
         }
+
+        let upMonitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseUp) { [weak self] event in
+            guard let self, self.isTrackingEnabled, let window = self.window, event.window == window else {
+                return event
+            }
+            defer {
+                self.mouseDownPoint = nil
+                self.pendingBlankClick = false
+            }
+            guard let downPoint = self.mouseDownPoint else { return event }
+
+            let windowPoint = event.locationInWindow
+            let drag = hypot(windowPoint.x - downPoint.x, windowPoint.y - downPoint.y)
+            guard drag < Self.dragThreshold else { return event }
+
+            if Self.textSurfaceAt(window: window, point: windowPoint) != nil {
+                DispatchQueue.main.async {
+                    NotificationCenter.default.post(name: .luminaToggleReaderChrome, object: nil)
+                }
+                return nil
+            }
+
+            guard self.pendingBlankClick else { return event }
+
+            let hitView = window.contentView?.hitTest(windowPoint)
+            guard !Self.isControlHit(hitView) else { return event }
+
+            self.onBlankClick?()
+            return nil
+        }
+
+        monitors = [downMonitor, upMonitor]
     }
 
     deinit {
-        removeMonitor()
+        removeMonitors()
     }
 
-    private func removeMonitor() {
-        if let monitor {
+    private func removeMonitors() {
+        for monitor in monitors {
             NSEvent.removeMonitor(monitor)
-            self.monitor = nil
         }
+        monitors = []
+        mouseDownPoint = nil
+        pendingBlankClick = false
     }
 
-    private static func isInteractive(_ view: NSView?) -> Bool {
+    private static func isControlHit(_ view: NSView?) -> Bool {
         var current = view
         while let v = current {
             if v is NSControl { return true }
-            if v is NSTextView { return true }
+            if v is NSButton { return true }
+            if v is NSScroller { return true }
+            if v.accessibilityRole() == .button { return true }
+            let typeName = String(describing: type(of: v))
+            if typeName.contains("Button") { return true }
             current = v.superview
         }
         return false
+    }
+
+    /// Deepest text surface at window point, or nil.
+    private static func textSurfaceAt(window: NSWindow, point: NSPoint) -> NSView? {
+        guard let hit = window.contentView?.hitTest(point) else { return nil }
+        var current: NSView? = hit
+        while let v = current {
+            if isTextSurfaceView(v) { return v }
+            current = v.superview
+        }
+        return findTextSurface(at: point, in: hit)
+    }
+
+    /// Point-accurate DFS — only returns text if point is inside text view bounds.
+    private static func findTextSurface(at windowPoint: NSPoint, in view: NSView) -> NSView? {
+        let local = view.convert(windowPoint, from: nil)
+        guard view.bounds.contains(local) else { return nil }
+        if isTextSurfaceView(view) { return view }
+        for sub in view.subviews.reversed() {
+            if let found = findTextSurface(at: windowPoint, in: sub) { return found }
+        }
+        return nil
+    }
+
+    private static func isTextSurfaceView(_ view: NSView) -> Bool {
+        view is NSTextView
+            || view is NSTextField
+            || view is LuminaSelectableTextView
+            || view is IntrinsicSizingTextContainer
     }
 }
 
@@ -1366,9 +1531,18 @@ private struct ScrollViewKeyHandler: NSViewRepresentable {
 private final class ScrollViewKeyNSView: NSView {
     var isEnabled = true
     private var observer: NSObjectProtocol?
+    private static weak var activeInstance: ScrollViewKeyNSView?
+    private static weak var readerScrollView: NSScrollView?
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
+        if window != nil {
+            Self.activeInstance = self
+            Self.readerScrollView = Self.discoverScrollView(from: self)
+        } else if Self.activeInstance === self {
+            Self.activeInstance = nil
+            Self.readerScrollView = nil
+        }
         if observer == nil {
             observer = NotificationCenter.default.addObserver(
                 forName: .luminaScrollContent,
@@ -1387,7 +1561,7 @@ private final class ScrollViewKeyNSView: NSView {
     }
 
     private func handleScroll(_ note: Notification) {
-        guard isEnabled, let scrollView = enclosingScrollView else { return }
+        guard isEnabled, let scrollView = Self.resolvedScrollView else { return }
         let clipView = scrollView.contentView
         var origin = clipView.bounds.origin
 
@@ -1400,10 +1574,77 @@ private final class ScrollViewKeyNSView: NSView {
             return
         }
 
+        Self.applyScrollOrigin(origin, to: scrollView)
+    }
+
+    private static var resolvedScrollView: NSScrollView? {
+        readerScrollView ?? activeInstance?.enclosingScrollView
+    }
+
+    static func registerReaderScrollView(from view: NSView) {
+        var current: NSView? = view
+        while let node = current {
+            if let scrollView = node as? NSScrollView {
+                readerScrollView = scrollView
+                return
+            }
+            current = node.superview
+        }
+    }
+
+    static func currentScrollOrigin() -> NSPoint? {
+        resolvedScrollView?.contentView.bounds.origin
+    }
+
+    static func scheduleScrollOriginRestore(_ origin: NSPoint, delays: [TimeInterval]) {
+        for delay in delays {
+            if delay <= 0 {
+                restoreScrollOrigin(origin)
+            } else {
+                DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+                    restoreScrollOrigin(origin)
+                }
+            }
+        }
+    }
+
+    private static func restoreScrollOrigin(_ savedOrigin: NSPoint) {
+        guard let scrollView = resolvedScrollView else { return }
+        applyScrollOrigin(savedOrigin, to: scrollView)
+    }
+
+    private static func discoverScrollView(from view: NSView) -> NSScrollView? {
+        var current: NSView? = view
+        while let node = current {
+            if let scrollView = node as? NSScrollView { return scrollView }
+            current = node.superview
+        }
+        guard let contentView = view.window?.contentView else { return nil }
+        return findLargestScrollView(in: contentView)
+    }
+
+    private static func findLargestScrollView(in view: NSView) -> NSScrollView? {
+        if let scrollView = view as? NSScrollView { return scrollView }
+        var best: NSScrollView?
+        var bestArea: CGFloat = 0
+        for subview in view.subviews {
+            guard let candidate = findLargestScrollView(in: subview) else { continue }
+            let area = candidate.bounds.width * candidate.bounds.height
+            if area > bestArea {
+                bestArea = area
+                best = candidate
+            }
+        }
+        return best
+    }
+
+    private static func applyScrollOrigin(_ origin: NSPoint, to scrollView: NSScrollView) {
+        let clipView = scrollView.contentView
+        var clamped = origin
         let docHeight = scrollView.documentView?.bounds.height ?? 0
         let maxY = max(0, docHeight - clipView.bounds.height)
-        origin.y = min(max(0, origin.y), maxY)
-        clipView.setBoundsOrigin(origin)
+        clamped.y = min(max(0, clamped.y), maxY)
+        clipView.setBoundsOrigin(clamped)
         scrollView.reflectScrolledClipView(clipView)
     }
 }
@@ -1503,6 +1744,7 @@ final class ReaderViewModel: ObservableObject {
     @Published var summaryTotalCount = 0
     @Published var segmentRunningMetrics: [Int: SegmentRunningMetrics] = [:]
     @Published var sidebarPreviewByIdx: [Int: String] = [:]
+    @Published private(set) var parsedSummaryCache: [Int: ParsedSummary] = [:]
     @Published var sidebarClock = Date()
     @Published var totalCharCount: Int?
     @Published private(set) var bookStatus = "unread"
@@ -1516,9 +1758,11 @@ final class ReaderViewModel: ObservableObject {
     private var eventTask: Task<Void, Never>?
     private var detailTasks: [Int: Task<Void, Never>] = [:]
     private var summaryHydrateTasks: [Int: Task<Void, Never>] = [:]
+    private var summaryParseTasks: [Int: Task<Void, Never>] = [:]
     private var sidebarPreviewTasks: [Int: Task<Void, Never>] = [:]
     private var sidebarClockTask: Task<Void, Never>?
     private var hydratingSummaryIndices: Set<Int> = []
+    private var parsingSummaryIndices: Set<Int> = []
     private var progressSaveTask: Task<Void, Never>?
     private var pendingProgressIdx: Int?
     private var suppressProgressSave = false
@@ -1564,6 +1808,14 @@ final class ReaderViewModel: ObservableObject {
         )
     }
 
+    func parsedSummary(for idx: Int) -> ParsedSummary? {
+        parsedSummaryCache[idx]
+    }
+
+    func isSummaryLoading(for idx: Int) -> Bool {
+        hydratingSummaryIndices.contains(idx) || parsingSummaryIndices.contains(idx)
+    }
+
     func cancelAllTasks() {
         eventTask?.cancel()
         eventTask = nil
@@ -1575,6 +1827,7 @@ final class ReaderViewModel: ObservableObject {
             task.cancel()
         }
         summaryHydrateTasks.removeAll()
+        clearSummaryCache()
         cancelSidebarPreviewTasks()
         setSidebarVisible(false)
         hydratingSummaryIndices.removeAll()
@@ -1684,6 +1937,7 @@ final class ReaderViewModel: ObservableObject {
             try Task.checkCancellation()
             segments = list
             scheduleSidebarPreviews(for: list)
+            warmSummaryCache(from: list)
             summaryReadyCount = book.summary_ready_count ?? list.filter { $0.summary_status == "ready" }.count
             summaryTotalCount = book.summary_total_count ?? list.count
             totalCharCount = book.total_char_count
@@ -1743,6 +1997,9 @@ final class ReaderViewModel: ObservableObject {
 
     func hydrateSummary(idx: Int, core: CoreClient) {
         guard let seg = segments.first(where: { $0.idx == idx }) else { return }
+        if let json = seg.summary_json, !json.isEmpty {
+            ensureSummaryParsed(idx: idx, json: json)
+        }
         guard needsSummaryHydration(seg) else { return }
         guard !hydratingSummaryIndices.contains(idx) else { return }
 
@@ -1781,7 +2038,64 @@ final class ReaderViewModel: ObservableObject {
         updated.summary_status = detail.summary_status
         segments[i] = updated
         syncCurrentSegment(from: updated)
+        if let json = updated.summary_json, !json.isEmpty {
+            ensureSummaryParsed(idx: idx, json: json)
+        }
         scheduleSidebarPreview(idx: idx, summaryJSON: updated.summary_json)
+    }
+
+    private func clearSummaryCache() {
+        for task in summaryParseTasks.values {
+            task.cancel()
+        }
+        summaryParseTasks.removeAll()
+        parsedSummaryCache = [:]
+        parsingSummaryIndices.removeAll()
+    }
+
+    private func ensureSummaryParsed(idx: Int, json: String) {
+        if parsedSummaryCache[idx] != nil { return }
+        scheduleSummaryParse(idx: idx, json: json)
+    }
+
+    private func scheduleSummaryParse(idx: Int, json: String) {
+        if parsedSummaryCache[idx] != nil { return }
+        if parsingSummaryIndices.contains(idx) { return }
+
+        parsingSummaryIndices.insert(idx)
+        summaryParseTasks[idx]?.cancel()
+        summaryParseTasks[idx] = Task.detached { [weak self] in
+            let parsed = ParsedSummary(json: json)
+            guard !Task.isCancelled else { return }
+            await MainActor.run { [weak self] in
+                guard let self else { return }
+                self.parsingSummaryIndices.remove(idx)
+                self.summaryParseTasks.removeValue(forKey: idx)
+                if let parsed {
+                    self.parsedSummaryCache[idx] = parsed
+                }
+            }
+        }
+    }
+
+    private func warmSummaryCache(from list: [SegmentRow]) {
+        let items = list.compactMap { segment -> (idx: Int, json: String)? in
+            guard let json = segment.summary_json, !json.isEmpty else { return nil }
+            return (segment.idx, json)
+        }
+        guard !items.isEmpty else { return }
+
+        parsingSummaryIndices.formUnion(items.map(\.idx))
+        Task.detached { [weak self] in
+            let parsed = ParsedSummary.parseBatch(items)
+            guard !Task.isCancelled else { return }
+            await MainActor.run { [weak self] in
+                guard let self else { return }
+                self.parsingSummaryIndices.subtract(items.map(\.idx))
+                guard !parsed.isEmpty else { return }
+                self.parsedSummaryCache.merge(parsed) { _, new in new }
+            }
+        }
     }
 
     /// Apply list meta only — never fetch or cache raw_text / translation in `segments[]`.
@@ -2096,6 +2410,9 @@ final class ReaderViewModel: ObservableObject {
         segments[i] = updated
         syncCurrentSegment(from: updated)
         segmentRunningMetrics.removeValue(forKey: idx)
+        if let json = updated.summary_json, !json.isEmpty {
+            ensureSummaryParsed(idx: idx, json: json)
+        }
         scheduleSidebarPreview(idx: idx, summaryJSON: updated.summary_json)
     }
 

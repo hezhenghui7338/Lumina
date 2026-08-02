@@ -62,7 +62,7 @@ final class SegmentReadyEventTests: XCTestCase {
         XCTAssertEqual(SegmentReadyEventParser.eventIndex(from: event), 4)
     }
 
-    def testParseBatch_offMainThread() {
+    func testParseBatch_offMainThread() {
         let json = sampleSummaryJSON
         let parsed = ParsedSummary.parseBatch([(0, json), (1, json)])
         XCTAssertEqual(parsed.count, 2)
@@ -81,5 +81,44 @@ final class SegmentReadyEventTests: XCTestCase {
         XCTAssertTrue(preview?.contains("寒门出身") ?? false)
         let bullets = SegmentReadyEventParser.parseBullets(sampleSummaryJSON)
         XCTAssertEqual(preview, bullets.joined(separator: " · "))
+    }
+
+    func testParsedSummary_legacyStringBullets() {
+        let json = """
+        {"sentences":["一句概述。"],"bullets":["寒门出身：主角生于贫苦农家。","赴考之志：段末誓要金榜题名。","邻里期望：乡邻将其视为希望。"],"anchor":"段 1"}
+        """
+        let parsed = ParsedSummary(json: json)
+        XCTAssertNotNil(parsed)
+        XCTAssertTrue(parsed?.hasContent ?? false)
+        XCTAssertEqual(parsed?.bullets.count, 3)
+        XCTAssertEqual(parsed?.bullets.first?.label, "寒门出身")
+    }
+
+    func testParsedSummary_markdownFence() {
+        let json = """
+        ```json
+        {"sentences":["一句概述。"],"bullets":[{"label":"要点一","body":"第一条要点的充实说明，包含足够细节内容。"},{"label":"要点二","body":"第二条要点的充实说明，包含足够细节内容。"},{"label":"要点三","body":"第三条要点的充实说明，包含足够细节内容。"}],"anchor":"§测试 · 段 1"}
+        ```
+        """
+        let parsed = ParsedSummary(json: json)
+        XCTAssertNotNil(parsed)
+        XCTAssertTrue(parsed?.hasContent ?? false)
+        XCTAssertEqual(parsed?.bullets.count, 3)
+    }
+
+    func testParsedSummary_proseWrappedJSON() {
+        let json = """
+        说明文字在前。
+        {"sentences":["一句概述。"],"bullets":[{"label":"要点一","body":"第一条要点的充实说明，包含足够细节内容。"},{"label":"要点二","body":"第二条要点的充实说明，包含足够细节内容。"},{"label":"要点三","body":"第三条要点的充实说明，包含足够细节内容。"}],"anchor":"§段 1"}
+        后面还有说明。
+        """
+        let parsed = ParsedSummary(json: json)
+        XCTAssertNotNil(parsed)
+        XCTAssertTrue(parsed?.hasContent ?? false)
+        XCTAssertEqual(parsed?.sentences.count, 1)
+    }
+
+    func testParsedSummary_invalidJSON_returnsNil() {
+        XCTAssertNil(ParsedSummary(json: "not json"))
     }
 }

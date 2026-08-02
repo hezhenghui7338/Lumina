@@ -15,15 +15,23 @@ struct IngestProgress: Equatable {
 final class LibraryViewModel: ObservableObject {
     @Published var books: [BookSummary] = []
     @Published var filter: LibraryFilter = .all
+    @Published var summarizeStateFilter: SummarizeStateFilter = .all
     @Published var sort: LibrarySort = .recent
     @Published var categories: [String] = LibraryFilter.fallbackCategories
     @Published var classifyingIds: Set<String> = []
     @Published var ingestProgress: [String: IngestProgress] = [:]
+    @Published var summarizeOverview: SummarizeOverview?
 
     private var ingestEventTasks: [String: Task<Void, Never>] = [:]
 
     var filterOptions: [LibraryFilter] {
         LibraryFilter.standardFilters(categories: categories)
+    }
+
+    var displayedBooks: [BookSummary] {
+        let filtered = books.filter { summarizeStateFilter.matches($0) }
+        guard sort == .recent, summarizeStateFilter == .all else { return filtered }
+        return Self.prioritizeSummarizeActivity(filtered)
     }
 
     func loadPreferences() {
@@ -51,6 +59,7 @@ final class LibraryViewModel: ObservableObject {
 
     func refresh(using core: CoreClient, preserveOrder: Bool = false) async throws {
         let fetched = try await core.listBooks(filter: filter, sort: sort)
+        summarizeOverview = try? await core.fetchSummarizeOverview()
         books = preserveOrder && !books.isEmpty
             ? Self.mergePreservingOrder(existing: books, fetched: fetched)
             : fetched
@@ -105,6 +114,23 @@ final class LibraryViewModel: ObservableObject {
         let known = Set(existing.map(\.id))
         merged.append(contentsOf: fetched.filter { !known.contains($0.id) })
         return merged
+    }
+
+    static func prioritizeSummarizeActivity(_ books: [BookSummary]) -> [BookSummary] {
+        var running: [BookSummary] = []
+        var queued: [BookSummary] = []
+        var rest: [BookSummary] = []
+        for book in books {
+            switch book.summarize_state {
+            case "running":
+                running.append(book)
+            case "queued":
+                queued.append(book)
+            default:
+                rest.append(book)
+            }
+        }
+        return running + queued + rest
     }
 
     func setFilter(_ value: LibraryFilter, using core: CoreClient) async throws {
@@ -166,6 +192,19 @@ final class LibraryViewModel: ObservableObject {
 
     var hasIncompleteSummaries: Bool {
         books.contains { $0.summaryTotal > 0 && $0.summaryReady < $0.summaryTotal }
+    }
+
+    var needsSummarizePolling: Bool {
+        if let overview = summarizeOverview, overview.activeCount > 0 {
+            return true
+        }
+        return books.contains {
+            switch $0.summarize_state {
+            case "running", "queued", "paused": return true
+            default:
+                return $0.summaryTotal > 0 && $0.summaryReady < $0.summaryTotal
+            }
+        }
     }
 
     var hasProcessingBooks: Bool {

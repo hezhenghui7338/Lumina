@@ -16,6 +16,12 @@ from lumina_core.config import (
     migrate_legacy_models,
     normalize_models_raw,
 )
+from lumina_core.prompts_store import (
+    default_prompts,
+    load_prompts,
+    merge_prompts,
+    prompts_to_dict,
+)
 from lumina_core.secrets_store import (
     apply_secrets_to_models,
     apply_secrets_to_settings,
@@ -66,7 +72,9 @@ def load_settings(data_dir: Path) -> Settings:
     else:
         settings = Settings(data_dir=data_dir)
     settings = apply_secrets_to_settings(settings, load_secrets(data_dir))
-    return _apply_search_env(settings)
+    settings = _apply_search_env(settings)
+    settings.prompts = load_prompts(data_dir)
+    return settings
 
 
 def save_settings(settings: Settings) -> None:
@@ -84,11 +92,14 @@ def merge_tavily_api_key(incoming: str | None, existing: str | None) -> str | No
 
 
 def settings_public_dict(settings: Settings) -> dict[str, Any]:
+    prompts = settings.prompts or load_prompts(settings.data_dir)
     return {
         "target_language": settings.target_language,
         "web_search_provider": normalize_web_search_provider(settings.web_search_provider),
         "tavily_api_key": API_KEY_MASK if settings.tavily_api_key else None,
         "debug_mode": settings.debug_mode,
+        "prompts": prompts_to_dict(prompts),
+        "prompts_defaults": prompts_to_dict(default_prompts()),
     }
 
 

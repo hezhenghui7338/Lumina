@@ -12,8 +12,10 @@ from typing import Any, Callable, Coroutine
 import sqlite3
 
 from lumina_core.config import (
+    PromptsConfig,
     SUMMARY_JOB_MAX_RETRIES,
     SUMMARY_SEGMENT_TIMEOUT_SECONDS,
+    load_prompts_config,
 )
 from lumina_core.db.connection import db_transaction
 from lumina_core.db.repos import BookRepo, SegmentRepo
@@ -65,10 +67,12 @@ class JobQueue:
         *,
         target_language: str = "zh-CN",
         task_registry: TaskRegistry | None = None,
+        prompts: PromptsConfig | None = None,
     ) -> None:
         self.conn = conn
         self.router = router
         self.target_language = target_language
+        self.prompts = prompts or load_prompts_config()
         self._task_registry = task_registry
         self._queue: asyncio.PriorityQueue[JobItem] = asyncio.PriorityQueue()
         self._paused = asyncio.Event()
@@ -107,6 +111,74 @@ class JobQueue:
                 "max_llm_attempts": state.get("max_llm_attempts"),
             }
         return out
+
+    def _key_is_summarize_for_book(self, key: str, book_id: str) -> bool:
+        prefix = f"{book_id}:"
+        suffix = f":{JobKind.SUMMARIZE.value}"
+        return key.startswith(prefix) and key.endswith(suffix)
+
+    def _summarize_queued_count_for_book(self, book_id: str) -> int:
+        return sum(
+            1
+            for key in self._queued_keys
+            if self._key_is_summarize_for_book(key, book_id)
+        )
+
+    def _has_queued_summarize_jobs(self, book_id: str) -> bool:
+        return self._summarize_queued_count_for_book(book_id) > 0
+
+    def summarize_state_for_book(
+        self, book_id: str, *, ready: int, total: int
+    ) -> str:
+        if total <= 0 or ready >= total:
+            return "summarized"
+        if self.summarize_active_for_book(book_id) is not None:
+            return "running"
+        if self.is_user_paused(book_id):
+            return "paused"
+        if self._has_queued_summarize_jobs(book_id):
+            return "queued"
+        return "idle"
+
+    def summarize_state_by_book(self) -> dict[str, dict[str, Any]]:
+        out: dict[str, dict[str, Any]] = {}
+        for book in self._books_repo.list_books():
+            book_id = book["id"]
+            progress = self._books_repo.summary_progress(book_id)
+            ready = int(progress["summary_ready_count"])
+            total = int(progress["summary_total_count"])
+            out[book_id] = {
+                "summarize_state": self.summarize_state_for_book(
+                    book_id, ready=ready, total=total
+                ),
+                "summarize_queued_count": self._summarize_queued_count_for_book(
+                    book_id
+                ),
+            }
+        return out
+
+    def summarize_overview(self) -> dict[str, Any]:
+        counts = {
+            "running": 0,
+            "queued": 0,
+            "paused": 0,
+            "idle": 0,
+            "summarized": 0,
+        }
+        for book in self._books_repo.list_books():
+            if book.get("status") == "processing":
+                continue
+            book_id = book["id"]
+            progress = self._books_repo.summary_progress(book_id)
+            ready = int(progress["summary_ready_count"])
+            total = int(progress["summary_total_count"])
+            state = self.summarize_state_for_book(book_id, ready=ready, total=total)
+            if state in counts:
+                counts[state] += 1
+        return {
+            "counts": counts,
+            "user_paused_all": self._user_paused_all,
+        }
 
     def _set_active_summarize(
         self,
@@ -600,7 +672,7 @@ class JobQueue:
                 },
             )
 
-        job_timeout = summarize_job_timeout_seconds(self.router)
+        job_timeout = summarize_job_timeout_seconds(self.router, self.prompts)
         try:
             async def _on_progress(payload: dict[str, Any]) -> None:
                 payload.setdefault("idx", item.segment_idx)
@@ -630,6 +702,7 @@ class JobQueue:
                     raw_text=seg["raw_text"] or "",
                     anchor_label=seg.get("anchor_label") or f"段 {item.segment_idx + 1}",
                     on_progress=_on_progress,
+                    prompts=self.prompts,
                 ),
                 timeout=job_timeout,
             )
@@ -772,6 +845,7 @@ class JobQueue:
                 self.router,
                 raw_text=seg["raw_text"],
                 target_language=self.target_language,
+                prompts=self.prompts,
             )
             if self._was_cancelled(item):
                 return

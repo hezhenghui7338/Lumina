@@ -7,8 +7,9 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
+from lumina_core.api.routes import _prioritize_summarize_activity
 from lumina_core.config import Settings
-from lumina_core.db.repos import SegmentRepo
+from lumina_core.db.repos import BookRepo, SegmentRepo
 from lumina_core.main import create_app
 from lumina_core.models.router import set_router
 from tests.support.import_helpers import import_sample_book
@@ -96,12 +97,119 @@ def test_books_list_summary_progress_matches_get(client):
     assert patched["summary_total_count"] == detail["summary_total_count"]
 
 
+def test_books_list_includes_summarize_state(client):
+    book_id = _import_sample(client)
+    client.post(f"/books/{book_id}/summarize/stop")
+
+    listed = next(b for b in client.get("/books").json()["books"] if b["id"] == book_id)
+    assert listed["summarize_state"] == "paused"
+    assert isinstance(listed["summarize_queued_count"], int)
+
+    overview = client.get("/books/summarize/overview").json()
+    assert isinstance(overview["counts"], dict)
+    assert "paused" in overview["counts"]
+    assert isinstance(overview["user_paused_all"], bool)
+
+
+def test_prioritize_summarize_activity_orders_running_then_queued():
+    books = [
+        {"id": "idle", "summarize_state": "idle"},
+        {"id": "running", "summarize_state": "running"},
+        {"id": "recent", "last_opened_at": "2024-05-01T00:00:00+00:00"},
+        {"id": "queued", "summarize_state": "queued"},
+    ]
+
+    result = _prioritize_summarize_activity(books)
+
+    assert [b["id"] for b in result] == ["running", "queued", "idle", "recent"]
+
+
+def test_list_books_recent_prioritizes_summarize_activity(client):
+    book_running = import_sample_book(client, sample_name="sample.txt")
+    book_queued = import_sample_book(client, sample_name="chunk_classical.txt")
+    book_idle = import_sample_book(client, sample_name="chunk_long_novel.txt")
+
+    BookRepo(client.app.state.lumina.conn).update(
+        book_idle,
+        last_opened_at="2024-05-01T00:00:00+00:00",
+    )
+
+    queue = client.app.state.lumina.job_queue
+    original = queue.summarize_state_by_book
+
+    def fake_state_by_book():
+        base = original()
+        base[book_running] = {
+            "summarize_state": "running",
+            "summarize_queued_count": 0,
+        }
+        base[book_queued] = {
+            "summarize_state": "queued",
+            "summarize_queued_count": 3,
+        }
+        return base
+
+    queue.summarize_state_by_book = fake_state_by_book
+
+    ids = [b["id"] for b in client.get("/books", params={"sort": "recent"}).json()["books"]]
+    assert ids[:2] == [book_running, book_queued]
+    assert ids.index(book_running) < ids.index(book_idle)
+    assert ids.index(book_queued) < ids.index(book_idle)
+
+    conn = client.app.state.lumina.conn
+    repo_title_ids = [b["id"] for b in BookRepo(conn).list_books(sort="title")]
+    api_title_ids = [
+        b["id"] for b in client.get("/books", params={"sort": "title"}).json()["books"]
+    ]
+    assert api_title_ids == repo_title_ids
+
+
+def test_summarize_batch_start_stop(client):
+    book_id = _import_sample(client)
+    client.post(f"/books/{book_id}/summarize/stop")
+
+    stop = client.post("/books/summarize/stop", json={"book_ids": [book_id]})
+    assert stop.status_code == 200
+    body = stop.json()
+    assert body["scope"] == "batch"
+    assert book_id in body["book_ids"]
+
+    start = client.post("/books/summarize/start", json={"book_ids": [book_id]})
+    assert start.status_code == 200
+    assert start.json()["scope"] == "batch"
+
+    missing = client.post(
+        "/books/summarize/stop",
+        json={"book_ids": [book_id, "nonexistent-id"]},
+    )
+    assert missing.status_code == 200
+    assert "nonexistent-id" in missing.json()["skipped"]
+
+
+def test_put_settings_rejects_invalid_prompts(client):
+    body = client.get("/settings").json()
+    prompts = body["prompts"]
+    prompts["segment"] = "missing placeholders"
+    resp = client.put("/settings", json={"prompts": prompts})
+    assert resp.status_code == 422
+
+
 def test_settings_matches_swift_app_settings(client):
     """GET /settings shape matches Swift AppSettings / resource pool."""
     body = client.get("/settings").json()
     assert isinstance(body["target_language"], str)
     assert isinstance(body["web_search_provider"], str)
     assert body.get("debug_mode") is False
+    prompts = body["prompts"]
+    assert isinstance(prompts["segment"], str)
+    assert isinstance(prompts["document"], str)
+    assert isinstance(prompts["chat"], str)
+    assert isinstance(prompts["news_chat"], str)
+    assert isinstance(prompts["translate"], str)
+    assert isinstance(prompts["classify"], str)
+    defaults = body["prompts_defaults"]
+    assert isinstance(defaults["segment"], str)
+    assert defaults["segment"] == prompts["segment"]
     models = body["models"]
     assert isinstance(models["resources"], list)
     for resource in models["resources"]:

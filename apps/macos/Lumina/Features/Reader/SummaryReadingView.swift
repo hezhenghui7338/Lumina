@@ -18,11 +18,20 @@ struct SummaryBlock: View {
     var showsHeader: Bool = true
 
     var body: some View {
-        if let parsedSummary, parsedSummary.hasContent {
-            content(parsedSummary)
+        if let summary = resolvedSummary, summary.hasContent {
+            content(summary)
         } else if let rawJSON, !rawJSON.isEmpty {
             parseFailurePlaceholder
         }
+    }
+
+    /// Prefer pre-parsed cache; fall back to synchronous parse when cache is not wired yet.
+    private var resolvedSummary: ParsedSummary? {
+        if let parsedSummary, parsedSummary.hasContent { return parsedSummary }
+        if let rawJSON, let parsed = ParsedSummary(json: rawJSON), parsed.hasContent {
+            return parsed
+        }
+        return nil
     }
 
     private var parseFailurePlaceholder: some View {
@@ -288,21 +297,50 @@ struct ParsedSummary: Equatable {
     }
 
     init?(json: String) {
-        guard let data = json.data(using: .utf8),
-              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-        else { return nil }
+        guard let obj = Self.extractJSONObject(from: json) else { return nil }
 
         sentences = Self.parseStringArray(obj["sentences"])
         bullets = Self.parseBullets(from: obj["bullets"])
         notes = Self.parseStringArray(obj["notes"])
         followUps = Self.parseStringArray(obj["follow_ups"])
 
-        if let a = obj["anchor"] as? String {
+        let anchorRaw = (obj["anchor"] as? String) ?? (obj["锚点"] as? String)
+        if let a = anchorRaw {
             let trimmed = a.trimmingCharacters(in: .whitespacesAndNewlines)
             anchor = trimmed.isEmpty ? nil : trimmed
         } else {
             anchor = nil
         }
+    }
+
+    /// Lenient JSON extraction — strips markdown fences and prose wrappers (legacy LLM output).
+    private static func extractJSONObject(from raw: String) -> [String: Any]? {
+        let candidates = jsonCandidates(from: raw)
+        for candidate in candidates {
+            guard let data = candidate.data(using: .utf8),
+                  let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+            else { continue }
+            return obj
+        }
+        return nil
+    }
+
+    private static func jsonCandidates(from raw: String) -> [String] {
+        var text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if text.hasPrefix("```") {
+            if let firstNewline = text.firstIndex(of: "\n") {
+                text = String(text[text.index(after: firstNewline)...])
+            }
+            if text.hasSuffix("```") {
+                text = String(text.dropLast(3)).trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+        }
+
+        var candidates = [text]
+        if let start = text.firstIndex(of: "{"), let end = text.lastIndex(of: "}" ), start < end {
+            candidates.append(String(text[start...end]))
+        }
+        return candidates
     }
 
     /// First bullet line for segment sidebar preview (no JSON re-parse in views).

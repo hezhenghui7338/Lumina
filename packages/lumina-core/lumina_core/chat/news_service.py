@@ -6,18 +6,13 @@ import json
 from collections.abc import AsyncIterator
 from typing import Any
 
+from lumina_core.config import PromptsConfig, load_prompts_config
 from lumina_core.db.repos import NewsChatRepo
 from lumina_core.models.router import ProfileModelRouter, parse_chat_response
 from lumina_core.news.read import load_cached_body
 from lumina_core.news.summary_parse import parse_rss_summary
+from lumina_core.prompts_defaults import DEFAULT_NEWS_CHAT as NEWS_CHAT_SYSTEM
 from lumina_core.search.web import assess_evidence_sufficiency, search_web
-
-NEWS_CHAT_SYSTEM = """你是 Lumina 资讯阅读助手。基于提供的文章信息回答问题。
-- 文章事实必须基于给定标题与正文/摘要
-- 联网信息标注 [网]
-- 无法从文章或联网确认时，明确拒答
-输出 JSON：{"answer": "...", "citations": [], "web_refs": [{"title": "...", "url": "..."}], "evidence_sufficient": true}
-"""
 
 
 def build_article_context(article: dict[str, Any]) -> str:
@@ -60,6 +55,7 @@ async def prepare_news_chat(
     quote: str | None = None,
     web_search_provider: str = "ddgs",
     tavily_api_key: str | None = None,
+    prompts: PromptsConfig | None = None,
 ) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
     context = build_article_context(article)
     web_refs: list[dict[str, str]] = []
@@ -79,7 +75,8 @@ async def prepare_news_chat(
     else:
         user_question = f"用户问题: {message}"
 
-    messages: list[dict[str, str]] = [{"role": "system", "content": NEWS_CHAT_SYSTEM}]
+    news_chat_system = (prompts or load_prompts_config()).news_chat
+    messages: list[dict[str, str]] = [{"role": "system", "content": news_chat_system}]
     messages.append(
         {
             "role": "user",
@@ -98,6 +95,7 @@ async def chat_with_article(
     quote: str | None = None,
     web_search_provider: str = "ddgs",
     tavily_api_key: str | None = None,
+    prompts: PromptsConfig | None = None,
 ) -> dict[str, Any]:
     history = chat_repo.list_messages(article["id"])[-6:]
     base_messages, web_refs = await prepare_news_chat(
@@ -106,6 +104,7 @@ async def chat_with_article(
         quote=quote,
         web_search_provider=web_search_provider,
         tavily_api_key=tavily_api_key,
+        prompts=prompts,
     )
     messages = [base_messages[0]]
     for msg in history:
@@ -142,6 +141,7 @@ async def stream_chat_with_article(
     quote: str | None = None,
     web_search_provider: str = "ddgs",
     tavily_api_key: str | None = None,
+    prompts: PromptsConfig | None = None,
 ) -> AsyncIterator[dict[str, Any]]:
     try:
         history = chat_repo.list_messages(article["id"])[-6:]
@@ -151,6 +151,7 @@ async def stream_chat_with_article(
             quote=quote,
             web_search_provider=web_search_provider,
             tavily_api_key=tavily_api_key,
+            prompts=prompts,
         )
         messages = [base_messages[0]]
         for msg in history:

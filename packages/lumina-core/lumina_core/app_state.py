@@ -7,7 +7,7 @@ import sqlite3
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from lumina_core.config import ModelsConfig, Settings, default_data_dir
+from lumina_core.config import ModelsConfig, PromptsConfig, Settings, default_data_dir
 from lumina_core.db.schema import init_db
 from lumina_core.jobs.queue import JobQueue
 from lumina_core.models.concurrency import ResourceConcurrencyGate
@@ -106,6 +106,7 @@ def create_app_state(settings: Settings | None = None) -> AppState:
         router,
         target_language=settings.target_language,
         task_registry=task_registry,
+        prompts=settings.prompts,
     )
     return AppState(
         settings=settings,

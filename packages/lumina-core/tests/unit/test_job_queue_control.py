@@ -639,3 +639,71 @@ async def test_registry_paused_not_cancelled(conn):
     assert counts["cancelled"] == 0
     paused_tasks = registry.snapshot(status="paused")
     assert all(t["status"] == "paused" for t in paused_tasks)
+
+
+@pytest.mark.asyncio
+async def test_summarize_state_queued_after_enqueue(conn):
+    router = SlowMockRouter(
+        delay=1.0,
+        responses={"summarize": SUMMARY, "translate": "译文"},
+    )
+    q = JobQueue(conn, router)
+    book_id = _seed_book(conn, n_segments=3)
+    await q.enqueue_book_prefetch(book_id)
+    await asyncio.sleep(0.02)
+
+    progress = BookRepo(conn).summary_progress(book_id)
+    state = q.summarize_state_for_book(
+        book_id,
+        ready=int(progress["summary_ready_count"]),
+        total=int(progress["summary_total_count"]),
+    )
+    assert state in ("queued", "running")
+    assert q._summarize_queued_count_for_book(book_id) >= 1
+
+
+@pytest.mark.asyncio
+async def test_summarize_state_paused_after_stop(conn):
+    router = SlowMockRouter(
+        delay=1.0,
+        responses={"summarize": SUMMARY, "translate": "译文"},
+    )
+    q = JobQueue(conn, router)
+    book_id = _seed_book(conn, n_segments=3)
+    await q.enqueue_book_prefetch(book_id)
+    await asyncio.sleep(0.02)
+    await q.stop_book(book_id)
+
+    progress = BookRepo(conn).summary_progress(book_id)
+    state = q.summarize_state_for_book(
+        book_id,
+        ready=int(progress["summary_ready_count"]),
+        total=int(progress["summary_total_count"]),
+    )
+    assert state == "paused"
+
+
+@pytest.mark.asyncio
+async def test_summarize_state_running_when_active(conn):
+    router = SlowMockRouter(
+        delay=0.8,
+        responses={"summarize": SUMMARY, "translate": "译文"},
+    )
+    q = JobQueue(conn, router)
+    book_id = _seed_book(conn, n_segments=2)
+    await q.enqueue_book_prefetch(book_id)
+
+    for _ in range(40):
+        if q.summarize_active_for_book(book_id) is not None:
+            break
+        await asyncio.sleep(0.05)
+    else:
+        pytest.fail("summarize never became active")
+
+    progress = BookRepo(conn).summary_progress(book_id)
+    state = q.summarize_state_for_book(
+        book_id,
+        ready=int(progress["summary_ready_count"]),
+        total=int(progress["summary_total_count"]),
+    )
+    assert state == "running"

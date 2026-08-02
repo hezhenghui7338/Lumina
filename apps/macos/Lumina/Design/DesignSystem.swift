@@ -8,6 +8,9 @@ enum LuminaTheme {
     static let textPrimary = Color(red: 0.12, green: 0.12, blue: 0.14)
     static let textSecondary = Color(red: 0.45, green: 0.45, blue: 0.50)
     static let border = Color(red: 0.90, green: 0.90, blue: 0.92)
+    static let listSelectionBackground = accentMuted.opacity(0.45)
+    /// 书库列表当前选中行背景：accent 浅 tint，与 textPrimary 对比清晰。
+    static let libraryRowSelectionBackground = accentMuted
     static let sidebarWidth: CGFloat = 260
 
     // MARK: - Summary reading typography

@@ -5,6 +5,8 @@ from lumina_core.config import (
     CHUNK_MAX_CHARS,
     OLLAMA_CHUNK_MAX,
     OLLAMA_CHUNK_TARGET,
+    OPENROUTER_CHUNK_MAX,
+    OPENROUTER_CHUNK_TARGET,
     SHORT_BOOK_MAX_CHARS,
     ChunkBudget,
 )
@@ -108,7 +110,24 @@ def test_ollama_budget_more_segments_than_cloud():
         max_chars=OLLAMA_CHUNK_MAX,
         min_chars=int(OLLAMA_CHUNK_TARGET * 0.6),
     )
-    cloud = ChunkBudget(target_chars=4000, max_chars=6000, min_chars=2400)
+    cloud = ChunkBudget(target_chars=4000, max_chars=4800, min_chars=2400)
     ollama_count = len(chunk_text(text, budget=ollama))
     cloud_count = len(chunk_text(text, budget=cloud))
     assert ollama_count > cloud_count
+
+
+def test_openrouter_budget_fewer_segments_than_ollama():
+    text = "第一章 开篇\n\n" + ("段落内容。" * 1500 + "\n\n") * 40
+    ollama = ChunkBudget(
+        target_chars=OLLAMA_CHUNK_TARGET,
+        max_chars=OLLAMA_CHUNK_MAX,
+        min_chars=int(OLLAMA_CHUNK_TARGET * 0.6),
+    )
+    openrouter = ChunkBudget(
+        target_chars=OPENROUTER_CHUNK_TARGET,
+        max_chars=OPENROUTER_CHUNK_MAX,
+        min_chars=int(OPENROUTER_CHUNK_TARGET * 0.6),
+    )
+    ollama_count = len(chunk_text(text, budget=ollama))
+    openrouter_count = len(chunk_text(text, budget=openrouter))
+    assert ollama_count > openrouter_count

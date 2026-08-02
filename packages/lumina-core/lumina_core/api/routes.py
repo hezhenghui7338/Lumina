@@ -18,7 +18,7 @@ from pydantic import BaseModel
 from lumina_core.app_state import AppState, default_rss_sources
 from lumina_core.chat.news_service import chat_with_article, stream_chat_with_article
 from lumina_core.chat.service import chat_with_book, stream_chat_with_book
-from lumina_core.config import ModelsConfig, Settings
+from lumina_core.config import ModelsConfig, PromptsConfig, Settings
 from lumina_core.classify.book import BOOK_CATEGORIES
 from lumina_core.classify.tasks import run_classify_book, validate_manual_category
 from lumina_core.db.repos import BookRepo, ChatRepo, NewsChatRepo, NoteRepo, SegmentRepo
@@ -46,7 +46,9 @@ from lumina_core.ops.helpers import (
 )
 from lumina_core.secrets_store import persist_secrets
 from lumina_core.settings_store import (
+    load_prompts,
     merge_incoming_models,
+    merge_prompts,
     merge_tavily_api_key,
     models_to_dict,
     normalize_web_search_provider,
@@ -86,6 +88,10 @@ class RetrySegmentsRequest(BaseModel):
     indices: list[int]
 
 
+class SummarizeBatchRequest(BaseModel):
+    book_ids: list[str] = []
+
+
 class ReadingProgressUpdate(BaseModel):
     segment_index: int
 
@@ -102,6 +108,7 @@ class SettingsUpdate(BaseModel):
     tavily_api_key: str | None = None
     debug_mode: bool | None = None
     models: ModelsConfig | None = None
+    prompts: PromptsConfig | None = None
 
 
 class NoteCreate(BaseModel):
@@ -119,6 +126,12 @@ class NewsSourceCreate(BaseModel):
 
 def _state(request: Request) -> AppState:
     return request.app.state.lumina  # type: ignore[attr-defined]
+
+
+def _prompts(state: AppState) -> PromptsConfig:
+    if state.settings.prompts is not None:
+        return state.settings.prompts
+    return load_prompts(state.settings.data_dir)
 
 
 _SCHEMA_STALE_DETAIL = "数据库 schema 过期，请重启应用"
@@ -162,11 +175,28 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _prioritize_summarize_activity(books: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    running: list[dict[str, Any]] = []
+    queued: list[dict[str, Any]] = []
+    rest: list[dict[str, Any]] = []
+    for book in books:
+        state = book.get("summarize_state")
+        if state == "running":
+            running.append(book)
+        elif state == "queued":
+            queued.append(book)
+        else:
+            rest.append(book)
+    return running + queued + rest
+
+
 def book_public_dict(
     row: dict[str, Any],
     *,
     conn: sqlite3.Connection | None = None,
     summarize_active: dict[str, Any] | None = None,
+    summarize_state: str | None = None,
+    summarize_queued_count: int | None = None,
 ) -> dict[str, Any]:
     """Normalize book row for JSON (SQLite stores is_favorite as INTEGER)."""
     out = dict(row)
@@ -192,7 +222,31 @@ def book_public_dict(
     if summarize_active is not None:
         out["summarize_active"] = summarize_active
 
+    if summarize_state is not None and row.get("status") != "processing":
+        out["summarize_state"] = summarize_state
+        out["summarize_queued_count"] = summarize_queued_count or 0
+
     return out
+
+
+def _book_public_with_queue(state: AppState, row: dict[str, Any]) -> dict[str, Any]:
+    book_id = row.get("id")
+    if not book_id:
+        return book_public_dict(row, conn=state.conn)
+    progress = BookRepo(state.conn).summary_progress(book_id)
+    ready = int(progress["summary_ready_count"])
+    total = int(progress["summary_total_count"])
+    return book_public_dict(
+        row,
+        conn=state.conn,
+        summarize_active=state.job_queue.summarize_active_for_book(book_id),
+        summarize_state=state.job_queue.summarize_state_for_book(
+            book_id, ready=ready, total=total
+        ),
+        summarize_queued_count=state.job_queue._summarize_queued_count_for_book(
+            book_id
+        ),
+    )
 
 
 async def _emit_book_event(state: AppState, book_id: str, payload: dict[str, Any]) -> None:
@@ -215,7 +269,12 @@ def _schedule_classify(state: AppState, book_id: str) -> None:
         )
         state.task_registry.mark_running(record.id)
         try:
-            category = await run_classify_book(state.conn, state.router, book_id)
+            category = await run_classify_book(
+                state.conn,
+                state.router,
+                book_id,
+                prompts=_prompts(state),
+            )
             if category:
                 state.task_registry.update_resource(record.id, state.router.last_resource_id)
                 await _emit_book_event(
@@ -346,16 +405,24 @@ async def list_books(
     try:
         books = BookRepo(conn).list_books(filter=filter, sort=sort)
         active_by_book = state.job_queue.summarize_active_by_book()
-        return {
-            "books": [
-                book_public_dict(
-                    b,
-                    conn=conn,
-                    summarize_active=active_by_book.get(b["id"]),
-                )
-                for b in books
-            ]
-        }
+        state_by_book = state.job_queue.summarize_state_by_book()
+        result = [
+            book_public_dict(
+                b,
+                conn=conn,
+                summarize_active=active_by_book.get(b["id"]),
+                summarize_state=state_by_book.get(b["id"], {}).get(
+                    "summarize_state"
+                ),
+                summarize_queued_count=state_by_book.get(b["id"], {}).get(
+                    "summarize_queued_count", 0
+                ),
+            )
+            for b in books
+        ]
+        if sort == "recent":
+            result = _prioritize_summarize_activity(result)
+        return {"books": result}
     except sqlite3.OperationalError as e:
         raise HTTPException(503, _SCHEMA_STALE_DETAIL) from e
 
@@ -382,13 +449,13 @@ async def patch_book(
         updates["title"] = title
 
     if not updates:
-        return book_public_dict(book, conn=state.conn)
+        return _book_public_with_queue(state, book)
 
     repo.update(book_id, **updates)
     updated = repo.get(book_id)
     if updated and "title" in updates:
         index_book(state.conn, updated)
-    return book_public_dict(updated, conn=state.conn)  # type: ignore[arg-type]
+    return _book_public_with_queue(state, updated)  # type: ignore[arg-type]
 
 
 @router.delete("/books/{book_id}")
@@ -419,11 +486,11 @@ async def list_book_categories() -> dict[str, list[str]]:
 
 @router.get("/books/{book_id}")
 async def get_book(book_id: str, request: Request) -> dict[str, Any]:
-    conn = _state(request).conn
-    book = BookRepo(conn).get(book_id)
+    state = _state(request)
+    book = BookRepo(state.conn).get(book_id)
     if not book:
         raise HTTPException(404, "Book not found")
-    return book_public_dict(book, conn=conn)
+    return _book_public_with_queue(state, book)
 
 
 @router.get("/books/{book_id}/segments")
@@ -509,20 +576,68 @@ async def update_reading_progress(
     return {"current_segment_index": body.segment_index}
 
 
+@router.get("/books/summarize/overview")
+async def summarize_overview(request: Request) -> dict[str, Any]:
+    state = _state(request)
+    return state.job_queue.summarize_overview()
+
+
 @router.post("/books/summarize/start")
-async def start_summarize_all(request: Request) -> dict[str, str]:
+async def start_summarize_batch(
+    request: Request, body: SummarizeBatchRequest | None = None
+) -> dict[str, Any]:
     state = _state(request)
     _wire_job_events(state)
-    await state.job_queue.start_all()
-    return {"status": "started", "scope": "all"}
+    book_ids = body.book_ids if body else []
+    if not book_ids:
+        await state.job_queue.start_all()
+        return {"status": "started", "scope": "all", "book_ids": [], "affected_count": 0}
+
+    repo = BookRepo(state.conn)
+    affected: list[str] = []
+    skipped: list[str] = []
+    for book_id in book_ids:
+        if not repo.get(book_id):
+            skipped.append(book_id)
+            continue
+        await state.job_queue.start_book(book_id)
+        affected.append(book_id)
+    return {
+        "status": "started",
+        "scope": "batch",
+        "book_ids": affected,
+        "affected_count": len(affected),
+        "skipped": skipped,
+    }
 
 
 @router.post("/books/summarize/stop")
-async def stop_summarize_all(request: Request) -> dict[str, str]:
+async def stop_summarize_batch(
+    request: Request, body: SummarizeBatchRequest | None = None
+) -> dict[str, Any]:
     state = _state(request)
     _wire_job_events(state)
-    await state.job_queue.stop_all()
-    return {"status": "stopped", "scope": "all"}
+    book_ids = body.book_ids if body else []
+    if not book_ids:
+        await state.job_queue.stop_all()
+        return {"status": "stopped", "scope": "all", "book_ids": [], "affected_count": 0}
+
+    repo = BookRepo(state.conn)
+    affected: list[str] = []
+    skipped: list[str] = []
+    for book_id in book_ids:
+        if not repo.get(book_id):
+            skipped.append(book_id)
+            continue
+        await state.job_queue.stop_book(book_id)
+        affected.append(book_id)
+    return {
+        "status": "stopped",
+        "scope": "batch",
+        "book_ids": affected,
+        "affected_count": len(affected),
+        "skipped": skipped,
+    }
 
 
 @router.post("/books/{book_id}/summarize/start")
@@ -657,6 +772,7 @@ async def book_chat(book_id: str, body: ChatRequest, request: Request):
                 quote=body.quote,
                 web_search_provider=state.settings.web_search_provider,
                 tavily_api_key=state.settings.tavily_api_key,
+                prompts=_prompts(state),
             ),
             router_resource=lambda: state.router.last_resource_id,
         )
@@ -698,6 +814,7 @@ async def book_chat_stream(book_id: str, body: ChatRequest, request: Request) ->
                 quote=body.quote,
                 web_search_provider=state.settings.web_search_provider,
                 tavily_api_key=state.settings.tavily_api_key,
+                prompts=_prompts(state),
             )
             async for event in track_stream_events(
                 state.task_registry,
@@ -765,6 +882,13 @@ async def update_settings(body: SettingsUpdate, request: Request) -> dict[str, A
         )
     if body.debug_mode is not None:
         state.settings.debug_mode = body.debug_mode
+    if body.prompts is not None:
+        try:
+            existing = _prompts(state)
+            state.settings.prompts = merge_prompts(body.prompts, existing)
+            state.job_queue.prompts = state.settings.prompts
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
     if body.models is not None:
         merged = merge_incoming_models(body.models, state.models)
         state.models = merged
@@ -1014,6 +1138,7 @@ async def news_article_read(
                 cache_dir=cache_dir,
                 force_refetch=force,
                 use_llm=True,
+                prompts=_prompts(state),
             ),
             router_resource=lambda: state.router.last_resource_id,
         )
@@ -1065,6 +1190,7 @@ async def news_article_chat(article_id: str, body: NewsChatRequest, request: Req
             quote=body.quote,
             web_search_provider=state.settings.web_search_provider,
             tavily_api_key=state.settings.tavily_api_key,
+            prompts=_prompts(state),
         ),
         router_resource=lambda: state.router.last_resource_id,
     )
@@ -1101,6 +1227,7 @@ async def news_article_chat_stream(
                 quote=body.quote,
                 web_search_provider=state.settings.web_search_provider,
                 tavily_api_key=state.settings.tavily_api_key,
+                prompts=_prompts(state),
             )
             async for event in track_stream_events(
                 state.task_registry,

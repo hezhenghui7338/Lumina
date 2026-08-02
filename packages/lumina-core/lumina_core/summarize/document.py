@@ -8,8 +8,10 @@ from dataclasses import dataclass, field
 from lumina_core.chunker.chunker import chunk_text
 from lumina_core.config import (
     MAX_SUMMARY_RETRIES,
+    PromptsConfig,
     SUMMARIZE_LLM_INPUT_CHARS,
     SUMMARIZE_SHORT_MAX_CHARS,
+    load_prompts_config,
     resolve_chunk_budget,
 )
 from lumina_core.models.router import ProfileModelRouter
@@ -93,31 +95,14 @@ def annotate_for_cite(text: str, *, filename: str = "article") -> str:
     return "\n\n".join(parts)
 
 
-def _prompt(annotated: str, *, filename: str) -> str:
-    return (
-        "你是文档速读助手。根据下列带索引标记的原文，输出「3 分钟读懂」卡片。\n"
-        "硬性规则：\n"
-        "1. 「总结」用 1～最多 3 句话；能一句说清就一句，禁止凑满三条或注水。\n"
-        "2. 「结构化要点」5～8 条；每条必须带具体索引，格式强制为 "
-        "〔§章节 | p.页〕或 〔§章节〕或 〔p.页〕。\n"
-        "3. 索引必须来自原文中的 [§…] / [p.…] 标记，禁止编造页码或章节。\n"
-        "4. 找不到依据的要点宁可省略，也不要瞎写索引。\n"
-        "5. 「需要注意」仅在有局限/免责/反方观点时写；否则整节省略。\n"
-        "6. 「你可以接着问」给 2～3 个短问题，且必须是原文已覆盖、可继续追问的点；"
-        "原文只有导语/摘要时请整节省略该段，禁止编造机制/架构细节类问题。\n"
-        "7. 只输出 Markdown，不要前言后语。\n\n"
-        "输出模板：\n"
-        "## 总结（最多三句话）\n"
-        "…\n\n"
-        "## 结构化要点\n"
-        "- **要点**：… — 依据：… 〔§… | p.…〕\n\n"
-        "## 需要注意\n"
-        "- …\n\n"
-        "## 你可以接着问\n"
-        "1. …\n\n"
-        f"文件名: {filename}\n\n"
-        f"原文（含索引标记）:\n{annotated}"
-    )
+def format_document_prompt(
+    annotated: str,
+    *,
+    filename: str,
+    prompts: PromptsConfig | None = None,
+) -> str:
+    template = (prompts or load_prompts_config()).document
+    return template.format(filename=filename, annotated=annotated)
 
 
 def _strip_marker_noise(text: str) -> str:
@@ -246,6 +231,7 @@ async def summarize_document(
     title: str = "article",
     use_llm: bool = True,
     allow_long: bool = True,
+    prompts: PromptsConfig | None = None,
 ) -> DocumentSummarizeResult:
     """Produce a short-path markdown card; long docs fall back to segment summarize."""
     warnings: list[str] = []
@@ -266,7 +252,10 @@ async def summarize_document(
             if use_llm:
                 try:
                     result = await summarize_segment(
-                        router, raw_text=chunk.raw_text, anchor_label=label
+                        router,
+                        raw_text=chunk.raw_text,
+                        anchor_label=label,
+                        prompts=prompts,
                     )
                     summary = result.summary
                     parts.append(
@@ -297,7 +286,7 @@ async def summarize_document(
     used_llm = False
     if use_llm:
         clipped = annotated[:SUMMARIZE_LLM_INPUT_CHARS]
-        prompt = _prompt(clipped, filename=title)
+        prompt = format_document_prompt(clipped, filename=title, prompts=prompts)
         for _ in range(MAX_SUMMARY_RETRIES):
             try:
                 raw = await router.complete(prompt, profile="summarize", json_mode=False)
