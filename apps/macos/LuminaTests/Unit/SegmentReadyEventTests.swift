@@ -62,7 +62,7 @@ final class SegmentReadyEventTests: XCTestCase {
         XCTAssertEqual(SegmentReadyEventParser.eventIndex(from: event), 4)
     }
 
-    func testParseBatch_offMainThread() {
+    def testParseBatch_offMainThread() {
         let json = sampleSummaryJSON
         let parsed = ParsedSummary.parseBatch([(0, json), (1, json)])
         XCTAssertEqual(parsed.count, 2)
@@ -73,5 +73,13 @@ final class SegmentReadyEventTests: XCTestCase {
     func testBulletPreviewLine() {
         let parsed = ParsedSummary(json: sampleSummaryJSON)
         XCTAssertEqual(parsed?.bulletPreviewLine, "寒门出身：主角生于贫苦农家，父亲早逝，母亲靠纺织维生；邻里虽敬其向学，却无力资助书卷。")
+    }
+
+    func testFormatBulletsPreview_matchesParseBullets() {
+        let preview = SegmentSidebarRow.formatBulletsPreview(sampleSummaryJSON)
+        XCTAssertNotNil(preview)
+        XCTAssertTrue(preview?.contains("寒门出身") ?? false)
+        let bullets = SegmentSidebarRow.parseBullets(sampleSummaryJSON)
+        XCTAssertEqual(preview, bullets.joined(separator: " · "))
     }
 }

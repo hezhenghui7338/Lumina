@@ -182,6 +182,29 @@ def test_export_markdown(client, tmp_path):
     assert "摘要版" in resp.text
 
 
+def test_export_chinese_title_returns_200(client, tmp_path):
+    sample = BOOK_FIXTURES / "sample.txt"
+    book_id = client.post("/books/import", json={"paths": [str(sample)]}).json()["books"][0]["book_id"]
+    wait_for_ingest(client, book_id)
+    import time
+
+    for _ in range(50):
+        segs = client.get(f"/books/{book_id}/segments").json()["segments"]
+        if segs and segs[0]["summary_status"] == "ready":
+            break
+        time.sleep(0.1)
+
+    patch = client.patch(f"/books/{book_id}", json={"title": "三体"})
+    assert patch.status_code == 200
+
+    resp = client.post(f"/books/{book_id}/export", json={"include_notes": False})
+    assert resp.status_code == 200
+    assert "摘要版" in resp.text
+    disposition = resp.headers.get("Content-Disposition", "")
+    assert "filename" in disposition
+    disposition.encode("latin-1")
+
+
 def test_settings_roundtrip(client):
     resp = client.put(
         "/settings",

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import pytest
@@ -9,40 +10,97 @@ import pytest
 from lumina_core import config
 from lumina_core.ingest.ocr import (
     OcrDocumentResult,
-    OcrPageResult,
+    ocr_available,
+    ocr_dependency_warning,
     ocr_install_hint,
     ocr_metadata_from_result,
     ocr_pdf,
 )
 from lumina_core.ingest.pdf import load_pdf
-
-
-def _empty_pdf(path: Path) -> None:
-    from pypdf import PdfWriter
-
-    writer = PdfWriter()
-    writer.add_blank_page(width=200, height=200)
-    writer.add_blank_page(width=200, height=200)
-    with path.open("wb") as handle:
-        writer.write(handle)
+from lumina_core.main import smoke_ocr
+from tests.support.ocr_helpers import fake_ocr_document, fake_ocr_pdf, write_blank_pdf, write_image_only_pdf
 
 
 def _fake_ocr_pdf(_path: Path, **_kwargs) -> OcrDocumentResult:
-    return OcrDocumentResult(
-        text="## [p.1]\n扫描页一\n\n## [p.2]\n扫描页二",
-        pages=[
-            OcrPageResult(page_num=1, text="扫描页一", avg_confidence=0.95, low_confidence=False),
-            OcrPageResult(page_num=2, text="扫描页二", avg_confidence=0.88, low_confidence=False),
-        ],
-        avg_confidence=0.915,
-        warnings=[],
-    )
+    return fake_ocr_pdf(_path, **_kwargs)
 
 
 def test_ocr_install_hint():
     assert "lumina-core[ocr]" in ocr_install_hint()
     assert "LUMINA_OCR_ENABLED=1" in ocr_install_hint(enabled=False)
     assert "pymupdf" in ocr_install_hint(enabled=True)
+
+
+def test_ocr_install_hint_frozen(monkeypatch):
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    assert "重新安装" in ocr_install_hint()
+    assert "uv sync" not in ocr_install_hint()
+
+
+def test_smoke_ocr_ok(monkeypatch):
+    monkeypatch.setattr("lumina_core.ingest.ocr.ocr_dependency_warning", lambda: None)
+    assert smoke_ocr() == 0
+
+
+def test_smoke_ocr_reports_failure(monkeypatch):
+    monkeypatch.setattr(
+        "lumina_core.ingest.ocr.ocr_dependency_warning",
+        lambda: "cv2 missing",
+    )
+    assert smoke_ocr() == 1
+
+
+def test_ocr_dependency_warning_when_disabled(monkeypatch):
+    monkeypatch.setattr(config, "OCR_ENABLED", False)
+    assert ocr_dependency_warning() is None
+    assert ocr_available() is False
+
+
+@pytest.mark.skipif(
+    ocr_dependency_warning() is not None,
+    reason=f"OCR deps unavailable: {ocr_dependency_warning() or ''}",
+)
+def test_ocr_pdf_on_image_only_page(tmp_path: Path):
+    """Live OCR stack: image-only PDF should yield non-empty text."""
+    pdf = tmp_path / "image-only.pdf"
+    write_image_only_pdf(pdf, text="SCAN123")
+    result = ocr_pdf(pdf)
+    assert result.text.strip()
+    assert result.pages
+    normalized = result.text.upper()
+    assert "SCAN" in normalized or "123" in normalized
+
+
+@pytest.mark.skipif(
+    ocr_dependency_warning() is not None,
+    reason=f"OCR deps unavailable: {ocr_dependency_warning() or ''}",
+)
+def test_load_pdf_runs_real_ocr_on_image_only_page(tmp_path: Path):
+    pdf = tmp_path / "scan-live.pdf"
+    write_image_only_pdf(pdf, text="SCAN123")
+    text, meta = load_pdf(pdf)
+    assert meta.get("ocr_used") is True
+    assert text.strip()
+    normalized = text.upper()
+    assert "SCAN" in normalized or "123" in normalized
+
+
+def test_load_pdf_ocr_empty_result_raises(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(config, "OCR_ENABLED", True)
+
+    def empty_ocr(_path, **_kwargs):
+        return OcrDocumentResult(text="", pages=[], avg_confidence=0.0)
+
+    monkeypatch.setattr("lumina_core.ingest.pdf.ocr_pdf", empty_ocr)
+    pdf = tmp_path / "scan.pdf"
+    write_blank_pdf(pdf, pages=1)
+
+    with pytest.raises(RuntimeError, match="OCR 失败或内容为空"):
+        load_pdf(pdf)
+
+
+def _empty_pdf(path: Path) -> None:
+    write_blank_pdf(path)
 
 
 def _block_fitz_import(monkeypatch):
@@ -108,8 +166,8 @@ def test_load_scanned_pdf_missing_deps(tmp_path: Path, monkeypatch):
 
 
 def test_ocr_metadata_from_result():
-    result = _fake_ocr_pdf(Path("x.pdf"))
+    result = fake_ocr_document()
     meta = ocr_metadata_from_result(result)
     assert meta["ocr_used"] is True
     assert meta["ocr_pages"] == 2
-    assert meta["ocr_confidence_avg"] == 0.915
+    assert meta["ocr_confidence_avg"] == 0.92

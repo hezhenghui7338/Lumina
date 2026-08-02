@@ -19,9 +19,23 @@ SUMMARY = load_json_fixture(LLM_FIXTURES / "summary_segment0.json")
 
 
 class HangingMockRouter(MockModelRouter):
-    async def complete(self, prompt: str, *, profile="summarize", json_mode: bool = False) -> str:
+    async def complete(
+        self,
+        prompt: str,
+        *,
+        profile="summarize",
+        json_mode: bool = False,
+        on_slot_acquired=None,
+    ) -> str:
+        if on_slot_acquired is not None:
+            await on_slot_acquired()
         await asyncio.sleep(3600)
-        return await super().complete(prompt, profile=profile, json_mode=json_mode)
+        return await super().complete(
+            prompt,
+            profile=profile,
+            json_mode=json_mode,
+            on_slot_acquired=None,
+        )
 
 
 def _seed_book(conn, *, book_id: str = "book-timeout", n_segments: int = 1) -> str:

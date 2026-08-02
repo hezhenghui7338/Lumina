@@ -22,6 +22,7 @@ async def lifespan(app: FastAPI):
     _wire_job_events(state)
     await state.job_queue.recover_on_startup()
     yield
+    await state.job_queue.stop_all()
     await state.router.aclose()
 
 
@@ -35,11 +36,30 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     return app
 
 
+def smoke_ocr() -> int:
+    """Verify OCR optional deps load (used by release build after prune-sidecar)."""
+    from lumina_core.ingest.ocr import ocr_dependency_warning
+
+    warning = ocr_dependency_warning()
+    if warning:
+        print(f"ERROR: OCR smoke failed: {warning}", flush=True)
+        return 1
+    print("OCR smoke OK", flush=True)
+    return 0
+
+
 def cli() -> None:
     parser = argparse.ArgumentParser(description="Lumina core sidecar")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=17432)
+    parser.add_argument(
+        "--smoke-ocr",
+        action="store_true",
+        help="Verify OCR deps load and exit (release build smoke test)",
+    )
     args = parser.parse_args()
+    if args.smoke_ocr:
+        raise SystemExit(smoke_ocr())
     settings = Settings(host=args.host, port=args.port)
     app = create_app(settings)
     uvicorn.run(app, host=settings.host, port=settings.port, log_level="info")

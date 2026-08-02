@@ -22,7 +22,7 @@ from lumina_core.config import ModelsConfig, Settings
 from lumina_core.classify.book import BOOK_CATEGORIES
 from lumina_core.classify.tasks import run_classify_book, validate_manual_category
 from lumina_core.db.repos import BookRepo, ChatRepo, NewsChatRepo, NoteRepo, SegmentRepo
-from lumina_core.export.markdown import export_book_markdown
+from lumina_core.export.markdown import content_disposition_attachment, export_book_markdown
 from lumina_core.ingest.loader import (
     copy_to_library,
     detect_format,
@@ -338,13 +338,13 @@ async def overwrite_book(book_id: str, body: ImportRequest, request: Request) ->
 @router.get("/books")
 async def list_books(
     request: Request,
-    collection: str = Query("all"),
+    filter: str = Query("all"),
     sort: str = Query("recent"),
 ) -> dict[str, Any]:
     state = _state(request)
     conn = state.conn
     try:
-        books = BookRepo(conn).list_books(collection=collection, sort=sort)
+        books = BookRepo(conn).list_books(filter=filter, sort=sort)
         active_by_book = state.job_queue.summarize_active_by_book()
         return {
             "books": [
@@ -427,13 +427,19 @@ async def get_book(book_id: str, request: Request) -> dict[str, Any]:
 
 
 @router.get("/books/{book_id}/segments")
-async def list_segments(book_id: str, request: Request) -> dict[str, Any]:
-    # Meta only — raw_text/translation via GET .../segments/{idx} (never-freeze).
+async def list_segments(
+    book_id: str,
+    request: Request,
+    include_summary: bool = Query(False),
+) -> dict[str, Any]:
+    # Slim meta — raw_text/translation/summary_json via GET .../segments/{idx} (never-freeze).
     repo = SegmentRepo(_state(request).conn)
 
     def _list_meta() -> list[dict[str, Any]]:
         try:
-            return repo.list_for_book(book_id, include_body=False)
+            return repo.list_for_book(
+                book_id, include_body=False, include_summary=include_summary
+            )
         except sqlite3.OperationalError as e:
             _raise_on_db_schema_error(e)
             raise  # pragma: no cover
@@ -491,6 +497,12 @@ async def update_reading_progress(
     book = BookRepo(_state(request).conn).get(book_id)
     if not book:
         raise HTTPException(404, "Book not found")
+    segment_count = book.get("segment_count") or 0
+    if segment_count > 0 and not (0 <= body.segment_index < segment_count):
+        raise HTTPException(
+            400,
+            f"segment_index must be between 0 and {segment_count - 1}",
+        )
     BookRepo(_state(request).conn).update(
         book_id, current_segment_index=body.segment_index
     )
@@ -727,7 +739,7 @@ async def export_book(book_id: str, body: ExportRequest, request: Request) -> Pl
     return PlainTextResponse(
         md,
         media_type="text/markdown; charset=utf-8",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        headers={"Content-Disposition": content_disposition_attachment(filename)},
     )
 
 
@@ -756,10 +768,8 @@ async def update_settings(body: SettingsUpdate, request: Request) -> dict[str, A
     if body.models is not None:
         merged = merge_incoming_models(body.models, state.models)
         state.models = merged
-        state.router = __import__(
-            "lumina_core.models.router", fromlist=["ProfileModelRouter"]
-        ).ProfileModelRouter(merged)
-        state.job_queue.router = state.router
+        state.router.models = merged
+        state.router.update_resources(merged.resources)
         state.job_queue.refresh_workers()
         save_models(state.settings.data_dir, merged)
     save_settings(state.settings)

@@ -1,14 +1,40 @@
 import AppKit
+import SwiftUI
 import UniformTypeIdentifiers
 
-enum BookExportOutcome: Equatable {
-    case saved(URL)
+enum ExportFeedback: Identifiable {
+    case success(URL)
     case cancelled
+    case error(String)
+
+    var id: String {
+        switch self {
+        case .success(let url):
+            return "success-\(url.path)"
+        case .cancelled:
+            return "cancelled"
+        case .error(let message):
+            return "error-\(message)"
+        }
+    }
 }
 
-struct PendingBookExport: Equatable {
-    let markdown: String
-    let bookTitle: String
+struct MarkdownExportDocument: FileDocument {
+    static var readableContentTypes: [UTType] { [.plainText] }
+
+    var text: String
+
+    init(text: String) {
+        self.text = text
+    }
+
+    init(configuration: ReadConfiguration) throws {
+        text = ""
+    }
+
+    func fileWrapper(configuration: WriteConfiguration) throws -> FileWrapper {
+        FileWrapper(regularFileWithContents: Data(text.utf8))
+    }
 }
 
 enum BookMarkdownExporter {
@@ -37,41 +63,46 @@ enum BookMarkdownExporter {
         return md
     }
 
-    @MainActor
-    static func presentSavePanel(markdown: String, bookTitle: String) async throws -> BookExportOutcome {
-        let panel = NSSavePanel()
-        let baseName = sanitizeFilename(bookTitle)
-        panel.nameFieldStringValue = "\(baseName)-summary.md"
-        panel.allowedContentTypes = [.plainText]
+    static func defaultFilename(for bookTitle: String) -> String {
+        "\(sanitizeFilename(bookTitle))-summary.md"
+    }
 
-        let response: NSApplication.ModalResponse
-        if let window = NSApp.mainWindow ?? NSApp.keyWindow {
-            response = await withCheckedContinuation { continuation in
-                panel.beginSheetModal(for: window) { response in
-                    continuation.resume(returning: response)
-                }
-            }
-        } else {
-            response = await panel.begin()
+    static func feedback(from result: Result<URL, Error>) -> ExportFeedback {
+        switch result {
+        case .success(let url):
+            return .success(url)
+        case .failure(let error) where isUserCancellation(error):
+            return .cancelled
+        case .failure(let error):
+            return .error(error.localizedDescription)
         }
+    }
 
-        guard response == .OK, let url = panel.url else {
+    /// Fallback when SwiftUI `fileExporter` fails (matches import flow).
+    @MainActor
+    static func presentSavePanelFallback(markdown: String, bookTitle: String) -> ExportFeedback {
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = defaultFilename(for: bookTitle)
+        panel.allowedContentTypes = [.plainText]
+        panel.canCreateDirectories = true
+
+        NSApp.activate(ignoringOtherApps: true)
+        guard panel.runModal() == .OK, let url = panel.url else {
             return .cancelled
         }
 
         do {
             try markdown.write(to: url, atomically: true, encoding: .utf8)
+            return .success(url)
         } catch {
-            throw NSError(
-                domain: "Lumina",
-                code: 3,
-                userInfo: [
-                    NSLocalizedDescriptionKey: "保存失败：\(error.localizedDescription)",
-                ]
-            )
+            return .error("保存失败：\(error.localizedDescription)")
         }
+    }
 
-        return .saved(url)
+    static func isUserCancellation(_ error: Error) -> Bool {
+        if error is CancellationError { return true }
+        let nsError = error as NSError
+        return nsError.domain == NSCocoaErrorDomain && nsError.code == NSUserCancelledError
     }
 
     private static func sanitizeFilename(_ title: String) -> String {
@@ -79,5 +110,34 @@ enum BookMarkdownExporter {
         let cleaned = title.components(separatedBy: invalid).joined(separator: "-")
         let trimmed = cleaned.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? "summary" : trimmed
+    }
+}
+
+extension View {
+    func exportFeedbackAlert(_ feedback: Binding<ExportFeedback?>) -> some View {
+        alert(item: feedback) { item in
+            switch item {
+            case .success(let url):
+                Alert(
+                    title: Text("导出成功"),
+                    message: Text("已保存至\n\(url.path)"),
+                    primaryButton: .default(Text("在 Finder 中显示")) {
+                        NSWorkspace.shared.activateFileViewerSelecting([url])
+                    },
+                    secondaryButton: .cancel(Text("好"))
+                )
+            case .cancelled:
+                Alert(
+                    title: Text("已取消保存"),
+                    dismissButton: .cancel(Text("好"))
+                )
+            case .error(let message):
+                Alert(
+                    title: Text("导出失败"),
+                    message: Text(message),
+                    dismissButton: .cancel(Text("好"))
+                )
+            }
+        }
     }
 }

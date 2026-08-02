@@ -145,7 +145,7 @@ async def test_summarize_segment_dumps_raw_on_failure(tmp_path):
     from lumina_core.summarize.segment import summarize_segment
 
     class BadRouter:
-        async def complete(self, prompt, profile="summarize", json_mode=True):
+        async def complete(self, prompt, profile="summarize", json_mode=True, **kwargs):
             return "not json"
 
     dump = tmp_path / "fail.txt"

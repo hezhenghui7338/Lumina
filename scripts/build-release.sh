@@ -3,7 +3,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-VERSION="${LUMINA_VERSION:-0.4.0}"
+VERSION="${LUMINA_VERSION:-0.5.0}"
 DIST="$ROOT/dist"
 DERIVED="$ROOT/build/DerivedData"
 CORE_PKG="$ROOT/packages/lumina-core"
@@ -57,6 +57,9 @@ fi
 
 bash "$ROOT/scripts/prune-sidecar.sh" "$SIDECAR_SRC"
 assert_max_dir_mb "$SIDECAR_SRC" "$MAX_SIDECAR_MB" "Pruned sidecar"
+
+echo "==> OCR smoke (embedded sidecar binary)…"
+"$SIDECAR_SRC/lumina-core" --smoke-ocr
 
 # --- 2. Build Lumina.app (Release) ---
 echo "==> Building Lumina.app (Release)…"

@@ -235,6 +235,12 @@ class ModelsConfig(BaseModel):
         resources = self.resources_for_profile("summarize")
         return bool(resources) and resources[0].provider == "ollama"
 
+    def primary_summarize_is_cloud(self) -> bool:
+        resources = self.resources_for_profile("summarize")
+        if not resources:
+            return False
+        return resources[0].provider != "ollama"
+
     def max_concurrency_for_profile(self, profile: str) -> int:
         resources = self.resources_for_profile(profile)
         if not resources:

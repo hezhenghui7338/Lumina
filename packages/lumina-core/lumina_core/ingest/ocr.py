@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
@@ -40,6 +41,8 @@ class OcrDocumentResult:
 
 def ocr_install_hint(*, enabled: bool | None = None) -> str:
     ocr_on = config.OCR_ENABLED if enabled is None else enabled
+    if getattr(sys, "frozen", False):
+        return "请重新安装完整的 Lumina 安装包；若问题仍在，请联系维护者。"
     install = f"uv sync --extra ocr  # or: pip install '{_OCR_EXTRA}'"
     if ocr_on:
         return f"请安装 OCR 可选依赖（rapidocr、onnxruntime、pymupdf）：{install}"

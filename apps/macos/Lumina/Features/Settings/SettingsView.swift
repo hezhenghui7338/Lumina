@@ -18,92 +18,7 @@ struct SettingsView: View {
 
     var body: some View {
         Form {
-            if let settings {
-                Section("阅读") {
-                    Picker("目标语言", selection: binding(\.target_language)) {
-                        Text("简体中文").tag("zh-CN")
-                        Text("English").tag("en-US")
-                        Text("日本語").tag("ja-JP")
-                    }
-                }
-
-                webSearchSection(settings: settings)
-
-                apiResourcesSection(settings: settings)
-
-                prioritySection(
-                    title: "深聊",
-                    route: chatRouteBinding,
-                    footer: "按顺序尝试，失败或超时自动 fallback 到下一资源。"
-                )
-
-                prioritySection(
-                    title: "摘要",
-                    route: summarizeRouteBinding,
-                    footer: "翻译与摘要共用此优先级链。靠前的资源优先使用。各资源的并发在 API 资源编辑中配置。"
-                )
-
-                Section("外观") {
-                    Picker("主题", selection: $theme.appearance) {
-                        ForEach(AppearanceMode.allCases) { mode in
-                            Text(mode.label).tag(mode)
-                        }
-                    }
-                }
-
-                Section {
-                    NavigationLink("RSS 信源") {
-                        NewsSourcesSettingsView()
-                    }
-                } header: {
-                    Text("资讯")
-                } footer: {
-                    Text("默认 BestBlogs 预置源；可添加自定义 RSS 地址。")
-                }
-
-                Section {
-                    Toggle("调试模式", isOn: boolBinding(\.debug_mode))
-                    if settings.debug_mode {
-                        NavigationLink("后台任务") {
-                            TaskManagerView()
-                        }
-                    }
-                } header: {
-                    Text("高级")
-                } footer: {
-                    Text("开启后可查看与管理 LLM 摘要、深聊、资讯精读等后台任务及 API 资源占用。默认关闭。")
-                }
-
-                Section("关于") {
-                    HStack(spacing: 14) {
-                        Image("LuminaMark")
-                            .resizable()
-                            .scaledToFit()
-                            .frame(width: 48, height: 48)
-                            .accessibilityHidden(true)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("Lumina")
-                                .font(.headline)
-                            Text("Local AI Reading Companion")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                            Text("版本 \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.4.0")")
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                        }
-                        Spacer()
-                    }
-                    .padding(.vertical, 4)
-                    Link("GitHub 仓库", destination: AppLinks.githubRepository)
-                        .font(.caption)
-                    Link("反馈问题", destination: AppLinks.githubIssues)
-                        .font(.caption)
-                }
-            } else if let error {
-                ContentUnavailableView("无法加载设置", systemImage: "gearshape", description: Text(error))
-            } else {
-                ProgressView("加载设置…")
-            }
+            formContent
         }
         .formStyle(.grouped)
         .navigationTitle("设置")
@@ -132,6 +47,119 @@ struct SettingsView: View {
                 },
                 onCancel: { showingAddResource = false }
             )
+        }
+    }
+
+    @ViewBuilder
+    private var formContent: some View {
+        if let settings {
+            loadedSettingsForm(settings: settings)
+        } else if let error {
+            ContentUnavailableView("无法加载设置", systemImage: "gearshape", description: Text(error))
+        } else {
+            ProgressView("加载设置…")
+        }
+    }
+
+    @ViewBuilder
+    private func loadedSettingsForm(settings: AppSettings) -> some View {
+        readingSection
+        webSearchSection(settings: settings)
+        apiResourcesSection(settings: settings)
+        prioritySection(
+            title: "深聊",
+            route: chatRouteBinding,
+            footer: "按顺序尝试，失败或超时自动 fallback 到下一资源。"
+        )
+        prioritySection(
+            title: "摘要",
+            route: summarizeRouteBinding,
+            footer: "翻译与摘要共用此优先级链。靠前的资源优先使用。各资源的并发在 API 资源编辑中配置。"
+        )
+        appearanceSection
+        newsSection
+        advancedSection(settings: settings)
+        aboutSection
+    }
+
+    @ViewBuilder
+    private var readingSection: some View {
+        Section("阅读") {
+            Picker("目标语言", selection: binding(\.target_language)) {
+                Text("简体中文").tag("zh-CN")
+                Text("English").tag("en-US")
+                Text("日本語").tag("ja-JP")
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var appearanceSection: some View {
+        Section("外观") {
+            Picker("主题", selection: $theme.appearance) {
+                ForEach(AppearanceMode.allCases) { mode in
+                    Text(mode.label).tag(mode)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var newsSection: some View {
+        Section {
+            NavigationLink("RSS 信源") {
+                NewsSourcesSettingsView()
+            }
+        } header: {
+            Text("资讯")
+        } footer: {
+            Text("默认 BestBlogs 预置源；可添加自定义 RSS 地址。")
+        }
+    }
+
+    @ViewBuilder
+    private func advancedSection(settings: AppSettings) -> some View {
+        Section {
+            Toggle("调试模式", isOn: boolBinding(\.debug_mode))
+            if settings.debug_mode {
+                NavigationLink("后台任务") {
+                    TaskManagerView()
+                }
+            }
+        } header: {
+            Text("高级")
+        } footer: {
+            Text("开启后可查看与管理 LLM 摘要、深聊、资讯精读等后台任务及 API 资源占用。默认关闭。")
+        }
+    }
+
+    @ViewBuilder
+    private var aboutSection: some View {
+        Section("关于") {
+            HStack(spacing: 14) {
+                Image("LuminaMark")
+                    .resizable()
+                    .scaledToFit()
+                    .frame(width: 48, height: 48)
+                    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    .accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Lumina")
+                        .font(.headline)
+                    Text("Local AI Reading Companion")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Text("版本 \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "未知")")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+            }
+            .padding(.vertical, 4)
+            Link("GitHub 仓库", destination: AppLinks.githubRepository)
+                .font(.caption)
+            Link("反馈问题", destination: AppLinks.githubIssues)
+                .font(.caption)
         }
     }
 
@@ -362,7 +390,12 @@ struct SettingsView: View {
         guard let settings else { return [] }
         let used = Set(route.priority)
         return settings.models.resources.filter { resource in
-            !used.contains(resource.id) && resourceStatuses[resource.id]?.ready == true
+            guard !used.contains(resource.id) else { return false }
+            let status = resourceStatuses[resource.id]
+            if resource.provider == "ollama" {
+                return status?.ready == true
+            }
+            return keyConfigured(for: resource.id) || status?.ready == true
         }
     }
 
@@ -882,7 +915,7 @@ enum ModelProviderKind: String, CaseIterable, Identifiable {
         switch self {
         case .ollama: return "模型（如 qwen3.5:4b）"
         case .openai: return "模型（如 gpt-4o-mini）"
-        case .openrouter: return "模型（如 anthropic/claude-sonnet-4）"
+        case .openrouter: return "模型（摘要建议 anthropic/claude-sonnet-4；openrouter/free 仅试用）"
         case .cursor: return "模型（如 composer-2.5）"
         case .aiping: return "模型（如 GLM-5.2）"
         case .custom: return "模型名"
@@ -919,8 +952,10 @@ enum ModelProviderKind: String, CaseIterable, Identifiable {
             return "并发建议 ≤ 本机 Ollama 的 OLLAMA_NUM_PARALLEL。内存吃紧时调回 1。"
         case .cursor:
             return "OpenAI 兼容 API 并发；需配置 Cursor 代理 Base URL。"
-        default:
-            return "OpenAI、OpenRouter 等 OpenAI 兼容 API 的并发上限。"
+        case .openrouter:
+            return "OpenRouter 等 OpenAI 兼容 API 的并发上限。摘要建议固定模型；openrouter/free 适合试用，structured outputs 支持不稳定。"
+        case .openai, .aiping, .custom:
+            return "OpenAI 兼容 API 的并发上限。"
         }
     }
 

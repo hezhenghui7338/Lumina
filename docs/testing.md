@@ -200,6 +200,7 @@ Lumina/
 | **B4/B5 深聊** | `test_evidence_sufficiency_router` · `test_rag_top_k` · `test_web_ref_annotation` · `test_refusal_when_no_source` · `test_dca_context_assembly` | `ChatViewModel_streamParse` · Snapshot |
 | **B8 笔记/搜索** | `test_fts5_trigger_on_note_insert` · `test_search_group_by_kind` | `SearchViewModel_jumpToSegment` · Snapshot |
 | **B9 导出** | `test_export_markdown_structure` · `test_export_with_notes_optional` | — |
+| **E2E-ingest-ocr** | `test_ocr` · `test_ingest` · `test_import_ocr` · `test_release_ocr_bundle` | — |
 
 **LocalAgent 参考测试**（移植为 unit，不直接依赖 LA 代码）：
 

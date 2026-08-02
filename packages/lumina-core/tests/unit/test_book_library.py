@@ -66,6 +66,7 @@ def test_list_books_filter_and_sort(db_conn):
         db_conn,
         title="Alpha",
         status="unread",
+        category="文学",
         is_favorite=0,
         created_at="2024-01-01T00:00:00+00:00",
         last_opened_at=None,
@@ -74,24 +75,41 @@ def test_list_books_filter_and_sort(db_conn):
         db_conn,
         title="Beta",
         status="reading",
+        category="历史",
         is_favorite=1,
         created_at="2024-02-01T00:00:00+00:00",
         last_opened_at="2024-03-01T00:00:00+00:00",
     )
-    _insert_book(
+    gamma = _insert_book(
         db_conn,
         title="Gamma",
         status="summarized",
+        category="科技",
         is_favorite=0,
         created_at="2024-04-01T00:00:00+00:00",
         last_opened_at="2024-05-01T00:00:00+00:00",
     )
+    unclassified = _insert_book(
+        db_conn,
+        title="Unclassified",
+        status="unread",
+        category=None,
+    )
 
-    unread = repo.list_books(collection="unread")
-    assert [b["id"] for b in unread] == [a["id"]]
+    literature = repo.list_books(filter="文学")
+    assert [b["id"] for b in literature] == [a["id"]]
+
+    summarized = repo.list_books(filter="summarized")
+    assert [b["id"] for b in summarized] == [gamma["id"]]
+
+    history = repo.list_books(filter="历史")
+    assert [b["title"] for b in history] == ["Beta"]
+
+    assert unclassified["id"] not in {b["id"] for b in literature}
+    assert unclassified["id"] in {b["id"] for b in repo.list_books(filter="all")}
 
     by_title = repo.list_books(sort="title")
-    assert [b["title"] for b in by_title] == ["Alpha", "Beta", "Gamma"]
+    assert [b["title"] for b in by_title] == ["Alpha", "Beta", "Gamma", "Unclassified"]
 
     favorites = repo.list_books(sort="favorite")
     assert favorites[0]["title"] == "Beta"
@@ -219,5 +237,5 @@ def test_maybe_mark_summarized_promotes_stale_reading(db_conn):
     assert repo.maybe_mark_summarized(book["id"]) is True
     assert repo.get(book["id"])["status"] == "summarized"
 
-    summarized = repo.list_books(collection="summarized")
+    summarized = repo.list_books(filter="summarized")
     assert [b["id"] for b in summarized] == [book["id"]]

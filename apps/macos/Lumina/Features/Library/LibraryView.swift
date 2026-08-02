@@ -12,11 +12,13 @@ struct LibraryView: View {
     @State private var checkedBookIds: Set<String> = []
     @State private var batchDeleteCount: Int?
     @State private var bookPendingExport: BookSummary?
-    @State private var showExport = false
     @State private var exportIncludeNotes = false
-    @State private var exportSuccessURL: URL?
-    @State private var pendingExport: PendingBookExport?
-    @State private var showExportCancelled = false
+    @State private var exportDocument = MarkdownExportDocument(text: "")
+    @State private var showFileExporter = false
+    @State private var exportDefaultFilename = "summary.md"
+    @State private var exportFallbackBookTitle = ""
+    @State private var shouldPresentFileExporter = false
+    @State private var exportFeedback: ExportFeedback?
 
     var onImport: () -> Void
     var onSearch: () -> Void
@@ -83,6 +85,7 @@ struct LibraryView: View {
         .onAppear { viewModel.loadPreferences() }
         .task(id: sidecar.isRunning) {
             guard sidecar.isRunning else { return }
+            await viewModel.loadCategories(using: core)
             await refreshBooks()
         }
         .task(id: viewModel.books.map(\.id)) {
@@ -136,76 +139,72 @@ struct LibraryView: View {
         } message: {
             Text("将删除本地副本、摘要与笔记，且不可恢复。")
         }
-        .alert("出错了", isPresented: .constant(actionError != nil)) {
+        .alert("出错了", isPresented: actionErrorPresented) {
             Button("好") { actionError = nil }
         } message: {
             Text(actionError ?? "")
         }
-        .alert("导出成功", isPresented: exportSuccessPresented) {
-            Button("在 Finder 中显示") {
-                if let url = exportSuccessURL {
-                    NSWorkspace.shared.activateFileViewerSelecting([url])
-                }
-            }
-            Button("好", role: .cancel) {
-                exportSuccessURL = nil
-            }
-        } message: {
-            if let url = exportSuccessURL {
-                Text("已保存至\n\(url.path)")
-            }
+        .exportFeedbackAlert($exportFeedback)
+        .sheet(item: $bookPendingExport, onDismiss: presentFileExporterIfNeeded) { book in
+            ExportSheet(
+                isPresented: Binding(
+                    get: { bookPendingExport != nil },
+                    set: { if !$0 { bookPendingExport = nil } }
+                ),
+                includeNotes: $exportIncludeNotes,
+                summaryReadyCount: book.summaryReady,
+                summaryTotalCount: book.summaryTotal,
+                onFetchMarkdown: {
+                    try await BookMarkdownExporter.fetchMarkdown(
+                        core: core,
+                        bookId: book.id,
+                        summaryReadyCount: book.summaryReady,
+                        includeNotes: exportIncludeNotes
+                    )
+                },
+                onMarkdownReady: { markdown in
+                    exportDocument = MarkdownExportDocument(text: markdown)
+                    exportDefaultFilename = BookMarkdownExporter.defaultFilename(for: book.title)
+                    exportFallbackBookTitle = book.title
+                    shouldPresentFileExporter = true
+                    bookPendingExport = nil
+                },
+                onError: { actionError = $0 }
+            )
         }
-        .alert("已取消保存", isPresented: $showExportCancelled) {
-            Button("好", role: .cancel) {}
-        }
-        .sheet(isPresented: $showExport) {
-            if let book = bookPendingExport {
-                ExportSheet(
-                    isPresented: $showExport,
-                    includeNotes: $exportIncludeNotes,
-                    summaryReadyCount: book.summaryReady,
-                    summaryTotalCount: book.summaryTotal,
-                    onFetchMarkdown: {
-                        try await BookMarkdownExporter.fetchMarkdown(
-                            core: core,
-                            bookId: book.id,
-                            summaryReadyCount: book.summaryReady,
-                            includeNotes: exportIncludeNotes
-                        )
-                    },
-                    onMarkdownReady: { markdown in
-                        pendingExport = PendingBookExport(
-                            markdown: markdown,
-                            bookTitle: book.title
-                        )
-                    },
-                    onError: { actionError = $0 }
-                )
-            }
-        }
-        .onChange(of: showExport) { _, isShowing in
-            guard !isShowing else { return }
-            guard let pending = pendingExport else { return }
-            pendingExport = nil
-            Task { await finishExportSave(pending) }
+        .fileExporter(
+            isPresented: $showFileExporter,
+            document: exportDocument,
+            contentType: .plainText,
+            defaultFilename: exportDefaultFilename
+        ) { result in
+            handleFileExportCompletion(result)
         }
     }
 
+    private func presentFileExporterIfNeeded() {
+        guard shouldPresentFileExporter else { return }
+        shouldPresentFileExporter = false
+        showFileExporter = true
+    }
+
     @MainActor
-    private func finishExportSave(_ pending: PendingBookExport) async {
-        try? await Task.sleep(nanoseconds: 150_000_000)
-        do {
-            switch try await BookMarkdownExporter.presentSavePanel(
-                markdown: pending.markdown,
-                bookTitle: pending.bookTitle
-            ) {
-            case .saved(let url):
-                exportSuccessURL = url
-            case .cancelled:
-                showExportCancelled = true
-            }
-        } catch {
-            actionError = error.localizedDescription
+    private func handleFileExportCompletion(_ result: Result<URL, Error>) {
+        let markdown = exportDocument.text
+        let bookTitle = exportFallbackBookTitle
+        exportDocument = MarkdownExportDocument(text: "")
+        exportFallbackBookTitle = ""
+
+        switch result {
+        case .success:
+            exportFeedback = BookMarkdownExporter.feedback(from: result)
+        case .failure(let error) where BookMarkdownExporter.isUserCancellation(error):
+            exportFeedback = .cancelled
+        case .failure:
+            exportFeedback = BookMarkdownExporter.presentSavePanelFallback(
+                markdown: markdown,
+                bookTitle: bookTitle
+            )
         }
     }
 
@@ -214,17 +213,16 @@ struct LibraryView: View {
         return viewModel.books.first { $0.id == selectedBookId }
     }
 
-    private var exportSuccessPresented: Binding<Bool> {
+    private var actionErrorPresented: Binding<Bool> {
         Binding(
-            get: { exportSuccessURL != nil },
-            set: { if !$0 { exportSuccessURL = nil } }
+            get: { actionError != nil },
+            set: { if !$0 { actionError = nil } }
         )
     }
 
     private func presentExport(for book: BookSummary) {
-        bookPendingExport = book
         exportIncludeNotes = false
-        showExport = true
+        bookPendingExport = book
     }
 
     private var batchDeleteTitle: String {
@@ -279,42 +277,56 @@ struct LibraryView: View {
     }
 
     private var libraryControls: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Picker("集合", selection: $viewModel.collection) {
-                ForEach(LibraryCollection.allCases) { item in
-                    Text(item.label).tag(item)
-                }
-            }
-            .pickerStyle(.segmented)
-            .onChange(of: viewModel.collection) { _, _ in
-                viewModel.persistPreferences()
-                Task {
-                    do { try await viewModel.refresh(using: core) }
-                    catch { setActionError(from: error) }
-                }
-            }
-
-            Menu {
-                Picker("排序", selection: $viewModel.sort) {
-                    ForEach(LibrarySort.allCases) { item in
-                        Text(item.label).tag(item)
-                    }
-                }
-            } label: {
-                Label(viewModel.sort.label, systemImage: "arrow.up.arrow.down")
-                    .font(.caption)
-                    .foregroundStyle(LuminaTheme.textSecondary)
-            }
-            .onChange(of: viewModel.sort) { _, _ in
-                viewModel.persistPreferences()
-                Task {
-                    do { try await viewModel.refresh(using: core) }
-                    catch { setActionError(from: error) }
-                }
-            }
+        HStack(spacing: 8) {
+            filterPicker
+            sortPicker
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
+    }
+
+    private var filterPicker: some View {
+        Picker("筛选", selection: $viewModel.filter) {
+            ForEach(viewModel.filterOptions) { item in
+                Text(item.label).tag(item)
+            }
+        }
+        .pickerStyle(.menu)
+        .labelsHidden()
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .layoutPriority(1)
+        .help("筛选：\(viewModel.filter.label)")
+        .onChange(of: viewModel.filter) { _, new in
+            Task {
+                do { try await viewModel.setFilter(new, using: core) }
+                catch { setActionError(from: error) }
+            }
+        }
+    }
+
+    private var sortPicker: some View {
+        Menu {
+            ForEach(LibrarySort.allCases) { item in
+                Button {
+                    Task {
+                        do { try await viewModel.setSort(item, using: core) }
+                        catch { setActionError(from: error) }
+                    }
+                } label: {
+                    if item == viewModel.sort {
+                        Label(item.label, systemImage: "checkmark")
+                    } else {
+                        Text(item.label)
+                    }
+                }
+            }
+        } label: {
+            Image(systemName: "arrow.up.arrow.down")
+                .font(.caption)
+                .foregroundStyle(LuminaTheme.textSecondary)
+        }
+        .fixedSize()
+        .help("排序：\(viewModel.sort.label)")
     }
 
     @ViewBuilder

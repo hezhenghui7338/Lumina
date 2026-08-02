@@ -13,7 +13,9 @@ struct SummaryBlock: View {
     var summaryDurationS: Double?
     var summaryLlmAttempts: Int?
     var onFollowUp: ((String) -> Void)?
+    var onSendToChat: ((String) -> Void)?
     var showsBackground: Bool = true
+    var showsHeader: Bool = true
 
     var body: some View {
         if let parsedSummary, parsedSummary.hasContent {
@@ -33,7 +35,9 @@ struct SummaryBlock: View {
     @ViewBuilder
     private func content(_ summary: ParsedSummary) -> some View {
         VStack(alignment: .leading, spacing: LuminaTheme.summarySectionSpacing) {
-            headerRow(summary)
+            if showsHeader {
+                headerRow(summary)
+            }
 
             if !summary.sentences.isEmpty {
                 VStack(alignment: .leading, spacing: 8) {
@@ -44,12 +48,12 @@ struct SummaryBlock: View {
 
                     VStack(alignment: .leading, spacing: LuminaTheme.summaryLeadParagraphSpacing) {
                         ForEach(Array(summary.sentences.enumerated()), id: \.offset) { _, sentence in
-                            Text(sentence)
-                                .font(.system(size: LuminaTheme.summaryLeadSize, weight: .regular))
-                                .foregroundStyle(LuminaTheme.textPrimary)
-                                .lineSpacing(LuminaTheme.summaryLeadLineSpacing)
-                                .fixedSize(horizontal: false, vertical: true)
-                                .textSelection(.enabled)
+                            LuminaSelectableText(
+                                text: sentence,
+                                fontSize: LuminaTheme.summaryLeadSize,
+                                lineSpacing: LuminaTheme.summaryLeadLineSpacing,
+                                onSendToChat: onSendToChat
+                            )
                         }
                     }
                 }
@@ -59,7 +63,11 @@ struct SummaryBlock: View {
                 summarySection(title: "结构化要点") {
                     VStack(alignment: .leading, spacing: LuminaTheme.summaryBulletItemSpacing) {
                         ForEach(Array(summary.bullets.enumerated()), id: \.offset) { index, bullet in
-                            StructuredBulletRow(index: index + 1, bullet: bullet)
+                            StructuredBulletRow(
+                                index: index + 1,
+                                bullet: bullet,
+                                onSendToChat: onSendToChat
+                            )
                         }
                     }
                 }
@@ -73,12 +81,11 @@ struct SummaryBlock: View {
                                 Text("·")
                                     .font(.system(size: LuminaTheme.summaryBulletSize, weight: .semibold))
                                     .foregroundStyle(LuminaTheme.textSecondary)
-                                Text(note)
-                                    .font(.system(size: LuminaTheme.summaryBulletSize, weight: .regular))
-                                    .foregroundStyle(LuminaTheme.textSecondary)
-                                    .lineSpacing(LuminaTheme.summaryBulletLineSpacing)
-                                    .fixedSize(horizontal: false, vertical: true)
-                                    .textSelection(.enabled)
+                                LuminaSelectableText(
+                                    text: note,
+                                    foreground: LuminaTheme.textSecondary,
+                                    onSendToChat: onSendToChat
+                                )
                             }
                         }
                     }
@@ -222,6 +229,7 @@ struct SummaryBlock: View {
 private struct StructuredBulletRow: View {
     let index: Int
     let bullet: ParsedBullet
+    var onSendToChat: ((String) -> Void)?
 
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
@@ -233,22 +241,19 @@ private struct StructuredBulletRow: View {
 
             VStack(alignment: .leading, spacing: 3) {
                 if let label = bullet.label, !label.isEmpty {
-                    Text(label)
-                        .font(.system(size: LuminaTheme.summaryBulletSize, weight: .semibold))
-                        .foregroundStyle(LuminaTheme.textPrimary)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .textSelection(.enabled)
-                }
-                Text(bullet.body)
-                    .font(.system(size: LuminaTheme.summaryBulletSize, weight: .regular))
-                    .foregroundStyle(
-                        bullet.label == nil
-                            ? LuminaTheme.textPrimary
-                            : LuminaTheme.textSecondary
+                    LuminaSelectableText(
+                        text: label,
+                        fontWeight: .semibold,
+                        onSendToChat: onSendToChat
                     )
-                    .lineSpacing(LuminaTheme.summaryBulletLineSpacing)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .textSelection(.enabled)
+                }
+                LuminaSelectableText(
+                    text: bullet.body,
+                    foreground: bullet.label == nil
+                        ? LuminaTheme.textPrimary
+                        : LuminaTheme.textSecondary,
+                    onSendToChat: onSendToChat
+                )
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }

@@ -29,6 +29,7 @@ struct SegmentReadingBlock: View, Equatable {
     var onToggleSummary: () -> Void
     var onFollowUp: (String) -> Void
     var onRetrySummary: () -> Void
+    var onSendToChat: ((String) -> Void)?
     var onSourceAppear: (() -> Void)?
     var onSummaryAppear: (() -> Void)?
 
@@ -37,11 +38,7 @@ struct SegmentReadingBlock: View, Equatable {
 
     var body: some View {
         VStack(alignment: .leading, spacing: LuminaTheme.summarySectionSpacing) {
-            segmentCharCountHeader
-
-            if contentMode == .original {
-                originalModeAnchor
-            }
+            segmentHeaderRow
 
             contentPanel
         }
@@ -196,15 +193,6 @@ struct SegmentReadingBlock: View, Equatable {
     }
 
     @ViewBuilder
-    private var originalModeAnchor: some View {
-        if let anchor = segment.anchor_label, !anchor.isEmpty {
-            Text(anchor)
-                .font(.system(size: LuminaTheme.summaryLabelSize, weight: .medium))
-                .foregroundStyle(LuminaTheme.textSecondary)
-        }
-    }
-
-    @ViewBuilder
     private func summaryContent(showsBackground: Bool) -> some View {
         if let parsedSummary {
             SummaryBlock(
@@ -229,14 +217,12 @@ struct SegmentReadingBlock: View, Equatable {
                 rawJSON: summary,
                 provider: segment.summary_provider,
                 model: segment.summary_model,
-                charCount: effectiveCharCount,
-                segmentIndex: segment.idx,
-                segmentTotal: segmentTotal,
-                fallbackAnchor: segment.anchor_label,
                 summaryDurationS: segment.summary_duration_s,
                 summaryLlmAttempts: segment.summary_llm_attempts,
                 onFollowUp: onFollowUp,
-                showsBackground: showsBackground
+                onSendToChat: onSendToChat,
+                showsBackground: showsBackground,
+                showsHeader: false
             )
         } else {
             summaryPlaceholder
@@ -255,9 +241,18 @@ struct SegmentReadingBlock: View, Equatable {
     }
 
     @ViewBuilder
-    private var segmentCharCountHeader: some View {
-        HStack(spacing: 12) {
-            Spacer(minLength: 0)
+    private var segmentHeaderRow: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            if let anchor = resolvedAnchorText {
+                Text(anchor)
+                    .font(.system(size: LuminaTheme.summaryLabelSize, weight: .medium))
+                    .foregroundStyle(LuminaTheme.textSecondary)
+                    .lineLimit(1)
+                    .textSelection(.enabled)
+            }
+
+            Spacer(minLength: 8)
+
             if isSummaryInProgress {
                 HStack(spacing: 6) {
                     ProgressView()
@@ -265,16 +260,40 @@ struct SegmentReadingBlock: View, Equatable {
                     progressStatusView
                         .font(.system(size: LuminaTheme.summaryLabelSize - 1))
                         .foregroundStyle(LuminaTheme.textSecondary)
-                        .lineLimit(2)
+                        .lineLimit(1)
                 }
             }
+
             if let count = effectiveCharCount, count > 0 {
                 Text("约 \(Self.formatCount(count)) 字")
                     .font(.system(size: LuminaTheme.summaryLabelSize - 1))
                     .foregroundStyle(LuminaTheme.textSecondary.opacity(0.85))
                     .textSelection(.enabled)
             }
+
+            if segmentTotal > 0 {
+                Text("段 \(segment.idx + 1)/\(segmentTotal)")
+                    .font(.system(size: LuminaTheme.summaryLabelSize - 1))
+                    .foregroundStyle(LuminaTheme.textSecondary.opacity(0.85))
+                    .textSelection(.enabled)
+            }
         }
+    }
+
+    private var resolvedAnchorText: String? {
+        let raw: String? = {
+            if let summary = segment.summary_json, !summary.isEmpty,
+               let parsed = ParsedSummary(json: summary),
+               let anchor = parsed.anchor, !anchor.isEmpty {
+                return anchor
+            }
+            if let label = segment.anchor_label, !label.isEmpty {
+                return label
+            }
+            return nil
+        }()
+        guard let raw else { return nil }
+        return raw.hasPrefix("〔") ? raw : "〔\(raw)〕"
     }
 
     @ViewBuilder
@@ -333,40 +352,27 @@ struct SegmentReadingBlock: View, Equatable {
     @ViewBuilder
     private var summaryPlaceholder: some View {
         VStack(alignment: .leading, spacing: 8) {
-            if let anchor = segment.anchor_label, !anchor.isEmpty {
-                Text(anchor)
-                    .font(.system(size: LuminaTheme.summaryLabelSize, weight: .medium))
-                    .foregroundStyle(LuminaTheme.textSecondary)
-            }
-
-            HStack(spacing: 10) {
-                switch segment.summary_status {
-                case "running", "pending":
-                    ProgressView()
-                        .controlSize(.small)
-                    progressStatusView
-                        .font(.system(size: LuminaTheme.summaryBulletSize))
-                        .foregroundStyle(LuminaTheme.textSecondary)
-                        .lineLimit(3)
-                case "failed", "error":
-                    VStack(alignment: .leading, spacing: 8) {
-                        HStack(spacing: 10) {
-                            Image(systemName: "exclamationmark.circle")
-                                .foregroundStyle(.red)
-                            Text(failureMessage)
-                                .font(.system(size: LuminaTheme.summaryBulletSize))
-                                .foregroundStyle(LuminaTheme.textSecondary)
-                                .lineLimit(3)
-                        }
-                        Button("重试", action: onRetrySummary)
-                            .buttonStyle(.bordered)
-                            .controlSize(.small)
+            switch segment.summary_status {
+            case "running", "pending":
+                EmptyView()
+            case "failed", "error":
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack(spacing: 10) {
+                        Image(systemName: "exclamationmark.circle")
+                            .foregroundStyle(.red)
+                        Text(failureMessage)
+                            .font(.system(size: LuminaTheme.summaryBulletSize))
+                            .foregroundStyle(LuminaTheme.textSecondary)
+                            .lineLimit(3)
                     }
-                default:
-                    Text("尚无摘要")
-                        .font(.system(size: LuminaTheme.summaryBulletSize))
-                        .foregroundStyle(LuminaTheme.textSecondary)
+                    Button("重试", action: onRetrySummary)
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
                 }
+            default:
+                Text("尚无摘要")
+                    .font(.system(size: LuminaTheme.summaryBulletSize))
+                    .foregroundStyle(LuminaTheme.textSecondary)
             }
         }
         .readingColumn()
@@ -386,16 +392,21 @@ struct SegmentReadingBlock: View, Equatable {
                 if needsTranslation {
                     sourceTextLabel("原文")
                 }
-                LazyParagraphText(text: body.rawText)
+                LuminaSelectableText(
+                    text: body.rawText,
+                    foreground: LuminaTheme.textSecondary,
+                    onSendToChat: onSendToChat
+                )
             }
             if needsTranslation {
                 if isSourceRefreshing && body.translation.isEmpty {
                     SourceTextSkeleton(lineCount: 3)
                 } else if !body.translation.isEmpty {
                     sourceTextLabel("译文")
-                    LazyParagraphText(
+                    LuminaSelectableText(
                         text: body.translation,
-                        foreground: LuminaTheme.textSecondary.opacity(0.85)
+                        foreground: LuminaTheme.textSecondary.opacity(0.85),
+                        onSendToChat: onSendToChat
                     )
                 }
             }

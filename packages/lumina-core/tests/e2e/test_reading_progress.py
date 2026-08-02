@@ -41,9 +41,38 @@ def _import_sample(client: TestClient) -> str:
     return import_sample_book(client)
 
 
+def _insert_multi_segment_book(client: TestClient, *, segment_count: int = 10) -> str:
+    import uuid
+    from datetime import datetime, timezone
+
+    conn = client.app.state.lumina.conn  # type: ignore[attr-defined]
+    book_id = str(uuid.uuid4())
+    now = datetime.now(timezone.utc).isoformat()
+    conn.execute(
+        """
+        INSERT INTO books (
+          id, title, format, file_path, segment_count, status,
+          file_hash, current_segment_index, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (book_id, "Multi", "txt", f"/tmp/{book_id}.txt", segment_count, "reading", book_id, 0, now, now),
+    )
+    for idx in range(segment_count):
+        conn.execute(
+            """
+            INSERT INTO segments (
+              id, book_id, idx, anchor_label, raw_text, char_count,
+              summary_status, retry_count
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (f"{book_id}-s{idx}", book_id, idx, f"段 {idx + 1}", f"text {idx}", 8, "pending", 0),
+        )
+    conn.commit()
+    return book_id
+
+
 def test_open_returns_current_segment_index(client):
-    book_id = _import_sample(client)
-    assert client.get(f"/books/{book_id}").json()["current_segment_index"] == 0
+    book_id = _insert_multi_segment_book(client, segment_count=10)
 
     client.patch(
         f"/books/{book_id}/reading-progress",
@@ -58,7 +87,7 @@ def test_open_returns_current_segment_index(client):
 
 
 def test_patch_reading_progress_persists(client):
-    book_id = _import_sample(client)
+    book_id = _insert_multi_segment_book(client, segment_count=10)
 
     resp = client.patch(
         f"/books/{book_id}/reading-progress",
@@ -77,3 +106,21 @@ def test_patch_reading_progress_404_for_missing_book(client):
         json={"segment_index": 1},
     )
     assert resp.status_code == 404
+
+
+def test_patch_reading_progress_rejects_out_of_range(client):
+    book_id = _insert_multi_segment_book(client, segment_count=5)
+    segment_count = client.get(f"/books/{book_id}").json()["segment_count"]
+    assert segment_count == 5
+
+    resp = client.patch(
+        f"/books/{book_id}/reading-progress",
+        json={"segment_index": segment_count + 10},
+    )
+    assert resp.status_code == 400
+
+    resp = client.patch(
+        f"/books/{book_id}/reading-progress",
+        json={"segment_index": -1},
+    )
+    assert resp.status_code == 400

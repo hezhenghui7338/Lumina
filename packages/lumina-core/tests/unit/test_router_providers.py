@@ -151,6 +151,50 @@ def test_format_chain_failure_connect_error_hint():
     assert "Ollama 已启动" in msg
 
 
+def test_format_chain_failure_openrouter_400_hint():
+    resources = [
+        ModelResource(
+            id="openrouter",
+            provider="openrouter",
+            base_url="https://openrouter.ai/api/v1",
+            model="openrouter/free",
+            api_key="test-key",
+        )
+    ]
+    request = httpx.Request("POST", "https://openrouter.ai/api/v1/chat/completions")
+    response = httpx.Response(
+        400,
+        request=request,
+        text='{"error":{"message":"Provider does not support response_format"}}',
+    )
+    msg = _format_chain_failure(
+        resources,
+        httpx.HTTPStatusError("400", request=request, response=response),
+    )
+    assert "HTTP 400" in msg
+    assert "response_format" in msg
+
+
+def test_format_chain_failure_404_hint():
+    resources = [
+        ModelResource(
+            id="openrouter",
+            provider="openrouter",
+            base_url="https://openrouter.ai/api/v1",
+            model="anthropic/claude-sonnet-4",
+            api_key="test-key",
+        )
+    ]
+    request = httpx.Request("POST", "https://openrouter.ai/api/v1/chat/completions")
+    response = httpx.Response(404, request=request, text="Not Found")
+    msg = _format_chain_failure(
+        resources,
+        httpx.HTTPStatusError("404", request=request, response=response),
+    )
+    assert "HTTP 404" in msg
+    assert "OpenRouter 应为 https://openrouter.ai/api/v1" in msg
+
+
 def test_ollama_payload_disables_thinking():
     router = _router()
     ollama = router.models.resource_by_id("ollama")

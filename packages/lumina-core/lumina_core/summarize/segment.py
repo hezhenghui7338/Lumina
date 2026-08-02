@@ -59,7 +59,25 @@ SUMMARY_PROMPT_OLLAMA = """你是阅读助手。阅读以下段落，只输出 J
 {text}
 """
 
+SUMMARY_PROMPT_CLOUD = """你是阅读助手。阅读以下段落，只输出 JSON，不要任何其他文字。
+
+字段（仅这两个）：
+- sentences: 1～3 句概述
+- bullets: 3～7 条要点，每条 {{"label":"≤8字小标题","body":"1～2句说明（40～120字）"}}
+
+示例：
+{{"sentences":["本段交代主角寒门出身与赴考之志。"],"bullets":[{{"label":"寒门出身","body":"主角生于贫苦农家，父亲早逝，母亲靠纺织维生。"}},{{"label":"赴考之志","body":"段末以誓要金榜题名收束，将个人命运与科举制度绑定。"}},{{"label":"邻里关系","body":"邻里虽敬其向学，却无力资助书卷。"}}]}}
+
+---
+{text}
+"""
+
 _OLLAMA_RETRY_SUFFIX = (
+    '\n\n上次输出不是合法 JSON。请只输出 '
+    '{{"sentences":["…"],"bullets":[{{"label":"…","body":"…"}}]}}，不要其他文字。'
+)
+
+_CLOUD_RETRY_SUFFIX = (
     '\n\n上次输出不是合法 JSON。请只输出 '
     '{{"sentences":["…"],"bullets":[{{"label":"…","body":"…"}}]}}，不要其他文字。'
 )
@@ -72,8 +90,10 @@ class SummarizeResult:
     llm_duration_s: float
 
 
-def _segment_prompt_settings(router: ProfileModelRouter) -> tuple[str, int, int, int, bool]:
-    """Return prompt template, text limit, retries, min bullet body chars, is_ollama."""
+def _segment_prompt_settings(
+    router: ProfileModelRouter,
+) -> tuple[str, int, int, int, bool, bool]:
+    """Return prompt template, text limit, retries, min body chars, text-only, minimal parse."""
     models = getattr(router, "models", None)
     if models is not None and models.primary_summarize_is_ollama():
         return (
@@ -82,8 +102,18 @@ def _segment_prompt_settings(router: ProfileModelRouter) -> tuple[str, int, int,
             OLLAMA_SUMMARY_MAX_RETRIES,
             OLLAMA_SUMMARY_MIN_BODY_CHARS,
             True,
+            True,
         )
-    return SUMMARY_PROMPT, 8000, MAX_SUMMARY_RETRIES, 20, False
+    if models is not None and models.primary_summarize_is_cloud():
+        return (
+            SUMMARY_PROMPT_CLOUD,
+            8000,
+            MAX_SUMMARY_RETRIES,
+            OLLAMA_SUMMARY_MIN_BODY_CHARS,
+            True,
+            True,
+        )
+    return SUMMARY_PROMPT, 8000, MAX_SUMMARY_RETRIES, 20, False, False
 
 
 def _format_base_prompt(
@@ -91,9 +121,9 @@ def _format_base_prompt(
     *,
     anchor_label: str,
     text: str,
-    is_ollama: bool,
+    text_only: bool,
 ) -> str:
-    if is_ollama:
+    if text_only:
         return template.format(text=text)
     return template.format(anchor=anchor_label, text=text)
 
@@ -102,7 +132,7 @@ def summarize_job_timeout_seconds(router: ProfileModelRouter) -> int:
     """Wall-clock budget for one summarize job (each LLM attempt may use full segment timeout)."""
     from lumina_core import config
 
-    _, _, llm_retries, _, _ = _segment_prompt_settings(router)
+    _, _, llm_retries, _, _, _ = _segment_prompt_settings(router)
     return config.SUMMARY_SEGMENT_TIMEOUT_SECONDS * max(1, llm_retries)
 
 
@@ -115,7 +145,7 @@ async def summarize_segment(
     failure_dump_path: Path | None = None,
     on_progress: SummaryProgressCallback | None = None,
 ) -> SummarizeResult:
-    prompt_template, text_limit, default_retries, min_body_chars, is_ollama = (
+    prompt_template, text_limit, default_retries, min_body_chars, text_only, use_minimal_parse = (
         _segment_prompt_settings(router)
     )
     segment_text = raw_text[:text_limit]
@@ -123,7 +153,7 @@ async def summarize_segment(
         prompt_template,
         anchor_label=anchor_label,
         text=segment_text,
-        is_ollama=is_ollama,
+        text_only=text_only,
     )
     prompt = base_prompt
     last_err: Exception | None = None
@@ -157,6 +187,10 @@ async def summarize_segment(
         llm_attempt = attempt + 1
         await _emit_progress(phase="start", llm_attempt=llm_attempt)
         attempt_started = time.time()
+
+        async def _on_slot_acquired() -> None:
+            await _emit_progress(phase="llm_start", llm_attempt=llm_attempt)
+
         agent_log(
             hypothesis_id="B",
             location="segment.py:summarize_segment:attempt",
@@ -172,13 +206,14 @@ async def summarize_segment(
             prompt,
             profile="summarize",
             json_mode=True,
+            on_slot_acquired=_on_slot_acquired,
         )
         llm_duration = round(time.time() - attempt_started, 2)
         total_llm_duration += llm_duration
         if isinstance(raw, str):
             last_raw = raw
         try:
-            if is_ollama:
+            if use_minimal_parse:
                 summary = parse_segment_summary_minimal(raw, fallback_anchor=anchor_label)
             else:
                 summary = parse_segment_summary(raw)
@@ -214,8 +249,9 @@ async def summarize_segment(
                 llm_duration_s=llm_duration,
             )
         if attempt + 1 < retries and last_err is not None:
-            if is_ollama:
-                prompt = base_prompt + _OLLAMA_RETRY_SUFFIX
+            if use_minimal_parse:
+                suffix = _OLLAMA_RETRY_SUFFIX if text_only and prompt_template is SUMMARY_PROMPT_OLLAMA else _CLOUD_RETRY_SUFFIX
+                prompt = base_prompt + suffix
             elif isinstance(last_err, json.JSONDecodeError):
                 prompt = (
                     base_prompt

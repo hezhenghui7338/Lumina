@@ -137,21 +137,52 @@ struct ImportConflictError: LocalizedError {
     }
 }
 
-enum LibraryCollection: String, CaseIterable, Identifiable {
-    case all, unread, reading, summarized
+struct LibraryFilter: Hashable, Identifiable {
+    let rawValue: String
+
+    static let all = LibraryFilter(rawValue: "all")
+    static let summarized = LibraryFilter(rawValue: "summarized")
+
+    static let fallbackCategories = ["文学", "历史", "科技", "哲学", "经济", "传记", "其他"]
 
     var id: String { rawValue }
 
     var label: String {
-        switch self {
-        case .all: return "全部"
-        case .unread: return "未读"
-        case .reading: return "在读"
-        case .summarized: return "已摘要"
+        switch rawValue {
+        case "all": return "全部"
+        case "summarized": return "已摘要"
+        default: return rawValue
         }
     }
 
     var queryValue: String { rawValue }
+
+    static func category(_ name: String) -> LibraryFilter {
+        LibraryFilter(rawValue: name)
+    }
+
+    static func standardFilters(categories: [String]) -> [LibraryFilter] {
+        var filters: [LibraryFilter] = [.all, .summarized]
+        filters.append(contentsOf: categories.map { category($0) })
+        return filters
+    }
+
+    init(rawValue: String) {
+        self.rawValue = rawValue
+    }
+
+    /// Migrate legacy collection preferences (unread/reading → all).
+    static func fromPersisted(_ raw: String) -> LibraryFilter {
+        switch raw {
+        case "all", "summarized": return LibraryFilter(rawValue: raw)
+        case "unread", "reading": return .all
+        default:
+            if fallbackCategories.contains(raw) {
+                return category(raw)
+            }
+            return .all
+        }
+    }
 }
 
 enum LibrarySort: String, CaseIterable, Identifiable {
@@ -447,15 +478,21 @@ final class CoreClient: ObservableObject {
     }
 
     func listBooks(
-        collection: LibraryCollection = .all,
+        filter: LibraryFilter = .all,
         sort: LibrarySort = .recent
     ) async throws -> [BookSummary] {
         let data = try await get(path: "/books", queryItems: [
-            URLQueryItem(name: "collection", value: collection.queryValue),
+            URLQueryItem(name: "filter", value: filter.queryValue),
             URLQueryItem(name: "sort", value: sort.queryValue),
         ])
         struct Resp: Codable { let books: [BookSummary] }
         return try await Self.decode(Resp.self, from: data).books
+    }
+
+    func listBookCategories() async throws -> [String] {
+        let data = try await get(path: "/books/categories")
+        struct Resp: Codable { let categories: [String] }
+        return try await Self.decode(Resp.self, from: data).categories
     }
 
     func updateBook(
@@ -564,7 +601,7 @@ final class CoreClient: ObservableObject {
     }
 
     func listSegments(bookId: String) async throws -> [SegmentRow] {
-        let data = try await get(path: "/books/\(bookId)/segments")
+        let data = try await getLongRunning(path: "/books/\(bookId)/segments")
         struct Resp: Codable { let segments: [SegmentRow] }
         return try await Self.decode(Resp.self, from: data).segments
     }
@@ -983,6 +1020,13 @@ final class CoreClient: ObservableObject {
             try validate(resp: resp, data: data)
             return data
         }
+    }
+
+    /// Long-running GET (segment list for large books): extended timeout, no retry storm.
+    private func getLongRunning(path: String, queryItems: [URLQueryItem]? = nil) async throws -> Data {
+        let (data, resp) = try await Self.longSession.data(from: url(path: path, queryItems: queryItems))
+        try validate(resp: resp, data: data)
+        return data
     }
 
     private func put(path: String, body: Data) async throws -> Data {

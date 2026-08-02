@@ -6,7 +6,7 @@ import json
 import logging
 import re
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Any, Literal
 
 import httpx
@@ -19,12 +19,23 @@ from lumina_core.config import (
     SUMMARY_SEGMENT_TIMEOUT_SECONDS,
 )
 from lumina_core.models.concurrency import ResourceBusyError, ResourceConcurrencyGate
+from lumina_core.models.openai_compat import openai_compat_client_base, openai_compat_paths
 from lumina_core.ollama_setup import is_local_base_url
 
 Profile = Literal["chat", "summarize", "translate"]
 
 _router: ProfileModelRouter | None = None
 logger = logging.getLogger(__name__)
+
+_JSON_FORMAT_RETRY_STATUSES = frozenset({400, 422})
+
+
+def _http_error_detail(exc: httpx.HTTPStatusError) -> str:
+    body = (exc.response.text or "").strip()[:200]
+    status = exc.response.status_code
+    if body:
+        return f"HTTP {status}: {body}"
+    return f"HTTP {status}: {exc.response.reason_phrase or 'error'}"
 
 
 def _format_chain_failure(
@@ -33,7 +44,10 @@ def _format_chain_failure(
 ) -> str:
     """Build an actionable error when every resource in a priority chain fails."""
     tried = ", ".join(r.id for r in resources) or "（无）"
-    detail = str(last_error) if last_error else "未知错误"
+    if isinstance(last_error, httpx.HTTPStatusError):
+        detail = _http_error_detail(last_error)
+    else:
+        detail = str(last_error) if last_error else "未知错误"
     hints: list[str] = []
 
     if "cursor base_url not set" in detail:
@@ -48,6 +62,14 @@ def _format_chain_failure(
         hints.append("请确认 Ollama 已启动（菜单栏 Llama 图标）或 API 服务可达")
     if isinstance(last_error, (httpx.TimeoutException, TimeoutError)):
         hints.append("请求超时，可稍后重试或调整优先级链")
+    if isinstance(last_error, httpx.HTTPStatusError) and last_error.response.status_code == 404:
+        hints.append(
+            "请检查 Base URL 是否正确（OpenRouter 应为 https://openrouter.ai/api/v1）"
+        )
+    elif "404" in detail and "Not Found" in detail:
+        hints.append(
+            "请检查 Base URL 是否正确（OpenRouter 应为 https://openrouter.ai/api/v1）"
+        )
 
     msg = f"优先级链全部失败（已尝试：{tried}）：{detail}"
     if hints:
@@ -58,14 +80,23 @@ def _format_chain_failure(
 class ProfileModelRouter:
     """Route LLM calls through per-profile resource priority chains."""
 
-    def __init__(self, models: ModelsConfig) -> None:
+    def __init__(
+        self,
+        models: ModelsConfig,
+        *,
+        gate: ResourceConcurrencyGate | None = None,
+    ) -> None:
         self.models = models
         self._clients: dict[str, httpx.AsyncClient] = {}
-        self._gate = ResourceConcurrencyGate(models.resources)
+        self._gate = gate if gate is not None else ResourceConcurrencyGate(models.resources)
         self.last_resource_id: str | None = None
         self.last_provider: str | None = None
         self.last_model: str | None = None
         self.last_call: dict[str, Any] | None = None
+
+    @property
+    def gate(self) -> ResourceConcurrencyGate:
+        return self._gate
 
     def update_resources(self, resources: list[ModelResource]) -> None:
         self._gate.set_resources(resources)
@@ -83,12 +114,61 @@ class ProfileModelRouter:
                 headers["HTTP-Referer"] = "https://lumina.local"
                 headers["X-Title"] = "Lumina"
             self._clients[key] = httpx.AsyncClient(
-                base_url=resource.base_url.rstrip("/") if resource.base_url else "",
+                base_url=openai_compat_client_base(resource.base_url)
+                if resource.base_url
+                else "",
                 headers=headers,
                 timeout=timeout,
                 trust_env=not is_local_base_url(resource.base_url),
             )
         return self._clients[key]
+
+    @staticmethod
+    def _openai_completions_path(resource: ModelResource) -> str:
+        _, completions_path = openai_compat_paths(resource.base_url or "")
+        return completions_path
+
+    @staticmethod
+    def _build_openai_payload(
+        resource: ModelResource,
+        messages: list[dict[str, str]],
+        *,
+        json_mode: bool,
+        stream: bool = False,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {"model": resource.model, "messages": messages}
+        if stream:
+            payload["stream"] = True
+        if json_mode:
+            payload["response_format"] = {"type": "json_object"}
+            if resource.provider == "openrouter":
+                payload["provider"] = {"require_parameters": True}
+        return payload
+
+    async def _post_openai_json(
+        self,
+        resource: ModelResource,
+        payload: dict[str, Any],
+        *,
+        timeout: float,
+    ) -> dict[str, Any]:
+        client = self._client_for(resource, timeout=timeout)
+        path = self._openai_completions_path(resource)
+        had_json_format = "response_format" in payload
+        resp = await client.post(path, json=payload)
+        if (
+            had_json_format
+            and resp.status_code in _JSON_FORMAT_RETRY_STATUSES
+        ):
+            retry_payload = {
+                key: value
+                for key, value in payload.items()
+                if key not in ("response_format", "provider")
+            }
+            resp = await client.post(path, json=retry_payload)
+        if resp.is_error:
+            resp.raise_for_status()
+        return resp.json()
 
     async def complete(
         self,
@@ -96,6 +176,7 @@ class ProfileModelRouter:
         *,
         profile: Profile = "summarize",
         json_mode: bool = False,
+        on_slot_acquired: Callable[[], Awaitable[None]] | None = None,
     ) -> str:
         resources = self._resources_for(profile)
         if not resources:
@@ -105,6 +186,7 @@ class ProfileModelRouter:
             prompt,
             json_mode=json_mode,
             profile=profile,
+            on_slot_acquired=on_slot_acquired,
         )
 
     async def chat(
@@ -137,12 +219,21 @@ class ProfileModelRouter:
         *,
         json_mode: bool,
         profile: Profile = "summarize",
+        on_slot_acquired: Callable[[], Awaitable[None]] | None = None,
     ) -> str:
         last_error: Exception | None = None
         ollama_skipped = False
         ollama_fast_timed_out = False
         attempted: set[str] = set()
         started = time.time()
+        slot_notified = False
+
+        async def _notify_slot() -> None:
+            nonlocal slot_notified
+            if on_slot_acquired is None or slot_notified:
+                return
+            slot_notified = True
+            await on_slot_acquired()
 
         for index, resource in enumerate(resources):
             if not self._resource_configured(resource):
@@ -164,6 +255,7 @@ class ProfileModelRouter:
                     skip_if_busy=skip_if_busy,
                     fast_ollama_timeout=fast_ollama_timeout,
                     profile=profile,
+                    on_slot_acquired=_notify_slot,
                 )
                 from lumina_core.debug_agent_log import agent_log
 
@@ -255,6 +347,7 @@ class ProfileModelRouter:
                     skip_if_busy=False,
                     fast_ollama_timeout=False,
                     profile=profile,
+                    on_slot_acquired=_notify_slot,
                 )
                 self._record_success(retry, profile=profile)
                 self._record_call(
@@ -519,8 +612,11 @@ class ProfileModelRouter:
         skip_if_busy: bool,
         fast_ollama_timeout: bool,
         profile: Profile = "summarize",
+        on_slot_acquired: Callable[[], Awaitable[None]] | None = None,
     ) -> str:
         async with self._gate.use(resource.id, skip_if_busy=skip_if_busy):
+            if on_slot_acquired is not None:
+                await on_slot_acquired()
             timeout = self._timeout_for(
                 resource, fast_ollama=fast_ollama_timeout, profile=profile
             )
@@ -687,6 +783,53 @@ class ProfileModelRouter:
                 if chunk:
                     yield chunk
 
+    async def _openai_stream_with_fallback(
+        self,
+        resource: ModelResource,
+        payload: dict[str, Any],
+        *,
+        timeout: float,
+    ) -> AsyncIterator[str]:
+        client = self._client_for(resource, timeout=timeout)
+        path = self._openai_completions_path(resource)
+        had_json_format = "response_format" in payload
+
+        async def _iter_stream(request_payload: dict[str, Any]) -> AsyncIterator[str]:
+            async with client.stream("POST", path, json=request_payload) as resp:
+                if resp.is_error:
+                    await resp.aread()
+                    resp.raise_for_status()
+                async for line in resp.aiter_lines():
+                    if not line.startswith("data: "):
+                        continue
+                    data_str = line[6:].strip()
+                    if data_str == "[DONE]":
+                        break
+                    data = json.loads(data_str)
+                    delta = data.get("choices", [{}])[0].get("delta", {}).get("content", "")
+                    if delta:
+                        yield delta
+
+        try:
+            async for chunk in _iter_stream(payload):
+                yield chunk
+        except httpx.HTTPStatusError as exc:
+            if (
+                not had_json_format
+                or exc.response.status_code not in _JSON_FORMAT_RETRY_STATUSES
+            ):
+                raise RuntimeError(_http_error_detail(exc)) from exc
+            retry_payload = {
+                key: value
+                for key, value in payload.items()
+                if key not in ("response_format", "provider")
+            }
+            try:
+                async for chunk in _iter_stream(retry_payload):
+                    yield chunk
+            except httpx.HTTPStatusError as retry_exc:
+                raise RuntimeError(_http_error_detail(retry_exc)) from retry_exc
+
     async def _openai_complete(
         self,
         resource: ModelResource,
@@ -695,16 +838,13 @@ class ProfileModelRouter:
         json_mode: bool,
         timeout: float,
     ) -> str:
-        client = self._client_for(resource, timeout=timeout)
-        payload: dict[str, Any] = {
-            "model": resource.model,
-            "messages": [{"role": "user", "content": prompt}],
-        }
-        if json_mode:
-            payload["response_format"] = {"type": "json_object"}
-        resp = await client.post("/v1/chat/completions", json=payload)
-        resp.raise_for_status()
-        return resp.json()["choices"][0]["message"]["content"]
+        messages = [{"role": "user", "content": prompt}]
+        payload = self._build_openai_payload(resource, messages, json_mode=json_mode)
+        try:
+            data = await self._post_openai_json(resource, payload, timeout=timeout)
+        except httpx.HTTPStatusError as exc:
+            raise RuntimeError(_http_error_detail(exc)) from exc
+        return data["choices"][0]["message"]["content"]
 
     async def _openai_chat(
         self,
@@ -714,13 +854,12 @@ class ProfileModelRouter:
         json_mode: bool,
         timeout: float,
     ) -> str:
-        client = self._client_for(resource, timeout=timeout)
-        payload: dict[str, Any] = {"model": resource.model, "messages": messages}
-        if json_mode:
-            payload["response_format"] = {"type": "json_object"}
-        resp = await client.post("/v1/chat/completions", json=payload)
-        resp.raise_for_status()
-        return resp.json()["choices"][0]["message"]["content"]
+        payload = self._build_openai_payload(resource, messages, json_mode=json_mode)
+        try:
+            data = await self._post_openai_json(resource, payload, timeout=timeout)
+        except httpx.HTTPStatusError as exc:
+            raise RuntimeError(_http_error_detail(exc)) from exc
+        return data["choices"][0]["message"]["content"]
 
     async def _openai_chat_stream(
         self,
@@ -730,31 +869,19 @@ class ProfileModelRouter:
         json_mode: bool,
         timeout: float,
     ) -> AsyncIterator[str]:
-        client = self._client_for(resource, timeout=timeout)
-        payload: dict[str, Any] = {
-            "model": resource.model,
-            "messages": messages,
-            "stream": True,
-        }
-        if json_mode:
-            payload["response_format"] = {"type": "json_object"}
-        async with client.stream("POST", "/v1/chat/completions", json=payload) as resp:
-            resp.raise_for_status()
-            async for line in resp.aiter_lines():
-                if not line.startswith("data: "):
-                    continue
-                data_str = line[6:].strip()
-                if data_str == "[DONE]":
-                    break
-                data = json.loads(data_str)
-                delta = data.get("choices", [{}])[0].get("delta", {}).get("content", "")
-                if delta:
-                    yield delta
+        payload = self._build_openai_payload(
+            resource, messages, json_mode=json_mode, stream=True
+        )
+        async for chunk in self._openai_stream_with_fallback(
+            resource, payload, timeout=timeout
+        ):
+            yield chunk
 
     async def aclose(self) -> None:
-        for client in self._clients.values():
-            await client.aclose()
+        clients = list(self._clients.values())
         self._clients.clear()
+        for client in clients:
+            await client.aclose()
 
 
 class OllamaRouter(ProfileModelRouter):

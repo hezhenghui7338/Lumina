@@ -42,7 +42,7 @@ async def test_summarize_segment_returns_attempt_metrics():
         def __init__(self) -> None:
             self.calls = 0
 
-        async def complete(self, prompt, profile="summarize", json_mode=True):
+        async def complete(self, prompt, profile="summarize", json_mode=True, **kwargs):
             self.calls += 1
             if self.calls == 1:
                 return "not json"
@@ -75,7 +75,10 @@ async def test_ollama_summarize_uses_json_mode():
     class CaptureRouter(ProfileModelRouter):
         json_modes: list[bool] = []
 
-        async def complete(self, prompt, profile="summarize", json_mode=True):
+        async def complete(self, prompt, profile="summarize", json_mode=True, **kwargs):
+            on_slot_acquired = kwargs.get("on_slot_acquired")
+            if on_slot_acquired is not None:
+                await on_slot_acquired()
             type(self).json_modes.append(json_mode)
             return json.dumps(_MINIMAL_SUMMARY)
 

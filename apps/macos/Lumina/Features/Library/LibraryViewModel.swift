@@ -14,17 +14,23 @@ struct IngestProgress: Equatable {
 @MainActor
 final class LibraryViewModel: ObservableObject {
     @Published var books: [BookSummary] = []
-    @Published var collection: LibraryCollection = .all
+    @Published var filter: LibraryFilter = .all
     @Published var sort: LibrarySort = .recent
+    @Published var categories: [String] = LibraryFilter.fallbackCategories
     @Published var classifyingIds: Set<String> = []
     @Published var ingestProgress: [String: IngestProgress] = [:]
 
     private var ingestEventTasks: [String: Task<Void, Never>] = [:]
 
+    var filterOptions: [LibraryFilter] {
+        LibraryFilter.standardFilters(categories: categories)
+    }
+
     func loadPreferences() {
-        if let raw = UserDefaults.standard.string(forKey: Self.collectionKey),
-           let value = LibraryCollection(rawValue: raw) {
-            collection = value
+        if let raw = UserDefaults.standard.string(forKey: Self.filterKey) {
+            filter = LibraryFilter.fromPersisted(raw)
+        } else if let legacy = UserDefaults.standard.string(forKey: Self.legacyCollectionKey) {
+            filter = LibraryFilter.fromPersisted(legacy)
         }
         if let raw = UserDefaults.standard.string(forKey: Self.sortKey),
            let value = LibrarySort(rawValue: raw) {
@@ -33,17 +39,18 @@ final class LibraryViewModel: ObservableObject {
     }
 
     func persistPreferences() {
-        UserDefaults.standard.set(collection.rawValue, forKey: Self.collectionKey)
+        UserDefaults.standard.set(filter.rawValue, forKey: Self.filterKey)
         UserDefaults.standard.set(sort.rawValue, forKey: Self.sortKey)
     }
 
-    func prepareForNewImport() {
-        collection = .all
-        persistPreferences()
+    func loadCategories(using core: CoreClient) async {
+        if let fetched = try? await core.listBookCategories(), !fetched.isEmpty {
+            categories = fetched
+        }
     }
 
     func refresh(using core: CoreClient, preserveOrder: Bool = false) async throws {
-        let fetched = try await core.listBooks(collection: collection, sort: sort)
+        let fetched = try await core.listBooks(filter: filter, sort: sort)
         books = preserveOrder && !books.isEmpty
             ? Self.mergePreservingOrder(existing: books, fetched: fetched)
             : fetched
@@ -100,8 +107,8 @@ final class LibraryViewModel: ObservableObject {
         return merged
     }
 
-    func setCollection(_ value: LibraryCollection, using core: CoreClient) async throws {
-        collection = value
+    func setFilter(_ value: LibraryFilter, using core: CoreClient) async throws {
+        filter = value
         persistPreferences()
         try await refresh(using: core)
     }
@@ -165,6 +172,7 @@ final class LibraryViewModel: ObservableObject {
         books.contains(where: \.isProcessing)
     }
 
-    private static let collectionKey = "lumina.library.collection"
+    private static let filterKey = "lumina.library.filter"
+    private static let legacyCollectionKey = "lumina.library.collection"
     private static let sortKey = "lumina.library.sort"
 }

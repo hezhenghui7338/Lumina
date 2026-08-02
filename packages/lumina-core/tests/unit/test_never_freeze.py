@@ -44,7 +44,7 @@ def test_sqlite_wal_enabled(tmp_path):
     conn.close()
 
 
-def test_list_segments_excludes_raw_text(client):
+def test_list_segments_excludes_raw_text_and_summary_json(client):
     book_id = import_sample_book(client)
     segs = client.get(f"/books/{book_id}/segments").json()["segments"]
     assert segs
@@ -103,6 +103,15 @@ def test_get_segment_summary(tmp_path, client):
     assert api_summary["idx"] == 0
 
 
+def test_list_segments_include_summary_query(client):
+    book_id = import_sample_book(client)
+    segs = client.get(
+        f"/books/{book_id}/segments", params={"include_summary": "true"}
+    ).json()["segments"]
+    assert segs
+    assert "summary_json" in segs[0]
+
+
 def test_list_for_book_include_body_flag(tmp_path):
     conn = init_db(tmp_path / "t.db")
     conn.execute(
@@ -158,7 +167,11 @@ def test_list_for_book_backfills_char_count(tmp_path):
     )
     conn.execute("UPDATE segments SET char_count = NULL WHERE id = 's2'")
     conn.commit()
-    meta = SegmentRepo(conn).list_for_book("b2", include_body=False)
+    repo = SegmentRepo(conn)
+    meta = repo.list_for_book("b2", include_body=False)
+    assert meta[0]["char_count"] is None
+    repo.backfill_char_counts("b2")
+    meta = repo.list_for_book("b2", include_body=False)
     assert meta[0]["char_count"] == 4
     conn.close()
 

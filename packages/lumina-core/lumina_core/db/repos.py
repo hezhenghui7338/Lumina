@@ -8,6 +8,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
+from lumina_core.classify.book import BOOK_CATEGORIES
 from lumina_core.db.connection import db_transaction
 from lumina_core.search.fts import delete_note_from_fts
 
@@ -16,15 +17,8 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-BOOK_COLLECTIONS = frozenset({"all", "unread", "reading", "summarized"})
+BOOK_FILTERS = frozenset({"all", "summarized", *BOOK_CATEGORIES})
 BOOK_SORTS = frozenset({"recent", "added", "title", "favorite"})
-
-_COLLECTION_WHERE: dict[str, str] = {
-    "all": "",
-    "unread": "status = 'unread'",
-    "reading": "status = 'reading'",
-    "summarized": "status = 'summarized'",
-}
 
 _SORT_ORDER: dict[str, str] = {
     "recent": "last_opened_at IS NULL, last_opened_at DESC, updated_at DESC",
@@ -51,20 +45,23 @@ class BookRepo:
     def list_books(
         self,
         *,
-        collection: str = "all",
+        filter: str = "all",
         sort: str = "recent",
     ) -> list[dict[str, Any]]:
-        if collection not in BOOK_COLLECTIONS:
-            collection = "all"
+        if filter not in BOOK_FILTERS:
+            filter = "all"
         if sort not in BOOK_SORTS:
             sort = "recent"
-        where = _COLLECTION_WHERE[collection]
         order = _SORT_ORDER[sort]
         sql = "SELECT * FROM books"
-        if where:
-            sql += f" WHERE {where}"
+        params: tuple[Any, ...] = ()
+        if filter == "summarized":
+            sql += " WHERE status = 'summarized'"
+        elif filter in BOOK_CATEGORIES:
+            sql += " WHERE category = ?"
+            params = (filter,)
         sql += f" ORDER BY {order}"
-        rows = self.conn.execute(sql).fetchall()
+        rows = self.conn.execute(sql, params).fetchall()
         return [dict(r) for r in rows]
 
     def insert(self, **fields: Any) -> dict[str, Any]:
@@ -158,11 +155,16 @@ class BookRepo:
         }
 
 
-# List API / UI sidebar: exclude raw_text, translation, and summary_json.
-_SEGMENT_META_COLUMNS = (
+# List API / UI sidebar: slim meta — no raw_text, translation, or summary_json.
+_SEGMENT_LIST_COLUMNS = (
     "id, book_id, idx, chapter, page_range, anchor_label, char_count, "
     "label, summary_status, retry_count, "
     "summary_provider, summary_model, summary_duration_s, summary_llm_attempts"
+)
+
+# Optional include_summary=1 on list API (export/debug).
+_SEGMENT_META_COLUMNS = (
+    f"{_SEGMENT_LIST_COLUMNS}, summary_json"
 )
 
 _SEGMENT_SUMMARY_COLUMNS = (
@@ -183,11 +185,18 @@ class SegmentRepo:
         self.conn = conn
 
     def list_for_book(
-        self, book_id: str, *, include_body: bool = True
+        self,
+        book_id: str,
+        *,
+        include_body: bool = True,
+        include_summary: bool = False,
     ) -> list[dict[str, Any]]:
-        if not include_body:
-            self._backfill_char_counts(book_id)
-        cols = "*" if include_body else _SEGMENT_META_COLUMNS
+        if include_body:
+            cols = "*"
+        elif include_summary:
+            cols = _SEGMENT_META_COLUMNS
+        else:
+            cols = _SEGMENT_LIST_COLUMNS
         rows = self.conn.execute(
             f"SELECT {cols} FROM segments WHERE book_id = ? ORDER BY idx",
             (book_id,),
@@ -201,7 +210,7 @@ class SegmentRepo:
         ).fetchall()
         return [dict(r) for r in rows]
 
-    def _backfill_char_counts(self, book_id: str) -> None:
+    def backfill_char_counts(self, book_id: str) -> None:
         row = self.conn.execute(
             """
             SELECT 1 FROM segments
