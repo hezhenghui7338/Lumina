@@ -91,6 +91,8 @@ def test_get_segment_summary(tmp_path, client):
     conn.close()
 
     book_id = import_sample_book(client)
+    # Default auto_start_summary is off; start prefetch explicitly.
+    assert client.post(f"/books/{book_id}/summarize/start").status_code == 200
     import time
 
     for _ in range(50):

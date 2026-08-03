@@ -30,7 +30,7 @@ def client(tmp_path, monkeypatch):
             "translate": "示例译文。",
         }
     )
-    app = create_app(Settings(data_dir=tmp_path))
+    app = create_app(Settings(data_dir=tmp_path, auto_start_summary=True))
     app.state.lumina.router = router
     app.state.lumina.job_queue.router = router
     set_router(router)

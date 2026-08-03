@@ -1,9 +1,10 @@
 """Chat DCA budget and JSON parse fallback."""
 
 import json
+from unittest.mock import MagicMock
 
 from lumina_core.chat.service import build_dca_context
-from lumina_core.models.router import parse_chat_response
+from lumina_core.models.router import ProfileModelRouter, parse_chat_response
 
 
 def test_parse_chat_response_valid_json():
@@ -66,3 +67,30 @@ def test_build_dca_context_truncates_current_and_nearby():
     # nearby excerpt capped at 400; only max_segments=3 considered, current skipped
     assert "乙" * 400 in ctx
     assert "乙" * 401 not in ctx
+
+
+def test_chat_done_payload_includes_router_metrics():
+    """SSE done / JSON response should merge router.chat_metrics() fields."""
+    router = MagicMock(spec=ProfileModelRouter)
+    router.chat_metrics.return_value = {
+        "provider": "openai",
+        "model": "gpt-4o-mini",
+        "duration_ms": 1200,
+        "prompt_tokens": 100,
+        "completion_tokens": 40,
+        "total_tokens": 140,
+        "tps": 33.3,
+    }
+    payload = {
+        "type": "done",
+        "answer": "ok",
+        "citations": [],
+        "web_refs": [],
+        "evidence_sufficient": True,
+        "session_id": "s1",
+        **router.chat_metrics(),
+    }
+    assert payload["provider"] == "openai"
+    assert payload["model"] == "gpt-4o-mini"
+    assert payload["tps"] == 33.3
+    assert payload["total_tokens"] == 140

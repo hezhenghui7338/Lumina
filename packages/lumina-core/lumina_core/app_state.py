@@ -105,6 +105,7 @@ def create_app_state(settings: Settings | None = None) -> AppState:
         conn,
         router,
         target_language=settings.target_language,
+        auto_start_summary=settings.auto_start_summary,
         task_registry=task_registry,
         prompts=settings.prompts,
     )

@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from unittest.mock import patch
+import json
+from contextlib import asynccontextmanager
+from unittest.mock import MagicMock, patch
 
 import httpx
 import pytest
@@ -308,3 +310,233 @@ async def test_chat_fallback_to_second_resource():
 
     assert text == "ollama-answer"
     assert router.last_resource_id == "ollama"
+
+
+def _aiping_resource() -> ModelResource:
+    return ModelResource(
+        id="aiping",
+        provider="aiping",
+        base_url="https://aiping.cn/api/v1",
+        model="GLM-5.2",
+        api_key="aiping-test-key",
+    )
+
+
+@pytest.mark.asyncio
+async def test_openai_stream_skips_empty_choices():
+    """SSE frames with choices:[] must not raise IndexError (aiping quirk)."""
+    router = _router(chat=[_aiping_resource()])
+    lines = [
+        f"data: {json.dumps({'choices': []})}",
+        f"data: {json.dumps({'choices': [{'delta': {'content': '你好'}}]})}",
+        f"data: {json.dumps({'choices': []})}",
+        f"data: {json.dumps({'choices': [{'delta': {'content': '世界'}}]})}",
+        "data: [DONE]",
+    ]
+
+    async def aiter_lines():
+        for line in lines:
+            yield line
+
+    resp = MagicMock()
+    resp.is_error = False
+    resp.aiter_lines = aiter_lines
+
+    @asynccontextmanager
+    async def fake_stream(*_args, **_kwargs):
+        yield resp
+
+    client = MagicMock()
+    client.stream = fake_stream
+    with patch.object(router, "_client_for", return_value=client):
+        stream = await router.chat(
+            [{"role": "user", "content": "hi"}],
+            profile="chat",
+            stream=True,
+        )
+        chunks = [chunk async for chunk in stream]
+
+    assert chunks == ["你好", "世界"]
+
+
+@pytest.mark.asyncio
+async def test_openai_chat_empty_choices_falls_back():
+    aiping = _aiping_resource()
+    ollama = ModelResource(
+        id="ollama",
+        provider="ollama",
+        base_url="http://127.0.0.1:11434",
+        model="qwen3.5:4b",
+    )
+    router = _router(chat=[aiping, ollama])
+
+    async def fake_post(*_args, **_kwargs):
+        return {"choices": []}
+
+    async def fake_ollama(resource, messages, *, json_mode, timeout):
+        return "ollama-fallback"
+
+    with patch.object(router, "_post_openai_json", side_effect=fake_post):
+        with patch.object(router, "_ollama_chat", side_effect=fake_ollama):
+            text = await router.chat([{"role": "user", "content": "hi"}], profile="chat")
+
+    assert text == "ollama-fallback"
+    assert router.last_resource_id == "ollama"
+
+
+def test_openai_message_content_empty_choices():
+    with pytest.raises(RuntimeError, match="empty choices"):
+        ProfileModelRouter._openai_message_content({"choices": []})
+
+
+def test_usage_from_openai_and_ollama():
+    prompt, completion, total = ProfileModelRouter._usage_from_openai(
+        {"usage": {"prompt_tokens": 10, "completion_tokens": 20, "total_tokens": 30}}
+    )
+    assert (prompt, completion, total) == (10, 20, 30)
+
+    prompt, completion, total, tps = ProfileModelRouter._usage_from_ollama(
+        {
+            "prompt_eval_count": 100,
+            "eval_count": 50,
+            "eval_duration": 1_000_000_000,  # 1s
+        }
+    )
+    assert (prompt, completion, total) == (100, 50, 150)
+    assert tps == pytest.approx(50.0)
+
+
+def test_chat_metrics_payload():
+    router = _router()
+    router.last_provider = "openai"
+    router.last_model = "gpt-4o-mini"
+    router._set_usage(prompt_tokens=12, completion_tokens=34, total_tokens=46)
+    router.last_duration_ms = 2000
+    router.last_tps = 17.0
+    metrics = router.chat_metrics()
+    assert metrics["provider"] == "openai"
+    assert metrics["model"] == "gpt-4o-mini"
+    assert metrics["prompt_tokens"] == 12
+    assert metrics["completion_tokens"] == 34
+    assert metrics["total_tokens"] == 46
+    assert metrics["duration_ms"] == 2000
+    assert metrics["tps"] == 17.0
+
+
+def test_build_openai_payload_includes_stream_options():
+    resource = ModelResource(
+        id="openai",
+        provider="openai",
+        base_url="https://api.openai.com/v1",
+        model="gpt-4o-mini",
+        api_key="k",
+    )
+    payload = ProfileModelRouter._build_openai_payload(
+        resource,
+        [{"role": "user", "content": "hi"}],
+        json_mode=False,
+        stream=True,
+    )
+    assert payload["stream"] is True
+    assert payload["stream_options"] == {"include_usage": True}
+
+
+@pytest.mark.asyncio
+async def test_openai_stream_captures_usage_and_tps():
+    router = _router(chat=[_aiping_resource()])
+    lines = [
+        f"data: {json.dumps({'choices': [{'delta': {'content': 'hi'}}]})}",
+        f"data: {json.dumps({'choices': [], 'usage': {'prompt_tokens': 8, 'completion_tokens': 4, 'total_tokens': 12}})}",
+        "data: [DONE]",
+    ]
+
+    async def aiter_lines():
+        for line in lines:
+            yield line
+
+    resp = MagicMock()
+    resp.is_error = False
+    resp.aiter_lines = aiter_lines
+
+    @asynccontextmanager
+    async def fake_stream(*_args, **_kwargs):
+        yield resp
+
+    client = MagicMock()
+    client.stream = fake_stream
+    with patch.object(router, "_client_for", return_value=client):
+        stream = await router.chat(
+            [{"role": "user", "content": "hi"}],
+            profile="chat",
+            stream=True,
+        )
+        chunks = [chunk async for chunk in stream]
+
+    assert chunks == ["hi"]
+    assert router.last_provider == "aiping"
+    assert router.last_model == "GLM-5.2"
+    assert router.last_usage == {
+        "prompt_tokens": 8,
+        "completion_tokens": 4,
+        "total_tokens": 12,
+    }
+    assert router.last_duration_ms is not None
+    assert router.last_duration_ms >= 0
+    metrics = router.chat_metrics()
+    assert metrics["provider"] == "aiping"
+    assert metrics["completion_tokens"] == 4
+    assert "tps" in metrics
+
+
+@pytest.mark.asyncio
+async def test_ollama_stream_captures_eval_usage():
+    ollama = ModelResource(
+        id="ollama",
+        provider="ollama",
+        base_url="http://127.0.0.1:11434",
+        model="qwen3.5:4b",
+    )
+    router = _router(chat=[ollama])
+    lines = [
+        json.dumps({"message": {"content": "答"}, "done": False}),
+        json.dumps(
+            {
+                "message": {"content": ""},
+                "done": True,
+                "prompt_eval_count": 40,
+                "eval_count": 20,
+                "eval_duration": 500_000_000,
+            }
+        ),
+    ]
+
+    async def aiter_lines():
+        for line in lines:
+            yield line
+
+    resp = MagicMock()
+    resp.raise_for_status = MagicMock()
+    resp.aiter_lines = aiter_lines
+
+    @asynccontextmanager
+    async def fake_stream(*_args, **_kwargs):
+        yield resp
+
+    client = MagicMock()
+    client.stream = fake_stream
+    with patch.object(router, "_client_for", return_value=client):
+        stream = await router.chat(
+            [{"role": "user", "content": "hi"}],
+            profile="chat",
+            stream=True,
+        )
+        chunks = [chunk async for chunk in stream]
+
+    assert chunks == ["答"]
+    assert router.last_usage == {
+        "prompt_tokens": 40,
+        "completion_tokens": 20,
+        "total_tokens": 60,
+    }
+    assert router.last_tps == pytest.approx(40.0)
+    assert router.chat_metrics()["tps"] == pytest.approx(40.0)

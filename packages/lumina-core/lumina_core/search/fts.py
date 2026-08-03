@@ -5,7 +5,7 @@ from __future__ import annotations
 import sqlite3
 from typing import Any
 
-from lumina_core.db.connection import db_transaction
+from lumina_core.db.connection import db_lock, db_transaction
 
 
 def delete_book_from_fts(conn: sqlite3.Connection, book_id: str) -> None:
@@ -74,24 +74,25 @@ def search(conn: sqlite3.Connection, query: str, *, limit: int = 30) -> list[dic
     q = query.strip()
     if not q:
         return []
-    rows = conn.execute(
-        """
-        SELECT book_id, segment_id, note_id, kind, title, snippet(search_fts, 4, '[', ']', '…', 10) AS snippet
-        FROM search_fts
-        WHERE search_fts MATCH ?
-        ORDER BY rank
-        LIMIT ?
-        """,
-        (q, limit),
-    ).fetchall()
-    results: list[dict[str, Any]] = []
-    for row in rows:
-        item = dict(row)
-        if item["segment_id"]:
-            seg = conn.execute(
-                "SELECT idx FROM segments WHERE id = ?", (item["segment_id"],)
-            ).fetchone()
-            if seg:
-                item["segment_index"] = seg["idx"]
-        results.append(item)
+    with db_lock(conn):
+        rows = conn.execute(
+            """
+            SELECT book_id, segment_id, note_id, kind, title, snippet(search_fts, 4, '[', ']', '…', 10) AS snippet
+            FROM search_fts
+            WHERE search_fts MATCH ?
+            ORDER BY rank
+            LIMIT ?
+            """,
+            (q, limit),
+        ).fetchall()
+        results: list[dict[str, Any]] = []
+        for row in rows:
+            item = dict(row)
+            if item["segment_id"]:
+                seg = conn.execute(
+                    "SELECT idx FROM segments WHERE id = ?", (item["segment_id"],)
+                ).fetchone()
+                if seg:
+                    item["segment_index"] = seg["idx"]
+            results.append(item)
     return results

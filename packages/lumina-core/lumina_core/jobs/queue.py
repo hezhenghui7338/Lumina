@@ -66,12 +66,14 @@ class JobQueue:
         router: ProfileModelRouter,
         *,
         target_language: str = "zh-CN",
+        auto_start_summary: bool = False,
         task_registry: TaskRegistry | None = None,
         prompts: PromptsConfig | None = None,
     ) -> None:
         self.conn = conn
         self.router = router
         self.target_language = target_language
+        self.auto_start_summary = auto_start_summary
         self.prompts = prompts or load_prompts_config()
         self._task_registry = task_registry
         self._queue: asyncio.PriorityQueue[JobItem] = asyncio.PriorityQueue()
@@ -421,10 +423,12 @@ class JobQueue:
                 )
 
     async def recover_on_startup(self) -> None:
-        """Reset orphan running segments and resume prefetch after Sidecar restart."""
+        """Reset orphan running segments; resume prefetch only if auto-start is on."""
         for book in self._books_repo.list_books():
             self._books_repo.maybe_mark_summarized(book["id"])
-            await self.enqueue_book_prefetch(book["id"])
+            await self._recover_stale_running(book["id"])
+            if self.auto_start_summary:
+                await self.enqueue_book_prefetch(book["id"])
         self.ensure_workers()
 
     async def enqueue_book_regenerate(self, book_id: str) -> int:

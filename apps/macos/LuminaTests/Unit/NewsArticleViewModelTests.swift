@@ -154,7 +154,14 @@ final class NewsArticleViewModelTests: XCTestCase {
             answer: "Assistant reply",
             citations: [],
             web_refs: nil,
-            evidence_sufficient: true
+            evidence_sufficient: true,
+            provider: "openai",
+            model: "gpt-4o-mini",
+            duration_ms: 2100,
+            prompt_tokens: 100,
+            completion_tokens: 40,
+            total_tokens: 140,
+            tps: 19.0
         )
         let vm = NewsArticleViewModel()
         await vm.load(articleId: "art1", service: mock)
@@ -166,6 +173,10 @@ final class NewsArticleViewModelTests: XCTestCase {
         XCTAssertEqual(vm.messages[0].content, "Hello?")
         XCTAssertEqual(vm.messages[1].role, "assistant")
         XCTAssertEqual(vm.messages[1].content, "Assistant reply")
+        XCTAssertEqual(vm.messages[1].provider, "openai")
+        XCTAssertEqual(vm.messages[1].model, "gpt-4o-mini")
+        XCTAssertEqual(vm.messages[1].total_tokens, 140)
+        XCTAssertEqual(vm.messages[1].tps, 19.0)
         XCTAssertFalse(vm.isSending)
     }
 

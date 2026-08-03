@@ -25,9 +25,30 @@ class MockModelRouter:
         self.last_resource_id: str | None = "ollama"
         self.last_provider: str | None = "ollama"
         self.last_model: str | None = self.models.resource_by_id("ollama").model if self.models.resource_by_id("ollama") else "qwen3.5:4b"
+        self.last_usage: dict[str, int] | None = {
+            "prompt_tokens": 120,
+            "completion_tokens": 40,
+            "total_tokens": 160,
+        }
+        self.last_duration_ms: int | None = 800
+        self.last_tps: float | None = 50.0
 
     def set_response(self, profile: Profile, value: Any) -> None:
         self.responses[profile] = value
+
+    def chat_metrics(self) -> dict[str, Any]:
+        out: dict[str, Any] = {}
+        if self.last_provider:
+            out["provider"] = self.last_provider
+        if self.last_model:
+            out["model"] = self.last_model
+        if self.last_duration_ms is not None:
+            out["duration_ms"] = self.last_duration_ms
+        if self.last_usage:
+            out.update(self.last_usage)
+        if self.last_tps is not None:
+            out["tps"] = self.last_tps
+        return out
 
     async def complete(
         self,

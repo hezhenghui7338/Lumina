@@ -31,7 +31,7 @@ def client(tmp_path, monkeypatch):
             "translate": "示例译文。",
         }
     )
-    app = create_app(Settings(data_dir=tmp_path))
+    app = create_app(Settings(data_dir=tmp_path, auto_start_summary=True))
     app.state.lumina.router = router
     app.state.lumina.job_queue.router = router
     set_router(router)
@@ -122,7 +122,12 @@ def test_chat_with_quote(client):
         json={"message": "解释这段", "segment_index": 0, "quote": "段落内容"},
     )
     assert resp.status_code == 200
-    assert resp.json()["answer"]
+    body = resp.json()
+    assert body["answer"]
+    assert body["provider"] == "ollama"
+    assert body["model"]
+    assert body["total_tokens"] == 160
+    assert body["tps"] == 50.0
 
 
 def test_news_article_chat(client):

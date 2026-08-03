@@ -39,6 +39,10 @@ struct SettingsView: View {
             guard autoSaveEnabled else { return }
             Task { await save() }
         }
+        .onChange(of: settings?.auto_start_summary) { _, _ in
+            guard autoSaveEnabled else { return }
+            Task { await save() }
+        }
         .sheet(item: $editingResource) { resource in
             ResourceEditorSheet(
                 resource: resourceBinding(for: resource.id),
@@ -97,12 +101,17 @@ struct SettingsView: View {
 
     @ViewBuilder
     private var readingSection: some View {
-        Section("阅读") {
+        Section {
             Picker("目标语言", selection: binding(\.target_language)) {
                 Text("简体中文").tag("zh-CN")
                 Text("English").tag("en-US")
                 Text("日本語").tag("ja-JP")
             }
+            Toggle("自动开始摘要", isOn: boolBinding(\.auto_start_summary))
+        } header: {
+            Text("阅读")
+        } footer: {
+            Text("开启后，导入完成、打开书籍及重启时自动排队段摘要。默认关闭，可随时在书库或阅读器手动开始。")
         }
     }
 
@@ -557,6 +566,7 @@ struct SettingsView: View {
                 webSearchProvider: snapshot.web_search_provider,
                 tavilyAPIKey: tavilyToSend,
                 debugMode: snapshot.debug_mode,
+                autoStartSummary: snapshot.auto_start_summary,
                 models: snapshot.models,
                 prompts: snapshot.prompts
             )
@@ -582,6 +592,7 @@ struct SettingsView: View {
                 webSearchProvider: snapshot.web_search_provider,
                 tavilyAPIKey: tavilyKeyConfigured ? "***" : nil,
                 debugMode: snapshot.debug_mode,
+                autoStartSummary: snapshot.auto_start_summary,
                 models: snapshot.models,
                 prompts: snapshot.prompts
             )
@@ -852,6 +863,7 @@ struct AppSettings: Codable {
     var web_search_provider: String
     var tavily_api_key: String?
     var debug_mode: Bool
+    var auto_start_summary: Bool
     var models: ModelsSettings
     var prompts: PromptsSettings
     var prompts_defaults: PromptsSettings
@@ -861,6 +873,7 @@ struct AppSettings: Codable {
         web_search_provider: String = "ddgs",
         tavily_api_key: String? = nil,
         debug_mode: Bool = false,
+        auto_start_summary: Bool = false,
         models: ModelsSettings = .defaults,
         prompts: PromptsSettings? = nil,
         prompts_defaults: PromptsSettings? = nil
@@ -869,6 +882,7 @@ struct AppSettings: Codable {
         self.web_search_provider = web_search_provider
         self.tavily_api_key = tavily_api_key
         self.debug_mode = debug_mode
+        self.auto_start_summary = auto_start_summary
         self.models = models
         let empty = PromptsSettings(
             segment: "",
@@ -888,6 +902,7 @@ struct AppSettings: Codable {
         web_search_provider = try c.decodeIfPresent(String.self, forKey: .web_search_provider) ?? "ddgs"
         tavily_api_key = try c.decodeIfPresent(String.self, forKey: .tavily_api_key)
         debug_mode = try c.decodeIfPresent(Bool.self, forKey: .debug_mode) ?? false
+        auto_start_summary = try c.decodeIfPresent(Bool.self, forKey: .auto_start_summary) ?? false
         models = try c.decodeIfPresent(ModelsSettings.self, forKey: .models) ?? .defaults
         let empty = PromptsSettings(
             segment: "",
@@ -907,12 +922,13 @@ struct AppSettings: Codable {
         try c.encode(web_search_provider, forKey: .web_search_provider)
         try c.encodeIfPresent(tavily_api_key, forKey: .tavily_api_key)
         try c.encode(debug_mode, forKey: .debug_mode)
+        try c.encode(auto_start_summary, forKey: .auto_start_summary)
         try c.encode(models, forKey: .models)
         try c.encode(prompts, forKey: .prompts)
     }
 
     enum CodingKeys: String, CodingKey {
-        case target_language, web_search_provider, tavily_api_key, debug_mode, models, prompts, prompts_defaults
+        case target_language, web_search_provider, tavily_api_key, debug_mode, auto_start_summary, models, prompts, prompts_defaults
     }
 }
 

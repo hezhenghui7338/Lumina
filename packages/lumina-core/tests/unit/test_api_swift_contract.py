@@ -200,6 +200,7 @@ def test_settings_matches_swift_app_settings(client):
     assert isinstance(body["target_language"], str)
     assert isinstance(body["web_search_provider"], str)
     assert body.get("debug_mode") is False
+    assert body.get("auto_start_summary") is False
     prompts = body["prompts"]
     assert isinstance(prompts["segment"], str)
     assert isinstance(prompts["document"], str)

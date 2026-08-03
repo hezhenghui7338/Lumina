@@ -34,6 +34,14 @@
 
 ## 最近更新
 
+### v0.6 — 更高可用的伴读体验
+
+- **SQLite 跨线程串行化**，导入写入与 API 读不再竞态报错
+- 摘要 **默认不自动开始**（设置可开），导入只分段，后台更可控
+- 阅读器 **命中区域收窄**、书库侧栏可见性策略，误触更少
+- 深聊 **token / 耗时 / TPS** 归因展示，云端与本地调用更可观测
+- 可配置 Prompt、书库批量摘要启停（承接 v0.5 后的管控能力）
+
 ### v0.5 — 云端摘要、多书并发与阅读体验升级
 
 - **OpenRouter / OpenAI 兼容**云端摘要，设置热更新与 JSON 解析更鲁棒
@@ -67,7 +75,7 @@
 |------|------|------|
 | macOS 14+（Apple Silicon / Intel） | 约 250 MB 安装包（安装后约 450 MB）+ 首次 AI 模型 ~3 GB | **[GitHub Releases 下载 DMG](https://github.com/hezhenghui7338/Lumina/releases/latest)** |
 
-Release 页提供 **Lumina-0.5.0-macOS.dmg**（由 GitHub Actions 自动构建）。若尚未上传 DMG，见下方「维护者构建」。
+Release 页提供 **Lumina-0.6.0-macOS.dmg**（由 GitHub Actions 自动构建）。若尚未上传 DMG，见下方「维护者构建」。
 
 ### 安装（两步）
 
@@ -208,7 +216,7 @@ just test-release  # 发布门禁：纯 mock 并行（~20s，与 PR 等价）
 **推荐：GitHub Actions（无需本机 Xcode）**
 
 1. 打开仓库 **Actions → Release → Run workflow**
-2. 输入版本号（如 `0.5.0`）运行
+2. 输入版本号（如 `0.6.0`）运行
 3. 在 Artifacts 或 tag Release 中下载 DMG
 
 **本机构建（需与 macOS 版本匹配的 Xcode）**
@@ -218,13 +226,13 @@ macOS 15 用户：**不要**从 App Store 装最新 Xcode（可能要求 macOS 2
 ```bash
 ./scripts/build-release.sh
 # 会先跑 just test-release 等价测试，通过后才打包
-# 产出：dist/Lumina-0.5.0-macOS.dmg 与 .zip
+# 产出：dist/Lumina-0.6.0-macOS.dmg 与 .zip
 ```
 
 打 tag 推送后会自动构建并上传到 Release：
 
 ```bash
-git tag v0.5.0 && git push origin v0.5.0
+git tag v0.6.0 && git push origin v0.6.0
 ```
 
 ### 文档

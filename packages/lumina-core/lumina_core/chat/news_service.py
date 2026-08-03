@@ -129,6 +129,7 @@ async def chat_with_article(
         "citations": [],
         "web_refs": web_from_llm,
         "evidence_sufficient": parsed.get("evidence_sufficient", True),
+        **router.chat_metrics(),
     }
 
 
@@ -184,6 +185,7 @@ async def stream_chat_with_article(
             "citations": [],
             "web_refs": web_from_llm,
             "evidence_sufficient": parsed.get("evidence_sufficient", True),
+            **router.chat_metrics(),
         }
     except Exception as exc:
         yield {

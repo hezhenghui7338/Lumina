@@ -57,6 +57,8 @@ def test_import_returns_processing_immediately(client):
 
 
 def test_import_txt_triggers_prefetch(client, tmp_path):
+    assert client.put("/settings", json={"auto_start_summary": True}).status_code == 200
+
     sample = BOOK_FIXTURES / "sample.txt"
     resp = client.post("/books/import", json={"paths": [str(sample)]})
     assert resp.status_code == 200
@@ -81,6 +83,21 @@ def test_import_txt_triggers_prefetch(client, tmp_path):
     summary = json.loads(seg0["summary_json"])
     assert "sentences" in summary
     assert seg0["label"]
+
+
+def test_import_does_not_prefetch_when_auto_start_off(client, tmp_path):
+    assert client.get("/settings").json()["auto_start_summary"] is False
+
+    sample = BOOK_FIXTURES / "sample.txt"
+    book_id = client.post("/books/import", json={"paths": [str(sample)]}).json()["books"][0]["book_id"]
+    wait_for_ingest(client, book_id)
+
+    import time
+
+    time.sleep(0.3)
+    segs = client.get(f"/books/{book_id}/segments").json()["segments"]
+    assert segs
+    assert all(s["summary_status"] == "pending" for s in segs)
 
 
 def test_import_duplicate_returns_409(client, tmp_path):
@@ -143,6 +160,7 @@ def test_import_overwrite_purges_old_data(client, tmp_path):
 
 
 def test_chat_json_mode(client, tmp_path):
+    assert client.put("/settings", json={"auto_start_summary": True}).status_code == 200
     sample = BOOK_FIXTURES / "sample.txt"
     book_id = client.post("/books/import", json={"paths": [str(sample)]}).json()["books"][0]["book_id"]
     wait_for_ingest(client, book_id)
@@ -166,6 +184,7 @@ def test_chat_json_mode(client, tmp_path):
 
 
 def test_export_markdown(client, tmp_path):
+    assert client.put("/settings", json={"auto_start_summary": True}).status_code == 200
     sample = BOOK_FIXTURES / "sample.txt"
     book_id = client.post("/books/import", json={"paths": [str(sample)]}).json()["books"][0]["book_id"]
     wait_for_ingest(client, book_id)
@@ -183,6 +202,7 @@ def test_export_markdown(client, tmp_path):
 
 
 def test_export_chinese_title_returns_200(client, tmp_path):
+    assert client.put("/settings", json={"auto_start_summary": True}).status_code == 200
     sample = BOOK_FIXTURES / "sample.txt"
     book_id = client.post("/books/import", json={"paths": [str(sample)]}).json()["books"][0]["book_id"]
     wait_for_ingest(client, book_id)
