@@ -34,7 +34,7 @@ Sidecar 已裁剪：冗余 OCR small 模型、非中英文 Babel 语言包。Ope
 ./scripts/build-release.sh
 
 # 指定版本号
-LUMINA_VERSION=0.5.0 ./scripts/build-release.sh
+LUMINA_VERSION=0.6.0 ./scripts/build-release.sh
 ```
 
 ## 构建步骤（脚本内部）
@@ -58,8 +58,8 @@ LUMINA_VERSION=0.5.0 ./scripts/build-release.sh
 
 ## GitHub Releases
 
-1. 打 tag：`git tag v0.5.0 && git push origin v0.5.0`
-2. 上传 `dist/Lumina-0.5.0-macOS.dmg` 与 `.zip`
+1. 打 tag：`git tag v0.6.0 && git push origin v0.6.0`
+2. 上传 `dist/Lumina-0.6.0-macOS.dmg` 与 `.zip`
 3. 更新 README 中的 Releases 链接
 
 ## 用户仍需 Ollama 的原因

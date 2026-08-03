@@ -148,6 +148,7 @@ async def chat_with_book(
         "web_refs": web_from_llm,
         "evidence_sufficient": parsed.get("evidence_sufficient", True),
         "session_id": session["id"],
+        **router.chat_metrics(),
     }
 
 
@@ -212,6 +213,7 @@ async def stream_chat_with_book(
             "web_refs": web_from_llm,
             "evidence_sufficient": parsed.get("evidence_sufficient", True),
             "session_id": session["id"],
+            **router.chat_metrics(),
         }
     except Exception as exc:
         yield {

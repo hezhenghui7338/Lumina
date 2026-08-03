@@ -1,24 +1,17 @@
 import AppKit
 import SwiftUI
 
-/// Selectable, non-editable text with a selection context menu for copy and deep chat.
+/// Non-selectable display text with AppKit intrinsic height (reader body copy).
 struct LuminaSelectableText: NSViewRepresentable {
     let text: String
     var fontSize: CGFloat = LuminaTheme.summaryBulletSize
     var fontWeight: NSFont.Weight = .regular
     var lineSpacing: CGFloat = LuminaTheme.summaryBulletLineSpacing
     var foreground: Color = LuminaTheme.textPrimary
-    var onSendToChat: ((String) -> Void)?
-
-    func makeCoordinator() -> Coordinator {
-        Coordinator(onSendToChat: onSendToChat)
-    }
 
     func makeNSView(context: Context) -> IntrinsicSizingTextContainer {
         let container = IntrinsicSizingTextContainer()
         let textView = LuminaSelectableTextView()
-        textView.delegate = context.coordinator
-        context.coordinator.textView = textView
         configure(textView)
         container.embed(textView)
         return container
@@ -26,7 +19,6 @@ struct LuminaSelectableText: NSViewRepresentable {
 
     func updateNSView(_ container: IntrinsicSizingTextContainer, context: Context) {
         guard let textView = container.textView else { return }
-        context.coordinator.onSendToChat = onSendToChat
         configure(textView)
     }
 
@@ -49,62 +41,16 @@ struct LuminaSelectableText: NSViewRepresentable {
             textView.superview?.invalidateIntrinsicContentSize()
         }
     }
-
-    final class Coordinator: NSObject, NSTextViewDelegate {
-        weak var textView: LuminaSelectableTextView?
-        var onSendToChat: ((String) -> Void)?
-
-        init(onSendToChat: ((String) -> Void)?) {
-            self.onSendToChat = onSendToChat
-        }
-
-        func textView(_ textView: NSTextView, menu: NSMenu, for event: NSEvent, at charIndex: Int) -> NSMenu? {
-            guard textView.selectedRange().length > 0 else { return menu }
-
-            var insertIndex = 0
-
-            let copyItem = NSMenuItem(title: "复制", action: #selector(NSText.copy(_:)), keyEquivalent: "")
-            copyItem.target = textView
-            menu.insertItem(copyItem, at: insertIndex)
-            insertIndex += 1
-
-            if onSendToChat != nil {
-                let sendItem = NSMenuItem(
-                    title: "发送到深聊",
-                    action: #selector(Coordinator.sendToChat(_:)),
-                    keyEquivalent: ""
-                )
-                sendItem.target = self
-                menu.insertItem(sendItem, at: insertIndex)
-                insertIndex += 1
-            }
-
-            if insertIndex > 0 {
-                menu.insertItem(NSMenuItem.separator(), at: insertIndex)
-            }
-
-            return menu
-        }
-
-        @objc func sendToChat(_ sender: Any?) {
-            guard let textView, textView.selectedRange().length > 0 else { return }
-            let selected = (textView.string as NSString).substring(with: textView.selectedRange())
-            let trimmed = selected.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !trimmed.isEmpty else { return }
-            onSendToChat?(trimmed)
-        }
-    }
 }
 
 // MARK: - AppKit views
 
-extension Notification.Name {
-    /// Posted when the user single-clicks selectable reading text (drag < 5pt).
-    static let luminaToggleReaderChrome = Notification.Name("luminaToggleReaderChrome")
-}
-
 final class LuminaSelectableTextView: NSTextView {
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+    override func resetCursorRects() {
+        addCursorRect(bounds, cursor: .arrow)
+    }
 
     override var intrinsicContentSize: NSSize {
         guard let layoutManager, let textContainer else {
@@ -133,7 +79,7 @@ final class IntrinsicSizingTextContainer: NSView {
         self.textView = textView
         textView.translatesAutoresizingMaskIntoConstraints = false
         textView.isEditable = false
-        textView.isSelectable = true
+        textView.isSelectable = false
         textView.drawsBackground = false
         textView.isRichText = false
         textView.textContainerInset = NSSize(width: 0, height: 0)

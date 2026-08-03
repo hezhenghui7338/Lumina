@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Callable, Coroutine
 
 from lumina_core.config import CHUNKER_VERSION, ModelsConfig, resolve_chunk_budget
+from lumina_core.db.connection import db_lock
 from lumina_core.db.repos import BookRepo, SegmentRepo
 from lumina_core.ingest.loader import (
     author_from_metadata,
@@ -54,22 +55,25 @@ def _persist_ingest_sync(
     ingest_meta: dict[str, Any],
 ) -> None:
     """SQLite writes after extract/chunk — runs off the asyncio event loop."""
-    books_repo = BookRepo(conn)
-    books_repo.update(
-        book_id,
-        title=title_from_path(src, metadata),
-        author=author_from_metadata(metadata),
-        language=detected_language,
-        target_language=target_language,
-        segment_count=len(segments),
-        status="unread",
-        metadata_json=ingest_meta,
-    )
-    SegmentRepo(conn).insert_many(segments)
-    book_row = books_repo.get(book_id)
-    if book_row:
-        index_book(conn, book_row)
-    SegmentRepo(conn).backfill_char_counts(book_id)
+    # Hold the shared-connection lock across the whole persist so concurrent
+    # API reads cannot interleave mid-write (sqlite3.InterfaceError).
+    with db_lock(conn):
+        books_repo = BookRepo(conn)
+        books_repo.update(
+            book_id,
+            title=title_from_path(src, metadata),
+            author=author_from_metadata(metadata),
+            language=detected_language,
+            target_language=target_language,
+            segment_count=len(segments),
+            status="unread",
+            metadata_json=ingest_meta,
+        )
+        SegmentRepo(conn).insert_many(segments)
+        book_row = books_repo.get(book_id)
+        if book_row:
+            index_book(conn, book_row)
+        SegmentRepo(conn).backfill_char_counts(book_id)
 
 
 async def run_ingest_job(
@@ -135,7 +139,8 @@ async def run_ingest_job(
             ingest_meta=ingest_meta,
         )
 
-        await job_queue.enqueue_book_prefetch(book_id)
+        if job_queue.auto_start_summary:
+            await job_queue.enqueue_book_prefetch(book_id)
         schedule_classify(book_id)
 
         await emit(

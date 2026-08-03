@@ -227,7 +227,7 @@ struct ReaderView: View {
     private var readerToolbar: some ToolbarContent {
         ToolbarItemGroup(placement: .navigation) {
             Button {
-                librarySidebarPinned.toggle()
+                toggleLibrarySidebar()
             } label: {
                 Label("书库", systemImage: "sidebar.left")
                     .symbolVariant(librarySidebarPinned ? .fill : .none)
@@ -255,11 +255,9 @@ struct ReaderView: View {
             .help("切换摘要 / 原文阅读模式（⌘⇧O）")
 
             Button("笔记") {
-                setChromeMode(.revealed)
                 openOverlay(.notes, engaged: true)
             }
             Button("提问") {
-                setChromeMode(.revealed)
                 openOverlay(.chat, engaged: true)
             }
 
@@ -349,8 +347,7 @@ struct ReaderView: View {
             readerOverlayActive = newValue != .none
             if newValue != .none {
                 cancelEdgeDwell()
-                segmentListPeeking = false
-                setChromeMode(.revealed)
+                setChromeMode(.revealed, closingSegmentPeek: true)
             } else {
                 readerContentFocused = true
                 setChromeMode(.revealed)
@@ -525,9 +522,6 @@ struct ReaderView: View {
                 toggleChromeOnBlankClick()
             }
         }
-        .onReceive(NotificationCenter.default.publisher(for: .luminaToggleReaderChrome)) { _ in
-            toggleChromeOnBlankClick()
-        }
             .scrollPosition(id: $scrollPosition, anchor: .top)
         .animation(.easeOut(duration: 0.2), value: contentMode)
         .background(LuminaTheme.background)
@@ -629,13 +623,6 @@ struct ReaderView: View {
                     catch { actionError = error.localizedDescription }
                 }
             },
-            onSendToChat: { quote in
-                viewModel.selectedIdx = idx
-                openOverlay(.chat, engaged: true)
-                Task {
-                    await viewModel.sendChat("请解释以下内容", quote: quote, core: core)
-                }
-            },
             onSourceAppear: contentMode == .original
                 ? { viewModel.fetchSource(idx: idx, core: core) }
                 : nil
@@ -706,8 +693,10 @@ struct ReaderView: View {
     // MARK: - Sidebar & drawers
 
     private var readerEdgeIconsOverlay: some View {
-        ZStack {
-            HStack(spacing: 0) {
+        // Only the icons themselves accept hits — never a full-size Spacer layer.
+        Color.clear
+            .allowsHitTesting(false)
+            .overlay(alignment: .leading) {
                 ReaderEdgeIcon(
                     systemImage: "list.bullet.rectangle",
                     label: "段列表",
@@ -716,33 +705,27 @@ struct ReaderView: View {
                     toggleSegmentList()
                 }
                 .padding(.leading, 6)
-                Spacer(minLength: 0)
+            }
+            .overlay(alignment: .trailing) {
                 ReaderEdgeIcon(
                     systemImage: "note.text",
                     label: "笔记",
                     isActive: overlay == .notes
                 ) {
-                    setChromeMode(.revealed)
                     openOverlay(.notes, engaged: true)
                 }
                 .padding(.trailing, 6)
             }
-            .frame(maxHeight: .infinity)
-
-            VStack(spacing: 0) {
-                Spacer(minLength: 0)
+            .overlay(alignment: .bottom) {
                 ReaderEdgeIcon(
                     systemImage: "bubble.left.and.bubble.right",
                     label: "深聊",
                     isActive: overlay == .chat
                 ) {
-                    setChromeMode(.revealed)
                     openOverlay(.chat, engaged: true)
                 }
                 .padding(.bottom, 8)
             }
-        }
-        .allowsHitTesting(true)
     }
 
     private func segmentSidebarPanel(isOverlay: Bool) -> some View {
@@ -839,10 +822,12 @@ struct ReaderView: View {
         .help(viewModel.isSegmentSelectionMode ? "退出多选" : "多选")
         if !segmentListPinned {
             Button {
-                withAnimation(.easeInOut(duration: 0.25)) {
-                    segmentListPinned = true
-                    setChromeMode(.revealed)
-                    segmentListPeeking = false
+                performReaderLayoutChange {
+                    withAnimation(.easeInOut(duration: 0.25)) {
+                        segmentListPinned = true
+                        chromeMode = .revealed
+                        segmentListPeeking = false
+                    }
                 }
             } label: {
                 Image(systemName: "pin")
@@ -855,9 +840,11 @@ struct ReaderView: View {
             .help("钉住段列表")
         }
         Button {
-            withAnimation(.easeInOut(duration: 0.25)) {
-                segmentListPinned = false
-                segmentListPeeking = false
+            performReaderLayoutChange {
+                withAnimation(.easeInOut(duration: 0.25)) {
+                    segmentListPinned = false
+                    segmentListPeeking = false
+                }
             }
         } label: {
             Image(systemName: "chevron.left")
@@ -1026,58 +1013,96 @@ struct ReaderView: View {
             }
             .padding(.horizontal)
 
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 8) {
-                    ForEach(Array(viewModel.messages.enumerated()), id: \.element.id) { _, msg in
-                        VStack(alignment: .leading, spacing: 4) {
-                            HStack {
-                                Text(msg.role == "user" ? "你" : "深聊")
-                                    .font(.caption.bold())
-                                Spacer()
-                                if msg.role == "assistant", !msg.content.isEmpty {
-                                    Button("存为笔记") {
-                                        Task { await saveChatAsNote(msg.content) }
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 8) {
+                        ForEach(viewModel.messages) { msg in
+                            VStack(alignment: .leading, spacing: 4) {
+                                HStack {
+                                    Text(msg.role == "user" ? "你" : "深聊")
+                                        .font(.caption.bold())
+                                    if msg.role == "assistant", msg.content.isEmpty, viewModel.isSending {
+                                        ProgressView()
+                                            .controlSize(.small)
+                                        Text("正在响应…")
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
                                     }
-                                    .font(.caption)
-                                }
-                            }
-                            Text(msg.content)
-                            ForEach(msg.citations, id: \.segment_index) { c in
-                                Button(c.label) {
-                                    navigateToSegment(c.segment_index)
-                                    highlightSegment = c.segment_index
-                                    closeOverlay()
-                                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
-                                        highlightSegment = nil
+                                    Spacer()
+                                    if msg.role == "assistant", !msg.content.isEmpty {
+                                        Button("存为笔记") {
+                                            Task { await saveChatAsNote(msg.content) }
+                                        }
+                                        .font(.caption)
                                     }
                                 }
-                                .buttonStyle(.link)
+                                if !msg.content.isEmpty {
+                                    Text(msg.content)
+                                }
+                                ForEach(msg.citations, id: \.segment_index) { c in
+                                    Button(c.label) {
+                                        navigateToSegment(c.segment_index)
+                                        highlightSegment = c.segment_index
+                                        closeOverlay()
+                                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+                                            highlightSegment = nil
+                                        }
+                                    }
+                                    .buttonStyle(.link)
+                                }
+                                if let attribution = ChatMetricsFormatter.attribution(for: msg) {
+                                    Text(attribution)
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
                             }
+                            .padding(8)
+                            .background(msg.role == "user" ? Color.blue.opacity(0.08) : Color.gray.opacity(0.08))
+                            .clipShape(RoundedRectangle(cornerRadius: 8))
+                            .id(msg.id)
                         }
-                        .padding(8)
-                        .background(msg.role == "user" ? Color.blue.opacity(0.08) : Color.gray.opacity(0.08))
-                        .clipShape(RoundedRectangle(cornerRadius: 8))
                     }
+                    .padding(.horizontal)
                 }
-                .padding(.horizontal)
+                .onChange(of: viewModel.messages.count) { _, _ in
+                    scrollChatToBottom(proxy: proxy)
+                }
+                .onChange(of: viewModel.messages.last?.content) { _, _ in
+                    scrollChatToBottom(proxy: proxy)
+                }
             }
 
             HStack {
                 TextField("提问…", text: $chatInput)
                     .textFieldStyle(.roundedBorder)
                     .focused($chatFocused)
+                    .disabled(viewModel.isSending)
                     .onChange(of: chatInput) { _, newValue in
                         if !newValue.isEmpty { overlayEngaged = true }
                     }
-                Button("发送") {
-                    let text = chatInput
-                    chatInput = ""
-                    Task { await viewModel.sendChat(text, core: core) }
-                }
-                .disabled(chatInput.trimmingCharacters(in: .whitespaces).isEmpty)
+                    .onSubmit { submitChat() }
+                Button("发送") { submitChat() }
+                    .disabled(
+                        chatInput.trimmingCharacters(in: .whitespaces).isEmpty || viewModel.isSending
+                    )
             }
             .padding(.horizontal)
             .padding(.bottom, 8)
+        }
+    }
+
+    private func submitChat() {
+        let text = chatInput.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty, !viewModel.isSending else { return }
+        chatInput = ""
+        overlayEngaged = true
+        Task { await viewModel.sendChat(text, core: core) }
+    }
+
+    private func scrollChatToBottom(proxy: ScrollViewProxy) {
+        guard let last = viewModel.messages.last else { return }
+        withAnimation(.easeOut(duration: 0.2)) {
+            proxy.scrollTo(last.id, anchor: .bottom)
         }
     }
 
@@ -1100,8 +1125,10 @@ struct ReaderView: View {
             let inList = point.map { isPointerInSegmentList($0, size: readerSize) } ?? false
             let inEdge = point.map { isPointerInLeftEdge($0) } ?? false
             if point == nil || (!inList && !inEdge) {
-                withAnimation(.easeInOut(duration: 0.25)) {
-                    segmentListPeeking = false
+                performReaderLayoutChange {
+                    withAnimation(.easeInOut(duration: 0.25)) {
+                        segmentListPeeking = false
+                    }
                 }
             }
         }
@@ -1120,18 +1147,24 @@ struct ReaderView: View {
             try? await Task.sleep(nanoseconds: edgeDwellNanoseconds)
             guard !Task.isCancelled, pendingEdge == target, overlay == .none else { return }
             pendingEdge = nil
-            withAnimation(.easeInOut(duration: 0.25)) {
-                switch target {
-                case .segments:
-                    if segmentListPinned {
-                        setChromeMode(.revealed)
-                    } else {
-                        segmentListPeeking = true
+            switch target {
+            case .segments:
+                if segmentListPinned {
+                    setChromeMode(.revealed)
+                } else {
+                    performReaderLayoutChange {
+                        withAnimation(.easeInOut(duration: 0.25)) {
+                            segmentListPeeking = true
+                        }
                     }
-                case .notes:
+                }
+            case .notes:
+                withAnimation(.easeInOut(duration: 0.25)) {
                     overlayEngaged = false
                     overlay = .notes
-                case .chat:
+                }
+            case .chat:
+                withAnimation(.easeInOut(duration: 0.25)) {
                     overlayEngaged = false
                     overlay = .chat
                 }
@@ -1157,9 +1190,10 @@ struct ReaderView: View {
         }
     }
 
-    /// Detaches scrollPosition during toolbar chrome changes so SwiftUI does not
-    /// re-anchor the current segment to `.top`, then restores AppKit scroll offset.
-    private func performChromeLayoutChange(_ changes: () -> Void) {
+    /// Detaches scrollPosition during reader chrome / sidebar layout changes so
+    /// SwiftUI does not re-anchor the current segment to `.top`, then restores
+    /// AppKit scroll offset.
+    private func performReaderLayoutChange(_ changes: () -> Void) {
         let savedOrigin = ScrollViewKeyNSView.currentScrollOrigin()
         beginSuppressScrollSync()
         scrollPosition = nil
@@ -1172,17 +1206,24 @@ struct ReaderView: View {
         }
     }
 
-    private func setChromeMode(_ mode: ReaderChromeMode) {
-        guard chromeMode != mode else { return }
-        performChromeLayoutChange {
+    private func setChromeMode(_ mode: ReaderChromeMode, closingSegmentPeek: Bool = false) {
+        let needsChrome = chromeMode != mode
+        let needsPeekClose = closingSegmentPeek && segmentListPeeking
+        guard needsChrome || needsPeekClose else { return }
+        performReaderLayoutChange {
             withAnimation(.easeInOut(duration: 0.25)) {
-                chromeMode = mode
+                if needsChrome {
+                    chromeMode = mode
+                }
+                if needsPeekClose {
+                    segmentListPeeking = false
+                }
             }
         }
     }
 
     private func collapseAllChrome() {
-        performChromeLayoutChange {
+        performReaderLayoutChange {
             withAnimation(.easeInOut(duration: 0.25)) {
                 chromeMode = .hidden
                 segmentListPeeking = false
@@ -1195,8 +1236,10 @@ struct ReaderView: View {
     private func toggleChromeOnBlankClick() {
         guard overlay == .none else { return }
         if segmentListOverlayVisible {
-            withAnimation(.easeInOut(duration: 0.25)) {
-                segmentListPeeking = false
+            performReaderLayoutChange {
+                withAnimation(.easeInOut(duration: 0.25)) {
+                    segmentListPeeking = false
+                }
             }
         } else if chromeMode != .hidden {
             collapseAllChrome()
@@ -1205,14 +1248,24 @@ struct ReaderView: View {
         }
     }
 
+    private func toggleLibrarySidebar() {
+        performReaderLayoutChange {
+            withAnimation(.easeInOut(duration: 0.25)) {
+                librarySidebarPinned.toggle()
+            }
+        }
+    }
+
     private func toggleSegmentList() {
         guard overlay == .none else { return }
-        withAnimation(.easeInOut(duration: 0.25)) {
-            if segmentListAnyVisible {
-                segmentListPinned = false
-                segmentListPeeking = false
-            } else {
-                segmentListPeeking = true
+        performReaderLayoutChange {
+            withAnimation(.easeInOut(duration: 0.25)) {
+                if segmentListAnyVisible {
+                    segmentListPinned = false
+                    segmentListPeeking = false
+                } else {
+                    segmentListPeeking = true
+                }
             }
         }
     }
@@ -1254,8 +1307,8 @@ struct ReaderView: View {
     }
 
     private func openOverlay(_ kind: ReaderOverlay, engaged: Bool) {
+        // Chrome reveal + segment-peek close happen once in onChange(of: overlay).
         withAnimation(.easeInOut(duration: 0.25)) {
-            setChromeMode(.revealed)
             overlayEngaged = engaged
             overlay = kind
         }
@@ -1369,7 +1422,8 @@ private final class ReaderScrollViewMarkerView: NSView {
     }
 }
 
-/// Detects left-clicks on reading content (excluding controls and text) to toggle chrome visibility.
+/// Toggles chrome on clicks inside reading content, excluding real controls.
+/// Never consumes mouse events — mis-swallowing breaks SwiftUI Buttons.
 private struct ChromeClickTracker: NSViewRepresentable {
     var enabled: Bool
     var onBlankClick: () -> Void
@@ -1392,9 +1446,11 @@ private final class ChromeClickNSView: NSView {
     var isTrackingEnabled = true
     private var monitors: [Any] = []
     private var mouseDownPoint: NSPoint?
-    private var pendingBlankClick = false
+    /// True when mouseDown landed on reading content (not a control).
+    private var pendingChromeToggle = false
 
     private static let dragThreshold: CGFloat = 5
+    private static let controlAccessibilityPrefix = "lumina.reader.control"
 
     override func layout() {
         super.layout()
@@ -1414,12 +1470,7 @@ private final class ChromeClickNSView: NSView {
             }
             let point = event.locationInWindow
             self.mouseDownPoint = point
-            let hitView = window.contentView?.hitTest(point)
-            if Self.isControlHit(hitView) || Self.textSurfaceAt(window: window, point: point) != nil {
-                self.pendingBlankClick = false
-            } else {
-                self.pendingBlankClick = true
-            }
+            self.pendingChromeToggle = Self.shouldToggleChrome(at: point, in: window)
             return event
         }
 
@@ -1429,31 +1480,24 @@ private final class ChromeClickNSView: NSView {
             }
             defer {
                 self.mouseDownPoint = nil
-                self.pendingBlankClick = false
+                self.pendingChromeToggle = false
             }
-            guard let downPoint = self.mouseDownPoint else { return event }
+            guard self.pendingChromeToggle, let downPoint = self.mouseDownPoint else {
+                return event
+            }
 
             let windowPoint = event.locationInWindow
             let drag = hypot(windowPoint.x - downPoint.x, windowPoint.y - downPoint.y)
             guard drag < Self.dragThreshold else { return event }
 
-            if Self.textSurfaceAt(window: window, point: windowPoint) != nil {
-                DispatchQueue.main.async {
-                    NotificationCenter.default.post(name: .luminaToggleReaderChrome, object: nil)
-                }
-                return nil
+            // Re-check on mouseUp; never consume the event — mis-swallowing kills SwiftUI Buttons.
+            if Self.shouldToggleChrome(at: windowPoint, in: window) {
+                self.onBlankClick?()
             }
-
-            guard self.pendingBlankClick else { return event }
-
-            let hitView = window.contentView?.hitTest(windowPoint)
-            guard !Self.isControlHit(hitView) else { return event }
-
-            self.onBlankClick?()
-            return nil
+            return event
         }
 
-        monitors = [downMonitor, upMonitor]
+        monitors = [downMonitor, upMonitor].compactMap { $0 }
     }
 
     deinit {
@@ -1466,41 +1510,105 @@ private final class ChromeClickNSView: NSView {
         }
         monitors = []
         mouseDownPoint = nil
-        pendingBlankClick = false
+        pendingChromeToggle = false
     }
 
-    private static func isControlHit(_ view: NSView?) -> Bool {
+    /// Toggle on any click inside the reader document except real controls / edge icons.
+    private static func shouldToggleChrome(at windowPoint: NSPoint, in window: NSWindow) -> Bool {
+        guard ScrollViewKeyNSView.isPointInReaderDocument(windowPoint) else { return false }
+        if isControlHit(at: windowPoint, in: window) { return false }
+        return true
+    }
+
+    private static func isControlHit(at windowPoint: NSPoint, in window: NSWindow) -> Bool {
+        guard let contentView = window.contentView else { return false }
+        let hitView = contentView.hitTest(windowPoint)
+
+        // Reading text is never a chrome-exempt "control".
+        if let hitView, textSurfaceInAncestors(from: hitView) != nil {
+            return false
+        }
+
+        if isInteractiveViewHierarchy(hitView) { return true }
+
+        // SwiftUI Buttons often hit-test as PlatformGroupContainer; resolve via AX.
+        return isAccessibilityControlAtScreenPosition(windowPoint, window: window)
+    }
+
+    private static func isInteractiveViewHierarchy(_ view: NSView?) -> Bool {
         var current = view
         while let v = current {
-            if v is NSControl { return true }
-            if v is NSButton { return true }
-            if v is NSScroller { return true }
-            if v.accessibilityRole() == .button { return true }
-            let typeName = String(describing: type(of: v))
-            if typeName.contains("Button") { return true }
+            if isTextSurfaceView(v) { return false }
+            if isDirectControl(v) { return true }
             current = v.superview
         }
         return false
     }
 
-    /// Deepest text surface at window point, or nil.
-    private static func textSurfaceAt(window: NSWindow, point: NSPoint) -> NSView? {
-        guard let hit = window.contentView?.hitTest(point) else { return nil }
-        var current: NSView? = hit
+    private static func isDirectControl(_ view: NSView) -> Bool {
+        if view is NSControl || view is NSButton || view is NSScroller { return true }
+        let axId = view.accessibilityIdentifier()
+        if axId.hasPrefix(controlAccessibilityPrefix) { return true }
+        if let role = view.accessibilityRole() {
+            switch role {
+            case .button, .checkBox, .radioButton, .popUpButton, .menuButton, .link:
+                return true
+            default:
+                break
+            }
+        }
+        let typeName = String(describing: type(of: view))
+        if typeName.contains("Button") { return true }
+        return false
+    }
+
+    /// Resolve SwiftUI Buttons via AX (view hit-test often lands on PlatformGroupContainer).
+    private static func isAccessibilityControlAtScreenPosition(
+        _ windowPoint: NSPoint,
+        window: NSWindow
+    ) -> Bool {
+        let screenPoint = window.convertPoint(toScreen: windowPoint)
+        guard let screen = window.screen ?? NSScreen.main else { return false }
+        // AX uses top-left origin; AppKit screen coords are bottom-left.
+        let axX = Float(screenPoint.x)
+        let axY = Float(screen.frame.maxY - screenPoint.y)
+
+        let appElement = AXUIElementCreateApplication(pid_t(ProcessInfo.processInfo.processIdentifier))
+        var element: AXUIElement?
+        guard AXUIElementCopyElementAtPosition(appElement, axX, axY, &element) == .success,
+              let element else {
+            return false
+        }
+        return axElementLooksLikeControl(element)
+    }
+
+    private static func axElementLooksLikeControl(_ element: AXUIElement) -> Bool {
+        var roleValue: CFTypeRef?
+        if AXUIElementCopyAttributeValue(element, kAXRoleAttribute as CFString, &roleValue) == .success,
+           let role = roleValue as? String {
+            let controlRoles: Set<String> = [
+                kAXButtonRole as String,
+                kAXCheckBoxRole as String,
+                kAXRadioButtonRole as String,
+                kAXPopUpButtonRole as String,
+                "AXLink",
+            ]
+            if controlRoles.contains(role) { return true }
+        }
+        var idValue: CFTypeRef?
+        if AXUIElementCopyAttributeValue(element, kAXIdentifierAttribute as CFString, &idValue) == .success,
+           let identifier = idValue as? String,
+           identifier.hasPrefix(controlAccessibilityPrefix) {
+            return true
+        }
+        return false
+    }
+
+    private static func textSurfaceInAncestors(from view: NSView) -> NSView? {
+        var current: NSView? = view
         while let v = current {
             if isTextSurfaceView(v) { return v }
             current = v.superview
-        }
-        return findTextSurface(at: point, in: hit)
-    }
-
-    /// Point-accurate DFS — only returns text if point is inside text view bounds.
-    private static func findTextSurface(at windowPoint: NSPoint, in view: NSView) -> NSView? {
-        let local = view.convert(windowPoint, from: nil)
-        guard view.bounds.contains(local) else { return nil }
-        if isTextSurfaceView(view) { return view }
-        for sub in view.subviews.reversed() {
-            if let found = findTextSurface(at: windowPoint, in: sub) { return found }
         }
         return nil
     }
@@ -1590,6 +1698,13 @@ private final class ScrollViewKeyNSView: NSView {
             }
             current = node.superview
         }
+    }
+
+    static func isPointInReaderDocument(_ windowPoint: NSPoint) -> Bool {
+        guard let scrollView = resolvedScrollView, scrollView.window != nil else { return true }
+        let clipView = scrollView.contentView
+        let pointInClip = clipView.convert(windowPoint, from: nil)
+        return clipView.bounds.contains(pointInClip)
     }
 
     static func currentScrollOrigin() -> NSPoint? {
@@ -1740,6 +1855,7 @@ final class ReaderViewModel: ObservableObject {
     @Published var loadingSourceIndices: Set<Int> = []
     @Published var refreshingSourceIndices: Set<Int> = []
     @Published var messages: [ChatMessage] = []
+    @Published var isSending = false
     @Published var summaryReadyCount = 0
     @Published var summaryTotalCount = 0
     @Published var segmentRunningMetrics: [Int: SegmentRunningMetrics] = [:]
@@ -1761,6 +1877,7 @@ final class ReaderViewModel: ObservableObject {
     private var summaryParseTasks: [Int: Task<Void, Never>] = [:]
     private var sidebarPreviewTasks: [Int: Task<Void, Never>] = [:]
     private var sidebarClockTask: Task<Void, Never>?
+    private var chatTask: Task<Void, Never>?
     private var hydratingSummaryIndices: Set<Int> = []
     private var parsingSummaryIndices: Set<Int> = []
     private var progressSaveTask: Task<Void, Never>?
@@ -1833,6 +1950,9 @@ final class ReaderViewModel: ObservableObject {
         hydratingSummaryIndices.removeAll()
         progressSaveTask?.cancel()
         progressSaveTask = nil
+        chatTask?.cancel()
+        chatTask = nil
+        isSending = false
         loadingSourceIndices.removeAll()
         refreshingSourceIndices.removeAll()
     }
@@ -2255,27 +2375,59 @@ final class ReaderViewModel: ObservableObject {
     }
 
     func sendChat(_ text: String, quote: String? = nil, core: CoreClient) async {
-        messages.append(ChatMessage(role: "user", content: text))
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, !isSending else { return }
         guard let idx = selectedIdx else { return }
 
-        var assistant = ChatMessage(role: "assistant", content: "")
-        messages.append(assistant)
+        chatTask?.cancel()
+        let task = Task { await performSendChat(trimmed, quote: quote, segmentIndex: idx, core: core) }
+        chatTask = task
+        await task.value
+        if chatTask == task {
+            chatTask = nil
+        }
+    }
+
+    private func performSendChat(
+        _ text: String,
+        quote: String?,
+        segmentIndex: Int,
+        core: CoreClient
+    ) async {
+        isSending = true
+        defer { isSending = false }
+
+        messages.append(ChatMessage(role: "user", content: text))
+        messages.append(ChatMessage(role: "assistant", content: ""))
         let assistantIndex = messages.count - 1
 
         do {
             let resp = try await core.chatStream(
                 bookId: bookId,
                 message: text,
-                segmentIndex: idx,
+                segmentIndex: segmentIndex,
                 quote: quote
             ) { token in
                 Task { @MainActor in
+                    guard assistantIndex < self.messages.count else { return }
                     self.messages[assistantIndex].content += token
                 }
             }
+            try Task.checkCancellation()
+            guard assistantIndex < messages.count else { return }
             messages[assistantIndex].content = resp.answer
             messages[assistantIndex].citations = resp.citations
+            messages[assistantIndex].applyMetrics(from: resp)
+        } catch is CancellationError {
+            if assistantIndex < messages.count, messages[assistantIndex].content.isEmpty {
+                messages[assistantIndex].content = "已取消"
+            }
+        } catch let error as URLError where error.code == .cancelled {
+            if assistantIndex < messages.count, messages[assistantIndex].content.isEmpty {
+                messages[assistantIndex].content = "已取消"
+            }
         } catch {
+            guard assistantIndex < messages.count else { return }
             messages[assistantIndex].content = "深聊失败：\(error.localizedDescription)"
         }
     }

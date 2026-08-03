@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 private struct SegmentPanelContentHeightKey: PreferenceKey {
@@ -29,7 +30,6 @@ struct SegmentReadingBlock: View, Equatable {
     var onToggleSummary: () -> Void
     var onFollowUp: (String) -> Void
     var onRetrySummary: () -> Void
-    var onSendToChat: ((String) -> Void)?
     var onSourceAppear: (() -> Void)?
     var onSummaryAppear: (() -> Void)?
 
@@ -158,8 +158,66 @@ struct SegmentReadingBlock: View, Equatable {
                     .tracking(0.6)
             }
             .buttonStyle(.plain)
-            Spacer(minLength: 0)
+            .accessibilityIdentifier("lumina.reader.control.panelToggle")
+
+            Spacer(minLength: 8)
+
+            Button(action: copyCurrentPanel) {
+                Text("复制")
+                    .font(.system(size: LuminaTheme.summaryLabelSize, weight: .semibold))
+                    .foregroundStyle(LuminaTheme.textSecondary)
+                    .tracking(0.6)
+            }
+            .buttonStyle(.plain)
+            .disabled(!canCopyCurrentPanel)
+            .help(showingSource ? "复制本段原文" : "复制本段摘要")
+            .accessibilityIdentifier("lumina.reader.control.copyPanel")
         }
+    }
+
+    private var canCopyCurrentPanel: Bool {
+        copyablePanelText() != nil
+    }
+
+    private func copyCurrentPanel() {
+        guard let text = copyablePanelText() else { return }
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(text, forType: .string)
+    }
+
+    private func copyablePanelText() -> String? {
+        if showingSource {
+            return copyableSourceText()
+        }
+        return copyableSummaryText()
+    }
+
+    private func copyableSourceText() -> String? {
+        guard let body = sourceBody else { return nil }
+        var parts: [String] = []
+        if !body.rawText.isEmpty {
+            if needsTranslation {
+                parts.append("原文\n\(body.rawText)")
+            } else {
+                parts.append(body.rawText)
+            }
+        }
+        if needsTranslation, !body.translation.isEmpty {
+            parts.append("译文\n\(body.translation)")
+        }
+        let text = parts.joined(separator: "\n\n")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return text.isEmpty ? nil : text
+    }
+
+    private func copyableSummaryText() -> String? {
+        let summary = parsedSummary
+            ?? segment.summary_json.flatMap { ParsedSummary(json: $0) }
+        guard let summary, summary.hasContent else { return nil }
+        let text = summary.copyablePlainText
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return text.isEmpty ? nil : text
     }
 
     private func handleSummaryHeightChange(_ height: CGFloat) {
@@ -219,7 +277,6 @@ struct SegmentReadingBlock: View, Equatable {
                 summaryDurationS: segment.summary_duration_s,
                 summaryLlmAttempts: segment.summary_llm_attempts,
                 onFollowUp: onFollowUp,
-                onSendToChat: onSendToChat,
                 showsBackground: showsBackground,
                 showsHeader: false
             )
@@ -261,6 +318,13 @@ struct SegmentReadingBlock: View, Equatable {
                         .foregroundStyle(LuminaTheme.textSecondary)
                         .lineLimit(1)
                 }
+            }
+
+            if showsRegenerateSummaryButton {
+                Button("重新摘要", action: onRetrySummary)
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .accessibilityIdentifier("lumina.reader.control.regenerateSummary")
             }
 
             if let count = effectiveCharCount, count > 0 {
@@ -328,6 +392,16 @@ struct SegmentReadingBlock: View, Equatable {
         }
     }
 
+    private var hasSummaryContent: Bool {
+        if parsedSummary != nil { return true }
+        if let summary = segment.summary_json, !summary.isEmpty { return true }
+        return false
+    }
+
+    private var showsRegenerateSummaryButton: Bool {
+        segment.summary_status == "ready" && hasSummaryContent
+    }
+
     private var failureMessage: String {
         if let summaryProgressMessage, !summaryProgressMessage.isEmpty {
             return summaryProgressMessage
@@ -364,9 +438,10 @@ struct SegmentReadingBlock: View, Equatable {
                             .foregroundStyle(LuminaTheme.textSecondary)
                             .lineLimit(3)
                     }
-                    Button("重试", action: onRetrySummary)
+                    Button("重新摘要", action: onRetrySummary)
                         .buttonStyle(.bordered)
                         .controlSize(.small)
+                        .accessibilityIdentifier("lumina.reader.control.regenerateSummary")
                 }
             default:
                 Text("尚无摘要")
@@ -393,8 +468,7 @@ struct SegmentReadingBlock: View, Equatable {
                 }
                 LuminaSelectableText(
                     text: body.rawText,
-                    foreground: LuminaTheme.textSecondary,
-                    onSendToChat: onSendToChat
+                    foreground: LuminaTheme.textSecondary
                 )
             }
             if needsTranslation {
@@ -404,8 +478,7 @@ struct SegmentReadingBlock: View, Equatable {
                     sourceTextLabel("译文")
                     LuminaSelectableText(
                         text: body.translation,
-                        foreground: LuminaTheme.textSecondary.opacity(0.85),
-                        onSendToChat: onSendToChat
+                        foreground: LuminaTheme.textSecondary.opacity(0.85)
                     )
                 }
             }

@@ -264,13 +264,36 @@ private struct LibraryTabView<EmptyDetail: View>: View {
     }
 
     var body: some View {
-        NavigationSplitView(columnVisibility: libraryColumnVisibility) {
-            librarySidebarContent
-        } detail: {
-            detailContent
+        Group {
+            if selectedBookId == nil {
+                // Browse: system split keeps library resident. No reading edge-gesture conflict.
+                NavigationSplitView(columnVisibility: .constant(.doubleColumn)) {
+                    librarySidebarContent
+                } detail: {
+                    detailContent
+                }
+                .navigationSplitViewStyle(.balanced)
+            } else {
+                // Reading: self-managed sidebar so system left-edge cannot reveal the library.
+                HStack(spacing: 0) {
+                    if LibrarySidebarVisibilityPolicy.showsLibrarySidebar(
+                        hasSelectedBook: true,
+                        pinned: librarySidebarPinned
+                    ) {
+                        NavigationStack {
+                            librarySidebarContent
+                        }
+                        .frame(width: libraryWidth)
+                        .transition(.move(edge: .leading))
+                    }
+                    NavigationStack {
+                        detailContent
+                    }
+                    .frame(maxWidth: .infinity)
+                }
+                .animation(.easeInOut(duration: 0.25), value: librarySidebarPinned)
+            }
         }
-        .navigationSplitViewStyle(.balanced)
-        .animation(.easeInOut(duration: 0.25), value: librarySidebarPinned)
         .background {
             WindowToolbarVisibility(visible: windowToolbarVisible)
         }
@@ -281,18 +304,6 @@ private struct LibraryTabView<EmptyDetail: View>: View {
                 readerChromeVisible = false
             }
         }
-    }
-
-    private var libraryColumnVisibility: Binding<NavigationSplitViewVisibility> {
-        Binding(
-            get: {
-                selectedBookId == nil || librarySidebarPinned ? .doubleColumn : .detailOnly
-            },
-            set: { newValue in
-                guard selectedBookId != nil else { return }
-                librarySidebarPinned = (newValue != .detailOnly)
-            }
-        )
     }
 
     @ViewBuilder

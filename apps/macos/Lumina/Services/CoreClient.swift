@@ -343,6 +343,67 @@ struct ChatResponse: Codable {
     let citations: [ChatCitation]
     let web_refs: [[String: String]]?
     let evidence_sufficient: Bool?
+    let provider: String?
+    let model: String?
+    let duration_ms: Int?
+    let prompt_tokens: Int?
+    let completion_tokens: Int?
+    let total_tokens: Int?
+    let tps: Double?
+
+    init(
+        answer: String,
+        citations: [ChatCitation],
+        web_refs: [[String: String]]? = nil,
+        evidence_sufficient: Bool? = nil,
+        provider: String? = nil,
+        model: String? = nil,
+        duration_ms: Int? = nil,
+        prompt_tokens: Int? = nil,
+        completion_tokens: Int? = nil,
+        total_tokens: Int? = nil,
+        tps: Double? = nil
+    ) {
+        self.answer = answer
+        self.citations = citations
+        self.web_refs = web_refs
+        self.evidence_sufficient = evidence_sufficient
+        self.provider = provider
+        self.model = model
+        self.duration_ms = duration_ms
+        self.prompt_tokens = prompt_tokens
+        self.completion_tokens = completion_tokens
+        self.total_tokens = total_tokens
+        self.tps = tps
+    }
+
+    static func fromSSEDone(_ obj: [String: Any], citations: [ChatCitation]) -> ChatResponse {
+        ChatResponse(
+            answer: obj["answer"] as? String ?? "",
+            citations: citations,
+            web_refs: nil,
+            evidence_sufficient: obj["evidence_sufficient"] as? Bool,
+            provider: obj["provider"] as? String,
+            model: obj["model"] as? String,
+            duration_ms: Self.intValue(obj["duration_ms"]),
+            prompt_tokens: Self.intValue(obj["prompt_tokens"]),
+            completion_tokens: Self.intValue(obj["completion_tokens"]),
+            total_tokens: Self.intValue(obj["total_tokens"]),
+            tps: Self.doubleValue(obj["tps"])
+        )
+    }
+
+    private static func intValue(_ value: Any?) -> Int? {
+        if let n = value as? Int { return n }
+        if let n = value as? Double { return Int(n) }
+        return nil
+    }
+
+    private static func doubleValue(_ value: Any?) -> Double? {
+        if let n = value as? Double { return n }
+        if let n = value as? Int { return Double(n) }
+        return nil
+    }
 }
 
 struct ChatMessage: Identifiable {
@@ -350,12 +411,47 @@ struct ChatMessage: Identifiable {
     let role: String
     var content: String
     var citations: [ChatCitation]
+    var provider: String?
+    var model: String?
+    var duration_ms: Int?
+    var prompt_tokens: Int?
+    var completion_tokens: Int?
+    var total_tokens: Int?
+    var tps: Double?
 
-    init(role: String, content: String, citations: [ChatCitation] = []) {
+    init(
+        role: String,
+        content: String,
+        citations: [ChatCitation] = [],
+        provider: String? = nil,
+        model: String? = nil,
+        duration_ms: Int? = nil,
+        prompt_tokens: Int? = nil,
+        completion_tokens: Int? = nil,
+        total_tokens: Int? = nil,
+        tps: Double? = nil
+    ) {
         self.id = UUID()
         self.role = role
         self.content = content
         self.citations = citations
+        self.provider = provider
+        self.model = model
+        self.duration_ms = duration_ms
+        self.prompt_tokens = prompt_tokens
+        self.completion_tokens = completion_tokens
+        self.total_tokens = total_tokens
+        self.tps = tps
+    }
+
+    mutating func applyMetrics(from resp: ChatResponse) {
+        provider = resp.provider
+        model = resp.model
+        duration_ms = resp.duration_ms
+        prompt_tokens = resp.prompt_tokens
+        completion_tokens = resp.completion_tokens
+        total_tokens = resp.total_tokens
+        tps = resp.tps
     }
 }
 
@@ -815,10 +911,9 @@ final class CoreClient: ObservableObject {
                     onToken(tokenBuffer)
                     tokenBuffer = ""
                 }
-                let answer = obj["answer"] as? String ?? ""
                 let citationsData = try JSONSerialization.data(withJSONObject: obj["citations"] ?? [])
                 let citations = (try? JSONDecoder().decode([ChatCitation].self, from: citationsData)) ?? []
-                final = ChatResponse(answer: answer, citations: citations, web_refs: nil, evidence_sufficient: obj["evidence_sufficient"] as? Bool)
+                final = ChatResponse.fromSSEDone(obj, citations: citations)
             }
         }
         if !tokenBuffer.isEmpty { onToken(tokenBuffer) }
@@ -894,6 +989,7 @@ final class CoreClient: ObservableObject {
         webSearchProvider: String,
         tavilyAPIKey: String? = nil,
         debugMode: Bool? = nil,
+        autoStartSummary: Bool? = nil,
         models: ModelsSettings? = nil,
         prompts: PromptsSettings? = nil
     ) async throws -> AppSettings {
@@ -902,6 +998,7 @@ final class CoreClient: ObservableObject {
             let web_search_provider: String
             let tavily_api_key: String?
             let debug_mode: Bool?
+            let auto_start_summary: Bool?
             let models: ModelsSettings?
             let prompts: PromptsSettings?
         }
@@ -911,6 +1008,7 @@ final class CoreClient: ObservableObject {
                 web_search_provider: webSearchProvider,
                 tavily_api_key: tavilyAPIKey,
                 debug_mode: debugMode,
+                auto_start_summary: autoStartSummary,
                 models: models,
                 prompts: prompts
             )
@@ -1018,8 +1116,7 @@ final class CoreClient: ObservableObject {
                     onToken(tokenBuffer)
                     tokenBuffer = ""
                 }
-                let answer = obj["answer"] as? String ?? ""
-                final = ChatResponse(answer: answer, citations: [], web_refs: nil, evidence_sufficient: obj["evidence_sufficient"] as? Bool)
+                final = ChatResponse.fromSSEDone(obj, citations: [])
             }
         }
         if !tokenBuffer.isEmpty { onToken(tokenBuffer) }

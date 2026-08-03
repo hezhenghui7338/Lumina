@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from lumina_core.classify.book import BOOK_CATEGORIES
-from lumina_core.db.connection import db_transaction
+from lumina_core.db.connection import db_lock, db_transaction
 from lumina_core.search.fts import delete_note_from_fts
 
 
@@ -33,13 +33,17 @@ class BookRepo:
         self.conn = conn
 
     def find_by_hash(self, file_hash: str) -> dict[str, Any] | None:
-        row = self.conn.execute(
-            "SELECT * FROM books WHERE file_hash = ?", (file_hash,)
-        ).fetchone()
+        with db_lock(self.conn):
+            row = self.conn.execute(
+                "SELECT * FROM books WHERE file_hash = ?", (file_hash,)
+            ).fetchone()
         return dict(row) if row else None
 
     def get(self, book_id: str) -> dict[str, Any] | None:
-        row = self.conn.execute("SELECT * FROM books WHERE id = ?", (book_id,)).fetchone()
+        with db_lock(self.conn):
+            row = self.conn.execute(
+                "SELECT * FROM books WHERE id = ?", (book_id,)
+            ).fetchone()
         return dict(row) if row else None
 
     def list_books(
@@ -61,7 +65,8 @@ class BookRepo:
             sql += " WHERE category = ?"
             params = (filter,)
         sql += f" ORDER BY {order}"
-        rows = self.conn.execute(sql, params).fetchall()
+        with db_lock(self.conn):
+            rows = self.conn.execute(sql, params).fetchall()
         return [dict(r) for r in rows]
 
     def insert(self, **fields: Any) -> dict[str, Any]:
@@ -124,14 +129,15 @@ class BookRepo:
 
     def maybe_mark_summarized(self, book_id: str) -> bool:
         """If every segment is ready, promote book status to summarized."""
-        row = self.conn.execute(
-            """
-            SELECT COUNT(*) AS total,
-                   SUM(CASE WHEN summary_status = 'ready' THEN 1 ELSE 0 END) AS ready
-            FROM segments WHERE book_id = ?
-            """,
-            (book_id,),
-        ).fetchone()
+        with db_lock(self.conn):
+            row = self.conn.execute(
+                """
+                SELECT COUNT(*) AS total,
+                       SUM(CASE WHEN summary_status = 'ready' THEN 1 ELSE 0 END) AS ready
+                FROM segments WHERE book_id = ?
+                """,
+                (book_id,),
+            ).fetchone()
         if not row or row["total"] == 0 or row["ready"] != row["total"]:
             return False
         self.update(book_id, status="summarized")
@@ -139,14 +145,15 @@ class BookRepo:
 
     def summary_progress(self, book_id: str) -> dict[str, int]:
         """Return ready/total segment counts for summary progress UI."""
-        row = self.conn.execute(
-            """
-            SELECT COUNT(*) AS total,
-                   SUM(CASE WHEN summary_status = 'ready' THEN 1 ELSE 0 END) AS ready
-            FROM segments WHERE book_id = ?
-            """,
-            (book_id,),
-        ).fetchone()
+        with db_lock(self.conn):
+            row = self.conn.execute(
+                """
+                SELECT COUNT(*) AS total,
+                       SUM(CASE WHEN summary_status = 'ready' THEN 1 ELSE 0 END) AS ready
+                FROM segments WHERE book_id = ?
+                """,
+                (book_id,),
+            ).fetchone()
         if not row:
             return {"summary_ready_count": 0, "summary_total_count": 0}
         return {
@@ -197,30 +204,33 @@ class SegmentRepo:
             cols = _SEGMENT_META_COLUMNS
         else:
             cols = _SEGMENT_LIST_COLUMNS
-        rows = self.conn.execute(
-            f"SELECT {cols} FROM segments WHERE book_id = ? ORDER BY idx",
-            (book_id,),
-        ).fetchall()
+        with db_lock(self.conn):
+            rows = self.conn.execute(
+                f"SELECT {cols} FROM segments WHERE book_id = ? ORDER BY idx",
+                (book_id,),
+            ).fetchall()
         return [dict(r) for r in rows]
 
     def list_for_export(self, book_id: str) -> list[dict[str, Any]]:
-        rows = self.conn.execute(
-            f"SELECT {_SEGMENT_EXPORT_COLUMNS} FROM segments WHERE book_id = ? ORDER BY idx",
-            (book_id,),
-        ).fetchall()
+        with db_lock(self.conn):
+            rows = self.conn.execute(
+                f"SELECT {_SEGMENT_EXPORT_COLUMNS} FROM segments WHERE book_id = ? ORDER BY idx",
+                (book_id,),
+            ).fetchall()
         return [dict(r) for r in rows]
 
     def backfill_char_counts(self, book_id: str) -> None:
-        row = self.conn.execute(
-            """
-            SELECT 1 FROM segments
-            WHERE book_id = ?
-              AND raw_text IS NOT NULL
-              AND (char_count IS NULL OR char_count = 0)
-            LIMIT 1
-            """,
-            (book_id,),
-        ).fetchone()
+        with db_lock(self.conn):
+            row = self.conn.execute(
+                """
+                SELECT 1 FROM segments
+                WHERE book_id = ?
+                  AND raw_text IS NOT NULL
+                  AND (char_count IS NULL OR char_count = 0)
+                LIMIT 1
+                """,
+                (book_id,),
+            ).fetchone()
         if not row:
             return
         with db_transaction(self.conn):
@@ -236,23 +246,26 @@ class SegmentRepo:
             )
 
     def get(self, segment_id: str) -> dict[str, Any] | None:
-        row = self.conn.execute(
-            "SELECT * FROM segments WHERE id = ?", (segment_id,)
-        ).fetchone()
+        with db_lock(self.conn):
+            row = self.conn.execute(
+                "SELECT * FROM segments WHERE id = ?", (segment_id,)
+            ).fetchone()
         return dict(row) if row else None
 
     def get_by_index(self, book_id: str, idx: int) -> dict[str, Any] | None:
-        row = self.conn.execute(
-            "SELECT * FROM segments WHERE book_id = ? AND idx = ?",
-            (book_id, idx),
-        ).fetchone()
+        with db_lock(self.conn):
+            row = self.conn.execute(
+                "SELECT * FROM segments WHERE book_id = ? AND idx = ?",
+                (book_id, idx),
+            ).fetchone()
         return dict(row) if row else None
 
     def get_summary_by_index(self, book_id: str, idx: int) -> dict[str, Any] | None:
-        row = self.conn.execute(
-            f"SELECT {_SEGMENT_SUMMARY_COLUMNS} FROM segments WHERE book_id = ? AND idx = ?",
-            (book_id, idx),
-        ).fetchone()
+        with db_lock(self.conn):
+            row = self.conn.execute(
+                f"SELECT {_SEGMENT_SUMMARY_COLUMNS} FROM segments WHERE book_id = ? AND idx = ?",
+                (book_id, idx),
+            ).fetchone()
         return dict(row) if row else None
 
     def insert_many(self, segments: list[dict[str, Any]]) -> None:
@@ -337,10 +350,11 @@ class ChatRepo:
         self.conn = conn
 
     def get_or_create_session(self, book_id: str) -> dict[str, Any]:
-        row = self.conn.execute(
-            "SELECT * FROM chat_sessions WHERE book_id = ? ORDER BY updated_at DESC LIMIT 1",
-            (book_id,),
-        ).fetchone()
+        with db_lock(self.conn):
+            row = self.conn.execute(
+                "SELECT * FROM chat_sessions WHERE book_id = ? ORDER BY updated_at DESC LIMIT 1",
+                (book_id,),
+            ).fetchone()
         if row:
             return dict(row)
         session_id = str(uuid.uuid4())
@@ -386,10 +400,11 @@ class ChatRepo:
         }
 
     def list_messages(self, session_id: str) -> list[dict[str, Any]]:
-        rows = self.conn.execute(
-            "SELECT * FROM chat_messages WHERE session_id = ? ORDER BY created_at",
-            (session_id,),
-        ).fetchall()
+        with db_lock(self.conn):
+            rows = self.conn.execute(
+                "SELECT * FROM chat_messages WHERE session_id = ? ORDER BY created_at",
+                (session_id,),
+            ).fetchall()
         return [dict(r) for r in rows]
 
 
@@ -457,10 +472,11 @@ class NoteRepo:
         return True
 
     def _list(self, *, where: str, params: tuple[Any, ...]) -> list[dict[str, Any]]:
-        rows = self.conn.execute(
-            f"{_NOTE_LIST_SQL} WHERE {where} ORDER BY n.created_at DESC",
-            params,
-        ).fetchall()
+        with db_lock(self.conn):
+            rows = self.conn.execute(
+                f"{_NOTE_LIST_SQL} WHERE {where} ORDER BY n.created_at DESC",
+                params,
+            ).fetchall()
         return [dict(r) for r in rows]
 
 
@@ -469,10 +485,11 @@ class NewsChatRepo:
         self.conn = conn
 
     def list_messages(self, article_id: str) -> list[dict[str, Any]]:
-        rows = self.conn.execute(
-            "SELECT * FROM news_chat_messages WHERE article_id = ? ORDER BY created_at",
-            (article_id,),
-        ).fetchall()
+        with db_lock(self.conn):
+            rows = self.conn.execute(
+                "SELECT * FROM news_chat_messages WHERE article_id = ? ORDER BY created_at",
+                (article_id,),
+            ).fetchall()
         return [dict(r) for r in rows]
 
     def add_message(

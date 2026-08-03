@@ -48,7 +48,7 @@ struct NewsArticleView: View {
             await viewModel.load(articleId: articleId, service: core)
         }
         .onDisappear {
-            viewModel.cancelLoad()
+            viewModel.cancelAll()
         }
     }
 
@@ -154,10 +154,20 @@ struct NewsArticleView: View {
                                     if msg.role == "assistant", msg.content.isEmpty, viewModel.isSending {
                                         ProgressView()
                                             .controlSize(.small)
+                                        Text("正在响应…")
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
                                     }
                                     Spacer()
                                 }
-                                Text(msg.content)
+                                if !msg.content.isEmpty {
+                                    Text(msg.content)
+                                }
+                                if let attribution = ChatMetricsFormatter.attribution(for: msg) {
+                                    Text(attribution)
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
                             }
                             .padding(8)
                             .background(msg.role == "user" ? Color.blue.opacity(0.08) : Color.gray.opacity(0.08))
@@ -303,6 +313,7 @@ final class NewsArticleViewModel: ObservableObject {
 
     private var articleId = ""
     private var loadTask: Task<Void, Never>?
+    private var chatTask: Task<Void, Never>?
 
     static func articleURL(article: NewsArticleDetail?, skim: NewsArticleCard?) -> URL? {
         if let raw = article?.url ?? skim?.url {
@@ -315,6 +326,17 @@ final class NewsArticleViewModel: ObservableObject {
         loadTask?.cancel()
         loadTask = nil
         isRefreshingSummary = false
+    }
+
+    func cancelChat() {
+        chatTask?.cancel()
+        chatTask = nil
+        isSending = false
+    }
+
+    func cancelAll() {
+        cancelLoad()
+        cancelChat()
     }
 
     func load(articleId: String, service: NewsArticleServing, forceRead: Bool = false) async {
@@ -382,26 +404,56 @@ final class NewsArticleViewModel: ObservableObject {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, !isSending else { return }
 
+        chatTask?.cancel()
+        let task = Task { await performSendChat(trimmed, quote: quote, service: service) }
+        chatTask = task
+        await task.value
+        if chatTask == task {
+            chatTask = nil
+        }
+    }
+
+    private func performSendChat(
+        _ text: String,
+        quote: String?,
+        service: NewsArticleServing
+    ) async {
         isSending = true
         defer { isSending = false }
 
-        messages.append(ChatMessage(role: "user", content: trimmed))
-        let assistant = ChatMessage(role: "assistant", content: "")
-        messages.append(assistant)
+        messages.append(ChatMessage(role: "user", content: text))
+        messages.append(ChatMessage(role: "assistant", content: ""))
         let idx = messages.count - 1
 
         do {
-            let resp = try await service.newsChatStream(articleId: articleId, message: trimmed, quote: quote) { token in
+            let resp = try await service.newsChatStream(articleId: articleId, message: text, quote: quote) { token in
                 Task { @MainActor in
+                    guard idx < self.messages.count else { return }
                     var msg = self.messages[idx]
                     msg.content += token
                     self.messages[idx] = msg
                 }
             }
+            try Task.checkCancellation()
+            guard idx < messages.count else { return }
             var msg = messages[idx]
             msg.content = resp.answer
+            msg.applyMetrics(from: resp)
             messages[idx] = msg
+        } catch is CancellationError {
+            if idx < messages.count, messages[idx].content.isEmpty {
+                var msg = messages[idx]
+                msg.content = "已取消"
+                messages[idx] = msg
+            }
+        } catch let error as URLError where error.code == .cancelled {
+            if idx < messages.count, messages[idx].content.isEmpty {
+                var msg = messages[idx]
+                msg.content = "已取消"
+                messages[idx] = msg
+            }
         } catch {
+            guard idx < messages.count else { return }
             var msg = messages[idx]
             msg.content = "深聊失败：\(error.localizedDescription)"
             messages[idx] = msg

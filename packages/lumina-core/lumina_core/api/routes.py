@@ -107,6 +107,7 @@ class SettingsUpdate(BaseModel):
     web_search_provider: str | None = None
     tavily_api_key: str | None = None
     debug_mode: bool | None = None
+    auto_start_summary: bool | None = None
     models: ModelsConfig | None = None
     prompts: PromptsConfig | None = None
 
@@ -487,10 +488,32 @@ async def list_book_categories() -> dict[str, list[str]]:
 @router.get("/books/{book_id}")
 async def get_book(book_id: str, request: Request) -> dict[str, Any]:
     state = _state(request)
-    book = BookRepo(state.conn).get(book_id)
+
+    def _load_book() -> dict[str, Any] | None:
+        book = BookRepo(state.conn).get(book_id)
+        if not book:
+            return None
+        progress = BookRepo(state.conn).summary_progress(book_id)
+        out = dict(book)
+        out.update(progress)
+        return out
+
+    # Off-loop: shared SQLite may be locked by ingest/persist worker threads.
+    book = await asyncio.to_thread(_load_book)
     if not book:
         raise HTTPException(404, "Book not found")
-    return _book_public_with_queue(state, book)
+    ready = int(book.get("summary_ready_count") or 0)
+    total = int(book.get("summary_total_count") or 0)
+    return book_public_dict(
+        book,
+        summarize_active=state.job_queue.summarize_active_for_book(book_id),
+        summarize_state=state.job_queue.summarize_state_for_book(
+            book_id, ready=ready, total=total
+        ),
+        summarize_queued_count=state.job_queue._summarize_queued_count_for_book(
+            book_id
+        ),
+    )
 
 
 @router.get("/books/{book_id}/segments")
@@ -550,7 +573,8 @@ async def open_book(book_id: str, request: Request) -> dict[str, Any]:
     except sqlite3.OperationalError as e:
         raise HTTPException(503, _SCHEMA_STALE_DETAIL) from e
     _wire_job_events(state)
-    await state.job_queue.enqueue_book_prefetch(book_id)
+    if state.job_queue.auto_start_summary:
+        await state.job_queue.enqueue_book_prefetch(book_id)
     return {
         "status": "opened",
         "current_segment_index": book.get("current_segment_index") or 0,
@@ -882,6 +906,9 @@ async def update_settings(body: SettingsUpdate, request: Request) -> dict[str, A
         )
     if body.debug_mode is not None:
         state.settings.debug_mode = body.debug_mode
+    if body.auto_start_summary is not None:
+        state.settings.auto_start_summary = body.auto_start_summary
+        state.job_queue.auto_start_summary = body.auto_start_summary
     if body.prompts is not None:
         try:
             existing = _prompts(state)

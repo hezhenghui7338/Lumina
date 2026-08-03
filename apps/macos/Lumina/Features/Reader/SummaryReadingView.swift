@@ -13,7 +13,6 @@ struct SummaryBlock: View {
     var summaryDurationS: Double?
     var summaryLlmAttempts: Int?
     var onFollowUp: ((String) -> Void)?
-    var onSendToChat: ((String) -> Void)?
     var showsBackground: Bool = true
     var showsHeader: Bool = true
 
@@ -60,8 +59,7 @@ struct SummaryBlock: View {
                             LuminaSelectableText(
                                 text: sentence,
                                 fontSize: LuminaTheme.summaryLeadSize,
-                                lineSpacing: LuminaTheme.summaryLeadLineSpacing,
-                                onSendToChat: onSendToChat
+                                lineSpacing: LuminaTheme.summaryLeadLineSpacing
                             )
                         }
                     }
@@ -74,8 +72,7 @@ struct SummaryBlock: View {
                         ForEach(Array(summary.bullets.enumerated()), id: \.offset) { index, bullet in
                             StructuredBulletRow(
                                 index: index + 1,
-                                bullet: bullet,
-                                onSendToChat: onSendToChat
+                                bullet: bullet
                             )
                         }
                     }
@@ -92,8 +89,7 @@ struct SummaryBlock: View {
                                     .foregroundStyle(LuminaTheme.textSecondary)
                                 LuminaSelectableText(
                                     text: note,
-                                    foreground: LuminaTheme.textSecondary,
-                                    onSendToChat: onSendToChat
+                                    foreground: LuminaTheme.textSecondary
                                 )
                             }
                         }
@@ -112,6 +108,7 @@ struct SummaryBlock: View {
                                     FollowUpChip(text: question, index: index + 1)
                                 }
                                 .buttonStyle(.plain)
+                                .accessibilityIdentifier("lumina.reader.control.followUp.\(index + 1)")
                             } else {
                                 FollowUpChip(text: question, index: index + 1)
                             }
@@ -238,7 +235,6 @@ struct SummaryBlock: View {
 private struct StructuredBulletRow: View {
     let index: Int
     let bullet: ParsedBullet
-    var onSendToChat: ((String) -> Void)?
 
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
@@ -252,16 +248,14 @@ private struct StructuredBulletRow: View {
                 if let label = bullet.label, !label.isEmpty {
                     LuminaSelectableText(
                         text: label,
-                        fontWeight: .semibold,
-                        onSendToChat: onSendToChat
+                        fontWeight: .semibold
                     )
                 }
                 LuminaSelectableText(
                     text: bullet.body,
                     foreground: bullet.label == nil
                         ? LuminaTheme.textPrimary
-                        : LuminaTheme.textSecondary,
-                    onSendToChat: onSendToChat
+                        : LuminaTheme.textSecondary
                 )
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -294,6 +288,49 @@ struct ParsedSummary: Equatable {
 
     var hasContent: Bool {
         !sentences.isEmpty || !bullets.isEmpty || !notes.isEmpty || !followUps.isEmpty
+    }
+
+    /// Plain text for clipboard copy of the full summary panel.
+    var copyablePlainText: String {
+        var sections: [String] = []
+
+        if !sentences.isEmpty {
+            var block = "总结"
+            for sentence in sentences {
+                block += "\n\(sentence)"
+            }
+            sections.append(block)
+        }
+
+        if !bullets.isEmpty {
+            var block = "结构化要点"
+            for (index, bullet) in bullets.enumerated() {
+                if let label = bullet.label, !label.isEmpty {
+                    block += "\n\(index + 1). \(label)：\(bullet.body)"
+                } else {
+                    block += "\n\(index + 1). \(bullet.body)"
+                }
+            }
+            sections.append(block)
+        }
+
+        if !notes.isEmpty {
+            var block = "需要注意"
+            for note in notes {
+                block += "\n· \(note)"
+            }
+            sections.append(block)
+        }
+
+        if !followUps.isEmpty {
+            var block = "你可以接着问"
+            for (index, question) in followUps.enumerated() {
+                block += "\n\(index + 1). \(question)"
+            }
+            sections.append(block)
+        }
+
+        return sections.joined(separator: "\n\n")
     }
 
     init?(json: String) {

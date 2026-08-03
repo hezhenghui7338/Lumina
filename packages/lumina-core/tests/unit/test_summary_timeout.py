@@ -163,7 +163,7 @@ async def test_enqueue_book_prefetch_recovers_stale_running(conn):
 @pytest.mark.asyncio
 async def test_recover_on_startup_resumes_incomplete_books(conn):
     router = MockModelRouter(responses={"summarize": SUMMARY, "translate": "译文"})
-    q = JobQueue(conn, router)
+    q = JobQueue(conn, router, auto_start_summary=True)
     book_id = _seed_book(conn)
     segs = SegmentRepo(conn).list_for_book(book_id)
     SegmentRepo(conn).set_status(segs[0]["id"], "running")
@@ -179,3 +179,18 @@ async def test_recover_on_startup_resumes_incomplete_books(conn):
         pytest.fail("startup recovery did not complete summarize for orphan running segment")
 
     assert SegmentRepo(conn).get_by_index(book_id, 0)["summary_status"] == "ready"
+
+
+@pytest.mark.asyncio
+async def test_recover_on_startup_clears_orphan_without_auto_start(conn):
+    router = MockModelRouter(responses={"summarize": SUMMARY, "translate": "译文"})
+    q = JobQueue(conn, router, auto_start_summary=False)
+    book_id = _seed_book(conn)
+    segs = SegmentRepo(conn).list_for_book(book_id)
+    SegmentRepo(conn).set_status(segs[0]["id"], "running")
+
+    await q.recover_on_startup()
+
+    updated = SegmentRepo(conn).get_by_index(book_id, 0)
+    assert updated["summary_status"] == "pending"
+    assert q._queue.qsize() == 0

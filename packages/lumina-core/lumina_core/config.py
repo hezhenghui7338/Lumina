@@ -476,6 +476,7 @@ class Settings(BaseSettings):
     web_search_provider: str = "ddgs"  # ddgs | tavily
     tavily_api_key: str | None = None
     debug_mode: bool = False
+    auto_start_summary: bool = False
     prompts: PromptsConfig | None = None
 
     class Config:

@@ -93,6 +93,9 @@ class ProfileModelRouter:
         self.last_provider: str | None = None
         self.last_model: str | None = None
         self.last_call: dict[str, Any] | None = None
+        self.last_usage: dict[str, int] | None = None
+        self.last_duration_ms: int | None = None
+        self.last_tps: float | None = None
 
     @property
     def gate(self) -> ResourceConcurrencyGate:
@@ -139,11 +142,104 @@ class ProfileModelRouter:
         payload: dict[str, Any] = {"model": resource.model, "messages": messages}
         if stream:
             payload["stream"] = True
+            # Ask providers for a final usage chunk (OpenAI / OpenRouter / compatible).
+            payload["stream_options"] = {"include_usage": True}
         if json_mode:
             payload["response_format"] = {"type": "json_object"}
             if resource.provider == "openrouter":
                 payload["provider"] = {"require_parameters": True}
         return payload
+
+    def clear_chat_metrics(self) -> None:
+        self.last_usage = None
+        self.last_duration_ms = None
+        self.last_tps = None
+
+    def chat_metrics(self) -> dict[str, Any]:
+        """Fields for chat API / SSE done payloads (omit unset values)."""
+        out: dict[str, Any] = {}
+        if self.last_provider:
+            out["provider"] = self.last_provider
+        if self.last_model:
+            out["model"] = self.last_model
+        if self.last_duration_ms is not None:
+            out["duration_ms"] = self.last_duration_ms
+        if self.last_usage:
+            for key in ("prompt_tokens", "completion_tokens", "total_tokens"):
+                value = self.last_usage.get(key)
+                if value is not None:
+                    out[key] = value
+        if self.last_tps is not None:
+            out["tps"] = self.last_tps
+        return out
+
+    def _set_usage(
+        self,
+        *,
+        prompt_tokens: int | None = None,
+        completion_tokens: int | None = None,
+        total_tokens: int | None = None,
+        tps: float | None = None,
+    ) -> None:
+        usage: dict[str, int] = {}
+        if prompt_tokens is not None:
+            usage["prompt_tokens"] = int(prompt_tokens)
+        if completion_tokens is not None:
+            usage["completion_tokens"] = int(completion_tokens)
+        if total_tokens is not None:
+            usage["total_tokens"] = int(total_tokens)
+        elif usage.get("prompt_tokens") is not None and usage.get("completion_tokens") is not None:
+            usage["total_tokens"] = usage["prompt_tokens"] + usage["completion_tokens"]
+        if usage:
+            self.last_usage = usage
+        if tps is not None:
+            self.last_tps = round(float(tps), 1)
+
+    def _finalize_chat_metrics(self, *, started: float) -> None:
+        self.last_duration_ms = max(0, int((time.time() - started) * 1000))
+        if self.last_tps is not None:
+            return
+        completion = (self.last_usage or {}).get("completion_tokens")
+        if completion:
+            # Instant mock/local streams can report 0ms; floor at 1ms for TPS.
+            seconds = max(self.last_duration_ms, 1) / 1000.0
+            self.last_tps = round(completion / seconds, 1)
+
+    @staticmethod
+    def _usage_from_openai(data: dict[str, Any]) -> tuple[int | None, int | None, int | None]:
+        usage = data.get("usage") or {}
+        if not isinstance(usage, dict):
+            return None, None, None
+        prompt = usage.get("prompt_tokens")
+        completion = usage.get("completion_tokens")
+        total = usage.get("total_tokens")
+        return (
+            int(prompt) if prompt is not None else None,
+            int(completion) if completion is not None else None,
+            int(total) if total is not None else None,
+        )
+
+    @staticmethod
+    def _usage_from_ollama(
+        data: dict[str, Any],
+    ) -> tuple[int | None, int | None, int | None, float | None]:
+        prompt = data.get("prompt_eval_count")
+        completion = data.get("eval_count")
+        tps: float | None = None
+        eval_duration = data.get("eval_duration")
+        if completion is not None and eval_duration:
+            seconds = float(eval_duration) / 1e9
+            if seconds > 0:
+                tps = float(completion) / seconds
+        total = None
+        if prompt is not None and completion is not None:
+            total = int(prompt) + int(completion)
+        return (
+            int(prompt) if prompt is not None else None,
+            int(completion) if completion is not None else None,
+            total,
+            tps,
+        )
 
     async def _post_openai_json(
         self,
@@ -200,6 +296,7 @@ class ProfileModelRouter:
         resources = self._resources_for(profile)
         if not resources:
             raise RuntimeError(f"no resources configured for profile {profile}")
+        self.clear_chat_metrics()
         if stream:
             return self._chat_stream_with_fallback(
                 resources,
@@ -400,6 +497,7 @@ class ProfileModelRouter:
                     started=started,
                     ok=True,
                 )
+                self._finalize_chat_metrics(started=started)
                 return text
             except ResourceBusyError as exc:
                 if resource.provider == "ollama":
@@ -435,6 +533,7 @@ class ProfileModelRouter:
                     started=started,
                     ok=True,
                 )
+                self._finalize_chat_metrics(started=started)
                 return text
             except Exception as exc:
                 last_error = exc
@@ -489,6 +588,7 @@ class ProfileModelRouter:
                         first = False
                     yield chunk
                 if not first:
+                    self._finalize_chat_metrics(started=started)
                     return
             except ResourceBusyError as exc:
                 if resource.provider == "ollama":
@@ -529,6 +629,7 @@ class ProfileModelRouter:
                     first = False
                 yield chunk
             if not first:
+                self._finalize_chat_metrics(started=started)
                 return
 
         err = _format_chain_failure(resources, last_error)
@@ -761,7 +862,15 @@ class ProfileModelRouter:
         payload = self._ollama_payload(resource, messages, json_mode=json_mode, stream=False)
         resp = await client.post("/api/chat", json=payload)
         resp.raise_for_status()
-        return resp.json()["message"]["content"]
+        data = resp.json()
+        prompt, completion, total, tps = self._usage_from_ollama(data)
+        self._set_usage(
+            prompt_tokens=prompt,
+            completion_tokens=completion,
+            total_tokens=total,
+            tps=tps,
+        )
+        return data["message"]["content"]
 
     async def _ollama_chat_stream(
         self,
@@ -782,6 +891,14 @@ class ProfileModelRouter:
                 chunk = data.get("message", {}).get("content", "")
                 if chunk:
                     yield chunk
+                if data.get("done"):
+                    prompt, completion, total, tps = self._usage_from_ollama(data)
+                    self._set_usage(
+                        prompt_tokens=prompt,
+                        completion_tokens=completion,
+                        total_tokens=total,
+                        tps=tps,
+                    )
 
     async def _openai_stream_with_fallback(
         self,
@@ -806,7 +923,17 @@ class ProfileModelRouter:
                     if data_str == "[DONE]":
                         break
                     data = json.loads(data_str)
-                    delta = data.get("choices", [{}])[0].get("delta", {}).get("content", "")
+                    prompt, completion, total = self._usage_from_openai(data)
+                    if prompt is not None or completion is not None or total is not None:
+                        self._set_usage(
+                            prompt_tokens=prompt,
+                            completion_tokens=completion,
+                            total_tokens=total,
+                        )
+                    choices = data.get("choices") or []
+                    if not choices:
+                        continue
+                    delta = (choices[0].get("delta") or {}).get("content") or ""
                     if delta:
                         yield delta
 
@@ -844,7 +971,7 @@ class ProfileModelRouter:
             data = await self._post_openai_json(resource, payload, timeout=timeout)
         except httpx.HTTPStatusError as exc:
             raise RuntimeError(_http_error_detail(exc)) from exc
-        return data["choices"][0]["message"]["content"]
+        return self._openai_message_content(data)
 
     async def _openai_chat(
         self,
@@ -859,7 +986,24 @@ class ProfileModelRouter:
             data = await self._post_openai_json(resource, payload, timeout=timeout)
         except httpx.HTTPStatusError as exc:
             raise RuntimeError(_http_error_detail(exc)) from exc
-        return data["choices"][0]["message"]["content"]
+        prompt, completion, total = self._usage_from_openai(data)
+        self._set_usage(
+            prompt_tokens=prompt,
+            completion_tokens=completion,
+            total_tokens=total,
+        )
+        return self._openai_message_content(data)
+
+    @staticmethod
+    def _openai_message_content(data: dict[str, Any]) -> str:
+        choices = data.get("choices") or []
+        if not choices:
+            raise RuntimeError("empty choices in API response")
+        message = choices[0].get("message") or {}
+        content = message.get("content")
+        if content is None:
+            raise RuntimeError("empty message content in API response")
+        return content
 
     async def _openai_chat_stream(
         self,

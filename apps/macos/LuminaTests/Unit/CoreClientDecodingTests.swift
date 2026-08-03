@@ -102,6 +102,7 @@ final class CoreClientDecodingTests: XCTestCase {
         let settings = try JSONDecoder().decode(AppSettings.self, from: data)
         XCTAssertEqual(settings.target_language, "zh-CN")
         XCTAssertFalse(settings.debug_mode)
+        XCTAssertFalse(settings.auto_start_summary)
         XCTAssertEqual(settings.models.resource(id: "ollama")?.model, "qwen3.5:4b")
         XCTAssertEqual(settings.models.resource(id: "openai")?.base_url, "https://api.openai.com/v1")
         XCTAssertEqual(settings.models.chat.priority, ["openai", "ollama"])
@@ -244,5 +245,66 @@ final class CoreClientDecodingTests: XCTestCase {
             SummaryMetricsFormatter.completedMetricsLabel(durationS: 62, llmAttempts: 2),
             "1m 2s · 2 次尝试"
         )
+    }
+
+    func testChatResponse_fromSSEDone_parsesMetrics() {
+        let obj: [String: Any] = [
+            "type": "done",
+            "answer": "hello",
+            "evidence_sufficient": true,
+            "provider": "openai",
+            "model": "gpt-4o-mini",
+            "duration_ms": 3200,
+            "prompt_tokens": 1200,
+            "completion_tokens": 380,
+            "total_tokens": 1580,
+            "tps": 118.7,
+        ]
+        let resp = ChatResponse.fromSSEDone(obj, citations: [])
+        XCTAssertEqual(resp.answer, "hello")
+        XCTAssertEqual(resp.provider, "openai")
+        XCTAssertEqual(resp.model, "gpt-4o-mini")
+        XCTAssertEqual(resp.duration_ms, 3200)
+        XCTAssertEqual(resp.prompt_tokens, 1200)
+        XCTAssertEqual(resp.completion_tokens, 380)
+        XCTAssertEqual(resp.total_tokens, 1580)
+        XCTAssertEqual(resp.tps, 118.7)
+    }
+
+    func testChatMetricsFormatter_buildsAttribution() {
+        let label = ChatMetricsFormatter.attribution(
+            provider: "openai",
+            model: "gpt-4o-mini",
+            tps: 118.7,
+            totalTokens: 1580,
+            promptTokens: 1200,
+            completionTokens: 380,
+            durationMs: 3200
+        )
+        XCTAssertEqual(label, "深聊 · OpenAI · gpt-4o-mini · 119 tok/s · 1.6k tokens · 3s")
+    }
+
+    func testChatMetricsFormatter_omitsMissingFields() {
+        XCTAssertNil(
+            ChatMetricsFormatter.attribution(
+                provider: nil,
+                model: nil,
+                tps: nil,
+                totalTokens: nil,
+                promptTokens: nil,
+                completionTokens: nil,
+                durationMs: nil
+            )
+        )
+        let label = ChatMetricsFormatter.attribution(
+            provider: "ollama",
+            model: "qwen3.5:4b",
+            tps: nil,
+            totalTokens: nil,
+            promptTokens: nil,
+            completionTokens: nil,
+            durationMs: 1500
+        )
+        XCTAssertEqual(label, "深聊 · Ollama · qwen3.5:4b · 2s")
     }
 }

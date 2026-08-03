@@ -30,5 +30,6 @@ struct ReaderEdgeIcon: View {
         .buttonStyle(.plain)
         .help(label)
         .accessibilityLabel(label)
+        .accessibilityIdentifier("lumina.reader.control.edgeIcon.\(label)")
     }
 }
