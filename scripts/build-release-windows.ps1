@@ -11,11 +11,20 @@ $MaxSidecarMb = 520
 
 Write-Host "==> Lumina Windows release build v$Version"
 
+function Assert-LastExitCode([string]$Step) {
+    if ($null -ne $LASTEXITCODE -and $LASTEXITCODE -ne 0) {
+        throw "$Step failed with exit code $LASTEXITCODE"
+    }
+}
+
 # --- 0. Unit tests (Python; skip live) ---
 Write-Host "==> Running Python unit tests…"
 Push-Location $CorePkg
 try {
+    uv sync --extra dev --extra release
+    Assert-LastExitCode "uv sync"
     uv run pytest tests/unit -q --tb=line
+    Assert-LastExitCode "pytest"
 } finally {
     Pop-Location
 }
@@ -25,7 +34,9 @@ Write-Host "==> Building lumina-core bundle…"
 Push-Location $CorePkg
 try {
     uv run python scripts/prefetch_ocr_models.py
+    Assert-LastExitCode "prefetch_ocr_models"
     uv run pyinstaller lumina-core.spec --noconfirm --clean
+    Assert-LastExitCode "pyinstaller"
 } finally {
     Pop-Location
 }
