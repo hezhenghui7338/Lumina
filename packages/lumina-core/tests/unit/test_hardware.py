@@ -8,7 +8,9 @@ from lumina_core.hardware import (
 )
 
 
-def test_recommend_ollama_model_tiers():
+def test_recommend_ollama_model_tiers(monkeypatch):
+    # None means "probe machine"; stub probe so CI RAM does not change the default.
+    monkeypatch.setattr("lumina_core.hardware.total_ram_bytes", lambda: None)
     assert recommend_ollama_model(None) == DEFAULT_TIER_MODEL
     assert recommend_ollama_model(2 * (1024**3)) == "qwen3.5:0.8b"
     assert recommend_ollama_model(8 * (1024**3)) == "qwen3.5:2b"
