@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import platform
 from pathlib import Path
 
 from lumina_core.config import ModelsConfig, Settings
@@ -32,7 +33,9 @@ def test_save_and_load_secrets_roundtrip(tmp_path: Path):
     loaded = load_secrets(tmp_path)
     assert loaded.resources == payload.resources
     assert loaded.tavily == "tvly-test"
-    assert oct(secrets_path(tmp_path).stat().st_mode & 0o777) == oct(0o600)
+    # POSIX mode bits are not meaningful on Windows NTFS.
+    if platform.system() != "Windows":
+        assert oct(secrets_path(tmp_path).stat().st_mode & 0o777) == oct(0o600)
 
 
 def test_load_secrets_missing_file(tmp_path: Path):
