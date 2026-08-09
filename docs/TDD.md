@@ -12,6 +12,7 @@
 |--------|-----------|------|
 | UI 响应性 | **永不卡住用户**（PRD 章程 0）：重活离事件循环 / 离 MainActor；列表 API 不含全文 | 最高原则 |
 | Mac UI | **SwiftUI 原生** | 浅色主界面、动效、阅读体验；PRD 原则 8 |
+| Windows UI | **WinUI 3（.NET 8）**（v1.1 P0） | 原生体验；与 mac 双壳，共享 `lumina-core` |
 | AI / 文档引擎 | **Python `lumina-core` 本地 sidecar** | 快速移植 LA 分段/摘要/联网算法；与 Swift UI 解耦 |
 | App ↔ Core 通信 | **localhost HTTP（JSON REST）** | 简单、可独立调试；后续可换 XPC |
 | 数据库 | **SQLite**（`GRDB` Swift 读 + Core 写，或 Core 独占） | PRD 数据模型；跨平台铺路 |
@@ -114,19 +115,16 @@ flowchart TB
 ```
 Lumina/
 ├── apps/
-│   └── macos/
-│       └── Lumina/                 # SwiftUI Xcode project
-│           ├── App/
-│           ├── Features/
-│           │   ├── Library/
-│           │   ├── Reader/         # 段列表 + 段内容 + 深聊
-│           │   ├── News/
-│           │   ├── Search/
-│           │   └── Settings/
-│           ├── Services/
-│           │   ├── CoreClient.swift    # HTTP → lumina-core
-│           │   └── SidecarManager.swift
-│           └── DesignSystem/
+│   ├── macos/
+│   │   └── Lumina/                 # SwiftUI Xcode project
+│   │       ├── Features/           # Library / Reader / News / Search / Settings
+│   │       ├── Services/           # CoreClient · SidecarManager
+│   │       └── Design/
+│   └── windows/
+│       └── Lumina/                 # WinUI 3 · .NET 8（v1.1 P0）
+│           ├── Features/           # Library / Reader / Settings / Onboarding
+│           ├── Services/           # CoreClient · SidecarHost · SseReader
+│           └── Design/
 ├── packages/
 │   └── lumina-core/                # Python ≥3.11
 │       ├── pyproject.toml
@@ -835,7 +833,7 @@ JobQueue：`asyncio.Queue` + worker pool；job 状态持久化 SQLite，Sidecar 
 |------|------|
 | LangGraph / LangChain Agent | 非 Agent 产品 |
 | Mem0 / Chroma / BM25 重栈 | 跨书 v1.0 用 FTS5 足够 |
-| Electron / Tauri | PRD 要求 SwiftUI 原生体验 |
+| Electron / Tauri | mac 要求 SwiftUI 原生体验；Windows 选用 WinUI 3，同样不引入 Web 壳 |
 | deep-translator | 翻译走 LLM |
 | LocalAgent 代码依赖 | 独立产品；仅参考算法 |
 

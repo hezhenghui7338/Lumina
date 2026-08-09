@@ -9,8 +9,9 @@
 | `dist/Lumina.app` | 内嵌 `lumina-core` 的 macOS 应用 |
 | `dist/Lumina-{version}-macOS.zip` | 压缩包，可直接分发 |
 | `dist/Lumina-{version}-macOS.dmg` | 磁盘映像，含拖入 Applications 引导 |
+| `dist/Lumina-{version}-Windows-x64.zip` | Windows 自包含目录（`Lumina.exe` + `lumina-core\`） |
 
-用户**无需**安装 Python、uv、Xcode。
+用户**无需**安装 Python、uv、Xcode / Visual Studio。
 
 ## 安装包体积（v0.2 精简版）
 
@@ -23,19 +24,42 @@ Sidecar 已裁剪：冗余 OCR small 模型、非中英文 Babel 语言包。Ope
 
 ## 前置条件
 
+### macOS
+
 - macOS 14+
 - Xcode 15+（`xcodebuild`）
 - [uv](https://docs.astral.sh/uv/)（Python **3.11+**，仓库根目录 `.python-version` 默认 3.11）
 - [Ollama](https://ollama.com) 运行中且已拉取 `qwen3.5:4b`（release 测试含 live 用例）
 
+### Windows
+
+- Windows 10/11 x64
+- [.NET 8 SDK](https://dotnet.microsoft.com/download) + Windows App SDK 工作负载
+- [uv](https://docs.astral.sh/uv/)（Python **3.11+**）
+- PowerShell 7+（推荐）
+
 ## 构建
+
+### macOS
 
 ```bash
 ./scripts/build-release.sh
 
 # 指定版本号
-LUMINA_VERSION=0.6.0 ./scripts/build-release.sh
+LUMINA_VERSION=0.7.0 ./scripts/build-release.sh
 ```
+
+### Windows
+
+```powershell
+.\scripts\build-release-windows.ps1
+
+$env:LUMINA_VERSION = "0.7.0"
+.\scripts\build-release-windows.ps1
+```
+
+步骤：`pytest tests/unit` → PyInstaller → `prune-sidecar.ps1` → `--smoke-ocr` → `dotnet publish` → 嵌入 sidecar → ZIP。  
+GitHub Actions：`Release Windows` workflow（`windows-latest`）。
 
 ## 构建步骤（脚本内部）
 
@@ -58,8 +82,8 @@ LUMINA_VERSION=0.6.0 ./scripts/build-release.sh
 
 ## GitHub Releases
 
-1. 打 tag：`git tag v0.6.0 && git push origin v0.6.0`
-2. 上传 `dist/Lumina-0.6.0-macOS.dmg` 与 `.zip`
+1. 打 tag：`git tag v0.7.0 && git push origin v0.7.0`
+2. 上传 `dist/Lumina-0.7.0-macOS.dmg` 与 `.zip`
 3. 更新 README 中的 Releases 链接
 
 ## 用户仍需 Ollama 的原因
@@ -77,6 +101,8 @@ AI 模型体积约 3 GB+，不适合打进主安装包。App 内引导用户安�
 
 **Sidecar 未嵌入**：检查 `Lumina.app/Contents/Resources/lumina-core/lumina-core` 是否存在且可执行
 
-## 代码签名与公证（v1.1 计划）
+## 代码签名与公证（后续）
 
 当前 CI 使用 `CODE_SIGNING_ALLOWED=NO`，用户首次打开需右键「打开」。正式对外分发需 Apple Developer Program + `notarytool` 公证。
+
+Windows 首发 ZIP **未做 Authenticode 签名**；SmartScreen 可能提示「仍要运行」。签名与 MSIX/安装器列为后续。

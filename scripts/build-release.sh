@@ -3,7 +3,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-VERSION="${LUMINA_VERSION:-0.6.0}"
+VERSION="${LUMINA_VERSION:-0.7.0}"
 DIST="$ROOT/dist"
 DERIVED="$ROOT/build/DerivedData"
 CORE_PKG="$ROOT/packages/lumina-core"

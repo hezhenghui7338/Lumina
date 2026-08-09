@@ -47,6 +47,8 @@ struct ReaderView: View {
     @State private var scrollPosition: Int?
     @State private var suppressScrollSync = false
     @State private var suppressScrollSyncTask: Task<Void, Never>?
+    /// Segment jump requested while scroll sync is suppressed (layout / programmatic scroll).
+    @State private var pendingScrollIdx: Int?
     @State private var overlay: ReaderOverlay = .none
     @State private var overlayEngaged = false
     @State private var chatInput = ""
@@ -377,7 +379,10 @@ struct ReaderView: View {
             guard let idx else { return }
             viewModel.selectSegment(idx)
             viewModel.scheduleProgressSave(idx, core: core)
-            guard !suppressScrollSync else { return }
+            if suppressScrollSync {
+                pendingScrollIdx = idx
+                return
+            }
             syncScrollToSelectedSegment(idx)
         }
         .onChange(of: scrollPosition) { _, idx in
@@ -634,17 +639,39 @@ struct ReaderView: View {
     }
 
     private func syncScrollToSelectedSegment(_ idx: Int, force: Bool = false) {
-        guard force || scrollPosition != idx else { return }
-        suppressScrollSync = true
+        if suppressScrollSync && !force {
+            pendingScrollIdx = idx
+            return
+        }
+        guard force || scrollPosition != idx else {
+            pendingScrollIdx = nil
+            return
+        }
+
+        ScrollViewKeyNSView.cancelScrollOriginRestore()
+        pendingScrollIdx = nil
+
+        let fromIdx = scrollPosition ?? viewModel.selectedIdx
+        let delta = SegmentRenderWindow.segmentIndexDelta(
+            from: fromIdx,
+            to: idx,
+            in: viewModel.segments
+        )
+
+        beginSuppressScrollSync(durationNanoseconds: 150_000_000)
         if force, scrollPosition == idx {
             scrollPosition = nil
         }
-        withAnimation(.easeInOut(duration: segmentSwitchDuration)) {
-            scrollPosition = idx
-        }
-        Task {
-            try? await Task.sleep(nanoseconds: 150_000_000)
-            suppressScrollSync = false
+        if delta <= SegmentRenderWindow.scrollAnimateThreshold {
+            withAnimation(.easeInOut(duration: segmentSwitchDuration)) {
+                scrollPosition = idx
+            }
+        } else {
+            var transaction = Transaction()
+            transaction.disablesAnimations = true
+            withTransaction(transaction) {
+                scrollPosition = idx
+            }
         }
     }
 
@@ -678,15 +705,24 @@ struct ReaderView: View {
     }
 
     private func navigateToSegment(_ idx: Int) {
+        ScrollViewKeyNSView.cancelScrollOriginRestore()
         viewModel.selectedIdx = idx
         readerContentFocused = true
+        // Explicit jump must not wait out layout suppress / pending flush.
+        if suppressScrollSync {
+            syncScrollToSelectedSegment(idx, force: true)
+        }
     }
 
     private func selectSidebarSegment(_ idx: Int) {
+        ScrollViewKeyNSView.cancelScrollOriginRestore()
         if viewModel.selectedIdx == idx {
             syncScrollToSelectedSegment(idx, force: true)
         } else {
             viewModel.selectedIdx = idx
+            if suppressScrollSync {
+                syncScrollToSelectedSegment(idx, force: true)
+            }
         }
     }
 
@@ -1180,14 +1216,23 @@ struct ReaderView: View {
         point.x <= edgeHotZone && point.y > topEdgeExclusionZone
     }
 
-    private func beginSuppressScrollSync() {
+    private func beginSuppressScrollSync(durationNanoseconds: UInt64 = 350_000_000) {
         suppressScrollSync = true
         suppressScrollSyncTask?.cancel()
-        suppressScrollSyncTask = Task {
-            try? await Task.sleep(nanoseconds: 350_000_000)
+        suppressScrollSyncTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: durationNanoseconds)
             guard !Task.isCancelled else { return }
             suppressScrollSync = false
+            flushPendingScrollSync()
         }
+    }
+
+    /// Apply a segment jump that arrived while layout/programmatic scroll sync was suppressed.
+    private func flushPendingScrollSync() {
+        guard let target = pendingScrollIdx else { return }
+        pendingScrollIdx = nil
+        guard scrollPosition != target else { return }
+        syncScrollToSelectedSegment(target, force: true)
     }
 
     /// Detaches scrollPosition during reader chrome / sidebar layout changes so
@@ -1641,6 +1686,8 @@ private final class ScrollViewKeyNSView: NSView {
     private var observer: NSObjectProtocol?
     private static weak var activeInstance: ScrollViewKeyNSView?
     private static weak var readerScrollView: NSScrollView?
+    private static var restoreGeneration: UInt64 = 0
+    private static var restoreWorkItems: [DispatchWorkItem] = []
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
@@ -1711,19 +1758,32 @@ private final class ScrollViewKeyNSView: NSView {
         resolvedScrollView?.contentView.bounds.origin
     }
 
+    static func cancelScrollOriginRestore() {
+        restoreGeneration &+= 1
+        for item in restoreWorkItems {
+            item.cancel()
+        }
+        restoreWorkItems.removeAll()
+    }
+
     static func scheduleScrollOriginRestore(_ origin: NSPoint, delays: [TimeInterval]) {
+        cancelScrollOriginRestore()
+        let generation = restoreGeneration
         for delay in delays {
             if delay <= 0 {
-                restoreScrollOrigin(origin)
+                restoreScrollOrigin(origin, generation: generation)
             } else {
-                DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
-                    restoreScrollOrigin(origin)
+                let work = DispatchWorkItem {
+                    restoreScrollOrigin(origin, generation: generation)
                 }
+                restoreWorkItems.append(work)
+                DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
             }
         }
     }
 
-    private static func restoreScrollOrigin(_ savedOrigin: NSPoint) {
+    private static func restoreScrollOrigin(_ savedOrigin: NSPoint, generation: UInt64) {
+        guard generation == restoreGeneration else { return }
         guard let scrollView = resolvedScrollView else { return }
         applyScrollOrigin(savedOrigin, to: scrollView)
     }

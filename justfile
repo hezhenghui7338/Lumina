@@ -20,3 +20,6 @@ test-all:
 
 release:
     ./scripts/build-release.sh
+
+# Windows release must run on Windows (PowerShell):
+#   .\scripts\build-release-windows.ps1

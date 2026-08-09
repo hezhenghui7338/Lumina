@@ -8,7 +8,7 @@
 </p>
 
 <p align="center">
-  macOS 14+ · MIT · <a href="https://github.com/hezhenghui7338/Lumina/releases/latest">Latest Release</a>
+  macOS 14+ · Windows 10/11（P0） · MIT · <a href="https://github.com/hezhenghui7338/Lumina/releases/latest">Latest Release</a>
 </p>
 
 <p align="center">
@@ -74,8 +74,9 @@
 | 平台 | 要求 | 下载 |
 |------|------|------|
 | macOS 14+（Apple Silicon / Intel） | 约 250 MB 安装包（安装后约 450 MB）+ 首次 AI 模型 ~3 GB | **[GitHub Releases 下载 DMG](https://github.com/hezhenghui7338/Lumina/releases/latest)** |
+| Windows 10/11 x64（P0） | ZIP 自包含目录 + 首次 AI 模型 ~3 GB | **[GitHub Releases 下载 Windows ZIP](https://github.com/hezhenghui7338/Lumina/releases/latest)** |
 
-Release 页提供 **Lumina-0.6.0-macOS.dmg**（由 GitHub Actions 自动构建）。若尚未上传 DMG，见下方「维护者构建」。
+Release 页提供 **Lumina-*-macOS.dmg** 与 **Lumina-*-Windows-x64.zip**（GitHub Actions 构建）。Windows 首发为 P0（书库 / 阅读 / 深聊 / 设置），不含资讯与全局搜索。
 
 ### 安装（两步）
 
@@ -136,12 +137,21 @@ xattr -cr /Applications/Lumina.app
 
 > **说明**：**Cursor** 预设资源走 OpenAI 兼容 HTTP 路径（`POST /v1/chat/completions`），需在设置中配置代理 Base URL 与 API Key（Cursor 官方暂无原生 chat/completions endpoint）。默认亦支持 Ollama、OpenAI、OpenRouter 等。
 
+### Windows 安装
+
+1. 下载 **Lumina-*-Windows-x64.zip** 并解压  
+2. 运行解压目录中的 **Lumina.exe**  
+3. 若 SmartScreen 提示「Windows 已保护你的电脑」：点 **更多信息** → **仍要运行**（当前 Release 尚未 Authenticode 签名）
+
+Windows 数据目录：`%APPDATA%\Lumina\`
+
 ### 数据在哪
 
-全部在本机，路径：
+全部在本机：
 
 ```
-~/Library/Application Support/Lumina/
+macOS:   ~/Library/Application Support/Lumina/
+Windows: %APPDATA%\Lumina\
 ```
 
 ### 常见问题
@@ -183,8 +193,9 @@ xattr -cr /Applications/Lumina.app
 
 ### 环境
 
-- macOS 14+
-- [Xcode 15+](https://developer.apple.com/xcode/)
+- macOS 14+（SwiftUI）或 Windows 10/11（WinUI 3）
+- macOS：[Xcode 15+](https://developer.apple.com/xcode/)
+- Windows：[.NET 8 SDK](https://dotnet.microsoft.com/download) + Visual Studio 2022（Windows 应用开发工作负载）
 - [uv](https://docs.astral.sh/uv/)（Python **3.11+**）
 - [Ollama](https://ollama.com) + `qwen3.5:4b`
 
@@ -199,8 +210,12 @@ just install
 # 终端 A：Sidecar
 just core
 
-# Xcode：打开 apps/macos/Lumina.xcodeproj → ⌘R
+# macOS — Xcode：打开 apps/macos/Lumina.xcodeproj → ⌘R
 # 或在 Scheme 中设置 LUMINA_CORE_DIR=$PWD/packages/lumina-core
+
+# Windows — 见 apps/windows/README.md
+#   $env:LUMINA_CORE_DIR = "$PWD\packages\lumina-core"
+#   dotnet run --project apps/windows/Lumina/Lumina.csproj -p:Platform=x64
 ```
 
 ### 测试
@@ -216,7 +231,7 @@ just test-release  # 发布门禁：纯 mock 并行（~20s，与 PR 等价）
 **推荐：GitHub Actions（无需本机 Xcode）**
 
 1. 打开仓库 **Actions → Release → Run workflow**
-2. 输入版本号（如 `0.6.0`）运行
+2. 输入版本号（如 `0.7.0`）运行
 3. 在 Artifacts 或 tag Release 中下载 DMG
 
 **本机构建（需与 macOS 版本匹配的 Xcode）**
@@ -226,13 +241,13 @@ macOS 15 用户：**不要**从 App Store 装最新 Xcode（可能要求 macOS 2
 ```bash
 ./scripts/build-release.sh
 # 会先跑 just test-release 等价测试，通过后才打包
-# 产出：dist/Lumina-0.6.0-macOS.dmg 与 .zip
+# 产出：dist/Lumina-0.7.0-macOS.dmg 与 .zip
 ```
 
 打 tag 推送后会自动构建并上传到 Release：
 
 ```bash
-git tag v0.6.0 && git push origin v0.6.0
+git tag v0.7.0 && git push origin v0.7.0
 ```
 
 ### 文档

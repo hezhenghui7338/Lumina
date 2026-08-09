@@ -1,0 +1,11 @@
+{
+  "profiles": {
+    "Lumina": {
+      "commandName": "Project",
+      "nativeDebugging": false,
+      "environmentVariables": {
+        "LUMINA_CORE_DIR": "..\\..\\..\\packages\\lumina-core"
+      }
+    }
+  }
+}

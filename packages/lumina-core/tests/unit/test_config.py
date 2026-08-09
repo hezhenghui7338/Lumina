@@ -1,5 +1,8 @@
 """Config path resolution."""
 
+import sys
+from pathlib import Path
+
 from lumina_core.config import (
     CLOUD_CHUNK_MAX,
     CLOUD_CHUNK_TARGET,
@@ -10,8 +13,10 @@ from lumina_core.config import (
     ModelsConfig,
     ProfileRoute,
     ModelResource,
+    _platform_default_data_dir,
     bundle_root,
     default_chunk_target_for_provider,
+    default_data_dir,
     effective_concurrency,
     load_models_config,
     normalize_models_raw,
@@ -126,3 +131,28 @@ def test_normalize_models_raw_migrates_job_concurrency():
     )
     assert "job_concurrency" not in raw
     assert raw["resources"][0]["concurrency"] == 3
+
+
+def test_default_data_dir_respects_env(monkeypatch, tmp_path):
+    monkeypatch.setenv("LUMINA_DATA_DIR", str(tmp_path / "custom"))
+    assert default_data_dir() == tmp_path / "custom"
+
+
+def test_platform_default_data_dir_shape(monkeypatch):
+    monkeypatch.delenv("LUMINA_DATA_DIR", raising=False)
+    path = _platform_default_data_dir()
+    assert path.name == "Lumina"
+    if sys.platform == "darwin":
+        assert "Application Support" in path.parts
+    elif sys.platform.startswith("win"):
+        assert "AppData" in path.parts or path.parts[-1] == "Lumina"
+    else:
+        assert path.as_posix().endswith("Lumina")
+
+
+def test_platform_default_data_dir_windows(monkeypatch):
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setenv("APPDATA", r"C:\Users\test\AppData\Roaming")
+    path = _platform_default_data_dir()
+    assert path.name == "Lumina"
+    assert str(path).replace("\\", "/").endswith("AppData/Roaming/Lumina")

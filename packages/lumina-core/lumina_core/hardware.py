@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ctypes
 import platform
 import re
 import subprocess
@@ -26,6 +27,28 @@ MODEL_TIERS: tuple[ModelTier, ...] = (
 DEFAULT_TIER_MODEL = "qwen3.5:4b"
 
 
+def _windows_total_ram_bytes() -> int | None:
+    """Read physical RAM via GlobalMemoryStatusEx (kernel32)."""
+    class MEMORYSTATUSEX(ctypes.Structure):
+        _fields_ = [
+            ("dwLength", ctypes.c_ulong),
+            ("dwMemoryLoad", ctypes.c_ulong),
+            ("ullTotalPhys", ctypes.c_ulonglong),
+            ("ullAvailPhys", ctypes.c_ulonglong),
+            ("ullTotalPageFile", ctypes.c_ulonglong),
+            ("ullAvailPageFile", ctypes.c_ulonglong),
+            ("ullTotalVirtual", ctypes.c_ulonglong),
+            ("ullAvailVirtual", ctypes.c_ulonglong),
+            ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
+        ]
+
+    stat = MEMORYSTATUSEX()
+    stat.dwLength = ctypes.sizeof(MEMORYSTATUSEX)
+    if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(stat)) == 0:  # type: ignore[attr-defined]
+        return None
+    return int(stat.ullTotalPhys)
+
+
 def total_ram_bytes() -> int | None:
     system = platform.system()
     try:
@@ -43,6 +66,8 @@ def total_ram_bytes() -> int | None:
             match = re.search(r"^MemTotal:\s+(\d+)\s+kB", text, re.MULTILINE)
             if match:
                 return int(match.group(1)) * 1024
+        if system == "Windows":
+            return _windows_total_ram_bytes()
     except Exception:
         return None
     return None

@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Page
+    x:Class="Lumina.Features.Settings.SettingsPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <ScrollViewer Padding="24">
+        <StackPanel MaxWidth="640" Spacing="16">
+            <TextBlock Text="设置" FontSize="28" FontWeight="SemiBold"/>
+            <TextBlock x:Name="StatusText" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+
+            <TextBlock Text="外观" FontSize="18" FontWeight="SemiBold" Margin="0,8,0,0"/>
+            <StackPanel Orientation="Horizontal" Spacing="8">
+                <RadioButton x:Name="ThemeLight" Content="浅色（默认）" GroupName="Theme" Checked="Theme_Checked"/>
+                <RadioButton x:Name="ThemeDark" Content="深色" GroupName="Theme" Checked="Theme_Checked"/>
+            </StackPanel>
+
+            <TextBlock Text="阅读" FontSize="18" FontWeight="SemiBold" Margin="0,8,0,0"/>
+            <TextBox x:Name="TargetLanguageBox" Header="目标语言" PlaceholderText="zh-CN"/>
+            <ToggleSwitch x:Name="AutoSummaryToggle" Header="导入后自动开始摘要" OffContent="关" OnContent="开"/>
+
+            <TextBlock Text="联网搜索" FontSize="18" FontWeight="SemiBold" Margin="0,8,0,0"/>
+            <ComboBox x:Name="WebProviderBox" Header="Provider" Width="240">
+                <ComboBoxItem Content="ddgs" Tag="ddgs" IsSelected="True"/>
+                <ComboBoxItem Content="tavily" Tag="tavily"/>
+            </ComboBox>
+            <PasswordBox x:Name="TavilyKeyBox" Header="Tavily API Key（可选）"/>
+
+            <TextBlock Text="Ollama" FontSize="18" FontWeight="SemiBold" Margin="0,8,0,0"/>
+            <TextBlock x:Name="OllamaStatusText" TextWrapping="WrapWholeWords"/>
+            <StackPanel Orientation="Horizontal" Spacing="8">
+                <Button Content="刷新状态" Click="RefreshOllama_Click"/>
+                <Button Content="打开下载页" Click="OpenOllama_Click"/>
+            </StackPanel>
+
+            <TextBlock Text="API 资源（摘要 / 深聊）" FontSize="18" FontWeight="SemiBold" Margin="0,8,0,0"/>
+            <TextBox x:Name="OllamaModelBox" Header="Ollama 模型" PlaceholderText="qwen3.5:4b"/>
+            <TextBox x:Name="OpenAiKeyBox" Header="OpenAI API Key（可选）"/>
+            <TextBox x:Name="OpenRouterKeyBox" Header="OpenRouter API Key（可选）"/>
+
+            <Button Content="保存" Style="{StaticResource AccentButtonStyle}"
+                    Click="Save_Click" HorizontalAlignment="Left" Margin="0,12,0,0"/>
+        </StackPanel>
+    </ScrollViewer>
+</Page>

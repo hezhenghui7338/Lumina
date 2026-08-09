@@ -29,7 +29,7 @@ async def lifespan(app: FastAPI):
 def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or Settings()
     state = create_app_state(settings)
-    app = FastAPI(title="lumina-core", version="0.6.0", lifespan=lifespan)
+    app = FastAPI(title="lumina-core", version="0.7.0", lifespan=lifespan)
     app.state.lumina = state
     app.include_router(router)
     app.include_router(ops_router)
