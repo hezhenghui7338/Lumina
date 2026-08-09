@@ -62,15 +62,32 @@ Write-Host "==> OCR smoke…"
 Write-Host "==> Publishing WinUI app…"
 $PublishDir = Join-Path $Root "build\windows-publish"
 if (Test-Path $PublishDir) { Remove-Item -Recurse -Force $PublishDir }
+dotnet --list-sdks
 dotnet publish $WinApp `
     -c Release `
     -r win-x64 `
     -p:Platform=x64 `
     -p:WindowsPackageType=None `
+    -p:EnableMsixTooling=true `
     -p:WindowsAppSDKSelfContained=true `
     -o $PublishDir
+Assert-LastExitCode "dotnet publish"
 
 if (-not (Test-Path (Join-Path $PublishDir "Lumina.exe"))) {
+    Write-Host "==> Publish dir top-level:"
+    if (Test-Path $PublishDir) {
+        Get-ChildItem -LiteralPath $PublishDir | Format-Table Name, Length, Mode
+        Write-Host "==> Any .exe under publish dir / default bin:"
+        Get-ChildItem -LiteralPath $PublishDir -Recurse -Filter *.exe -ErrorAction SilentlyContinue |
+            Select-Object -ExpandProperty FullName
+        $DefaultBin = Join-Path $WinApp "bin\x64\Release"
+        if (Test-Path $DefaultBin) {
+            Get-ChildItem -LiteralPath $DefaultBin -Recurse -Filter Lumina.exe -ErrorAction SilentlyContinue |
+                Select-Object -ExpandProperty FullName
+        }
+    } else {
+        Write-Host "(publish dir does not exist)"
+    }
     throw "Publish failed — Lumina.exe not found in $PublishDir"
 }
 
