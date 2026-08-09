@@ -1,0 +1,108 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Page
+    x:Class="Lumina.Features.Reader.ReaderPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:models="using:Lumina.Services">
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <Grid Grid.Row="0" Padding="16,12" BorderBrush="{ThemeResource DividerStrokeColorDefaultBrush}" BorderThickness="0,0,0,1">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="Auto"/>
+            </Grid.ColumnDefinitions>
+            <Button Content="← 书库" Click="Back_Click"/>
+            <TextBlock x:Name="TitleText" Grid.Column="1" Margin="16,0"
+                       FontSize="18" FontWeight="SemiBold" VerticalAlignment="Center"
+                       TextTrimming="CharacterEllipsis"/>
+            <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="8">
+                <ToggleButton x:Name="ShowRawToggle" Content="原文" Click="ShowRaw_Click"/>
+                <Button x:Name="SummarizeBtn" Content="开始摘要" Click="Summarize_Click"/>
+                <Button x:Name="StopSummarizeBtn" Content="停止摘要" Click="StopSummarize_Click"/>
+                <Button Content="提问" Style="{StaticResource AccentButtonStyle}" Click="OpenChat_Click"/>
+            </StackPanel>
+        </Grid>
+
+        <Border x:Name="ProgressBanner" Grid.Row="1" Padding="16,8" Visibility="Collapsed"
+                Background="{ThemeResource SubtleFillColorSecondaryBrush}">
+            <TextBlock x:Name="ProgressText" TextWrapping="WrapWholeWords"/>
+        </Border>
+
+        <Grid Grid.Row="2">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="280"/>
+                <ColumnDefinition Width="*"/>
+            </Grid.ColumnDefinitions>
+
+            <ListView x:Name="SegmentList" Grid.Column="0"
+                      SelectionChanged="SegmentList_SelectionChanged"
+                      BorderBrush="{ThemeResource DividerStrokeColorDefaultBrush}"
+                      BorderThickness="0,0,1,0">
+                <ListView.ItemTemplate>
+                    <DataTemplate x:DataType="models:SegmentRow">
+                        <StackPanel Padding="8,6">
+                            <TextBlock Text="{x:Bind DisplayLabel}" TextWrapping="WrapWholeWords"/>
+                            <TextBlock Text="{x:Bind SummaryStatus}" FontSize="11"
+                                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                        </StackPanel>
+                    </DataTemplate>
+                </ListView.ItemTemplate>
+            </ListView>
+
+            <ScrollViewer Grid.Column="1" Padding="24">
+                <StackPanel Spacing="12">
+                    <TextBlock x:Name="SegmentTitle" FontSize="20" FontWeight="SemiBold" TextWrapping="WrapWholeWords"/>
+                    <ProgressRing x:Name="SegmentLoading" Width="32" Height="32" IsActive="False"
+                                  HorizontalAlignment="Left"/>
+                    <TextBlock x:Name="BodyText" TextWrapping="WrapWholeWords" FontSize="15"
+                               IsTextSelectionEnabled="True" LineHeight="26"/>
+                </StackPanel>
+            </ScrollViewer>
+        </Grid>
+
+        <Border x:Name="ChatPanel" Grid.Row="3" Visibility="Collapsed"
+                BorderBrush="{ThemeResource DividerStrokeColorDefaultBrush}" BorderThickness="0,1,0,0"
+                Padding="16" MaxHeight="320">
+            <Grid>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="*"/>
+                    <RowDefinition Height="Auto"/>
+                </Grid.RowDefinitions>
+                <Grid>
+                    <TextBlock Text="深聊" FontWeight="SemiBold"/>
+                    <Button Content="收起" HorizontalAlignment="Right" Click="CloseChat_Click"/>
+                </Grid>
+                <ListView x:Name="ChatList" Grid.Row="1" Margin="0,8" MaxHeight="180">
+                    <ListView.ItemTemplate>
+                        <DataTemplate x:DataType="models:ChatMessage">
+                            <StackPanel Padding="4">
+                                <TextBlock Text="{x:Bind Role}" FontSize="11"
+                                           Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                                <TextBlock Text="{x:Bind Content}" TextWrapping="WrapWholeWords" IsTextSelectionEnabled="True"/>
+                            </StackPanel>
+                        </DataTemplate>
+                    </ListView.ItemTemplate>
+                </ListView>
+                <Grid Grid.Row="2">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <TextBox x:Name="ChatInput" PlaceholderText="针对当前段提问…" AcceptsReturn="True"
+                             TextWrapping="Wrap" Height="64"/>
+                    <Button Grid.Column="1" Content="发送" Margin="8,0,0,0"
+                            Style="{StaticResource AccentButtonStyle}" Click="SendChat_Click"
+                            VerticalAlignment="Bottom"/>
+                </Grid>
+            </Grid>
+        </Border>
+    </Grid>
+</Page>

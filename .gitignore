@@ -20,3 +20,6 @@ xcuserdata/
 .derivedData/
 apps/macos/.build/
 apps/macos/.derivedData/
+apps/windows/**/bin/
+apps/windows/**/obj/
+*.userlog

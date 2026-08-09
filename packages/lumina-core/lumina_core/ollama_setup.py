@@ -22,6 +22,9 @@ _OLLAMA_CANDIDATES = (
     "/opt/homebrew/bin/ollama",
     "/usr/local/bin/ollama",
     "/Applications/Ollama.app/Contents/Resources/ollama",
+    # Windows (LocalAppData / Program Files); shutil.which still preferred.
+    os.path.expandvars(r"%LOCALAPPDATA%\Programs\Ollama\ollama.exe"),
+    r"C:\Program Files\Ollama\ollama.exe",
 )
 
 _OLLAMA_APP_PATH = "/Applications/Ollama.app"
@@ -51,17 +54,21 @@ class OllamaStatus:
 
 
 def ollama_bin() -> str | None:
-    found = shutil.which("ollama")
+    found = shutil.which("ollama") or shutil.which("ollama.exe")
     if found:
         return found
     for path in _OLLAMA_CANDIDATES:
-        if os.access(path, os.X_OK):
+        if path and os.path.isfile(path) and os.access(path, os.X_OK):
             return path
     return None
 
 
 def ollama_app_present() -> bool:
-    return os.path.isdir(_OLLAMA_APP_PATH)
+    if os.path.isdir(_OLLAMA_APP_PATH):
+        return True
+    # Windows installer layout
+    win_dir = os.path.expandvars(r"%LOCALAPPDATA%\Programs\Ollama")
+    return os.path.isdir(win_dir)
 
 
 def is_ollama_installed() -> bool:

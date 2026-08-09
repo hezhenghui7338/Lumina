@@ -1,4 +1,4 @@
-# PyInstaller spec — one-folder bundle for macOS release.
+# PyInstaller spec — one-folder bundle for macOS / Windows release.
 # Run: uv run pyinstaller lumina-core.spec --noconfirm
 
 import sys
@@ -8,6 +8,9 @@ from PyInstaller.utils.hooks import collect_all, collect_submodules
 
 block_cipher = None
 root = Path(SPECPATH)
+is_windows = sys.platform.startswith("win")
+# strip=True can break PE binaries on Windows; keep Darwin/Linux strip.
+use_strip = not is_windows
 
 datas = [(str(root / "config" / "models.yaml"), "config")]
 
@@ -64,7 +67,7 @@ exe = EXE(
     name="lumina-core",
     debug=False,
     bootloader_ignore_signals=False,
-    strip=True,
+    strip=use_strip,
     upx=False,
     console=True,
     disable_windowed_traceback=False,
@@ -79,7 +82,7 @@ coll = COLLECT(
     a.binaries,
     a.zipfiles,
     a.datas,
-    strip=True,
+    strip=use_strip,
     upx=False,
     upx_exclude=[],
     name="lumina-core",

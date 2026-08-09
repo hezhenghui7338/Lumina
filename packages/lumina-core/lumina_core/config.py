@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import re
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -466,12 +467,25 @@ def load_prompts_config(path: Path | None = None) -> PromptsConfig:
     return cfg
 
 
+def _platform_default_data_dir() -> Path:
+    """OS-native application data directory for Lumina."""
+    if sys.platform.startswith("win"):
+        appdata = os.environ.get("APPDATA")
+        if appdata:
+            return Path(appdata) / "Lumina"
+        return Path.home() / "AppData" / "Roaming" / "Lumina"
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Application Support" / "Lumina"
+    xdg = os.environ.get("XDG_DATA_HOME")
+    if xdg:
+        return Path(xdg) / "Lumina"
+    return Path.home() / ".local" / "share" / "Lumina"
+
+
 class Settings(BaseSettings):
     host: str = "127.0.0.1"
     port: int = 17432
-    data_dir: Path = Field(
-        default_factory=lambda: Path.home() / "Library/Application Support/Lumina"
-    )
+    data_dir: Path = Field(default_factory=_platform_default_data_dir)
     target_language: str = "zh-CN"
     web_search_provider: str = "ddgs"  # ddgs | tavily
     tavily_api_key: str | None = None
@@ -487,13 +501,11 @@ def default_data_dir() -> Path:
     override = os.getenv("LUMINA_DATA_DIR")
     if override:
         return Path(override)
-    return Path.home() / "Library/Application Support/Lumina"
+    return _platform_default_data_dir()
 
 
 def bundle_root() -> Path | None:
     """Directory next to frozen lumina-core executable (PyInstaller one-folder)."""
-    import sys
-
     if getattr(sys, "frozen", False):
         return Path(sys.executable).resolve().parent
     return None
