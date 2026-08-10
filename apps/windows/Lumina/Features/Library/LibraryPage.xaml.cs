@@ -109,7 +109,7 @@ public sealed partial class LibraryPage : Page
         _categoryFilter = (CategoryBox.SelectedItem as ComboBoxItem)?.Tag as string ?? LibraryFilters.All;
         _stateFilter = (StateBox.SelectedItem as ComboBoxItem)?.Tag as string ?? SummarizeStateFilters.All;
         var newSort = (SortBox.SelectedItem as ComboBoxItem)?.Tag as string ?? LibrarySorts.Recent;
-        if (newSort != _sort || sender == CategoryBox)
+        if (newSort != _sort || ReferenceEquals(sender, CategoryBox))
         {
             _sort = newSort;
             await ReloadAsync();
@@ -273,7 +273,6 @@ public sealed partial class LibraryPage : Page
 
     private async void Favorite_Click(object sender, RoutedEventArgs e)
     {
-        e.Handled = true;
         if (sender is not Button { Tag: string id }) return;
         var book = _allBooks.FirstOrDefault(b => b.Id == id);
         if (book is null) return;
@@ -287,7 +286,6 @@ public sealed partial class LibraryPage : Page
 
     private async void More_Click(object sender, RoutedEventArgs e)
     {
-        e.Handled = true;
         if (sender is not Button { Tag: string id }) return;
         var book = _allBooks.FirstOrDefault(b => b.Id == id);
         if (book is null) return;
