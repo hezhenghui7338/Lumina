@@ -660,7 +660,7 @@ Citation（运行时）
 |----|------|
 | 句级/词级引用溯源 | v1.1 |
 | PDF 导出 | v1.1 |
-| Windows 桌面（P0） | v1.1：WinUI 3 壳 + 复用 `lumina-core`；范围=书库导入→摘要→阅读/深聊→设置/Ollama（不含资讯/全局搜索/导出/完整任务 UI） |
+| Windows 桌面 | v1.1+：WinUI 3 壳 + 复用 `lumina-core`；与 macOS **功能对等**（书库/阅读/笔记/Ctrl+K 搜索/资讯/导出/完整设置与任务管理）；交互为 Windows 惯用 IA，不复刻 Mac 贴边沉浸 chrome |
 | iPad | v1.2 |
 | 社交分享、多用户、云同步 | 非产品方向 |
 | DRM 电子书 | 不支持 |

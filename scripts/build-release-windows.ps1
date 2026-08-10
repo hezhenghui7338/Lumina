@@ -3,7 +3,7 @@
 $ErrorActionPreference = "Stop"
 
 $Root = Resolve-Path (Join-Path $PSScriptRoot "..")
-$Version = if ($env:LUMINA_VERSION) { $env:LUMINA_VERSION } else { "0.7.0" }
+$Version = if ($env:LUMINA_VERSION) { $env:LUMINA_VERSION } else { "0.8.0" }
 $Dist = Join-Path $Root "dist"
 $CorePkg = Join-Path $Root "packages\lumina-core"
 $WinApp = Join-Path $Root "apps\windows\Lumina"

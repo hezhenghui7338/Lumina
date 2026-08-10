@@ -1,10 +1,17 @@
 using Lumina.Design;
 using Lumina.Features.Library;
+using Lumina.Features.News;
+using Lumina.Features.Notes;
 using Lumina.Features.Onboarding;
 using Lumina.Features.Reader;
+using Lumina.Features.Search;
 using Lumina.Features.Settings;
+using Lumina.Features.Tasks;
+using Lumina.Services;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Input;
+using Windows.System;
 
 namespace Lumina;
 
@@ -26,21 +33,66 @@ public sealed partial class MainWindow : Window
         App.Sidecar.StateChanged += OnSidecarStateChanged;
         UpdateEngineStatus();
 
+        NavigationHub.OpenBookRequested += OnOpenBookRequested;
+        NavigationHub.OpenAllNotesRequested += () =>
+        {
+            DispatcherQueue.TryEnqueue(() =>
+            {
+                ContentFrame.Navigate(typeof(AllNotesPage));
+                SelectNav("library");
+            });
+        };
+        NavigationHub.OpenSearchRequested += () => DispatcherQueue.TryEnqueue(ShowSearch);
+        NavigationHub.OpenTaskManagerRequested += () =>
+        {
+            DispatcherQueue.TryEnqueue(() =>
+            {
+                ContentFrame.Navigate(typeof(TaskManagerPage));
+                SelectNav("settings");
+            });
+        };
+
+        RootGrid.KeyDown += RootGrid_KeyDown;
+
         if (!ThemeService.OnboardingDone)
             ContentFrame.Navigate(typeof(OnboardingPage));
         else
             ContentFrame.Navigate(typeof(LibraryPage));
     }
 
-    public void NavigateToReader(string bookId, string title)
+    private void RootGrid_KeyDown(object sender, KeyRoutedEventArgs e)
     {
-        ContentFrame.Navigate(typeof(ReaderPage), new ReaderNavArgs(bookId, title));
+        var ctrl = Microsoft.UI.Input.InputKeyboardSource.GetKeyStateForCurrentThread(VirtualKey.Control)
+            .HasFlag(Windows.UI.Core.CoreVirtualKeyStates.Down);
+        if (!ctrl) return;
+        if (e.Key == VirtualKey.K)
+        {
+            ShowSearch();
+            e.Handled = true;
+        }
+        else if (e.Key == VirtualKey.O)
+        {
+            // Import is owned by library page; switch there and raise hub if needed.
+            NavigateToLibrary();
+            e.Handled = true;
+        }
+    }
+
+    public void NavigateToReader(string bookId, string title, int? segmentIndex = null)
+    {
+        ContentFrame.Navigate(typeof(ReaderPage), new ReaderNavArgs(bookId, title, segmentIndex));
+        SelectNav("library");
     }
 
     public void NavigateToLibrary()
     {
         ContentFrame.Navigate(typeof(LibraryPage));
         SelectNav("library");
+    }
+
+    private void OnOpenBookRequested(string bookId, string title, int? segmentIndex)
+    {
+        DispatcherQueue.TryEnqueue(() => NavigateToReader(bookId, title, segmentIndex));
     }
 
     private void NavView_SelectionChanged(NavigationView sender, NavigationViewSelectionChangedEventArgs args)
@@ -51,6 +103,9 @@ public sealed partial class MainWindow : Window
             {
                 case "library":
                     ContentFrame.Navigate(typeof(LibraryPage));
+                    break;
+                case "news":
+                    ContentFrame.Navigate(typeof(NewsPage));
                     break;
                 case "settings":
                     ContentFrame.Navigate(typeof(SettingsPage));
@@ -69,6 +124,13 @@ public sealed partial class MainWindow : Window
                 break;
             }
         }
+    }
+
+    private void Search_Click(object sender, RoutedEventArgs e) => ShowSearch();
+
+    private void ShowSearch()
+    {
+        ContentFrame.Navigate(typeof(SearchPage));
     }
 
     private void OnSidecarStateChanged()

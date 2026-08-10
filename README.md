@@ -76,7 +76,7 @@
 | macOS 14+（Apple Silicon / Intel） | 约 250 MB 安装包（安装后约 450 MB）+ 首次 AI 模型 ~3 GB | **[GitHub Releases 下载 DMG](https://github.com/hezhenghui7338/Lumina/releases/latest)** |
 | Windows 10/11 x64（P0） | ZIP 自包含目录 + 首次 AI 模型 ~3 GB | **[GitHub Releases 下载 Windows ZIP](https://github.com/hezhenghui7338/Lumina/releases/latest)** |
 
-Release 页提供 **Lumina-*-macOS.dmg** 与 **Lumina-*-Windows-x64.zip**（GitHub Actions 构建）。Windows 首发为 P0（书库 / 阅读 / 深聊 / 设置），不含资讯与全局搜索。
+Release 页提供 **Lumina-*-macOS.dmg** 与 **Lumina-*-Windows-x64.zip**（GitHub Actions 构建）。Windows 与 macOS **功能对等**（WinUI 惯用交互：书库 / 阅读 / 笔记 / Ctrl+K / 资讯 / 设置 / 任务管理）。
 
 ### 安装（两步）
 

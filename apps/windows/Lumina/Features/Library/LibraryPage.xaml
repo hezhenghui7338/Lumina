@@ -4,8 +4,10 @@
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
     xmlns:models="using:Lumina.Services">
-    <Grid Padding="24">
+    <Grid Padding="20">
         <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="*"/>
@@ -14,38 +16,75 @@
         <Grid Grid.Row="0" Margin="0,0,0,12">
             <TextBlock Text="书库" FontSize="28" FontWeight="SemiBold"/>
             <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Spacing="8">
+                <Button Content="全部笔记" Click="AllNotes_Click"/>
                 <Button Content="刷新" Click="Refresh_Click"/>
                 <Button Content="导入" Style="{StaticResource AccentButtonStyle}" Click="Import_Click"/>
             </StackPanel>
         </Grid>
 
-        <TextBlock x:Name="StatusText" Grid.Row="1" Margin="0,0,0,8"
+        <StackPanel Grid.Row="1" Orientation="Horizontal" Spacing="12" Margin="0,0,0,8">
+            <ComboBox x:Name="CategoryBox" Header="分类" Width="140" SelectionChanged="Filter_Changed"/>
+            <ComboBox x:Name="StateBox" Header="摘要状态" Width="140" SelectionChanged="Filter_Changed">
+                <ComboBoxItem Content="全部" Tag="all" IsSelected="True"/>
+                <ComboBoxItem Content="正在摘要" Tag="running"/>
+                <ComboBoxItem Content="排队中" Tag="queued"/>
+                <ComboBoxItem Content="待摘要" Tag="idle"/>
+                <ComboBoxItem Content="已摘要" Tag="summarized"/>
+            </ComboBox>
+            <ComboBox x:Name="SortBox" Header="排序" Width="140" SelectionChanged="Filter_Changed">
+                <ComboBoxItem Content="最近打开" Tag="recent" IsSelected="True"/>
+                <ComboBoxItem Content="添加时间" Tag="added"/>
+                <ComboBoxItem Content="标题" Tag="title"/>
+                <ComboBoxItem Content="收藏优先" Tag="favorite"/>
+            </ComboBox>
+        </StackPanel>
+
+        <StackPanel x:Name="BatchBar" Grid.Row="2" Orientation="Horizontal" Spacing="8" Margin="0,0,0,8" Visibility="Collapsed">
+            <TextBlock x:Name="BatchCountText" VerticalAlignment="Center"/>
+            <Button Content="收藏" Click="BatchFavorite_Click"/>
+            <Button Content="取消收藏" Click="BatchUnfavorite_Click"/>
+            <Button Content="开始摘要" Click="BatchSummarize_Click"/>
+            <Button Content="停止摘要" Click="BatchStop_Click"/>
+            <Button Content="删除" Click="BatchDelete_Click"/>
+            <Button Content="取消选择" Click="ClearSelection_Click"/>
+        </StackPanel>
+
+        <TextBlock x:Name="StatusText" Grid.Row="3" Margin="0,0,0,8"
                    Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
 
-        <ProgressRing x:Name="LoadingRing" Grid.Row="2" Width="40" Height="40"
-                      IsActive="False" HorizontalAlignment="Center" VerticalAlignment="Center"/>
-
-        <ListView x:Name="BooksList" Grid.Row="2"
-                  IsItemClickEnabled="True"
-                  ItemClick="BooksList_ItemClick"
-                  SelectionMode="None">
-            <ListView.ItemTemplate>
-                <DataTemplate x:DataType="models:BookSummary">
-                    <Grid Padding="8,12">
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="*"/>
-                            <ColumnDefinition Width="Auto"/>
-                        </Grid.ColumnDefinitions>
-                        <StackPanel>
-                            <TextBlock Text="{x:Bind Title}" FontSize="16" FontWeight="SemiBold" TextWrapping="WrapWholeWords"/>
-                            <TextBlock Text="{x:Bind ProgressLabel}" FontSize="12"
-                                       Foreground="{ThemeResource TextFillColorSecondaryBrush}" Margin="0,4,0,0"/>
-                        </StackPanel>
-                        <Button Grid.Column="1" Content="删除" Tag="{x:Bind Id}" Click="Delete_Click"
-                                Margin="12,0,0,0" VerticalAlignment="Center"/>
-                    </Grid>
-                </DataTemplate>
-            </ListView.ItemTemplate>
-        </ListView>
+        <Grid Grid.Row="4">
+            <ProgressRing x:Name="LoadingRing" Width="40" Height="40"
+                          IsActive="False" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+            <ListView x:Name="BooksList"
+                      IsItemClickEnabled="True"
+                      ItemClick="BooksList_ItemClick"
+                      SelectionMode="Multiple"
+                      SelectionChanged="BooksList_SelectionChanged">
+                <ListView.ItemTemplate>
+                    <DataTemplate x:DataType="models:BookSummary">
+                        <Grid Padding="8,10">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <StackPanel>
+                                <StackPanel Orientation="Horizontal" Spacing="6">
+                                    <TextBlock Text="{x:Bind Title}" FontSize="16" FontWeight="SemiBold" TextWrapping="WrapWholeWords"/>
+                                    <TextBlock Text="{x:Bind FavoriteMark}" Foreground="Goldenrod"/>
+                                </StackPanel>
+                                <TextBlock Text="{x:Bind ProgressLabel}" FontSize="12"
+                                           Foreground="{ThemeResource TextFillColorSecondaryBrush}" Margin="0,4,0,0"/>
+                                <TextBlock FontSize="11" Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                           Text="{x:Bind Category}"/>
+                            </StackPanel>
+                            <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="4" VerticalAlignment="Center">
+                                <Button Content="☆" Tag="{x:Bind Id}" Click="Favorite_Click" ToolTipService.ToolTip="收藏"/>
+                                <Button Content="⋯" Tag="{x:Bind Id}" Click="More_Click"/>
+                            </StackPanel>
+                        </Grid>
+                    </DataTemplate>
+                </ListView.ItemTemplate>
+            </ListView>
+        </Grid>
     </Grid>
 </Page>

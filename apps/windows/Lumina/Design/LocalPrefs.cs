@@ -32,6 +32,25 @@ public static class LocalPrefs
         }
     }
 
+    public static double ReaderFontSize
+    {
+        get => _data.ReaderFontSize <= 0 ? 15 : _data.ReaderFontSize;
+        set
+        {
+            _data.ReaderFontSize = value;
+            Save();
+        }
+    }
+
+    public static bool GetShowRaw(string bookId) =>
+        _data.ShowRawByBook.TryGetValue(bookId, out var v) && v;
+
+    public static void SetShowRaw(string bookId, bool showRaw)
+    {
+        _data.ShowRawByBook[bookId] = showRaw;
+        Save();
+    }
+
     private static PrefsData Load()
     {
         try
@@ -57,5 +76,7 @@ public static class LocalPrefs
     {
         public string Theme { get; set; } = "Light";
         public bool OnboardingDone { get; set; }
+        public double ReaderFontSize { get; set; } = 15;
+        public Dictionary<string, bool> ShowRawByBook { get; set; } = new();
     }
 }

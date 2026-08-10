@@ -1,6 +1,6 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
-    <TargetFramework>net8.0</TargetFramework>
+    <TargetFramework>net9.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <IsPackable>false</IsPackable>
@@ -14,5 +14,7 @@
   <ItemGroup>
     <Compile Include="..\Lumina\Services\SseReader.cs" Link="SseReader.cs" />
     <Compile Include="..\Lumina\Services\Models.cs" Link="Models.cs" />
+    <Compile Include="..\Lumina\Services\CoreClient.cs" Link="CoreClient.cs" />
+    <Compile Include="..\Lumina\Services\SummaryJsonParser.cs" Link="SummaryJsonParser.cs" />
   </ItemGroup>
 </Project>

@@ -1,0 +1,98 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Page
+    x:Class="Lumina.Features.News.NewsPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:models="using:Lumina.Services">
+    <Grid>
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="360"/>
+            <ColumnDefinition Width="*"/>
+        </Grid.ColumnDefinitions>
+
+        <Grid Grid.Column="0" BorderBrush="{ThemeResource DividerStrokeColorDefaultBrush}" BorderThickness="0,0,1,0" Padding="16">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="*"/>
+            </Grid.RowDefinitions>
+            <Grid Grid.Row="0" Margin="0,0,0,8">
+                <TextBlock Text="资讯" FontSize="24" FontWeight="SemiBold"/>
+                <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Spacing="6">
+                    <Button Content="信源" Click="Sources_Click"/>
+                    <Button Content="同步" Style="{StaticResource AccentButtonStyle}" Click="Sync_Click"/>
+                </StackPanel>
+            </Grid>
+            <StackPanel Grid.Row="1" Spacing="8" Margin="0,0,0,8">
+                <ComboBox x:Name="SourceFilterBox" Header="信源筛选" SelectionChanged="SourceFilter_Changed"/>
+                <TextBlock x:Name="StatusText" FontSize="12" Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextWrapping="WrapWholeWords"/>
+            </StackPanel>
+            <ListView x:Name="ArticlesList" Grid.Row="2"
+                      SelectionChanged="Articles_SelectionChanged">
+                <ListView.ItemTemplate>
+                    <DataTemplate x:DataType="models:NewsArticleCard">
+                        <StackPanel Padding="6,10">
+                            <TextBlock Text="{x:Bind Title}" FontWeight="SemiBold" TextWrapping="WrapWholeWords"/>
+                            <TextBlock Text="{x:Bind DisplaySource}" FontSize="11"
+                                       Foreground="{ThemeResource TextFillColorSecondaryBrush}" Margin="0,2,0,0"/>
+                            <TextBlock Text="{x:Bind OneLiner}" FontSize="12" TextWrapping="WrapWholeWords" Margin="0,4,0,0"/>
+                        </StackPanel>
+                    </DataTemplate>
+                </ListView.ItemTemplate>
+            </ListView>
+        </Grid>
+
+        <Grid Grid.Column="1" Padding="20">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="*"/>
+                <RowDefinition Height="Auto"/>
+            </Grid.RowDefinitions>
+            <StackPanel Grid.Row="0" Spacing="8" Margin="0,0,0,12">
+                <TextBlock x:Name="ArticleTitle" FontSize="22" FontWeight="SemiBold" TextWrapping="WrapWholeWords"
+                           Text="选择一篇资讯"/>
+                <StackPanel Orientation="Horizontal" Spacing="8">
+                    <HyperlinkButton x:Name="OpenUrlBtn" Content="打开原文" Click="OpenUrl_Click"/>
+                    <Button Content="精读" Click="Read_Click"/>
+                    <Button Content="深聊" Click="ToggleChat_Click"/>
+                </StackPanel>
+                <TextBlock x:Name="ArticleMeta" FontSize="12" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+            </StackPanel>
+            <ScrollViewer Grid.Row="1">
+                <StackPanel Spacing="12">
+                    <ProgressRing x:Name="ReadRing" Width="32" Height="32" IsActive="False" HorizontalAlignment="Left"/>
+                    <TextBlock x:Name="SummaryText" TextWrapping="WrapWholeWords" FontSize="15" LineHeight="26"
+                               IsTextSelectionEnabled="True"/>
+                    <TextBlock x:Name="BodyText" TextWrapping="WrapWholeWords" FontSize="14" LineHeight="24"
+                               IsTextSelectionEnabled="True" Opacity="0.9"/>
+                </StackPanel>
+            </ScrollViewer>
+            <Border x:Name="ChatPanel" Grid.Row="2" Visibility="Collapsed" MaxHeight="280"
+                    BorderBrush="{ThemeResource DividerStrokeColorDefaultBrush}" BorderThickness="0,1,0,0" Padding="12">
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="*"/>
+                        <RowDefinition Height="Auto"/>
+                    </Grid.RowDefinitions>
+                    <Grid>
+                        <TextBlock Text="资讯深聊" FontWeight="SemiBold"/>
+                        <Button Content="关闭" HorizontalAlignment="Right" Click="ToggleChat_Click"/>
+                    </Grid>
+                    <ScrollViewer Grid.Row="1" MaxHeight="160" Margin="0,8">
+                        <ItemsControl x:Name="ChatList"/>
+                    </ScrollViewer>
+                    <Grid Grid.Row="2">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <TextBox x:Name="ChatInput" PlaceholderText="针对本文提问…"/>
+                        <Button Grid.Column="1" Content="发送" Margin="8,0,0,0" Click="SendChat_Click"
+                                Style="{StaticResource AccentButtonStyle}"/>
+                    </Grid>
+                </Grid>
+            </Border>
+        </Grid>
+    </Grid>
+</Page>

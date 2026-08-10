@@ -4,7 +4,7 @@
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
     <ScrollViewer Padding="24">
-        <StackPanel MaxWidth="640" Spacing="16">
+        <StackPanel MaxWidth="720" Spacing="14">
             <TextBlock Text="设置" FontSize="28" FontWeight="SemiBold"/>
             <TextBlock x:Name="StatusText" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
 
@@ -15,7 +15,11 @@
             </StackPanel>
 
             <TextBlock Text="阅读" FontSize="18" FontWeight="SemiBold" Margin="0,8,0,0"/>
-            <TextBox x:Name="TargetLanguageBox" Header="目标语言" PlaceholderText="zh-CN"/>
+            <ComboBox x:Name="TargetLanguageBox" Header="目标语言" Width="240">
+                <ComboBoxItem Content="zh-CN" Tag="zh-CN" IsSelected="True"/>
+                <ComboBoxItem Content="en-US" Tag="en-US"/>
+                <ComboBoxItem Content="ja-JP" Tag="ja-JP"/>
+            </ComboBox>
             <ToggleSwitch x:Name="AutoSummaryToggle" Header="导入后自动开始摘要" OffContent="关" OnContent="开"/>
 
             <TextBlock Text="联网搜索" FontSize="18" FontWeight="SemiBold" Margin="0,8,0,0"/>
@@ -25,20 +29,45 @@
             </ComboBox>
             <PasswordBox x:Name="TavilyKeyBox" Header="Tavily API Key（可选）"/>
 
-            <TextBlock Text="Ollama" FontSize="18" FontWeight="SemiBold" Margin="0,8,0,0"/>
-            <TextBlock x:Name="OllamaStatusText" TextWrapping="WrapWholeWords"/>
-            <StackPanel Orientation="Horizontal" Spacing="8">
-                <Button Content="刷新状态" Click="RefreshOllama_Click"/>
-                <Button Content="打开下载页" Click="OpenOllama_Click"/>
-            </StackPanel>
-
-            <TextBlock Text="API 资源（摘要 / 深聊）" FontSize="18" FontWeight="SemiBold" Margin="0,8,0,0"/>
+            <TextBlock Text="模型资源池" FontSize="18" FontWeight="SemiBold" Margin="0,8,0,0"/>
+            <TextBlock x:Name="ResourceStatusText" FontSize="12" TextWrapping="WrapWholeWords"
+                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
             <TextBox x:Name="OllamaModelBox" Header="Ollama 模型" PlaceholderText="qwen3.5:4b"/>
+            <TextBox x:Name="OllamaUrlBox" Header="Ollama Base URL" PlaceholderText="http://127.0.0.1:11434"/>
             <TextBox x:Name="OpenAiKeyBox" Header="OpenAI API Key（可选）"/>
+            <TextBox x:Name="OpenAiModelBox" Header="OpenAI 模型" PlaceholderText="gpt-4o-mini"/>
             <TextBox x:Name="OpenRouterKeyBox" Header="OpenRouter API Key（可选）"/>
+            <TextBox x:Name="OpenRouterModelBox" Header="OpenRouter 模型"/>
+            <TextBox x:Name="CursorKeyBox" Header="Cursor API Key（可选）"/>
+            <TextBox x:Name="CursorModelBox" Header="Cursor 模型" PlaceholderText="composer-2.5"/>
+            <TextBox x:Name="ChatPriorityBox" Header="深聊优先级（逗号分隔 resource id）"
+                     PlaceholderText="openai,ollama"/>
+            <TextBox x:Name="SummarizePriorityBox" Header="摘要优先级（逗号分隔 resource id）"
+                     PlaceholderText="ollama,openrouter"/>
+            <StackPanel Orientation="Horizontal" Spacing="8">
+                <Button Content="刷新资源状态" Click="RefreshResources_Click"/>
+                <Button Content="打开 Ollama 下载页" Click="OpenOllama_Click"/>
+            </StackPanel>
+            <TextBlock x:Name="OllamaStatusText" TextWrapping="WrapWholeWords"/>
+
+            <TextBlock Text="Prompt 模板" FontSize="18" FontWeight="SemiBold" Margin="0,8,0,0"/>
+            <TextBox x:Name="PromptSegmentBox" Header="段摘要" AcceptsReturn="True" TextWrapping="Wrap" Height="80"/>
+            <TextBox x:Name="PromptDocumentBox" Header="文档/资讯" AcceptsReturn="True" TextWrapping="Wrap" Height="60"/>
+            <TextBox x:Name="PromptChatBox" Header="书籍深聊" AcceptsReturn="True" TextWrapping="Wrap" Height="60"/>
+            <TextBox x:Name="PromptNewsChatBox" Header="资讯深聊" AcceptsReturn="True" TextWrapping="Wrap" Height="60"/>
+            <TextBox x:Name="PromptTranslateBox" Header="翻译" AcceptsReturn="True" TextWrapping="Wrap" Height="60"/>
+            <TextBox x:Name="PromptClassifyBox" Header="分类" AcceptsReturn="True" TextWrapping="Wrap" Height="60"/>
+            <Button Content="恢复 Prompt 默认" Click="ResetPrompts_Click"/>
+
+            <TextBlock Text="高级" FontSize="18" FontWeight="SemiBold" Margin="0,8,0,0"/>
+            <ToggleSwitch x:Name="DebugToggle" Header="调试模式（任务管理）" OffContent="关" OnContent="开"/>
+            <Button x:Name="TaskManagerBtn" Content="打开任务管理" Click="TaskManager_Click" Visibility="Collapsed"/>
+
+            <TextBlock Text="关于" FontSize="18" FontWeight="SemiBold" Margin="0,8,0,0"/>
+            <TextBlock Text="Lumina for Windows · 与 macOS 功能对等（Win 惯用交互）" TextWrapping="WrapWholeWords"/>
 
             <Button Content="保存" Style="{StaticResource AccentButtonStyle}"
-                    Click="Save_Click" HorizontalAlignment="Left" Margin="0,12,0,0"/>
+                    Click="Save_Click" HorizontalAlignment="Left" Margin="0,12,0,24"/>
         </StackPanel>
     </ScrollViewer>
 </Page>
