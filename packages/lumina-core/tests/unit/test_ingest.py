@@ -127,3 +127,61 @@ def test_load_pdf_partial_ocr_for_mixed_pages(tmp_path, monkeypatch):
     assert "text layer page" in text
     assert "scan-page" in text
     assert meta.get("ocr_partial") is True
+
+
+def _write_epub_with_id_href_mismatch(path: Path) -> None:
+    """Typical EPUB: spine idref != file href (e.g. c0_gu_wang_yan vs c0_gu_wang_yan.xhtml)."""
+    ebooklib = pytest.importorskip("ebooklib")
+    from ebooklib import epub
+
+    book = epub.EpubBook()
+    book.set_identifier("lumina-epub-test")
+    book.set_title("姑妄言")
+    book.add_author("曹去晶")
+
+    chapter = epub.EpubHtml(
+        title="卷一",
+        file_name="c0_gu_wang_yan.xhtml",
+        uid="c0_gu_wang_yan",
+        lang="zh",
+    )
+    chapter.set_content("<html><body><h1>卷一</h1><p>正文段落甲乙丙。</p></body></html>")
+    book.add_item(chapter)
+    book.add_item(epub.EpubNcx())
+    book.add_item(epub.EpubNav())
+    book.spine = [chapter]
+    epub.write_epub(str(path), book)
+
+    loaded = epub.read_epub(str(path))
+    idref = loaded.spine[0][0]
+    assert loaded.get_item_with_href(idref) is None
+    assert loaded.get_item_with_id(idref) is not None
+    assert loaded.get_item_with_id(idref).get_type() == ebooklib.ITEM_DOCUMENT
+
+
+def test_load_epub_uses_spine_idref_not_href(tmp_path):
+    p = tmp_path / "gu-wang-yan.epub"
+    _write_epub_with_id_href_mismatch(p)
+    text, meta = load_document(p, "epub")
+    assert meta.get("title") == "姑妄言"
+    assert meta.get("author") == "曹去晶"
+    assert "正文段落甲乙丙" in text
+    assert "§" in text
+
+
+def test_load_epub_falls_back_when_spine_empty(tmp_path, monkeypatch):
+    p = tmp_path / "no-spine.epub"
+    _write_epub_with_id_href_mismatch(p)
+    from ebooklib import epub as ebooklib_epub
+    from lumina_core.ingest.epub import load_epub
+
+    original_read = ebooklib_epub.read_epub
+
+    def _read_empty_spine(path, *args, **kwargs):
+        book = original_read(path, *args, **kwargs)
+        book.spine = []
+        return book
+
+    monkeypatch.setattr(ebooklib_epub, "read_epub", _read_empty_spine)
+    text, _meta = load_epub(p)
+    assert "正文段落甲乙丙" in text

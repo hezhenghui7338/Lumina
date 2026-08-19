@@ -2,7 +2,7 @@
 
 def test_import_lumina_core():
     import lumina_core
-    assert lumina_core.__version__ == "0.7.0"
+    assert lumina_core.__version__ == "0.8.1"
 
 def test_pytest_markers_registered():
     import pytest

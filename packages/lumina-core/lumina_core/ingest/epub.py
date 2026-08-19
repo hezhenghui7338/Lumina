@@ -19,6 +19,66 @@ def _html_to_text(html: str) -> str:
     return text.strip()
 
 
+def _chapter_title(item, raw_html: str, href: str) -> str:
+    title = getattr(item, "title", None)
+    if isinstance(title, str) and title.strip():
+        return title.strip()
+    match = re.search(r"(?is)<title[^>]*>(.*?)</title>", raw_html)
+    if match:
+        extracted = _html_to_text(match.group(1))
+        if extracted:
+            return extracted
+    name = item.get_name() or href
+    return Path(name).stem.replace("_", " ")
+
+
+def _spine_idref(spine_entry) -> str:
+    if isinstance(spine_entry, tuple):
+        return str(spine_entry[0])
+    return str(spine_entry)
+
+
+def _item_from_spine(book, spine_entry):
+    """ebooklib spine stores item IDs (idref), not hrefs."""
+    idref = _spine_idref(spine_entry)
+    item = book.get_item_with_id(idref)
+    if item is not None:
+        return item
+    return book.get_item_with_href(idref)
+
+
+def _is_nav_item(item) -> bool:
+    name = (item.get_name() or "").lower()
+    item_id = (getattr(item, "id", None) or "").lower()
+    if item_id == "nav" or name.endswith("nav.xhtml") or name.endswith("toc.xhtml"):
+        return True
+    props = getattr(item, "properties", None) or []
+    return "nav" in props
+
+
+def _iter_document_items(book, ebooklib_mod):
+    seen: set[str] = set()
+    for spine_entry in book.spine:
+        item = _item_from_spine(book, spine_entry)
+        if item is None or item.get_type() != ebooklib_mod.ITEM_DOCUMENT:
+            continue
+        key = item.get_id() or item.get_name()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        yield item
+
+    if seen:
+        return
+
+    for item in book.get_items_of_type(ebooklib_mod.ITEM_DOCUMENT):
+        key = item.get_id() or item.get_name()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        yield item
+
+
 def load_epub(path: Path) -> tuple[str, dict]:
     try:
         import ebooklib
@@ -32,20 +92,13 @@ def load_epub(path: Path) -> tuple[str, dict]:
 
     parts: list[str] = []
     skipped_chapters = 0
-    seen_hrefs: set[str] = set()
 
-    for spine_entry in book.spine:
-        href = spine_entry[0] if isinstance(spine_entry, tuple) else spine_entry
-        if href in seen_hrefs:
-            continue
-        seen_hrefs.add(href)
-
-        item = book.get_item_with_href(href)
-        if item is None or item.get_type() != ebooklib.ITEM_DOCUMENT:
+    for item in _iter_document_items(book, ebooklib):
+        if _is_nav_item(item):
+            skipped_chapters += 1
             continue
 
-        name = item.get_name() or href
-        chapter_title = Path(name).stem.replace("_", " ")
+        href = item.get_name() or item.get_id() or ""
         try:
             raw_html = item.get_content().decode("utf-8", errors="replace")
         except Exception:
@@ -56,6 +109,7 @@ def load_epub(path: Path) -> tuple[str, dict]:
         if not body:
             skipped_chapters += 1
             continue
+        chapter_title = _chapter_title(item, raw_html, href)
         parts.append(f"## [§{chapter_title}]\n{body}")
 
     metadata: dict = {"title": title, "author": author}
