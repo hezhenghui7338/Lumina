@@ -61,7 +61,11 @@ enum SummaryMetricsFormatter {
     static func bookActiveLabel(active: SummarizeActive, now: Date = Date()) -> String? {
         guard let startedAt = active.startedAtDate else { return nil }
         let elapsed = max(0, now.timeIntervalSince(startedAt))
-        var parts = ["段 \(active.segment_idx + 1)", duration(seconds: elapsed)]
+        var parts: [String] = []
+        if active.summary_tier == "advanced" {
+            parts.append("高级摘要")
+        }
+        parts.append(contentsOf: ["段 \(active.segment_idx + 1)", duration(seconds: elapsed)])
         parts.append(attemptLabel(attempt: active.llm_attempt, maxAttempts: active.max_llm_attempts))
         return parts.joined(separator: " · ")
     }
@@ -82,6 +86,21 @@ struct SummarizeActive: Codable, Hashable {
     let started_at: String
     let llm_attempt: Int
     let max_llm_attempts: Int?
+    let summary_tier: String?
+
+    init(
+        segment_idx: Int,
+        started_at: String,
+        llm_attempt: Int,
+        max_llm_attempts: Int?,
+        summary_tier: String? = nil
+    ) {
+        self.segment_idx = segment_idx
+        self.started_at = started_at
+        self.llm_attempt = llm_attempt
+        self.max_llm_attempts = max_llm_attempts
+        self.summary_tier = summary_tier
+    }
 
     var startedAtDate: Date? {
         SummaryMetricsFormatter.parseISO8601(started_at)

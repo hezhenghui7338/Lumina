@@ -142,6 +142,11 @@ public sealed class CoreClient : IDisposable
         }).ToList();
     }
 
+    public async Task CancelIngestAsync(string bookId, CancellationToken ct = default)
+    {
+        await PostAsync($"/books/{bookId}/ingest/cancel", "{}", ct).ConfigureAwait(false);
+    }
+
     public async Task<OpenBookResponse> OpenBookAsync(string id, CancellationToken ct = default)
     {
         var data = await PostAsync($"/books/{id}/open", "{}", ct).ConfigureAwait(false);
@@ -166,15 +171,37 @@ public sealed class CoreClient : IDisposable
         return Deserialize<SegmentRow>(data) ?? new SegmentRow { Idx = idx };
     }
 
+    public async Task<SegmentBoundaryPreview> FetchSegmentBoundaryAsync(
+        string bookId, int idx, CancellationToken ct = default)
+    {
+        var data = await GetAsync($"/books/{bookId}/segments/{idx}/boundary", ct).ConfigureAwait(false);
+        return Deserialize<SegmentBoundaryPreview>(data) ?? new SegmentBoundaryPreview { LeftIdx = idx };
+    }
+
+    public async Task<SegmentBoundaryMoveResult> MoveSegmentBoundaryAsync(
+        string bookId, int idx, int leftCharCount, CancellationToken ct = default)
+    {
+        var body = JsonSerializer.Serialize(new { left_char_count = leftCharCount }, JsonOptions);
+        var data = await PostAsync($"/books/{bookId}/segments/{idx}/boundary", body, ct).ConfigureAwait(false);
+        return Deserialize<SegmentBoundaryMoveResult>(data) ?? new SegmentBoundaryMoveResult { LeftIdx = idx };
+    }
+
     public async Task<SegmentSummaryDetail> FetchSegmentSummaryAsync(string bookId, int idx, CancellationToken ct = default)
     {
         var data = await GetAsync($"/books/{bookId}/segments/{idx}/summary", ct).ConfigureAwait(false);
         return Deserialize<SegmentSummaryDetail>(data) ?? new SegmentSummaryDetail { Idx = idx };
     }
 
-    public async Task StartSummarizeAllAsync(CancellationToken ct = default)
+    private static string SummaryTierValue(SummaryTier tier) =>
+        tier == SummaryTier.Advanced ? "advanced" : "normal";
+
+    public async Task StartSummarizeAllAsync(
+        SummaryTier summaryTier = SummaryTier.Normal,
+        CancellationToken ct = default)
     {
-        await PostAsync("/books/summarize/start", "{}", ct).ConfigureAwait(false);
+        var body = JsonSerializer.Serialize(
+            new { summary_tier = SummaryTierValue(summaryTier) }, JsonOptions);
+        await PostAsync("/books/summarize/start", body, ct).ConfigureAwait(false);
     }
 
     public async Task StopSummarizeAllAsync(CancellationToken ct = default)
@@ -182,9 +209,14 @@ public sealed class CoreClient : IDisposable
         await PostAsync("/books/summarize/stop", "{}", ct).ConfigureAwait(false);
     }
 
-    public async Task StartSummarizeBooksAsync(IReadOnlyList<string> bookIds, CancellationToken ct = default)
+    public async Task StartSummarizeBooksAsync(
+        IReadOnlyList<string> bookIds,
+        SummaryTier summaryTier = SummaryTier.Normal,
+        CancellationToken ct = default)
     {
-        var body = JsonSerializer.Serialize(new { book_ids = bookIds }, JsonOptions);
+        var body = JsonSerializer.Serialize(
+            new { book_ids = bookIds, summary_tier = SummaryTierValue(summaryTier) },
+            JsonOptions);
         await PostAsync("/books/summarize/start", body, ct).ConfigureAwait(false);
     }
 
@@ -200,9 +232,14 @@ public sealed class CoreClient : IDisposable
         return Deserialize<SummarizeOverview>(data) ?? new SummarizeOverview();
     }
 
-    public async Task StartSummarizeAsync(string bookId, CancellationToken ct = default)
+    public async Task StartSummarizeAsync(
+        string bookId,
+        SummaryTier summaryTier = SummaryTier.Normal,
+        CancellationToken ct = default)
     {
-        await PostAsync($"/books/{bookId}/summarize/start", "{}", ct).ConfigureAwait(false);
+        var body = JsonSerializer.Serialize(
+            new { summary_tier = SummaryTierValue(summaryTier) }, JsonOptions);
+        await PostAsync($"/books/{bookId}/summarize/start", body, ct).ConfigureAwait(false);
     }
 
     public async Task StopSummarizeAsync(string bookId, CancellationToken ct = default)
@@ -210,20 +247,49 @@ public sealed class CoreClient : IDisposable
         await PostAsync($"/books/{bookId}/summarize/stop", "{}", ct).ConfigureAwait(false);
     }
 
-    public async Task RetrySegmentAsync(string bookId, int idx, CancellationToken ct = default)
+    public async Task RetrySegmentAsync(
+        string bookId,
+        int idx,
+        SummaryTier? summaryTier = null,
+        CancellationToken ct = default)
     {
-        await PostAsync($"/books/{bookId}/segments/{idx}/retry", "{}", ct).ConfigureAwait(false);
+        var body = JsonSerializer.Serialize(
+            new
+            {
+                summary_tier = summaryTier.HasValue
+                    ? SummaryTierValue(summaryTier.Value)
+                    : null
+            },
+            JsonOptions);
+        await PostAsync($"/books/{bookId}/segments/{idx}/retry", body, ct).ConfigureAwait(false);
     }
 
-    public async Task RetrySegmentsAsync(string bookId, IReadOnlyList<int> indices, CancellationToken ct = default)
+    public async Task RetrySegmentsAsync(
+        string bookId,
+        IReadOnlyList<int> indices,
+        SummaryTier? summaryTier = null,
+        CancellationToken ct = default)
     {
-        var body = JsonSerializer.Serialize(new { indices }, JsonOptions);
+        var body = JsonSerializer.Serialize(
+            new
+            {
+                indices,
+                summary_tier = summaryTier.HasValue
+                    ? SummaryTierValue(summaryTier.Value)
+                    : null
+            },
+            JsonOptions);
         await PostAsync($"/books/{bookId}/segments/retry", body, ct).ConfigureAwait(false);
     }
 
-    public async Task RegenerateBookSummariesAsync(string bookId, CancellationToken ct = default)
+    public async Task RegenerateBookSummariesAsync(
+        string bookId,
+        SummaryTier summaryTier = SummaryTier.Normal,
+        CancellationToken ct = default)
     {
-        await PostAsync($"/books/{bookId}/summarize/regenerate", "{}", ct).ConfigureAwait(false);
+        var body = JsonSerializer.Serialize(
+            new { summary_tier = SummaryTierValue(summaryTier) }, JsonOptions);
+        await PostAsync($"/books/{bookId}/summarize/regenerate", body, ct).ConfigureAwait(false);
     }
 
     public async Task<string> ExportMarkdownAsync(string bookId, bool includeNotes = false, CancellationToken ct = default)
@@ -241,6 +307,8 @@ public sealed class CoreClient : IDisposable
         int segmentIndex,
         Action<string> onToken,
         string? quote = null,
+        string scope = "segment",
+        Action<string>? onStatus = null,
         CancellationToken ct = default)
     {
         var payload = new
@@ -249,8 +317,9 @@ public sealed class CoreClient : IDisposable
             segment_index = segmentIndex,
             stream = true,
             quote,
+            scope,
         };
-        return await StreamChatAsync($"/books/{bookId}/chat", payload, onToken, includeCitations: true, ct)
+        return await StreamChatAsync($"/books/{bookId}/chat", payload, onToken, includeCitations: true, onStatus, ct)
             .ConfigureAwait(false);
     }
 
@@ -259,10 +328,11 @@ public sealed class CoreClient : IDisposable
         string message,
         Action<string> onToken,
         string? quote = null,
+        Action<string>? onStatus = null,
         CancellationToken ct = default)
     {
         var payload = new { message, stream = true, quote };
-        return await StreamChatAsync($"/news/articles/{articleId}/chat", payload, onToken, includeCitations: false, ct)
+        return await StreamChatAsync($"/news/articles/{articleId}/chat", payload, onToken, includeCitations: false, onStatus, ct)
             .ConfigureAwait(false);
     }
 
@@ -389,7 +459,12 @@ public sealed class CoreClient : IDisposable
         {
             target_language = settings.TargetLanguage,
             web_search_provider = settings.WebSearchProvider,
+            web_search_enabled = settings.WebSearchEnabled,
             tavily_api_key = settings.TavilyApiKey,
+            ocr_cloud_base_url = settings.OcrCloudBaseUrl,
+            ocr_cloud_model = settings.OcrCloudModel,
+            ocr_cloud_api_key = settings.OcrCloudApiKey,
+            ocr_cloud_timeout_seconds = settings.OcrCloudTimeoutSeconds,
             debug_mode = settings.DebugMode,
             auto_start_summary = settings.AutoStartSummary,
             models = settings.Models,
@@ -406,6 +481,12 @@ public sealed class CoreClient : IDisposable
         return Deserialize<OllamaStatus>(data) ?? new OllamaStatus();
     }
 
+    public async Task<OcrStatus> FetchOcrStatusAsync(CancellationToken ct = default)
+    {
+        var data = await GetAsync("/settings/ocr/status", ct).ConfigureAwait(false);
+        return Deserialize<OcrStatus>(data) ?? new OcrStatus();
+    }
+
     public async Task<IReadOnlyList<ResourceStatus>> FetchAllResourceStatusAsync(CancellationToken ct = default)
     {
         var data = await GetAsync("/settings/resources/status", ct).ConfigureAwait(false);
@@ -417,6 +498,43 @@ public sealed class CoreClient : IDisposable
         var data = await GetAsync($"/settings/resources/{Uri.EscapeDataString(resourceId)}/status", ct)
             .ConfigureAwait(false);
         return Deserialize<ResourceStatus>(data) ?? new ResourceStatus { ResourceId = resourceId };
+    }
+
+    public async Task<ContextProbeStatus> StartContextProbeAsync(
+        string resourceId,
+        string? model = null,
+        string? baseUrl = null,
+        string? apiKey = null,
+        CancellationToken ct = default)
+    {
+        var body = JsonSerializer.Serialize(new
+        {
+            model,
+            base_url = baseUrl,
+            api_key = apiKey,
+        }, JsonOptions);
+        var data = await PostAsync(
+            $"/settings/resources/{Uri.EscapeDataString(resourceId)}/context-probe",
+            body,
+            ct).ConfigureAwait(false);
+        return Deserialize<ContextProbeStatus>(data) ?? new ContextProbeStatus { ResourceId = resourceId };
+    }
+
+    public async Task<ContextProbeStatus> FetchContextProbeAsync(string resourceId, CancellationToken ct = default)
+    {
+        var data = await GetAsync(
+            $"/settings/resources/{Uri.EscapeDataString(resourceId)}/context-probe",
+            ct).ConfigureAwait(false);
+        return Deserialize<ContextProbeStatus>(data)
+            ?? new ContextProbeStatus { ResourceId = resourceId };
+    }
+
+    public async Task CancelContextProbeAsync(string resourceId, CancellationToken ct = default)
+    {
+        await PostAsync(
+            $"/settings/resources/{Uri.EscapeDataString(resourceId)}/context-probe/cancel",
+            "{}",
+            ct).ConfigureAwait(false);
     }
 
     // --- Ops ---
@@ -481,6 +599,7 @@ public sealed class CoreClient : IDisposable
         object payload,
         Action<string> onToken,
         bool includeCitations,
+        Action<string>? onStatus,
         CancellationToken ct)
     {
         var body = JsonSerializer.Serialize(payload, JsonOptions);
@@ -507,6 +626,12 @@ public sealed class CoreClient : IDisposable
             {
                 var msg = el.TryGetProperty("message", out var m) ? m.GetString() : null;
                 throw new HttpRequestException(msg ?? "深聊未完成（模型输出异常或上下文过长），请重试");
+            }
+            if (type == "status" && el.TryGetProperty("message", out var statusEl))
+            {
+                var status = statusEl.GetString();
+                if (!string.IsNullOrEmpty(status))
+                    onStatus?.Invoke(status);
             }
             if (type == "token" && el.TryGetProperty("content", out var tok))
             {
@@ -538,10 +663,26 @@ public sealed class CoreClient : IDisposable
                         });
                     }
                 }
+                var webRefs = new List<ChatWebRef>();
+                if (el.TryGetProperty("web_refs", out var refs) && refs.ValueKind == JsonValueKind.Array)
+                {
+                    foreach (var r in refs.EnumerateArray())
+                    {
+                        var url = r.TryGetProperty("url", out var u) ? u.GetString() ?? "" : "";
+                        if (string.IsNullOrEmpty(url)) continue;
+                        webRefs.Add(new ChatWebRef
+                        {
+                            Title = r.TryGetProperty("title", out var ti) ? ti.GetString() ?? "" : "",
+                            Url = url,
+                            Source = r.TryGetProperty("source", out var src) ? src.GetString() : null,
+                        });
+                    }
+                }
                 final = new ChatResponse
                 {
                     Answer = el.TryGetProperty("answer", out var ans) ? ans.GetString() ?? "" : "",
                     Citations = citations,
+                    WebRefs = webRefs,
                     EvidenceSufficient = el.TryGetProperty("evidence_sufficient", out var es) && es.ValueKind == JsonValueKind.True,
                     Provider = el.TryGetProperty("provider", out var p) ? p.GetString() : null,
                     Model = el.TryGetProperty("model", out var mo) ? mo.GetString() : null,

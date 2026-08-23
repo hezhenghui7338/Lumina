@@ -3,9 +3,16 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Mapping
 from pathlib import Path
 
 import pytest
+
+# Limit native pools before any test imports RapidOCR/onnxruntime.
+# Unbounded Eigen threads can deadlock pytest-xdist worker teardown.
+os.environ.setdefault("OMP_NUM_THREADS", "1")
+os.environ.setdefault("ORT_INTRA_OP_NUM_THREADS", "1")
+os.environ.setdefault("ORT_INTER_OP_NUM_THREADS", "1")
 
 from lumina_core.models.router import set_router
 from tests.support.mock_router import MockModelRouter, load_json_fixture
@@ -87,3 +94,16 @@ def _reset_router_between_tests(request):
     """Ensure live tests don't leak router into mock tests."""
     yield
     set_router(None)
+
+
+def xdist_worker_should_force_exit(environ: Mapping[str, str]) -> bool:
+    """xdist workers that loaded ORT can hang in session teardown; force-exit them."""
+    return bool(environ.get("PYTEST_XDIST_WORKER"))
+
+
+@pytest.hookimpl(hookwrapper=True, trylast=True)
+def pytest_sessionfinish(session, exitstatus):
+    yield
+    if not xdist_worker_should_force_exit(os.environ):
+        return
+    os._exit(int(exitstatus))

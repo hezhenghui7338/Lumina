@@ -12,6 +12,7 @@ struct BookSummary: Codable, Identifiable, Hashable {
     var author: String?
     var created_at: String?
     var total_char_count: Int?
+    var chunk_target_chars: Int?
     var summary_ready_count: Int?
     var summary_total_count: Int?
     var chunker_version: String?
@@ -20,13 +21,17 @@ struct BookSummary: Codable, Identifiable, Hashable {
     var summarize_active: SummarizeActive?
     var summarize_state: String?
     var summarize_queued_count: Int?
+    var summary_tier: String?
+    var processing_kind: String?
+    var index_status: String?
+    var ingest_error: String?
 
     enum CodingKeys: String, CodingKey {
         case id, title, status, segment_count, is_favorite, category
         case last_opened_at, current_segment_index, author, created_at
-        case total_char_count, summary_ready_count, summary_total_count, chunker_version
+        case total_char_count, chunk_target_chars, summary_ready_count, summary_total_count, chunker_version
         case language, target_language, summarize_active, summarize_state
-        case summarize_queued_count
+        case summarize_queued_count, summary_tier, processing_kind, index_status, ingest_error
     }
 
     init(
@@ -41,6 +46,7 @@ struct BookSummary: Codable, Identifiable, Hashable {
         author: String? = nil,
         created_at: String? = nil,
         total_char_count: Int? = nil,
+        chunk_target_chars: Int? = nil,
         summary_ready_count: Int? = nil,
         summary_total_count: Int? = nil,
         chunker_version: String? = nil,
@@ -48,7 +54,11 @@ struct BookSummary: Codable, Identifiable, Hashable {
         target_language: String? = nil,
         summarize_active: SummarizeActive? = nil,
         summarize_state: String? = nil,
-        summarize_queued_count: Int? = nil
+        summarize_queued_count: Int? = nil,
+        summary_tier: String? = nil,
+        processing_kind: String? = nil,
+        index_status: String? = nil,
+        ingest_error: String? = nil
     ) {
         self.id = id
         self.title = title
@@ -61,6 +71,7 @@ struct BookSummary: Codable, Identifiable, Hashable {
         self.author = author
         self.created_at = created_at
         self.total_char_count = total_char_count
+        self.chunk_target_chars = chunk_target_chars
         self.summary_ready_count = summary_ready_count
         self.summary_total_count = summary_total_count
         self.chunker_version = chunker_version
@@ -69,6 +80,10 @@ struct BookSummary: Codable, Identifiable, Hashable {
         self.summarize_active = summarize_active
         self.summarize_state = summarize_state
         self.summarize_queued_count = summarize_queued_count
+        self.summary_tier = summary_tier
+        self.processing_kind = processing_kind
+        self.index_status = index_status
+        self.ingest_error = ingest_error
     }
 
     init(from decoder: Decoder) throws {
@@ -92,6 +107,7 @@ struct BookSummary: Codable, Identifiable, Hashable {
         author = try c.decodeIfPresent(String.self, forKey: .author)
         created_at = try c.decodeIfPresent(String.self, forKey: .created_at)
         total_char_count = try c.decodeIfPresent(Int.self, forKey: .total_char_count)
+        chunk_target_chars = try c.decodeIfPresent(Int.self, forKey: .chunk_target_chars)
         summary_ready_count = try c.decodeIfPresent(Int.self, forKey: .summary_ready_count)
         summary_total_count = try c.decodeIfPresent(Int.self, forKey: .summary_total_count)
         chunker_version = try c.decodeIfPresent(String.self, forKey: .chunker_version)
@@ -100,6 +116,23 @@ struct BookSummary: Codable, Identifiable, Hashable {
         summarize_active = try c.decodeIfPresent(SummarizeActive.self, forKey: .summarize_active)
         summarize_state = try c.decodeIfPresent(String.self, forKey: .summarize_state)
         summarize_queued_count = try c.decodeIfPresent(Int.self, forKey: .summarize_queued_count)
+        summary_tier = try c.decodeIfPresent(String.self, forKey: .summary_tier)
+        processing_kind = try c.decodeIfPresent(String.self, forKey: .processing_kind)
+        index_status = try c.decodeIfPresent(String.self, forKey: .index_status)
+        ingest_error = try c.decodeIfPresent(String.self, forKey: .ingest_error)
+    }
+
+    var canChatBook: Bool {
+        hasCompletedSummary && (index_status ?? "idle") == "ready"
+    }
+
+    var bookIndexLabel: String {
+        switch index_status {
+        case "building": return "全书（索引生成中）"
+        case "error": return "全书（索引失败）"
+        case "ready": return "全书"
+        default: return hasCompletedSummary ? "全书（索引生成中）" : "全书"
+        }
     }
 
     var isFavorite: Bool { is_favorite ?? false }
@@ -108,12 +141,51 @@ struct BookSummary: Codable, Identifiable, Hashable {
 
     var summaryReady: Int { summary_ready_count ?? 0 }
 
+    var hasCompletedSummary: Bool {
+        summaryTotal > 0 && summaryReady >= summaryTotal
+    }
+
+    var readingTotal: Int {
+        max(segment_count ?? 0, 0)
+    }
+
+    var readingCurrent: Int {
+        guard last_opened_at != nil, readingTotal > 0 else { return 0 }
+        let index = min(max(current_segment_index ?? 0, 0), readingTotal - 1)
+        return index + 1
+    }
+
+    var readingStatusLabel: String {
+        guard last_opened_at != nil else { return "未读" }
+        guard readingTotal > 0 else { return "在读" }
+        if readingTotal > 1, readingCurrent >= readingTotal { return "已读完" }
+        return "在读 · \(readingCurrent)/\(readingTotal) 段"
+    }
+
+    var readingProgressBucket: ReadingProgressBucket {
+        guard last_opened_at != nil else { return .unread }
+        guard readingTotal > 1 else { return .reading }
+        if readingCurrent >= readingTotal { return .finished }
+        return .reading
+    }
+
+    var segmentCountLabel: String {
+        let count = segment_count ?? 0
+        return count > 0 ? "\(count) 段" : "未分段"
+    }
+
+    var coverInitial: String {
+        let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let first = trimmed.first else { return "书" }
+        return String(first)
+    }
+
     var progressLabel: String {
         let total = summaryTotal
         if status == "processing" { return statusLabel }
         guard total > 0 else { return statusLabel }
         let ready = summaryReady
-        if ready >= total { return "已摘要" }
+        if ready >= total { return readingStatusLabel }
         var label = "\(statusLabel) · 摘要 \(ready)/\(total)"
         if let active = summarize_active,
            let activeLabel = SummaryMetricsFormatter.bookActiveLabel(active: active) {
@@ -148,7 +220,12 @@ struct BookSummary: Codable, Identifiable, Hashable {
         case "reading": return "在读"
         case "summarized": return "已摘要"
         case "processing": return "处理中"
-        case "error": return "导入失败"
+        case "error":
+            if let reason = ingest_error?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !reason.isEmpty {
+                return "导入失败：\(reason)"
+            }
+            return "导入失败"
         default: return status
         }
     }
@@ -169,8 +246,12 @@ struct SummarizeOverview: Codable {
     var activeCount: Int { counts.running + counts.queued }
 }
 
+enum ReadingProgressBucket: String {
+    case unread, reading, finished
+}
+
 enum SummarizeStateFilter: String, CaseIterable, Identifiable {
-    case all, running, queued, idle, summarized
+    case all, running, idle, summarized
 
     var id: String { rawValue }
 
@@ -178,7 +259,6 @@ enum SummarizeStateFilter: String, CaseIterable, Identifiable {
         switch self {
         case .all: return "全部"
         case .running: return "正在摘要"
-        case .queued: return "排队中"
         case .idle: return "待摘要"
         case .summarized: return "已摘要"
         }
@@ -188,7 +268,6 @@ enum SummarizeStateFilter: String, CaseIterable, Identifiable {
         switch self {
         case .all: return "square.stack.3d.up"
         case .running: return "arrow.triangle.2.circlepath"
-        case .queued: return "clock"
         case .idle: return "doc.text"
         case .summarized: return "checkmark.circle"
         }
@@ -199,9 +278,7 @@ enum SummarizeStateFilter: String, CaseIterable, Identifiable {
         case .all:
             return true
         case .running:
-            return book.summarize_state == "running"
-        case .queued:
-            return book.summarize_state == "queued"
+            return book.summarize_state == "running" || book.summarize_state == "queued"
         case .idle:
             return book.summarize_state == "idle" || book.summarize_state == "paused"
         case .summarized:
@@ -267,11 +344,13 @@ struct LibraryFilter: Hashable, Identifiable {
         self.rawValue = rawValue
     }
 
-    /// Migrate legacy collection preferences (unread/reading → all).
+    /// Migrate legacy collection preferences (all → recent; unread/reading restored).
     static func fromPersisted(_ raw: String) -> LibraryFilter {
         switch raw {
-        case "all": return .all
-        case "summarized", "unread", "reading": return .all
+        case "all", "recent": return .all
+        case "summarized": return .summarized
+        case "unread", "reading", "finished", "idle", "summarizing", "favorite":
+            return LibraryFilter(rawValue: raw)
         default:
             if fallbackCategories.contains(raw) {
                 return category(raw)
@@ -281,16 +360,156 @@ struct LibraryFilter: Hashable, Identifiable {
     }
 }
 
+enum LibraryCollection: Hashable, Identifiable {
+    case recent
+    case idle
+    case summarizing
+    case summarized
+    case unread
+    case reading
+    case finished
+    case favorite
+    case category(String)
+
+    var id: String { rawValue }
+
+    var rawValue: String {
+        switch self {
+        case .recent: return "recent"
+        case .idle: return "idle"
+        case .summarizing: return "summarizing"
+        case .summarized: return "summarized"
+        case .unread: return "unread"
+        case .reading: return "reading"
+        case .finished: return "finished"
+        case .favorite: return "favorite"
+        case .category(let name): return name
+        }
+    }
+
+    var label: String {
+        switch self {
+        case .recent: return "最近"
+        case .idle: return "未摘要"
+        case .summarizing: return "摘要中"
+        case .summarized: return "已摘要"
+        case .unread: return "未读"
+        case .reading: return "在读"
+        case .finished: return "已读完"
+        case .favorite: return "收藏"
+        case .category(let name): return name
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .recent: return "clock"
+        case .idle: return "doc.text"
+        case .summarizing: return "arrow.triangle.2.circlepath"
+        case .summarized: return "checkmark.circle"
+        case .unread: return "book.closed"
+        case .reading: return "book"
+        case .finished: return "checkmark.circle.fill"
+        case .favorite: return "star.fill"
+        case .category(let name):
+            return LibraryFilter.category(name).systemImage
+        }
+    }
+
+    var section: LibraryCollectionSection {
+        switch self {
+        case .recent: return .defaultSection
+        case .idle, .summarizing, .summarized: return .summary
+        case .unread, .reading, .finished: return .reading
+        case .favorite: return .favorite
+        case .category: return .category
+        }
+    }
+
+    func matches(_ book: BookSummary) -> Bool {
+        switch self {
+        case .recent:
+            return true
+        case .idle:
+            return book.summarize_state == "idle" || book.summarize_state == "paused"
+        case .summarizing:
+            return book.summarize_state == "running" || book.summarize_state == "queued"
+        case .summarized:
+            return book.summarize_state == "summarized"
+                || (book.summaryTotal > 0 && book.summaryReady >= book.summaryTotal)
+        case .unread:
+            return book.readingProgressBucket == .unread
+        case .reading:
+            return book.readingProgressBucket == .reading
+        case .finished:
+            return book.readingProgressBucket == .finished
+        case .favorite:
+            return book.isFavorite
+        case .category(let name):
+            return book.category == name
+        }
+    }
+
+    static func fromPersisted(_ raw: String) -> LibraryCollection {
+        switch raw {
+        case "all", "recent": return .recent
+        case "idle": return .idle
+        case "summarizing", "running": return .summarizing
+        case "summarized": return .summarized
+        case "unread": return .unread
+        case "reading": return .reading
+        case "finished": return .finished
+        case "favorite": return .favorite
+        default:
+            if LibraryFilter.fallbackCategories.contains(raw) {
+                return .category(raw)
+            }
+            return .recent
+        }
+    }
+
+    static func sidebarItems(categories: [String]) -> [LibraryCollection] {
+        let cats = categories.isEmpty ? LibraryFilter.fallbackCategories : categories
+        return [
+            .recent,
+            .idle, .summarizing, .summarized,
+            .unread, .reading, .finished,
+            .favorite,
+        ] + cats.map { .category($0) }
+    }
+}
+
+enum LibraryCollectionSection: String, CaseIterable, Identifiable {
+    case defaultSection
+    case summary
+    case reading
+    case favorite
+    case category
+
+    var id: String { rawValue }
+
+    var label: String? {
+        switch self {
+        case .defaultSection: return nil
+        case .summary: return "摘要"
+        case .reading: return "阅读"
+        case .favorite: return nil
+        case .category: return "分类"
+        }
+    }
+}
+
 enum LibrarySort: String, CaseIterable, Identifiable {
-    case recent, added, title, favorite
+    case recent, added, title, segments, favorite
 
     var id: String { rawValue }
 
     var label: String {
         switch self {
-        case .recent: return "最近打开"
+        case .recent: return "最近访问"
         case .added: return "添加时间"
         case .title: return "标题"
+        case .segments: return "段落数"
         case .favorite: return "收藏优先"
         }
     }
@@ -307,7 +526,7 @@ struct SegmentRow: Codable, Identifiable, Hashable {
     let id: String
     let idx: Int
     var label: String?
-    let chapter: String?
+    var chapter: String?
     var summary_status: String
     var summary_json: String?
     let raw_text: String?
@@ -315,10 +534,43 @@ struct SegmentRow: Codable, Identifiable, Hashable {
     var anchor_label: String?
     var summary_provider: String?
     var summary_model: String?
+    var summary_tier: String?
     var char_count: Int?
     var retry_count: Int?
     var summary_duration_s: Double?
     var summary_llm_attempts: Int?
+}
+
+struct SegmentBoundaryCandidate: Codable, Hashable {
+    let offset: Int
+    let kind: String
+}
+
+struct SegmentBoundaryPreview: Codable {
+    let left_idx: Int
+    let right_idx: Int
+    let total_chars: Int
+    let left_char_count: Int
+    let candidates: [SegmentBoundaryCandidate]
+    let oversized_limit: Int
+}
+
+struct SegmentBoundaryMoveResult: Codable {
+    let left_idx: Int
+    let right_idx: Int
+    let left_char_count: Int
+    let right_char_count: Int
+    let left_anchor_label: String?
+    let right_anchor_label: String?
+    let left_chapter: String?
+    let right_chapter: String?
+    let left_page_range: String?
+    let right_page_range: String?
+    let left_status: String?
+    let right_status: String?
+    let oversized: Bool
+    let unchanged: Bool
+    let oversized_limit: Int?
 }
 
 struct SegmentSummaryDetail: Codable {
@@ -329,13 +581,46 @@ struct SegmentSummaryDetail: Codable {
     var summary_status: String?
     var summary_provider: String?
     var summary_model: String?
+    var summary_tier: String?
     var summary_duration_s: Double?
     var summary_llm_attempts: Int?
+}
+
+enum SummaryTier: String, Codable, CaseIterable, Identifiable {
+    case normal
+    case advanced
+
+    var id: String { rawValue }
+    var label: String { self == .normal ? "正常摘要" : "高级摘要" }
+    /// Start/resume: only incomplete segments; does not overwrite ready summaries.
+    var startMenuLabel: String {
+        self == .normal ? "正常摘要" : "高级摘要（仅未摘要）"
+    }
+    /// Whole-book regenerate: overwrites every segment.
+    var regenerateMenuLabel: String {
+        self == .normal ? "正常摘要（覆盖全书）" : "高级摘要（覆盖全书）"
+    }
 }
 
 struct ChatCitation: Codable {
     let segment_index: Int
     let label: String
+}
+
+struct ChatWebRef: Identifiable, Hashable {
+    let title: String
+    let url: String
+    let source: String?
+
+    var id: String { url }
+
+    var displayLabel: String {
+        let name = title.isEmpty ? url : title
+        if let source, !source.isEmpty {
+            return "[网] \(name) · \(source)"
+        }
+        return "[网] \(name)"
+    }
 }
 
 struct ChatResponse: Codable {
@@ -381,7 +666,7 @@ struct ChatResponse: Codable {
         ChatResponse(
             answer: obj["answer"] as? String ?? "",
             citations: citations,
-            web_refs: nil,
+            web_refs: parseWebRefDicts(obj["web_refs"]),
             evidence_sufficient: obj["evidence_sufficient"] as? Bool,
             provider: obj["provider"] as? String,
             model: obj["model"] as? String,
@@ -391,6 +676,33 @@ struct ChatResponse: Codable {
             total_tokens: Self.intValue(obj["total_tokens"]),
             tps: Self.doubleValue(obj["tps"])
         )
+    }
+
+    var webRefs: [ChatWebRef] {
+        Self.parseWebRefs(web_refs)
+    }
+
+    static func parseWebRefDicts(_ value: Any?) -> [[String: String]]? {
+        guard let items = value as? [Any] else { return nil }
+        var out: [[String: String]] = []
+        for item in items {
+            guard let dict = item as? [String: Any] else { continue }
+            let url = dict["url"] as? String ?? ""
+            if url.isEmpty { continue }
+            var row: [String: String] = ["url": url]
+            if let title = dict["title"] as? String { row["title"] = title }
+            if let source = dict["source"] as? String { row["source"] = source }
+            out.append(row)
+        }
+        return out.isEmpty ? nil : out
+    }
+
+    static func parseWebRefs(_ dicts: [[String: String]]?) -> [ChatWebRef] {
+        (dicts ?? []).compactMap { row in
+            let url = row["url"] ?? ""
+            guard !url.isEmpty else { return nil }
+            return ChatWebRef(title: row["title"] ?? "", url: url, source: row["source"])
+        }
     }
 
     private static func intValue(_ value: Any?) -> Int? {
@@ -411,6 +723,7 @@ struct ChatMessage: Identifiable {
     let role: String
     var content: String
     var citations: [ChatCitation]
+    var webRefs: [ChatWebRef]
     var provider: String?
     var model: String?
     var duration_ms: Int?
@@ -423,6 +736,7 @@ struct ChatMessage: Identifiable {
         role: String,
         content: String,
         citations: [ChatCitation] = [],
+        webRefs: [ChatWebRef] = [],
         provider: String? = nil,
         model: String? = nil,
         duration_ms: Int? = nil,
@@ -435,6 +749,7 @@ struct ChatMessage: Identifiable {
         self.role = role
         self.content = content
         self.citations = citations
+        self.webRefs = webRefs
         self.provider = provider
         self.model = model
         self.duration_ms = duration_ms
@@ -452,6 +767,7 @@ struct ChatMessage: Identifiable {
         completion_tokens = resp.completion_tokens
         total_tokens = resp.total_tokens
         tps = resp.tps
+        webRefs = resp.webRefs
     }
 }
 
@@ -469,6 +785,54 @@ struct ResourceStatus: Codable {
     let installed_models: [String]?
     let ram_gb: String?
     let skipped: Bool?
+
+    var displayMessage: String {
+        let trimmed = message?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return trimmed.isEmpty ? (ready ? "已就绪" : "未就绪") : trimmed
+    }
+}
+
+struct ContextProbeStep: Codable, Equatable {
+    let chars: Int
+    let ok: Bool
+    let message: String?
+}
+
+struct ContextProbeStatus: Codable, Equatable {
+    let resource_id: String
+    let status: String
+    let model: String?
+    let current_chars: Int?
+    let max_ok_chars: Int?
+    let recommended_chars: Int?
+    let steps: [ContextProbeStep]?
+    let message: String?
+    let waiting_for_slot: Bool?
+
+    var isRunning: Bool { status == "running" }
+
+    var displayMessage: String {
+        let trimmed = message?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !trimmed.isEmpty { return trimmed }
+        switch status {
+        case "running": return "正在测试后面的段是否仍被理解…"
+        case "done": return "测试完成"
+        case "cancelled": return "已取消"
+        case "failed": return "测试失败"
+        default: return ""
+        }
+    }
+}
+
+struct OcrStatus: Codable {
+    let provider: String
+    let ready: Bool
+    let probe_ok: Bool
+    let configured: Bool
+    let key_configured: Bool
+    let model_ready: Bool
+    let message: String?
+    let base_url: String?
 
     var displayMessage: String {
         let trimmed = message?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -803,22 +1167,43 @@ final class CoreClient: ObservableObject {
         return try await Self.decode(SegmentRow.self, from: data)
     }
 
+    func fetchSegmentBoundary(bookId: String, idx: Int) async throws -> SegmentBoundaryPreview {
+        let data = try await get(path: "/books/\(bookId)/segments/\(idx)/boundary")
+        return try await Self.decode(SegmentBoundaryPreview.self, from: data)
+    }
+
+    func moveSegmentBoundary(
+        bookId: String, idx: Int, leftCharCount: Int
+    ) async throws -> SegmentBoundaryMoveResult {
+        struct Body: Codable { let left_char_count: Int }
+        let body = try JSONEncoder().encode(Body(left_char_count: leftCharCount))
+        let data = try await post(path: "/books/\(bookId)/segments/\(idx)/boundary", body: body)
+        return try await Self.decode(SegmentBoundaryMoveResult.self, from: data)
+    }
+
     func fetchSegmentSummary(bookId: String, idx: Int) async throws -> SegmentSummaryDetail {
         let data = try await get(path: "/books/\(bookId)/segments/\(idx)/summary")
         return try await Self.decode(SegmentSummaryDetail.self, from: data)
     }
 
-    func startSummarizeAll() async throws {
-        _ = try await post(path: "/books/summarize/start", body: Data("{}".utf8))
+    func startSummarizeAll(summaryTier: SummaryTier = .normal) async throws {
+        struct Body: Codable { let summary_tier: SummaryTier }
+        let body = try JSONEncoder().encode(Body(summary_tier: summaryTier))
+        _ = try await post(path: "/books/summarize/start", body: body)
     }
 
     func stopSummarizeAll() async throws {
         _ = try await post(path: "/books/summarize/stop", body: Data("{}".utf8))
     }
 
-    func startSummarize(bookIds: [String]) async throws {
-        struct Body: Codable { let book_ids: [String] }
-        let body = try JSONEncoder().encode(Body(book_ids: bookIds))
+    func startSummarize(bookIds: [String], summaryTier: SummaryTier = .normal) async throws {
+        struct Body: Codable {
+            let book_ids: [String]
+            let summary_tier: SummaryTier
+        }
+        let body = try JSONEncoder().encode(
+            Body(book_ids: bookIds, summary_tier: summaryTier)
+        )
         _ = try await post(path: "/books/summarize/start", body: body)
     }
 
@@ -833,26 +1218,51 @@ final class CoreClient: ObservableObject {
         return try await Self.decode(SummarizeOverview.self, from: data)
     }
 
-    func startSummarize(bookId: String) async throws {
-        _ = try await post(path: "/books/\(bookId)/summarize/start", body: Data("{}".utf8))
+    func startSummarize(bookId: String, summaryTier: SummaryTier = .normal) async throws {
+        struct Body: Codable { let summary_tier: SummaryTier }
+        let body = try JSONEncoder().encode(Body(summary_tier: summaryTier))
+        _ = try await post(path: "/books/\(bookId)/summarize/start", body: body)
     }
 
     func stopSummarize(bookId: String) async throws {
         _ = try await post(path: "/books/\(bookId)/summarize/stop", body: Data("{}".utf8))
     }
 
-    func retrySegment(bookId: String, idx: Int) async throws {
-        _ = try await post(path: "/books/\(bookId)/segments/\(idx)/retry", body: Data("{}".utf8))
+    func retrySegment(bookId: String, idx: Int, summaryTier: SummaryTier? = nil) async throws {
+        struct Body: Codable { let summary_tier: SummaryTier? }
+        let body = try JSONEncoder().encode(Body(summary_tier: summaryTier))
+        _ = try await post(path: "/books/\(bookId)/segments/\(idx)/retry", body: body)
     }
 
-    func retrySegments(bookId: String, indices: [Int]) async throws {
-        struct Body: Codable { let indices: [Int] }
-        let body = try JSONEncoder().encode(Body(indices: indices))
+    func retrySegments(bookId: String, indices: [Int], summaryTier: SummaryTier? = nil) async throws {
+        struct Body: Codable {
+            let indices: [Int]
+            let summary_tier: SummaryTier?
+        }
+        let body = try JSONEncoder().encode(
+            Body(indices: indices, summary_tier: summaryTier)
+        )
         _ = try await post(path: "/books/\(bookId)/segments/retry", body: body)
     }
 
-    func regenerateBookSummaries(bookId: String) async throws {
-        _ = try await post(path: "/books/\(bookId)/summarize/regenerate", body: Data("{}".utf8))
+    func regenerateBookSummaries(bookId: String, summaryTier: SummaryTier = .normal) async throws {
+        struct Body: Codable { let summary_tier: SummaryTier }
+        let body = try JSONEncoder().encode(Body(summary_tier: summaryTier))
+        _ = try await post(path: "/books/\(bookId)/summarize/regenerate", body: body)
+    }
+
+    func resegmentBook(bookId: String, chunkTargetChars: Int) async throws {
+        struct Body: Codable { let chunk_target_chars: Int }
+        let body = try JSONEncoder().encode(Body(chunk_target_chars: chunkTargetChars))
+        _ = try await post(path: "/books/\(bookId)/resegment", body: body)
+    }
+
+    func cancelResegmentBook(bookId: String) async throws {
+        _ = try await post(path: "/books/\(bookId)/resegment/cancel", body: Data("{}".utf8))
+    }
+
+    func cancelIngestBook(bookId: String) async throws {
+        _ = try await post(path: "/books/\(bookId)/ingest/cancel", body: Data("{}".utf8))
     }
 
     func chat(bookId: String, message: String, segmentIndex: Int) async throws -> ChatResponse {
@@ -867,6 +1277,8 @@ final class CoreClient: ObservableObject {
         message: String,
         segmentIndex: Int,
         quote: String? = nil,
+        scope: String = "segment",
+        onStatus: ((String) -> Void)? = nil,
         onToken: @escaping (String) -> Void
     ) async throws -> ChatResponse {
         struct Body: Codable {
@@ -874,9 +1286,10 @@ final class CoreClient: ObservableObject {
             let segment_index: Int
             let stream: Bool
             let quote: String?
+            let scope: String
         }
         let body = try JSONEncoder().encode(
-            Body(message: message, segment_index: segmentIndex, stream: true, quote: quote)
+            Body(message: message, segment_index: segmentIndex, stream: true, quote: quote, scope: scope)
         )
         var request = URLRequest(url: url(path: "/books/\(bookId)/chat"))
         request.httpMethod = "POST"
@@ -898,6 +1311,9 @@ final class CoreClient: ObservableObject {
             if obj["type"] as? String == "error" {
                 let msg = obj["message"] as? String ?? "深聊未完成（模型输出异常或上下文过长），请重试"
                 throw NSError(domain: "CoreClient", code: -1, userInfo: [NSLocalizedDescriptionKey: msg])
+            }
+            if obj["type"] as? String == "status", let status = obj["message"] as? String {
+                onStatus?(status)
             }
             if obj["type"] as? String == "token", let token = obj["content"] as? String {
                 tokenBuffer += token
@@ -987,7 +1403,12 @@ final class CoreClient: ObservableObject {
     func updateSettings(
         targetLanguage: String,
         webSearchProvider: String,
+        webSearchEnabled: Bool = true,
         tavilyAPIKey: String? = nil,
+        ocrCloudBaseURL: String? = nil,
+        ocrCloudModel: String? = nil,
+        ocrCloudAPIKey: String? = nil,
+        ocrCloudTimeoutSeconds: Double? = nil,
         debugMode: Bool? = nil,
         autoStartSummary: Bool? = nil,
         models: ModelsSettings? = nil,
@@ -996,7 +1417,12 @@ final class CoreClient: ObservableObject {
         struct Body: Codable {
             let target_language: String
             let web_search_provider: String
+            let web_search_enabled: Bool
             let tavily_api_key: String?
+            let ocr_cloud_base_url: String?
+            let ocr_cloud_model: String?
+            let ocr_cloud_api_key: String?
+            let ocr_cloud_timeout_seconds: Double?
             let debug_mode: Bool?
             let auto_start_summary: Bool?
             let models: ModelsSettings?
@@ -1006,7 +1432,12 @@ final class CoreClient: ObservableObject {
             Body(
                 target_language: targetLanguage,
                 web_search_provider: webSearchProvider,
+                web_search_enabled: webSearchEnabled,
                 tavily_api_key: tavilyAPIKey,
+                ocr_cloud_base_url: ocrCloudBaseURL,
+                ocr_cloud_model: ocrCloudModel,
+                ocr_cloud_api_key: ocrCloudAPIKey,
+                ocr_cloud_timeout_seconds: ocrCloudTimeoutSeconds,
                 debug_mode: debugMode,
                 auto_start_summary: autoStartSummary,
                 models: models,
@@ -1028,9 +1459,47 @@ final class CoreClient: ObservableObject {
         return try await Self.decode(Wrapper.self, from: data).resources
     }
 
+    func fetchOcrStatus() async throws -> OcrStatus {
+        let data = try await get(path: "/settings/ocr/status")
+        return try await Self.decode(OcrStatus.self, from: data)
+    }
+
     func fetchResourceStatus(resourceId: String) async throws -> ResourceStatus {
         let data = try await get(path: "/settings/resources/\(resourceId)/status")
         return try await Self.decode(ResourceStatus.self, from: data)
+    }
+
+    func startContextProbe(
+        resourceId: String,
+        model: String? = nil,
+        baseURL: String? = nil,
+        apiKey: String? = nil
+    ) async throws -> ContextProbeStatus {
+        struct Body: Codable {
+            let model: String?
+            let base_url: String?
+            let api_key: String?
+        }
+        let body = try JSONEncoder().encode(
+            Body(model: model, base_url: baseURL, api_key: apiKey)
+        )
+        let data = try await post(
+            path: "/settings/resources/\(resourceId)/context-probe",
+            body: body
+        )
+        return try await Self.decode(ContextProbeStatus.self, from: data)
+    }
+
+    func fetchContextProbe(resourceId: String) async throws -> ContextProbeStatus {
+        let data = try await get(path: "/settings/resources/\(resourceId)/context-probe")
+        return try await Self.decode(ContextProbeStatus.self, from: data)
+    }
+
+    func cancelContextProbe(resourceId: String) async throws {
+        _ = try await post(
+            path: "/settings/resources/\(resourceId)/context-probe/cancel",
+            body: Data("{}".utf8)
+        )
     }
 
     func fetchOpsOverview() async throws -> OpsOverview {
@@ -1075,6 +1544,7 @@ final class CoreClient: ObservableObject {
         articleId: String,
         message: String,
         quote: String? = nil,
+        onStatus: ((String) -> Void)? = nil,
         onToken: @escaping (String) -> Void
     ) async throws -> ChatResponse {
         struct Body: Codable {
@@ -1103,6 +1573,9 @@ final class CoreClient: ObservableObject {
             if obj["type"] as? String == "error" {
                 let msg = obj["message"] as? String ?? "深聊未完成（模型输出异常或上下文过长），请重试"
                 throw NSError(domain: "CoreClient", code: -1, userInfo: [NSLocalizedDescriptionKey: msg])
+            }
+            if obj["type"] as? String == "status", let status = obj["message"] as? String {
+                onStatus?(status)
             }
             if obj["type"] as? String == "token", let token = obj["content"] as? String {
                 tokenBuffer += token

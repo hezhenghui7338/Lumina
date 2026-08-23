@@ -23,23 +23,63 @@
             <ToggleSwitch x:Name="AutoSummaryToggle" Header="导入后自动开始摘要" OffContent="关" OnContent="开"/>
 
             <TextBlock Text="联网搜索" FontSize="18" FontWeight="SemiBold" Margin="0,8,0,0"/>
+            <ToggleSwitch x:Name="WebSearchToggle" Header="启用联网搜索" OffContent="关" OnContent="开"/>
             <ComboBox x:Name="WebProviderBox" Header="Provider" Width="240">
                 <ComboBoxItem Content="ddgs" Tag="ddgs" IsSelected="True"/>
                 <ComboBoxItem Content="tavily" Tag="tavily"/>
             </ComboBox>
             <PasswordBox x:Name="TavilyKeyBox" Header="Tavily API Key（可选）"/>
 
+            <TextBlock Text="文档识别" FontSize="18" FontWeight="SemiBold" Margin="0,8,0,0"/>
+            <TextBlock Text="Base URL、模型和 Key 均配置后优先使用云端 OCR；扫描页图片会上传至该服务。任一项为空则使用本地 RapidOCR，云端失败不会静默回退。"
+                       FontSize="12" TextWrapping="WrapWholeWords"
+                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+            <TextBox x:Name="OcrBaseUrlBox" Header="OpenAI 兼容 Base URL" PlaceholderText="https://api.openai.com/v1"/>
+            <TextBox x:Name="OcrModelBox" Header="视觉模型" PlaceholderText="gpt-4o-mini"/>
+            <PasswordBox x:Name="OcrKeyBox" Header="OCR API Key"/>
+            <StackPanel Orientation="Horizontal" Spacing="8">
+                <Button Content="保存并测试 OCR" Click="TestOcr_Click"/>
+                <TextBlock x:Name="OcrStatusText" VerticalAlignment="Center" TextWrapping="WrapWholeWords"/>
+            </StackPanel>
+
             <TextBlock Text="模型资源池" FontSize="18" FontWeight="SemiBold" Margin="0,8,0,0"/>
+            <TextBlock Text="「测上下文」检查多段拼在一起后，模型会不会丢掉最后几段。按仍能理解的长度取 80%，上限 3500 字，保存设置后写入分段目标。"
+                       FontSize="12" TextWrapping="WrapWholeWords"
+                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
             <TextBlock x:Name="ResourceStatusText" FontSize="12" TextWrapping="WrapWholeWords"
                        Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
-            <TextBox x:Name="OllamaModelBox" Header="Ollama 模型" PlaceholderText="qwen3.5:4b"/>
+            <TextBox x:Name="OllamaModelBox" Header="Ollama 正常模型" PlaceholderText="qwen3.5:4b"/>
+            <TextBox x:Name="OllamaAdvancedModelBox" Header="Ollama 高级模型（留空回退正常模型）"/>
             <TextBox x:Name="OllamaUrlBox" Header="Ollama Base URL" PlaceholderText="http://127.0.0.1:11434"/>
+            <StackPanel Orientation="Horizontal" Spacing="8">
+                <Button x:Name="OllamaProbeBtn" Content="测上下文" Click="ProbeContext_Click" Tag="ollama"/>
+                <TextBlock x:Name="OllamaProbeText" VerticalAlignment="Center" TextWrapping="WrapWholeWords"
+                           Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+            </StackPanel>
             <TextBox x:Name="OpenAiKeyBox" Header="OpenAI API Key（可选）"/>
-            <TextBox x:Name="OpenAiModelBox" Header="OpenAI 模型" PlaceholderText="gpt-4o-mini"/>
+            <TextBox x:Name="OpenAiModelBox" Header="OpenAI 正常模型" PlaceholderText="gpt-4o-mini"/>
+            <TextBox x:Name="OpenAiAdvancedModelBox" Header="OpenAI 高级模型（留空回退正常模型）"/>
+            <StackPanel Orientation="Horizontal" Spacing="8">
+                <Button x:Name="OpenAiProbeBtn" Content="测上下文" Click="ProbeContext_Click" Tag="openai"/>
+                <TextBlock x:Name="OpenAiProbeText" VerticalAlignment="Center" TextWrapping="WrapWholeWords"
+                           Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+            </StackPanel>
             <TextBox x:Name="OpenRouterKeyBox" Header="OpenRouter API Key（可选）"/>
-            <TextBox x:Name="OpenRouterModelBox" Header="OpenRouter 模型"/>
+            <TextBox x:Name="OpenRouterModelBox" Header="OpenRouter 正常模型"/>
+            <TextBox x:Name="OpenRouterAdvancedModelBox" Header="OpenRouter 高级模型（留空回退正常模型）"/>
+            <StackPanel Orientation="Horizontal" Spacing="8">
+                <Button x:Name="OpenRouterProbeBtn" Content="测上下文" Click="ProbeContext_Click" Tag="openrouter"/>
+                <TextBlock x:Name="OpenRouterProbeText" VerticalAlignment="Center" TextWrapping="WrapWholeWords"
+                           Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+            </StackPanel>
             <TextBox x:Name="CursorKeyBox" Header="Cursor API Key（可选）"/>
-            <TextBox x:Name="CursorModelBox" Header="Cursor 模型" PlaceholderText="composer-2.5"/>
+            <TextBox x:Name="CursorModelBox" Header="Cursor 正常模型" PlaceholderText="composer-2.5"/>
+            <TextBox x:Name="CursorAdvancedModelBox" Header="Cursor 高级模型（留空回退正常模型）"/>
+            <StackPanel Orientation="Horizontal" Spacing="8">
+                <Button x:Name="CursorProbeBtn" Content="测上下文" Click="ProbeContext_Click" Tag="cursor"/>
+                <TextBlock x:Name="CursorProbeText" VerticalAlignment="Center" TextWrapping="WrapWholeWords"
+                           Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+            </StackPanel>
             <TextBox x:Name="ChatPriorityBox" Header="深聊优先级（逗号分隔 resource id）"
                      PlaceholderText="openai,ollama"/>
             <TextBox x:Name="SummarizePriorityBox" Header="摘要优先级（逗号分隔 resource id）"

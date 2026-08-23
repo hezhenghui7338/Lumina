@@ -26,6 +26,17 @@ if (Test-Path -LiteralPath $babelDir -PathType Container) {
         Remove-Item -Force
 }
 
+# RapidOCR only needs onnxruntime capi at inference time.
+$ort = Join-Path $Internal "onnxruntime"
+if (Test-Path -LiteralPath $ort -PathType Container) {
+    foreach ($name in @("transformers", "quantization", "tools", "datasets")) {
+        $ballast = Join-Path $ort $name
+        if (Test-Path -LiteralPath $ballast) {
+            Remove-Item -LiteralPath $ballast -Recurse -Force
+        }
+    }
+}
+
 $cursorSdk = Join-Path $Internal "cursor_sdk"
 if (Test-Path -LiteralPath $cursorSdk) {
     Write-Error "cursor_sdk must not be in release sidecar: $cursorSdk"
@@ -34,6 +45,18 @@ if (Test-Path -LiteralPath $cursorSdk) {
 $smallLeft = @(Get-ChildItem -LiteralPath $modelsDir -Filter "*_small.onnx" -ErrorAction SilentlyContinue)
 if ($smallLeft.Count -gt 0) {
     Write-Error "small OCR models must be pruned from release sidecar"
+}
+
+if (Test-Path -LiteralPath $ort -PathType Container) {
+    foreach ($name in @("transformers", "quantization", "tools", "datasets")) {
+        if (Test-Path -LiteralPath (Join-Path $ort $name)) {
+            Write-Error "onnxruntime $name must be pruned from release sidecar"
+        }
+    }
+    $capi = Join-Path $ort "capi"
+    if (-not (Test-Path -LiteralPath $capi -PathType Container)) {
+        Write-Error "onnxruntime capi missing after prune: $capi"
+    }
 }
 
 $size = (Get-ChildItem -LiteralPath $Sidecar -Recurse -File | Measure-Object -Property Length -Sum).Sum

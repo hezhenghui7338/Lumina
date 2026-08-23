@@ -8,8 +8,9 @@ from contextlib import asynccontextmanager
 import uvicorn
 from fastapi import FastAPI
 
-from lumina_core.api.routes import router
+from lumina_core import __version__
 from lumina_core.api.ops_routes import router as ops_router
+from lumina_core.api.routes import router
 from lumina_core.app_state import AppState, create_app_state
 from lumina_core.config import Settings
 
@@ -27,9 +28,8 @@ async def lifespan(app: FastAPI):
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
-    settings = settings or Settings()
     state = create_app_state(settings)
-    app = FastAPI(title="lumina-core", version="0.8.1", lifespan=lifespan)
+    app = FastAPI(title="lumina-core", version=__version__, lifespan=lifespan)
     app.state.lumina = state
     app.include_router(router)
     app.include_router(ops_router)

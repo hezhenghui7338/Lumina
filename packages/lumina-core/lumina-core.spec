@@ -13,9 +13,23 @@ is_windows = sys.platform.startswith("win")
 use_strip = not is_windows
 
 datas = [(str(root / "config" / "models.yaml"), "config")]
+embedding_assets = root / "models" / "embedding"
+if embedding_assets.is_dir():
+    datas.append((str(embedding_assets), "models/embedding"))
 
 hiddenimports = collect_submodules("lumina_core")
-for pkg in ("uvicorn", "fastapi", "starlette", "pydantic", "email", "rapidocr", "onnxruntime", "fitz"):
+for pkg in (
+    "uvicorn",
+    "fastapi",
+    "starlette",
+    "pydantic",
+    "email",
+    "rapidocr",
+    "onnxruntime",
+    "tokenizers",
+    "fitz",
+    "pypdf",
+):
     try:
         _datas, _binaries, _hidden = collect_all(pkg)
         datas += _datas
@@ -39,6 +53,11 @@ hiddenimports += [
     "multipart",
     "multipart.multipart",
     "numpy",
+    "encodings.utf_8",
+    "encodings.utf_8_sig",
+    "encodings.gb18030",
+    "encodings.gbk",
+    "encodings.latin_1",
 ]
 
 a = Analysis(

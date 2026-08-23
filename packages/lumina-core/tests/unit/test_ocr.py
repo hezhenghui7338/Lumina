@@ -5,12 +5,16 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import httpx
 import pytest
 
 from lumina_core import config
+from lumina_core.config import Settings
 from lumina_core.ingest.ocr import (
     OcrDocumentResult,
+    _cloud_request,
     ocr_available,
+    ocr_cloud_configured,
     ocr_dependency_warning,
     ocr_install_hint,
     ocr_metadata_from_result,
@@ -18,7 +22,15 @@ from lumina_core.ingest.ocr import (
 )
 from lumina_core.ingest.pdf import load_pdf
 from lumina_core.main import smoke_ocr
-from tests.support.ocr_helpers import fake_ocr_document, fake_ocr_pdf, write_blank_pdf, write_image_only_pdf
+from tests.support.ocr_helpers import (
+    fake_ocr_document,
+    fake_ocr_pdf,
+    live_ocr_skip_reason,
+    write_blank_pdf,
+    write_image_only_pdf,
+)
+
+_LIVE_OCR_SKIP = live_ocr_skip_reason()
 
 
 def _fake_ocr_pdf(_path: Path, **_kwargs) -> OcrDocumentResult:
@@ -56,10 +68,7 @@ def test_ocr_dependency_warning_when_disabled(monkeypatch):
     assert ocr_available() is False
 
 
-@pytest.mark.skipif(
-    ocr_dependency_warning() is not None,
-    reason=f"OCR deps unavailable: {ocr_dependency_warning() or ''}",
-)
+@pytest.mark.skipif(_LIVE_OCR_SKIP is not None, reason=_LIVE_OCR_SKIP or "")
 def test_ocr_pdf_on_image_only_page(tmp_path: Path):
     """Live OCR stack: image-only PDF should yield non-empty text."""
     pdf = tmp_path / "image-only.pdf"
@@ -71,10 +80,7 @@ def test_ocr_pdf_on_image_only_page(tmp_path: Path):
     assert "SCAN" in normalized or "123" in normalized
 
 
-@pytest.mark.skipif(
-    ocr_dependency_warning() is not None,
-    reason=f"OCR deps unavailable: {ocr_dependency_warning() or ''}",
-)
+@pytest.mark.skipif(_LIVE_OCR_SKIP is not None, reason=_LIVE_OCR_SKIP or "")
 def test_load_pdf_runs_real_ocr_on_image_only_page(tmp_path: Path):
     pdf = tmp_path / "scan-live.pdf"
     write_image_only_pdf(pdf, text="SCAN123")
@@ -171,3 +177,80 @@ def test_ocr_metadata_from_result():
     assert meta["ocr_used"] is True
     assert meta["ocr_pages"] == 2
     assert meta["ocr_confidence_avg"] == 0.92
+
+
+def test_cloud_ocr_configuration_requires_all_fields():
+    assert not ocr_cloud_configured(Settings(ocr_cloud_base_url="https://example.test/v1"))
+    assert ocr_cloud_configured(
+        Settings(
+            ocr_cloud_base_url="https://example.test/v1",
+            ocr_cloud_model="vision-model",
+            ocr_cloud_api_key="secret",
+        )
+    )
+
+
+def test_ocr_pdf_prefers_cloud_without_initializing_local(tmp_path: Path, monkeypatch):
+    pdf = tmp_path / "scan.pdf"
+    write_blank_pdf(pdf)
+    expected = OcrDocumentResult(text="云端文字", engine="openai-compatible/vision")
+    monkeypatch.setattr("lumina_core.ingest.ocr._ocr_pdf_cloud", lambda *_args, **_kwargs: expected)
+    monkeypatch.setattr(
+        "lumina_core.ingest.ocr._ocr_pdf_local",
+        lambda *_args, **_kwargs: pytest.fail("云端配置完整时不应初始化本地 OCR"),
+    )
+    settings = Settings(
+        ocr_cloud_base_url="https://example.test/v1",
+        ocr_cloud_model="vision",
+        ocr_cloud_api_key="secret",
+    )
+    assert ocr_pdf(pdf, settings=settings) is expected
+
+
+def test_cloud_ocr_failure_does_not_fallback_local(tmp_path: Path, monkeypatch):
+    pdf = tmp_path / "scan.pdf"
+    write_blank_pdf(pdf)
+
+    def fail_cloud(*_args, **_kwargs):
+        raise RuntimeError("云端 OCR 请求受限")
+
+    monkeypatch.setattr("lumina_core.ingest.ocr._ocr_pdf_cloud", fail_cloud)
+    monkeypatch.setattr(
+        "lumina_core.ingest.ocr._ocr_pdf_local",
+        lambda *_args, **_kwargs: pytest.fail("云端失败时不应回退本地 OCR"),
+    )
+    settings = Settings(
+        ocr_cloud_base_url="https://example.test/v1",
+        ocr_cloud_model="vision",
+        ocr_cloud_api_key="secret",
+    )
+    with pytest.raises(RuntimeError, match="请求受限"):
+        ocr_pdf(pdf, settings=settings)
+
+
+def test_cloud_request_sends_image_and_parses_text():
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = __import__("json").loads(request.content)
+        assert payload["model"] == "vision-model"
+        image_url = payload["messages"][0]["content"][1]["image_url"]["url"]
+        assert image_url.startswith("data:image/jpeg;base64,")
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": "识别结果"}}]},
+        )
+
+    with httpx.Client(
+        base_url="https://example.test/v1/",
+        transport=httpx.MockTransport(handler),
+    ) as client:
+        text = _cloud_request(client, model="vision-model", image_bytes=b"jpeg")
+    assert text == "识别结果"
+
+
+def test_cloud_request_unauthorized_is_readable():
+    transport = httpx.MockTransport(lambda _request: httpx.Response(401))
+    with (
+        httpx.Client(base_url="https://example.test/v1/", transport=transport) as client,
+        pytest.raises(RuntimeError, match="API Key 无效"),
+    ):
+        _cloud_request(client, model="vision-model", image_bytes=b"jpeg")

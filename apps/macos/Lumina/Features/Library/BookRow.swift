@@ -11,7 +11,7 @@ struct BookRow: View {
     let onReclassify: () -> Void
     let onExport: () -> Void
     let onDelete: () -> Void
-    var onStartSummarize: (() -> Void)? = nil
+    var onStartSummarize: ((SummaryTier) -> Void)? = nil
     var onStopSummarize: (() -> Void)? = nil
 
     private var statusText: String {
@@ -25,7 +25,7 @@ struct BookRow: View {
         let total = book.summaryTotal
         if total <= 0 { return book.statusLabel }
         let ready = book.summaryReady
-        if ready >= total { return "已摘要" }
+        if ready >= total { return book.readingStatusLabel }
 
         switch book.summarize_state {
         case "running":
@@ -104,7 +104,7 @@ struct BookRow: View {
                             .controlSize(.small)
                             .tint(LuminaTheme.accent)
                     }
-                } else if book.summaryTotal > 0 {
+                } else if book.summaryTotal > 0, !book.hasCompletedSummary {
                     if book.summarize_state == "queued" {
                         ProgressView()
                             .controlSize(.small)
@@ -121,6 +121,11 @@ struct BookRow: View {
                 HStack(spacing: 6) {
                     summarizeStateBadge
                     categoryBadge
+                    if let count = book.segment_count, count > 0 {
+                        Text("\(count) 段")
+                            .font(.caption2)
+                            .foregroundStyle(LuminaTheme.textSecondary)
+                    }
                 }
             }
             Spacer(minLength: 0)
@@ -135,8 +140,10 @@ struct BookRow: View {
                 onReclassify()
             }
             if book.canStartSummarize, let onStartSummarize {
-                Button("开始摘要") {
-                    onStartSummarize()
+                Menu("开始摘要") {
+                    ForEach(SummaryTier.allCases) { tier in
+                        Button(tier.startMenuLabel) { onStartSummarize(tier) }
+                    }
                 }
             }
             if book.canStopSummarize, let onStopSummarize {
@@ -159,7 +166,7 @@ struct BookRow: View {
         let total = book.summaryTotal
         guard total > 0 else { return book.statusLabel }
         let ready = book.summaryReady
-        if ready >= total { return "已摘要" }
+        if ready >= total { return book.readingStatusLabel }
         var label = "正在摘要 · \(ready)/\(total)"
         if let active = book.summarize_active,
            let activeLabel = SummaryMetricsFormatter.bookActiveLabel(active: active, now: now) {
@@ -170,41 +177,51 @@ struct BookRow: View {
 
     @ViewBuilder
     private var summarizeStateBadge: some View {
-        switch book.summarize_state {
-        case "running":
-            Text("正在摘要")
+        if book.hasCompletedSummary {
+            Text("摘要完成")
                 .font(.caption2)
                 .padding(.horizontal, 6)
                 .padding(.vertical, 2)
                 .background(LuminaTheme.accentMuted)
                 .foregroundStyle(LuminaTheme.accent)
                 .clipShape(Capsule())
-        case "queued":
-            Text("排队中")
-                .font(.caption2)
-                .padding(.horizontal, 6)
-                .padding(.vertical, 2)
-                .background(LuminaTheme.border.opacity(0.45))
-                .foregroundStyle(LuminaTheme.textSecondary)
-                .clipShape(Capsule())
-        case "paused":
-            Text("已暂停")
-                .font(.caption2)
-                .padding(.horizontal, 6)
-                .padding(.vertical, 2)
-                .background(Color.orange.opacity(0.15))
-                .foregroundStyle(.orange)
-                .clipShape(Capsule())
-        case "idle":
-            Text("待摘要")
-                .font(.caption2)
-                .padding(.horizontal, 6)
-                .padding(.vertical, 2)
-                .background(LuminaTheme.border.opacity(0.35))
-                .foregroundStyle(LuminaTheme.textSecondary)
-                .clipShape(Capsule())
-        default:
-            EmptyView()
+        } else {
+            switch book.summarize_state {
+            case "running":
+                Text("正在摘要")
+                    .font(.caption2)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(LuminaTheme.accentMuted)
+                    .foregroundStyle(LuminaTheme.accent)
+                    .clipShape(Capsule())
+            case "queued":
+                Text("排队中")
+                    .font(.caption2)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(LuminaTheme.border.opacity(0.45))
+                    .foregroundStyle(LuminaTheme.textSecondary)
+                    .clipShape(Capsule())
+            case "paused":
+                Text("已暂停")
+                    .font(.caption2)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(Color.orange.opacity(0.15))
+                    .foregroundStyle(.orange)
+                    .clipShape(Capsule())
+            case "idle":
+                Text("待摘要")
+                    .font(.caption2)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(LuminaTheme.border.opacity(0.35))
+                    .foregroundStyle(LuminaTheme.textSecondary)
+                    .clipShape(Capsule())
+            default:
+                EmptyView()
+            }
         }
     }
 

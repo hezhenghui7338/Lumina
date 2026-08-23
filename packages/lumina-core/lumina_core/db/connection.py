@@ -25,6 +25,11 @@ def db_lock(conn: sqlite3.Connection) -> threading.RLock:
     return attach_db_lock(conn)
 
 
+def detach_db_lock(conn: sqlite3.Connection) -> None:
+    """Forget a short-lived connection after its users have stopped."""
+    _CONN_LOCKS.pop(id(conn), None)
+
+
 @contextmanager
 def db_transaction(conn: sqlite3.Connection) -> Iterator[sqlite3.Connection]:
     """Serialize writes on the shared connection; commit or rollback atomically."""

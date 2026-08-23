@@ -18,7 +18,7 @@ from tests.support.mock_router import MockModelRouter
 BOOK_ID = "b1"
 SEG_ID = "s1"
 
-REQUIRED_BOOK_COLUMNS = frozenset({"is_favorite", "category", "last_opened_at"})
+REQUIRED_BOOK_COLUMNS = frozenset({"is_favorite", "category", "last_opened_at", "index_status"})
 REQUIRED_SEGMENT_COLUMNS = frozenset(
     {
         "chapter",
@@ -151,6 +151,8 @@ def test_legacy_schema_migrates_required_columns(tmp_path):
     assert REQUIRED_BOOK_COLUMNS <= book_cols
     assert REQUIRED_SEGMENT_COLUMNS <= seg_cols
     assert "quote" in note_cols
+    node_cols = {row[1] for row in conn.execute("PRAGMA table_info(summary_nodes)")}
+    assert {"book_id", "level", "summary_json"} <= node_cols
     conn.close()
 
 

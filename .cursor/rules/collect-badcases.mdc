@@ -1,0 +1,14 @@
+---
+description: 对话中发现的坑必须落盘，发布前必须覆盖，避免修过的问题反复漏掉
+alwaysApply: true
+---
+
+# 采集 Bad Case（每次对话）
+
+对话中一旦出现 **bad case**（用户纠错、「不对 / 还是 / 又坏了 / 之前修过」、已确认 bug、回归、契约破裂、agent 改完引入的倒退），**本回合**写入 [`tests/badcases/draft.jsonl`](tests/badcases/draft.jsonl)，不要问「要不要记」。
+
+修这个坑时：补最小回归测试（或流程规则），把该行升到 [`tests/badcases/catalog.jsonl`](tests/badcases/catalog.jsonl)。
+
+发布 / `just release` / `build-release`：先跑 `python3 scripts/check-badcases.py`。`draft.jsonl` 非空或 catalog 指针失效则禁止打包。
+
+详情与 schema：项目 skill `badcase`（[`.cursor/skills/badcase/SKILL.md`](.cursor/skills/badcase/SKILL.md)）。

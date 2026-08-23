@@ -122,3 +122,105 @@ final class SegmentReadyEventTests: XCTestCase {
         XCTAssertNil(ParsedSummary(json: "not json"))
     }
 }
+
+@MainActor
+final class ReaderSummaryRefreshTests: XCTestCase {
+    func testSegmentReady_replacesCachedSummaryAfterResummarize() async {
+        let viewModel = ReaderViewModel()
+        viewModel.segments = [
+            SegmentRow(
+                id: "s0",
+                idx: 0,
+                label: "旧标题",
+                chapter: nil,
+                summary_status: "ready",
+                summary_json: Self.summaryJSON("旧摘要。"),
+                raw_text: nil,
+                translation: nil,
+                anchor_label: nil,
+                summary_provider: nil,
+                summary_model: nil,
+                summary_tier: nil,
+                char_count: nil,
+                retry_count: nil,
+                summary_duration_s: nil,
+                summary_llm_attempts: nil
+            ),
+        ]
+        let core = CoreClient(baseURL: URL(string: "http://127.0.0.1:8765")!)
+
+        viewModel.handleEvent(Self.readyEvent(sentence: "旧摘要。"), core: core)
+        let firstReady = await Self.waitUntil {
+            viewModel.parsedSummary(for: 0)?.sentences.first == "旧摘要。"
+        }
+        XCTAssertTrue(firstReady, "first summary should parse into the reader cache")
+
+        viewModel.handleEvent(Self.readyEvent(sentence: "新摘要。"), core: core)
+        let replaced = await Self.waitUntil {
+            viewModel.parsedSummary(for: 0)?.sentences.first == "新摘要。"
+        }
+        XCTAssertTrue(replaced, "re-summarize must replace the cached parsed summary without leaving the reader")
+        XCTAssertEqual(viewModel.segments[0].summary_json, Self.summaryJSON("新摘要。"))
+    }
+
+    func testSegmentReady_sameJSON_keepsExistingParse() async {
+        let viewModel = ReaderViewModel()
+        viewModel.segments = [
+            SegmentRow(
+                id: "s0",
+                idx: 0,
+                label: nil,
+                chapter: nil,
+                summary_status: "ready",
+                summary_json: Self.summaryJSON("同一句。"),
+                raw_text: nil,
+                translation: nil,
+                anchor_label: nil,
+                summary_provider: nil,
+                summary_model: nil,
+                summary_tier: nil,
+                char_count: nil,
+                retry_count: nil,
+                summary_duration_s: nil,
+                summary_llm_attempts: nil
+            ),
+        ]
+        let core = CoreClient(baseURL: URL(string: "http://127.0.0.1:8765")!)
+        viewModel.handleEvent(Self.readyEvent(sentence: "同一句。"), core: core)
+        let parsed = await Self.waitUntil { viewModel.parsedSummary(for: 0) != nil }
+        XCTAssertTrue(parsed)
+        let first = viewModel.parsedSummary(for: 0)
+
+        viewModel.handleEvent(Self.readyEvent(sentence: "同一句。"), core: core)
+        try? await Task.sleep(nanoseconds: 80_000_000)
+        XCTAssertEqual(viewModel.parsedSummary(for: 0), first)
+    }
+
+    private static func summaryJSON(_ sentence: String) -> String {
+        """
+        {"sentences":["\(sentence)"],"bullets":[{"label":"要点","body":"说明文字。"}],"notes":[],"follow_ups":[],"label":"段","anchor":"段 1"}
+        """
+    }
+
+    private static func readyEvent(sentence: String) -> [String: Any] {
+        [
+            "type": "segment_ready",
+            "idx": 0,
+            "summary_status": "ready",
+            "label": "段",
+            "summary_json": summaryJSON(sentence),
+        ]
+    }
+
+    private static func waitUntil(
+        timeout: TimeInterval = 1.0,
+        _ condition: () -> Bool
+    ) async -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if condition() { return true }
+            try? await Task.sleep(nanoseconds: 20_000_000)
+        }
+        return condition()
+    }
+}

@@ -2,17 +2,21 @@
 
 from __future__ import annotations
 
+import threading
 from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
 
 from lumina_core.config import Settings
-from lumina_core.db.repos import SegmentRepo
+from lumina_core.db.connection import db_lock
+from lumina_core.db.repos import BookRepo, SegmentRepo
 from lumina_core.db.schema import init_db
+from lumina_core.jobs.ingest import _persist_ingest_sync
+from lumina_core.jobs.resegment import _persist_resegment_sync
 from lumina_core.main import create_app
 from lumina_core.models.router import set_router
-from tests.support.import_helpers import import_sample_book
+from tests.support.import_helpers import import_sample_book, wait_for_ingest
 from tests.support.mock_router import MockModelRouter, load_json_fixture
 
 LLM_FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "llm"
@@ -42,6 +46,101 @@ def test_sqlite_wal_enabled(tmp_path):
     mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
     assert str(mode).lower() == "wal"
     conn.close()
+
+
+def test_ingest_persist_does_not_wait_for_api_connection_lock(tmp_path):
+    """Import writes use another WAL connection, not the API connection lock."""
+    db_path = tmp_path / "concurrent.db"
+    api_conn = init_db(db_path)
+    BookRepo(api_conn).insert(
+        id="importing",
+        title="Importing",
+        format="txt",
+        file_path="/tmp/importing.txt",
+        segment_count=0,
+        status="processing",
+    )
+    segments = [
+        {
+            "id": "import-segment",
+            "book_id": "importing",
+            "idx": 0,
+            "raw_text": "正文",
+            "summary_status": "pending",
+        }
+    ]
+    errors: list[BaseException] = []
+
+    def persist() -> None:
+        try:
+            _persist_ingest_sync(
+                db_path,
+                book_id="importing",
+                src=Path("/tmp/importing.txt"),
+                metadata={},
+                detected_language="zh",
+                target_language="zh-CN",
+                segments=segments,
+                ingest_meta={"total_char_count": 2},
+            )
+        except BaseException as exc:  # pragma: no cover - surfaced by assertion
+            errors.append(exc)
+
+    worker = threading.Thread(target=persist)
+    with db_lock(api_conn):
+        worker.start()
+        worker.join(timeout=2)
+
+    assert worker.is_alive() is False
+    assert errors == []
+    assert SegmentRepo(api_conn).get_by_index("importing", 0)["raw_text"] == "正文"
+    api_conn.close()
+
+
+def test_resegment_persist_does_not_wait_for_api_connection_lock(tmp_path):
+    """Resegment replacement uses another WAL connection, not the API lock."""
+    db_path = tmp_path / "resegment-concurrent.db"
+    api_conn = init_db(db_path)
+    BookRepo(api_conn).insert(
+        id="resegmenting",
+        title="Resegmenting",
+        format="txt",
+        file_path="/tmp/resegmenting.txt",
+        segment_count=0,
+        status="processing",
+    )
+    segments = [
+        {
+            "id": "new-segment",
+            "book_id": "resegmenting",
+            "idx": 0,
+            "raw_text": "新正文",
+            "summary_status": "pending",
+        }
+    ]
+    errors: list[BaseException] = []
+
+    def persist() -> None:
+        try:
+            _persist_resegment_sync(
+                db_path,
+                "resegmenting",
+                segments,
+                metadata_json={"chunk_target_chars": 2000},
+                status="reading",
+            )
+        except BaseException as exc:  # pragma: no cover - surfaced by assertion
+            errors.append(exc)
+
+    worker = threading.Thread(target=persist)
+    with db_lock(api_conn):
+        worker.start()
+        worker.join(timeout=2)
+
+    assert worker.is_alive() is False
+    assert errors == []
+    assert SegmentRepo(api_conn).get_by_index("resegmenting", 0)["raw_text"] == "新正文"
+    api_conn.close()
 
 
 def test_list_segments_excludes_raw_text_and_summary_json(client):
@@ -246,3 +345,101 @@ def test_health_responds_during_get_segment(client, monkeypatch):
     worker.join(timeout=5)
     assert worker.is_alive() is False
     assert health_during == ["ok"]
+
+
+def test_health_responds_while_open_book_waits_on_database(client, monkeypatch):
+    """Opening another book must not block the sidecar event loop."""
+    import time
+
+    book_id = import_sample_book(client)
+    original_update = BookRepo.update
+
+    def slow_update(self, target_book_id, **fields):
+        if target_book_id == book_id and "last_opened_at" in fields:
+            time.sleep(0.2)
+        return original_update(self, target_book_id, **fields)
+
+    monkeypatch.setattr(BookRepo, "update", slow_update)
+
+    worker = threading.Thread(target=lambda: client.post(f"/books/{book_id}/open"))
+    worker.start()
+    time.sleep(0.05)
+    health = client.get("/health").json()["status"]
+    worker.join(timeout=5)
+
+    assert worker.is_alive() is False
+    assert health == "ok"
+
+
+def test_context_probe_handler_does_not_block_health(client):
+    """POST /context-probe must return before LLM rungs finish."""
+    import time
+
+    client.app.state.lumina.router.pinned_delay_s = 1.5
+    health_during: list[str] = []
+
+    def start_probe() -> None:
+        client.post("/settings/resources/ollama/context-probe", json={})
+
+    worker = threading.Thread(target=start_probe)
+    worker.start()
+    time.sleep(0.05)
+    health_during.append(client.get("/health").json()["status"])
+    worker.join(timeout=5)
+    client.post("/settings/resources/ollama/context-probe/cancel")
+    assert worker.is_alive() is False
+    assert health_during == ["ok"]
+
+
+def test_health_responds_while_ingest_extracts(client, monkeypatch):
+    """Ingest CPU work must yield so /health stays on the event loop."""
+    import time
+
+    from lumina_core.jobs import ingest as ingest_module
+
+    entered = threading.Event()
+
+    def slow_load_document(*args, **kwargs):
+        entered.set()
+        time.sleep(0.3)
+        cancel = kwargs.get("cancel_event")
+        if cancel is not None and cancel.is_set():
+            from lumina_core.ingest.progress import DocumentLoadCancelled
+
+            raise DocumentLoadCancelled("已取消")
+        return "正文段落。", {}
+
+    monkeypatch.setattr(ingest_module, "load_document", slow_load_document)
+    sample = BOOK_FIXTURES / "sample.txt"
+    book_id = client.post("/books/import", json={"paths": [str(sample)]}).json()["books"][0][
+        "book_id"
+    ]
+    assert entered.wait(timeout=2)
+    health = client.get("/health").json()["status"]
+    wait_for_ingest(client, book_id, timeout=5.0)
+    assert health == "ok"
+
+
+def test_health_responds_while_summarize_indexes(client, monkeypatch):
+    """FTS index after a segment summary must not block the sidecar event loop."""
+    import time
+
+    from lumina_core.search import fts as fts_module
+
+    book_id = import_sample_book(client)
+    orig_index = fts_module.index_segment
+    entered = threading.Event()
+
+    def slow_index_segment(conn, book, seg):
+        entered.set()
+        time.sleep(0.3)
+        return orig_index(conn, book, seg)
+
+    monkeypatch.setattr(fts_module, "index_segment", slow_index_segment)
+    assert client.post(f"/books/{book_id}/summarize/start").status_code == 200
+    assert entered.wait(timeout=5)
+    started = time.monotonic()
+    health = client.get("/health").json()["status"]
+    elapsed = time.monotonic() - started
+    assert health == "ok"
+    assert elapsed < 0.15

@@ -2,12 +2,20 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
 
-from lumina_core.api.routes import _prioritize_summarize_activity
+from pydantic import ValidationError
+
+from lumina_core.api.routes import (
+    ResegmentRequest,
+    _prioritize_summarize_activity,
+    apply_book_list_filter,
+    book_public_dict,
+)
 from lumina_core.config import Settings
 from lumina_core.db.repos import BookRepo, SegmentRepo
 from lumina_core.main import create_app
@@ -74,6 +82,20 @@ def test_books_get_returns_bool_favorite(client):
     assert book["is_favorite"] is True
 
 
+def test_book_chat_scope_requires_ready_index(client):
+    book_id = _import_sample(client)
+    client.post(f"/books/{book_id}/summarize/stop")
+    book = client.get(f"/books/{book_id}").json()
+    if book.get("index_status") == "ready":
+        return
+    resp = client.post(
+        f"/books/{book_id}/chat",
+        json={"message": "全书？", "segment_index": 0, "scope": "book"},
+    )
+    assert resp.status_code == 409
+    assert "索引" in (resp.json().get("detail") or "")
+
+
 def test_books_list_summary_progress_matches_get(client):
     """GET /books must return live summary_ready_count (library progress bar)."""
     book_id = _import_sample(client)
@@ -83,12 +105,13 @@ def test_books_list_summary_progress_matches_get(client):
     seg = SegmentRepo(conn).get_by_index(book_id, 0)
     assert seg is not None
     SegmentRepo(conn).set_status(seg["id"], "ready")
+    segment_total = len(SegmentRepo(conn).list_for_book(book_id, include_body=False))
 
     detail = client.get(f"/books/{book_id}").json()
     listed = next(b for b in client.get("/books").json()["books"] if b["id"] == book_id)
 
     assert detail["summary_ready_count"] == 1
-    assert detail["summary_total_count"] == 1
+    assert detail["summary_total_count"] == segment_total
     assert listed["summary_ready_count"] == detail["summary_ready_count"]
     assert listed["summary_total_count"] == detail["summary_total_count"]
 
@@ -122,6 +145,21 @@ def test_prioritize_summarize_activity_orders_running_then_queued():
     result = _prioritize_summarize_activity(books)
 
     assert [b["id"] for b in result] == ["running", "queued", "idle", "recent"]
+
+
+def test_apply_book_list_filter_summarizing_and_idle():
+    books = [
+        {"id": "idle", "summarize_state": "idle"},
+        {"id": "paused", "summarize_state": "paused"},
+        {"id": "running", "summarize_state": "running"},
+        {"id": "queued", "summarize_state": "queued"},
+        {"id": "done", "summarize_state": "summarized"},
+    ]
+    summarizing = apply_book_list_filter(books, "summarizing")
+    idle = apply_book_list_filter(books, "idle")
+    assert [b["id"] for b in summarizing] == ["running", "queued"]
+    assert [b["id"] for b in idle] == ["idle", "paused"]
+    assert apply_book_list_filter(books, "all") == books
 
 
 def test_list_books_recent_prioritizes_summarize_activity(client):
@@ -164,6 +202,39 @@ def test_list_books_recent_prioritizes_summarize_activity(client):
     assert api_title_ids == repo_title_ids
 
 
+def test_list_books_filter_summarizing_uses_queue_state(client):
+    book_running = import_sample_book(client, sample_name="sample.txt")
+    book_idle = import_sample_book(client, sample_name="chunk_classical.txt")
+
+    queue = client.app.state.lumina.job_queue
+    original = queue.summarize_state_by_book
+
+    def fake_state_by_book():
+        base = original()
+        base[book_running] = {
+            "summarize_state": "running",
+            "summarize_queued_count": 0,
+        }
+        base[book_idle] = {
+            "summarize_state": "idle",
+            "summarize_queued_count": 0,
+        }
+        return base
+
+    queue.summarize_state_by_book = fake_state_by_book
+
+    summarizing_ids = [
+        b["id"]
+        for b in client.get("/books", params={"filter": "summarizing"}).json()["books"]
+    ]
+    idle_ids = [
+        b["id"] for b in client.get("/books", params={"filter": "idle"}).json()["books"]
+    ]
+    assert summarizing_ids == [book_running]
+    assert book_idle in idle_ids
+    assert book_running not in idle_ids
+
+
 def test_summarize_batch_start_stop(client):
     book_id = _import_sample(client)
     client.post(f"/books/{book_id}/summarize/stop")
@@ -174,9 +245,13 @@ def test_summarize_batch_start_stop(client):
     assert body["scope"] == "batch"
     assert book_id in body["book_ids"]
 
-    start = client.post("/books/summarize/start", json={"book_ids": [book_id]})
+    start = client.post(
+        "/books/summarize/start",
+        json={"book_ids": [book_id], "summary_tier": "advanced"},
+    )
     assert start.status_code == 200
     assert start.json()["scope"] == "batch"
+    assert start.json()["summary_tier"] == "advanced"
 
     missing = client.post(
         "/books/summarize/stop",
@@ -199,6 +274,11 @@ def test_settings_matches_swift_app_settings(client):
     body = client.get("/settings").json()
     assert isinstance(body["target_language"], str)
     assert isinstance(body["web_search_provider"], str)
+    assert body.get("web_search_enabled") is True
+    assert isinstance(body["ocr_cloud_base_url"], str)
+    assert isinstance(body["ocr_cloud_model"], str)
+    assert body["ocr_cloud_api_key"] is None
+    assert isinstance(body["ocr_cloud_timeout_seconds"], (int, float))
     assert body.get("debug_mode") is False
     assert body.get("auto_start_summary") is False
     prompts = body["prompts"]
@@ -208,6 +288,9 @@ def test_settings_matches_swift_app_settings(client):
     assert isinstance(prompts["news_chat"], str)
     assert isinstance(prompts["translate"], str)
     assert isinstance(prompts["classify"], str)
+    assert isinstance(prompts.get("rollup"), (str, type(None)))
+    if prompts.get("rollup"):
+        assert "{text}" in prompts["rollup"]
     defaults = body["prompts_defaults"]
     assert isinstance(defaults["segment"], str)
     assert defaults["segment"] == prompts["segment"]
@@ -217,10 +300,37 @@ def test_settings_matches_swift_app_settings(client):
         assert isinstance(resource["id"], str)
         assert isinstance(resource["provider"], str)
         assert isinstance(resource["model"], str)
+        assert resource["advanced_model"] is None or isinstance(
+            resource["advanced_model"], str
+        )
     for profile in ("chat", "summarize"):
         route = models[profile]
         assert isinstance(route["priority"], list)
         assert all(isinstance(item, str) for item in route["priority"])
+
+
+def test_settings_redacts_and_preserves_ocr_cloud_key(client):
+    first = client.put(
+        "/settings",
+        json={
+            "ocr_cloud_base_url": "https://example.test/v1",
+            "ocr_cloud_model": "vision-model",
+            "ocr_cloud_api_key": "ocr-secret",
+        },
+    )
+    assert first.status_code == 200
+    assert first.json()["ocr_cloud_api_key"] == "***"
+
+    second = client.put(
+        "/settings",
+        json={
+            "ocr_cloud_model": "vision-model-v2",
+            "ocr_cloud_api_key": "***",
+        },
+    )
+    assert second.status_code == 200
+    assert second.json()["ocr_cloud_api_key"] == "***"
+    assert second.json()["ocr_cloud_model"] == "vision-model-v2"
 
 
 def test_news_brief_matches_swift_news_brief(client):
@@ -285,3 +395,24 @@ def test_news_sources_is_preset_and_restore(client):
     assert any(s["url"] == listed["sources"][0]["url"] for s in body["sources"])
     assert any(s["url"] == "https://example.com/my-feed.xml" for s in body["sources"])
     assert sum(1 for s in body["sources"] if s["is_preset"]) == 3
+
+
+def test_resegment_request_allows_min_target_200():
+    assert ResegmentRequest(chunk_target_chars=200).chunk_target_chars == 200
+    with pytest.raises(ValidationError):
+        ResegmentRequest(chunk_target_chars=199)
+    with pytest.raises(ValidationError):
+        ResegmentRequest(chunk_target_chars=8001)
+
+
+def test_book_public_dict_exposes_ingest_error():
+    row = {
+        "id": "b1",
+        "title": "金阁寺",
+        "status": "error",
+        "is_favorite": 0,
+        "segment_count": 0,
+        "metadata_json": json.dumps({"ingest_error": "unknown encoding: utf-8-sig"}),
+    }
+    out = book_public_dict(row)
+    assert out["ingest_error"] == "unknown encoding: utf-8-sig"

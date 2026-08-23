@@ -267,6 +267,7 @@ private final class MockNewsArticleService: NewsArticleServing {
         articleId: String,
         message: String,
         quote: String?,
+        onStatus: ((String) -> Void)?,
         onToken: @escaping (String) -> Void
     ) async throws -> ChatResponse {
         if chatDelay > 0 {

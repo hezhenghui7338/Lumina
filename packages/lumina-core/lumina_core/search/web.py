@@ -37,32 +37,73 @@ def classify_domain(query: str) -> Domain:
     return "general"
 
 
+_LOCAL_ONLY_MARKERS = (
+    "总结本段",
+    "概括本段",
+    "这段在说什么",
+    "本段讲",
+    "这段讲",
+    "翻译本段",
+    "翻译这段",
+    "summarize this",
+    "what does this paragraph",
+    "translate this paragraph",
+)
+
+_EXTERNAL_INTENT_MARKERS = (
+    "历史上",
+    "背景",
+    "史实",
+    "术语",
+    "维基",
+    "网上",
+    "最新",
+    "核对",
+    "查一下",
+    "搜一下",
+    "wikipedia",
+    "who is",
+    "who was",
+    "when did",
+    "background",
+)
+
+
+def _char_ngrams(text: str, n: int = 3) -> set[str]:
+    compact = re.sub(r"\s+", "", (text or "").lower())
+    if len(compact) < n:
+        return {compact} if compact else set()
+    return {compact[i : i + n] for i in range(len(compact) - n + 1)}
+
+
+def overlap_ratio(query: str, context: str) -> float:
+    q_grams = _char_ngrams(query)
+    if not q_grams:
+        return 1.0
+    c_grams = _char_ngrams((context or "")[:4000])
+    if not c_grams:
+        return 0.0
+    return len(q_grams & c_grams) / len(q_grams)
+
+
 def assess_evidence_sufficiency(
     query: str,
     local_context: str,
     *,
     min_chars: int = 200,
+    overlap_floor: float = 0.12,
 ) -> bool:
-    """Return True if local context is likely sufficient (skip web)."""
+    """Return True if local context is likely sufficient (skip web search)."""
     ctx = (local_context or "").strip()
+    q = (query or "").strip()
+    q_lower = q.lower()
+    if any(m in q or m in q_lower for m in _LOCAL_ONLY_MARKERS):
+        return len(ctx) >= min_chars
     if len(ctx) < min_chars:
         return False
-    # Simple heuristic: question asks for external facts
-    external_markers = (
-        "历史上",
-        "背景",
-        "为什么",
-        "维基",
-        "网上",
-        "最新",
-        "who is",
-        "when did",
-        "wikipedia",
-    )
-    q = query.lower()
-    if any(m in query or m in q for m in external_markers):
+    if any(m in q or m in q_lower for m in _EXTERNAL_INTENT_MARKERS):
         return False
-    return True
+    return overlap_ratio(q, ctx) >= overlap_floor
 
 
 def _query_has_cjk(text: str) -> bool:
@@ -169,7 +210,8 @@ async def _search_tavily(query: str, api_key: str, *, max_results: int = 5) -> l
 
 
 async def _search_wikipedia(query: str) -> list[WebResult]:
-    api = "https://en.wikipedia.org/w/api.php"
+    lang = "zh" if _query_has_cjk(query) else "en"
+    api = f"https://{lang}.wikipedia.org/w/api.php"
     params = {
         "action": "query",
         "list": "search",
@@ -195,7 +237,7 @@ async def _search_wikipedia(query: str) -> list[WebResult]:
         out.append(
             WebResult(
                 title=title,
-                url=f"https://en.wikipedia.org/wiki/{quote_plus(title.replace(' ', '_'))}",
+                url=f"https://{lang}.wikipedia.org/wiki/{quote_plus(title.replace(' ', '_'))}",
                 snippet=item.get("snippet", ""),
                 source="Wikipedia",
             )

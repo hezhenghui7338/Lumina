@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+import re
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any, Literal
@@ -11,6 +13,10 @@ Profile = Literal["chat", "summarize", "translate"]
 
 
 from lumina_core.config import ModelsConfig
+
+_PROBE_CHARS_RE = re.compile(r"\[LUMINA_PROBE_CHARS=(\d+)\]")
+_PROBE_FIRST_RE = re.compile(r"本段关键人物是([^。\n]+)")
+_PROBE_LAST_RE = re.compile(r"本段关键物件是([^。\n]+)")
 
 
 class MockModelRouter:
@@ -32,6 +38,10 @@ class MockModelRouter:
         }
         self.last_duration_ms: int | None = 800
         self.last_tps: float | None = 50.0
+        self.pinned_fail_over_chars: int | None = None
+        self.pinned_delay_s: float = 0.0
+        self.pinned_fail_ids: set[str] = set()
+        self.pinned_drop_last: bool = False
 
     def set_response(self, profile: Profile, value: Any) -> None:
         self.responses[profile] = value
@@ -55,13 +65,64 @@ class MockModelRouter:
         prompt: str,
         *,
         profile: Profile = "summarize",
+        summary_tier: str = "normal",
         json_mode: bool = False,
         on_slot_acquired=None,
     ) -> str:
         if on_slot_acquired is not None:
             await on_slot_acquired()
-        self.calls.append({"method": "complete", "profile": profile, "prompt": prompt})
+        self.calls.append(
+            {
+                "method": "complete",
+                "profile": profile,
+                "summary_tier": summary_tier,
+                "prompt": prompt,
+            }
+        )
         raw = self.responses.get(profile, self.responses.get("summarize", "{}"))
+        if isinstance(raw, (dict, list)):
+            return json.dumps(raw, ensure_ascii=False)
+        return str(raw)
+
+    async def complete_pinned(
+        self,
+        resource,
+        prompt: str,
+        *,
+        json_mode: bool = False,
+        timeout: float | None = None,
+        on_slot_acquired=None,
+    ) -> str:
+        if on_slot_acquired is not None:
+            await on_slot_acquired()
+        resource_id = getattr(resource, "id", "")
+        self.last_resource_id = resource_id or self.last_resource_id
+        self.last_provider = getattr(resource, "provider", self.last_provider)
+        self.last_model = getattr(resource, "model", self.last_model)
+        self.calls.append(
+            {
+                "method": "complete_pinned",
+                "resource_id": resource_id,
+                "prompt": prompt,
+                "json_mode": json_mode,
+                "timeout": timeout,
+            }
+        )
+        if self.pinned_delay_s > 0:
+            await asyncio.sleep(self.pinned_delay_s)
+        if resource_id in self.pinned_fail_ids:
+            raise RuntimeError(f"{resource_id} pinned fail")
+        chars_match = _PROBE_CHARS_RE.search(prompt)
+        chars = int(chars_match.group(1)) if chars_match else 0
+        if self.pinned_fail_over_chars is not None and chars > self.pinned_fail_over_chars:
+            raise TimeoutError(f"context overflow at {chars}")
+        first_match = _PROBE_FIRST_RE.search(prompt)
+        lasts = _PROBE_LAST_RE.findall(prompt)
+        if first_match and lasts:
+            first = first_match.group(1)
+            last = "" if self.pinned_drop_last else lasts[-1]
+            return json.dumps({"first": first, "last": last}, ensure_ascii=False)
+        raw = self.responses.get("pinned", self.responses.get("summarize", "{}"))
         if isinstance(raw, (dict, list)):
             return json.dumps(raw, ensure_ascii=False)
         return str(raw)

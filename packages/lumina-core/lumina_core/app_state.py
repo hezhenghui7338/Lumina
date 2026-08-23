@@ -4,17 +4,19 @@ from __future__ import annotations
 
 import asyncio
 import sqlite3
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
-from lumina_core.config import ModelsConfig, PromptsConfig, Settings, default_data_dir
+from lumina_core.config import ModelsConfig, PromptsConfig, Settings
 from lumina_core.db.schema import init_db
 from lumina_core.jobs.queue import JobQueue
 from lumina_core.models.concurrency import ResourceConcurrencyGate
 from lumina_core.models.router import ProfileModelRouter
 from lumina_core.news.store import NewsSourceRepo
 from lumina_core.ops.task_registry import TaskRegistry
-from lumina_core.settings_store import load_models, load_settings
+from lumina_core.settings_store import hydrate_startup_settings, load_models
 
 BESTBLOGS_AI_ZH = (
     "https://www.bestblogs.dev/zh/feeds/rss"
@@ -80,6 +82,13 @@ class AppState:
     job_queue: JobQueue
     task_registry: TaskRegistry
     event_subscribers: dict[str, list[asyncio.Queue]] = field(default_factory=dict)
+    resegment_tasks: dict[str, asyncio.Task[str]] = field(default_factory=dict)
+    resegment_cancel_events: dict[str, threading.Event] = field(default_factory=dict)
+    ingest_tasks: dict[str, asyncio.Task[str]] = field(default_factory=dict)
+    ingest_cancel_events: dict[str, threading.Event] = field(default_factory=dict)
+    context_probe_tasks: dict[str, asyncio.Task[Any]] = field(default_factory=dict)
+    context_probe_cancel: dict[str, asyncio.Event] = field(default_factory=dict)
+    context_probe_status: dict[str, Any] = field(default_factory=dict)
 
     @property
     def db_path(self) -> Path:
@@ -91,9 +100,7 @@ class AppState:
 
 
 def create_app_state(settings: Settings | None = None) -> AppState:
-    if settings is None:
-        data_dir = default_data_dir()
-        settings = load_settings(data_dir)
+    settings = hydrate_startup_settings(settings)
     settings.data_dir.mkdir(parents=True, exist_ok=True)
     models = load_models(settings.data_dir)
     conn = init_db(settings.data_dir / "lumina.db")

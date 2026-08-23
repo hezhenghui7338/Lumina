@@ -271,12 +271,20 @@ class ProfileModelRouter:
         prompt: str,
         *,
         profile: Profile = "summarize",
+        summary_tier: Literal["normal", "advanced"] = "normal",
         json_mode: bool = False,
         on_slot_acquired: Callable[[], Awaitable[None]] | None = None,
     ) -> str:
         resources = self._resources_for(profile)
         if not resources:
             raise RuntimeError(f"no resources configured for profile {profile}")
+        if profile == "summarize":
+            resources = [
+                resource.model_copy(
+                    update={"model": resource.summary_model(summary_tier)}
+                )
+                for resource in resources
+            ]
         return await self._complete_with_fallback(
             resources,
             prompt,
@@ -284,6 +292,46 @@ class ProfileModelRouter:
             profile=profile,
             on_slot_acquired=on_slot_acquired,
         )
+
+    async def complete_pinned(
+        self,
+        resource: ModelResource,
+        prompt: str,
+        *,
+        json_mode: bool = False,
+        timeout: float | None = None,
+        on_slot_acquired: Callable[[], Awaitable[None]] | None = None,
+    ) -> str:
+        """Complete on one resource with no priority-chain fallback."""
+        started = time.time()
+        try:
+            text = await self._complete_resource(
+                resource,
+                prompt,
+                json_mode=json_mode,
+                skip_if_busy=False,
+                fast_ollama_timeout=False,
+                profile="summarize",
+                on_slot_acquired=on_slot_acquired,
+                timeout_override=timeout,
+            )
+            self._record_success(resource, profile="summarize")
+            self._record_call(
+                resource_id=resource.id,
+                profile="summarize",
+                started=started,
+                ok=True,
+            )
+            return text
+        except Exception as exc:
+            self._record_call(
+                resource_id=resource.id,
+                profile="summarize",
+                started=started,
+                ok=False,
+                error=str(exc),
+            )
+            raise
 
     async def chat(
         self,
@@ -714,12 +762,17 @@ class ProfileModelRouter:
         fast_ollama_timeout: bool,
         profile: Profile = "summarize",
         on_slot_acquired: Callable[[], Awaitable[None]] | None = None,
+        timeout_override: float | None = None,
     ) -> str:
         async with self._gate.use(resource.id, skip_if_busy=skip_if_busy):
             if on_slot_acquired is not None:
                 await on_slot_acquired()
-            timeout = self._timeout_for(
-                resource, fast_ollama=fast_ollama_timeout, profile=profile
+            timeout = (
+                float(timeout_override)
+                if timeout_override is not None
+                else self._timeout_for(
+                    resource, fast_ollama=fast_ollama_timeout, profile=profile
+                )
             )
             if resource.provider == "ollama":
                 return await self._ollama_complete(

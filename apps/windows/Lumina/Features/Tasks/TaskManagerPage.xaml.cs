@@ -81,7 +81,10 @@ public sealed partial class TaskManagerPage : Page
     {
         try
         {
-            await App.Core.StartSummarizeAllAsync();
+            var tier = SummaryTierBox.SelectedItem is ComboBoxItem { Tag: "advanced" }
+                ? SummaryTier.Advanced
+                : SummaryTier.Normal;
+            await App.Core.StartSummarizeAllAsync(tier);
             await ReloadAsync();
         }
         catch (Exception ex) { OverviewText.Text = ex.Message; }

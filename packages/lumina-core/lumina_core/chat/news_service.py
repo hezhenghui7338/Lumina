@@ -6,13 +6,15 @@ import json
 from collections.abc import AsyncIterator
 from typing import Any
 
+from lumina_core.chat.service import HISTORY_LIMIT, WEB_STATUS_MESSAGE
 from lumina_core.config import PromptsConfig, load_prompts_config
 from lumina_core.db.repos import NewsChatRepo
 from lumina_core.models.router import ProfileModelRouter, parse_chat_response
 from lumina_core.news.read import load_cached_body
 from lumina_core.news.summary_parse import parse_rss_summary
-from lumina_core.prompts_defaults import DEFAULT_NEWS_CHAT as NEWS_CHAT_SYSTEM
-from lumina_core.search.web import assess_evidence_sufficiency, search_web
+from lumina_core.search.evidence import prepare_web_evidence, will_use_web
+
+NEWS_BODY_CHARS = 12000
 
 
 def build_article_context(article: dict[str, Any]) -> str:
@@ -27,7 +29,7 @@ def build_article_context(article: dict[str, Any]) -> str:
 
     body = load_cached_body(article)
     if body:
-        parts.append(f"\n## 正文\n{body[:12000]}")
+        parts.append(f"\n## 正文\n{body[:NEWS_BODY_CHARS]}")
         return "\n".join(parts)
 
     parsed = parse_rss_summary(article.get("rss_summary") or "")
@@ -48,6 +50,37 @@ def build_article_context(article: dict[str, Any]) -> str:
     return "\n".join(parts)
 
 
+def _news_messages(
+    context: str,
+    message: str,
+    quote: str | None,
+    prompts: PromptsConfig | None,
+) -> list[dict[str, str]]:
+    if quote and quote.strip():
+        user_question = f"用户选中的原文:\n「{quote.strip()}」\n\n问题: {message}"
+    else:
+        user_question = f"用户问题: {message}"
+    news_chat_system = (prompts or load_prompts_config()).news_chat
+    return [
+        {"role": "system", "content": news_chat_system},
+        {
+            "role": "user",
+            "content": f"文章:\n{context}\n\n{user_question}",
+        },
+    ]
+
+
+def _with_history(
+    base_messages: list[dict[str, str]],
+    history: list[dict[str, Any]],
+) -> list[dict[str, str]]:
+    messages = [base_messages[0]]
+    for msg in history[-HISTORY_LIMIT:]:
+        messages.append({"role": msg["role"], "content": msg["content"]})
+    messages.append(base_messages[1])
+    return messages
+
+
 async def prepare_news_chat(
     *,
     article: dict[str, Any],
@@ -55,35 +88,20 @@ async def prepare_news_chat(
     quote: str | None = None,
     web_search_provider: str = "ddgs",
     tavily_api_key: str | None = None,
+    web_search_enabled: bool = True,
     prompts: PromptsConfig | None = None,
 ) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
     context = build_article_context(article)
-    web_refs: list[dict[str, str]] = []
-
-    if not assess_evidence_sufficiency(message, context):
-        results = await search_web(
-            message,
-            provider=web_search_provider,
-            tavily_api_key=tavily_api_key,
-        )
-        web_refs = [{"title": r.title, "url": r.url, "source": r.source} for r in results]
-        if web_refs:
-            context += "\n\n## 联网检索\n" + json.dumps(web_refs, ensure_ascii=False)
-
-    if quote and quote.strip():
-        user_question = f"用户选中的原文:\n「{quote.strip()}」\n\n问题: {message}"
-    else:
-        user_question = f"用户问题: {message}"
-
-    news_chat_system = (prompts or load_prompts_config()).news_chat
-    messages: list[dict[str, str]] = [{"role": "system", "content": news_chat_system}]
-    messages.append(
-        {
-            "role": "user",
-            "content": f"文章:\n{context}\n\n{user_question}",
-        }
+    evidence = await prepare_web_evidence(
+        message,
+        context,
+        enabled=web_search_enabled,
+        provider=web_search_provider,
+        tavily_api_key=tavily_api_key,
     )
-    return messages, web_refs
+    if evidence.block:
+        context = f"{context}\n\n{evidence.block}"
+    return _news_messages(context, message, quote, prompts), evidence.refs
 
 
 async def chat_with_article(
@@ -95,28 +113,27 @@ async def chat_with_article(
     quote: str | None = None,
     web_search_provider: str = "ddgs",
     tavily_api_key: str | None = None,
+    web_search_enabled: bool = True,
     prompts: PromptsConfig | None = None,
 ) -> dict[str, Any]:
-    history = chat_repo.list_messages(article["id"])[-6:]
+    history = chat_repo.list_messages(article["id"])[-HISTORY_LIMIT:]
     base_messages, web_refs = await prepare_news_chat(
         article=article,
         message=message,
         quote=quote,
         web_search_provider=web_search_provider,
         tavily_api_key=tavily_api_key,
+        web_search_enabled=web_search_enabled,
         prompts=prompts,
     )
-    messages = [base_messages[0]]
-    for msg in history:
-        messages.append({"role": msg["role"], "content": msg["content"]})
-    messages.append(base_messages[1])
+    messages = _with_history(base_messages, history)
 
     chat_repo.add_message(article["id"], "user", message)
     raw = await router.chat(messages, profile="chat", json_mode=True)
     assert isinstance(raw, str)
     parsed = parse_chat_response(raw)
     answer = parsed.get("answer", raw)
-    web_from_llm = parsed.get("web_refs", web_refs)
+    web_from_llm = parsed.get("web_refs") or web_refs
 
     chat_repo.add_message(
         article["id"],
@@ -142,22 +159,31 @@ async def stream_chat_with_article(
     quote: str | None = None,
     web_search_provider: str = "ddgs",
     tavily_api_key: str | None = None,
+    web_search_enabled: bool = True,
     prompts: PromptsConfig | None = None,
 ) -> AsyncIterator[dict[str, Any]]:
     try:
-        history = chat_repo.list_messages(article["id"])[-6:]
-        base_messages, web_refs = await prepare_news_chat(
-            article=article,
-            message=message,
-            quote=quote,
-            web_search_provider=web_search_provider,
+        history = chat_repo.list_messages(article["id"])[-HISTORY_LIMIT:]
+        context = build_article_context(article)
+        if will_use_web(
+            message,
+            context,
+            enabled=web_search_enabled,
+            provider=web_search_provider,
+        ):
+            yield {"type": "status", "message": WEB_STATUS_MESSAGE}
+        evidence = await prepare_web_evidence(
+            message,
+            context,
+            enabled=web_search_enabled,
+            provider=web_search_provider,
             tavily_api_key=tavily_api_key,
-            prompts=prompts,
         )
-        messages = [base_messages[0]]
-        for msg in history:
-            messages.append({"role": msg["role"], "content": msg["content"]})
-        messages.append(base_messages[1])
+        if evidence.block:
+            context = f"{context}\n\n{evidence.block}"
+        web_refs = evidence.refs
+        base_messages = _news_messages(context, message, quote, prompts)
+        messages = _with_history(base_messages, history)
 
         chat_repo.add_message(article["id"], "user", message)
 
@@ -171,7 +197,7 @@ async def stream_chat_with_article(
 
         parsed = parse_chat_response(buffer)
         answer = parsed.get("answer", buffer)
-        web_from_llm = parsed.get("web_refs", web_refs)
+        web_from_llm = parsed.get("web_refs") or web_refs
 
         chat_repo.add_message(
             article["id"],

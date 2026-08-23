@@ -106,7 +106,12 @@ async def test_multi_book_summarize_respects_ollama_concurrency(conn):
                 all_ready = False
                 break
         if all_ready:
-            break
+            indexes_ready = all(
+                (BookRepo(conn).get(bid) or {}).get("index_status") == "ready"
+                for bid in ("book-a", "book-b", "book-c")
+            )
+            if indexes_ready:
+                break
         await asyncio.sleep(0.05)
     else:
         statuses = {

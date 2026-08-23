@@ -7,17 +7,26 @@ final class LibraryViewModelMergeTests: XCTestCase {
         id: String,
         title: String = "Book",
         status: String = "reading",
+        segmentCount: Int? = 10,
         summaryReady: Int? = nil,
         summaryTotal: Int? = nil,
         summarizeState: String? = nil,
-        lastOpenedAt: String? = nil
+        lastOpenedAt: String? = nil,
+        currentSegmentIndex: Int? = nil,
+        isFavorite: Bool? = nil,
+        category: String? = nil,
+        createdAt: String? = nil
     ) -> BookSummary {
         BookSummary(
             id: id,
             title: title,
             status: status,
-            segment_count: 10,
+            segment_count: segmentCount,
+            is_favorite: isFavorite,
+            category: category,
             last_opened_at: lastOpenedAt,
+            current_segment_index: currentSegmentIndex,
+            created_at: createdAt,
             summary_ready_count: summaryReady,
             summary_total_count: summaryTotal,
             summarize_state: summarizeState
@@ -89,10 +98,10 @@ final class LibraryViewModelMergeTests: XCTestCase {
         XCTAssertEqual(prioritized.map(\.id), ["running", "queued", "idle", "recent"])
     }
 
-    func testDisplayedBooks_prioritizesSummarizeActivityWhenRecentAndAll() {
+    func testDisplayedBooks_prioritizesSummarizeActivityWhenRecent() {
         let viewModel = LibraryViewModel()
         viewModel.sort = .recent
-        viewModel.summarizeStateFilter = .all
+        viewModel.collection = .recent
         viewModel.books = [
             book(id: "idle", summarizeState: "idle"),
             book(id: "running", summarizeState: "running"),
@@ -103,16 +112,121 @@ final class LibraryViewModelMergeTests: XCTestCase {
         XCTAssertEqual(viewModel.displayedBooks.map(\.id), ["running", "queued", "idle", "recent"])
     }
 
+    func testSummarizingCollectionIncludesQueuedBooks() {
+        let viewModel = LibraryViewModel()
+        viewModel.collection = .summarizing
+        viewModel.books = [
+            book(id: "running", summarizeState: "running"),
+            book(id: "queued", summarizeState: "queued"),
+            book(id: "idle", summarizeState: "idle"),
+        ]
+
+        XCTAssertEqual(viewModel.displayedBooks.map(\.id), ["running", "queued"])
+    }
+
     func testDisplayedBooks_doesNotReorderForTitleSort() {
         let viewModel = LibraryViewModel()
         viewModel.sort = .title
-        viewModel.summarizeStateFilter = .all
+        viewModel.collection = .recent
         viewModel.books = [
-            book(id: "idle", summarizeState: "idle"),
-            book(id: "running", summarizeState: "running"),
-            book(id: "queued", summarizeState: "queued"),
+            book(id: "idle", title: "Idle", summarizeState: "idle"),
+            book(id: "running", title: "Running", summarizeState: "running"),
+            book(id: "queued", title: "Queued", summarizeState: "queued"),
         ]
 
-        XCTAssertEqual(viewModel.displayedBooks.map(\.id), ["idle", "running", "queued"])
+        XCTAssertEqual(viewModel.displayedBooks.map(\.id), ["idle", "queued", "running"])
+    }
+
+    func testReadingCollectionsIgnoreSummarizedStatus() {
+        let viewModel = LibraryViewModel()
+        viewModel.books = [
+            book(id: "unread", lastOpenedAt: nil, currentSegmentIndex: 0),
+            book(
+                id: "reading",
+                lastOpenedAt: "2024-05-01T00:00:00Z",
+                currentSegmentIndex: 2
+            ),
+            book(
+                id: "finished",
+                lastOpenedAt: "2024-06-01T00:00:00Z",
+                currentSegmentIndex: 9
+            ),
+            book(
+                id: "short",
+                segmentCount: 1,
+                lastOpenedAt: "2024-07-01T00:00:00Z",
+                currentSegmentIndex: 0
+            ),
+        ]
+
+        viewModel.collection = .unread
+        XCTAssertEqual(viewModel.displayedBooks.map(\.id), ["unread"])
+        viewModel.collection = .reading
+        XCTAssertEqual(Set(viewModel.displayedBooks.map(\.id)), ["reading", "short"])
+        viewModel.collection = .finished
+        XCTAssertEqual(viewModel.displayedBooks.map(\.id), ["finished"])
+    }
+
+    func testApplyReadingProgress_updatesLabelWithoutMarkingFinishedEarly() {
+        let viewModel = LibraryViewModel()
+        viewModel.books = [
+            book(
+                id: "reading",
+                lastOpenedAt: "2024-05-01T00:00:00Z",
+                currentSegmentIndex: 1
+            )
+        ]
+
+        viewModel.applyReadingProgress(bookId: "reading", segmentIndex: 4)
+
+        XCTAssertEqual(viewModel.books[0].current_segment_index, 4)
+        XCTAssertEqual(viewModel.books[0].readingStatusLabel, "在读 · 5/10 段")
+        XCTAssertEqual(viewModel.books[0].readingProgressBucket, .reading)
+
+        viewModel.applyReadingProgress(bookId: "reading", segmentIndex: 9)
+        XCTAssertEqual(viewModel.books[0].readingStatusLabel, "已读完")
+        XCTAssertEqual(viewModel.books[0].readingProgressBucket, .finished)
+    }
+
+    func testApplyReadingProgress_setsOpenedAtWhenUnread() {
+        let viewModel = LibraryViewModel()
+        viewModel.books = [book(id: "unread", lastOpenedAt: nil, currentSegmentIndex: 0)]
+
+        let opened = Date(timeIntervalSince1970: 1_700_000_000)
+        viewModel.applyReadingProgress(bookId: "unread", segmentIndex: 2, openedAt: opened)
+
+        XCTAssertNotNil(viewModel.books[0].last_opened_at)
+        XCTAssertEqual(viewModel.books[0].current_segment_index, 2)
+        XCTAssertEqual(viewModel.books[0].readingProgressBucket, .reading)
+    }
+
+    func testSortBySegmentCountDescending() {
+        let viewModel = LibraryViewModel()
+        viewModel.collection = .recent
+        viewModel.sort = .segments
+        viewModel.books = [
+            book(id: "short", title: "Short", segmentCount: 3),
+            book(id: "long", title: "Long", segmentCount: 40),
+            book(id: "mid", title: "Mid", segmentCount: 12),
+        ]
+
+        XCTAssertEqual(viewModel.displayedBooks.map(\.id), ["long", "mid", "short"])
+    }
+
+    func testTitleQueryFiltersDisplayedBooks() {
+        let viewModel = LibraryViewModel()
+        viewModel.books = [
+            book(id: "a", title: "史记"),
+            book(id: "b", title: "黑客与画家"),
+        ]
+        viewModel.titleQuery = "黑客"
+        XCTAssertEqual(viewModel.displayedBooks.map(\.id), ["b"])
+    }
+
+    func testFromPersistedRestoresUnreadAndReading() {
+        XCTAssertEqual(LibraryCollection.fromPersisted("unread"), .unread)
+        XCTAssertEqual(LibraryCollection.fromPersisted("reading"), .reading)
+        XCTAssertEqual(LibraryCollection.fromPersisted("all"), .recent)
+        XCTAssertEqual(LibraryCollection.fromPersisted("文学"), .category("文学"))
     }
 }

@@ -4,21 +4,44 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import shutil
 import sqlite3
+import sys
+import threading
+import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import PlainTextResponse, StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from lumina_core.app_state import AppState, default_rss_sources
+from lumina_core.config import RESEGMENT_MAX_TARGET_CHARS, RESEGMENT_MIN_TARGET_CHARS
+from lumina_core.models.context_probe import (
+    ContextProbeStatus,
+    idle_probe_status,
+    run_context_probe,
+)
 from lumina_core.chat.news_service import chat_with_article, stream_chat_with_article
 from lumina_core.chat.service import chat_with_book, stream_chat_with_book
-from lumina_core.config import ModelsConfig, PromptsConfig, Settings
+from lumina_core.chunker.boundary import (
+    BoundaryError,
+    apply_cut,
+    list_cut_offsets,
+    segment_anchor_label,
+)
+from lumina_core.config import (
+    CHUNK_MAX_CHARS,
+    CHUNKER_VERSION,
+    CORE_VERSION,
+    ModelsConfig,
+    PromptsConfig,
+    Settings,
+)
 from lumina_core.classify.book import BOOK_CATEGORIES
 from lumina_core.classify.tasks import run_classify_book, validate_manual_category
 from lumina_core.db.repos import BookRepo, ChatRepo, NewsChatRepo, NoteRepo, SegmentRepo
@@ -31,12 +54,13 @@ from lumina_core.ingest.loader import (
     validate_import,
 )
 from lumina_core.jobs.ingest import run_ingest_job
+from lumina_core.jobs.resegment import run_resegment_job
 from lumina_core.news.brief import build_brief
 from lumina_core.news.read import load_cached_body, read_article
 from lumina_core.news.store import NewsSourceRepo, NewsStore
 from lumina_core.news.sync import sync_all
-from lumina_core.search.fts import index_book, index_note, search
-from lumina_core.resource_probe import probe_resource
+from lumina_core.search.fts import index_book, index_note, index_segment, search
+from lumina_core.resource_probe import probe_ocr, probe_resource
 from lumina_core.ops.helpers import (
     book_title,
     register_article_task,
@@ -48,6 +72,7 @@ from lumina_core.secrets_store import persist_secrets
 from lumina_core.settings_store import (
     load_prompts,
     merge_incoming_models,
+    merge_ocr_cloud_api_key,
     merge_prompts,
     merge_tavily_api_key,
     models_to_dict,
@@ -59,7 +84,17 @@ from lumina_core.settings_store import (
 
 router = APIRouter()
 
-SUPPORTED_FORMATS = {"txt", "pdf", "epub", "mobi"}
+SUPPORTED_FORMATS = {
+    "txt",
+    "pdf",
+    "epub",
+    "mobi",
+    "html",
+    "rtf",
+    "docx",
+    "odt",
+    "fb2",
+}
 
 
 class ImportRequest(BaseModel):
@@ -72,6 +107,7 @@ class ChatRequest(BaseModel):
     segment_index: int = 0
     stream: bool = False
     quote: str | None = None
+    scope: Literal["segment", "book"] = "segment"
 
 
 class NewsChatRequest(BaseModel):
@@ -86,14 +122,31 @@ class ExportRequest(BaseModel):
 
 class RetrySegmentsRequest(BaseModel):
     indices: list[int]
+    summary_tier: Literal["normal", "advanced"] | None = None
+
+
+class ResegmentRequest(BaseModel):
+    chunk_target_chars: int = Field(
+        ge=RESEGMENT_MIN_TARGET_CHARS,
+        le=RESEGMENT_MAX_TARGET_CHARS,
+    )
 
 
 class SummarizeBatchRequest(BaseModel):
     book_ids: list[str] = []
+    summary_tier: Literal["normal", "advanced"] = "normal"
+
+
+class SummaryTierRequest(BaseModel):
+    summary_tier: Literal["normal", "advanced"] = "normal"
 
 
 class ReadingProgressUpdate(BaseModel):
     segment_index: int
+
+
+class MoveBoundaryRequest(BaseModel):
+    left_char_count: int = Field(ge=1)
 
 
 class BookPatchUpdate(BaseModel):
@@ -102,10 +155,21 @@ class BookPatchUpdate(BaseModel):
     title: str | None = None
 
 
+class ContextProbeRequest(BaseModel):
+    model: str | None = None
+    base_url: str | None = None
+    api_key: str | None = None
+
+
 class SettingsUpdate(BaseModel):
     target_language: str | None = None
     web_search_provider: str | None = None
+    web_search_enabled: bool | None = None
     tavily_api_key: str | None = None
+    ocr_cloud_base_url: str | None = None
+    ocr_cloud_model: str | None = None
+    ocr_cloud_api_key: str | None = None
+    ocr_cloud_timeout_seconds: float | None = Field(default=None, ge=1.0, le=300.0)
     debug_mode: bool | None = None
     auto_start_summary: bool | None = None
     models: ModelsConfig | None = None
@@ -145,11 +209,25 @@ def _raise_on_db_schema_error(exc: BaseException) -> None:
 
 
 async def _purge_book(state: AppState, book_id: str) -> None:
+    ingest_cancel = state.ingest_cancel_events.get(book_id)
+    if ingest_cancel:
+        ingest_cancel.set()
+    resegment_cancel = state.resegment_cancel_events.get(book_id)
+    if resegment_cancel:
+        resegment_cancel.set()
     await state.job_queue.stop_book(book_id)
     BookRepo(state.conn).delete(book_id)
     book_dir = state.books_dir / book_id
     if book_dir.exists():
         await asyncio.to_thread(shutil.rmtree, book_dir)
+
+
+def _processing_kind(state: AppState, book_id: str) -> str | None:
+    if book_id in state.resegment_tasks:
+        return "resegment"
+    if book_id in state.ingest_tasks:
+        return "ingest"
+    return None
 
 
 def _wire_job_events(state: AppState) -> None:
@@ -161,7 +239,12 @@ def _wire_job_events(state: AppState) -> None:
 
 
 async def _queue_segment_retry(
-    state: AppState, book_id: str, idx: int, *, seg: dict[str, Any] | None = None
+    state: AppState,
+    book_id: str,
+    idx: int,
+    *,
+    seg: dict[str, Any] | None = None,
+    summary_tier: str | None = None,
 ) -> None:
     if seg is None:
         seg = SegmentRepo(state.conn).get_by_index(book_id, idx)
@@ -169,7 +252,13 @@ async def _queue_segment_retry(
             raise HTTPException(404, "Segment not found")
     state.job_queue.unpause_book(book_id)
     SegmentRepo(state.conn).set_status(seg["id"], "pending", retry_count=0)
-    await state.job_queue.enqueue_summarize(book_id, seg["id"], idx, high=True)
+    await state.job_queue.enqueue_summarize(
+        book_id,
+        seg["id"],
+        idx,
+        high=True,
+        summary_tier=summary_tier or seg.get("summary_tier") or "normal",
+    )
 
 
 def _now_iso() -> str:
@@ -191,6 +280,25 @@ def _prioritize_summarize_activity(books: list[dict[str, Any]]) -> list[dict[str
     return running + queued + rest
 
 
+def apply_book_list_filter(
+    books: list[dict[str, Any]], filter_name: str
+) -> list[dict[str, Any]]:
+    """Queue-derived filters that cannot be expressed in SQL (summarize_state)."""
+    if filter_name == "summarizing":
+        return [
+            book
+            for book in books
+            if book.get("summarize_state") in ("running", "queued")
+        ]
+    if filter_name == "idle":
+        return [
+            book
+            for book in books
+            if book.get("summarize_state") in ("idle", "paused")
+        ]
+    return books
+
+
 def book_public_dict(
     row: dict[str, Any],
     *,
@@ -198,6 +306,8 @@ def book_public_dict(
     summarize_active: dict[str, Any] | None = None,
     summarize_state: str | None = None,
     summarize_queued_count: int | None = None,
+    summary_tier: str | None = None,
+    processing_kind: str | None = None,
 ) -> dict[str, Any]:
     """Normalize book row for JSON (SQLite stores is_favorite as INTEGER)."""
     out = dict(row)
@@ -212,6 +322,13 @@ def book_public_dict(
             meta = {}
     out["total_char_count"] = meta.get("total_char_count")
     out["chunker_version"] = meta.get("chunker_version")
+    out["chunk_target_chars"] = meta.get("chunk_target_chars")
+    ingest_error = meta.get("ingest_error")
+    out["ingest_error"] = (
+        ingest_error.strip() if isinstance(ingest_error, str) and ingest_error.strip() else None
+    )
+    out["processing_kind"] = processing_kind
+    out.setdefault("index_status", out.get("index_status") or "idle")
 
     if conn is not None and out.get("id"):
         progress = BookRepo(conn).summary_progress(out["id"])
@@ -226,6 +343,7 @@ def book_public_dict(
     if summarize_state is not None and row.get("status") != "processing":
         out["summarize_state"] = summarize_state
         out["summarize_queued_count"] = summarize_queued_count or 0
+        out["summary_tier"] = summary_tier or "normal"
 
     return out
 
@@ -247,6 +365,7 @@ def _book_public_with_queue(state: AppState, row: dict[str, Any]) -> dict[str, A
         summarize_queued_count=state.job_queue._summarize_queued_count_for_book(
             book_id
         ),
+        summary_tier=state.job_queue.summary_tier_for_book(book_id),
     )
 
 
@@ -298,26 +417,184 @@ def _schedule_ingest(
     fmt: str,
     src: Path,
 ) -> None:
-    async def _run() -> None:
-        await run_ingest_job(
+    cancel_event = threading.Event()
+    title = book_title(state.conn, book_id)
+    record = state.task_registry.register(
+        kind="ingest",
+        subject_type="book",
+        subject_id=book_id,
+        subject_label=title,
+        detail="导入解析",
+        cancellable=True,
+        cancel_fn=cancel_event.set,
+        job_key=f"{book_id}:ingest",
+        status="queued",
+    )
+
+    async def _run() -> str:
+        state.task_registry.mark_running(record.id)
+        outcome = await run_ingest_job(
             book_id=book_id,
             dest=dest,
             fmt=fmt,
             src=src,
             conn=state.conn,
+            db_path=state.db_path,
             models=state.models,
+            settings=state.settings.model_copy(deep=True),
             target_language=state.settings.target_language,
             job_queue=state.job_queue,
-            emit=lambda book_id, payload: _emit_book_event(state, book_id, payload),
+            emit=lambda event_book_id, payload: _emit_book_event(
+                state, event_book_id, payload
+            ),
             schedule_classify=lambda bid: _schedule_classify(state, bid),
+            cancel_event=cancel_event,
         )
+        if outcome == "completed":
+            state.task_registry.complete(record.id)
+        elif outcome == "cancelled":
+            state.task_registry.cancel(record.id)
+        else:
+            state.task_registry.fail(record.id, "导入失败")
+        return outcome
 
-    asyncio.create_task(_run())
+    task = asyncio.create_task(_run())
+    state.ingest_tasks[book_id] = task
+    state.ingest_cancel_events[book_id] = cancel_event
+
+    def _cleanup(completed: asyncio.Task[str]) -> None:
+        if state.ingest_tasks.get(book_id) is completed:
+            state.ingest_tasks.pop(book_id, None)
+            state.ingest_cancel_events.pop(book_id, None)
+
+    task.add_done_callback(_cleanup)
+
+
+def _schedule_resegment(
+    state: AppState,
+    *,
+    book_id: str,
+    chunk_target_chars: int,
+    previous_status: str,
+) -> None:
+    cancel_event = threading.Event()
+    title = book_title(state.conn, book_id)
+    record = state.task_registry.register(
+        kind="resegment",
+        subject_type="book",
+        subject_id=book_id,
+        subject_label=title,
+        detail=f"整书重新分段 · 目标 {chunk_target_chars} 字",
+        cancellable=True,
+        cancel_fn=cancel_event.set,
+        job_key=f"{book_id}:resegment",
+        status="queued",
+    )
+
+    async def _run() -> str:
+        state.task_registry.mark_running(record.id)
+        outcome = await run_resegment_job(
+            book_id=book_id,
+            chunk_target_chars=chunk_target_chars,
+            previous_status=previous_status,
+            conn=state.conn,
+            db_path=state.db_path,
+            settings=state.settings.model_copy(deep=True),
+            job_queue=state.job_queue,
+            emit=lambda event_book_id, payload: _emit_book_event(
+                state, event_book_id, payload
+            ),
+            cancel_event=cancel_event,
+        )
+        if outcome == "completed":
+            state.task_registry.complete(record.id)
+        elif outcome == "cancelled":
+            state.task_registry.cancel(record.id)
+        else:
+            state.task_registry.fail(record.id, "重新分段失败")
+        return outcome
+
+    task = asyncio.create_task(_run())
+    state.resegment_tasks[book_id] = task
+    state.resegment_cancel_events[book_id] = cancel_event
+
+    def _cleanup(completed: asyncio.Task[str]) -> None:
+        if state.resegment_tasks.get(book_id) is completed:
+            state.resegment_tasks.pop(book_id, None)
+            state.resegment_cancel_events.pop(book_id, None)
+
+    task.add_done_callback(_cleanup)
+
+
+def _probe_resource_with_overrides(resource, body: ContextProbeRequest):
+    updates: dict[str, Any] = {}
+    if body.model is not None and body.model.strip():
+        updates["model"] = body.model.strip()
+    if body.base_url is not None and body.base_url.strip():
+        updates["base_url"] = body.base_url.strip()
+    key = (body.api_key or "").strip()
+    if key and key != "***":
+        updates["api_key"] = key
+    if not updates:
+        return resource
+    return resource.model_copy(update=updates)
+
+
+def _schedule_context_probe(state: AppState, resource) -> None:
+    resource_id = resource.id
+    cancel_event = asyncio.Event()
+    status = ContextProbeStatus(
+        resource_id=resource_id,
+        status="running",
+        model=resource.model,
+        message="正在测试后面的段是否仍被理解…",
+    )
+    state.context_probe_status[resource_id] = status
+    state.context_probe_cancel[resource_id] = cancel_event
+
+    async def _run() -> None:
+        try:
+            await run_context_probe(
+                router=state.router,
+                resource=resource,
+                status=status,
+                cancel_event=cancel_event,
+            )
+        except Exception as exc:
+            status.status = "failed"
+            status.waiting_for_slot = False
+            status.message = str(exc).strip()[:240] or "上下文探测失败"
+
+    task = asyncio.create_task(_run())
+    state.context_probe_tasks[resource_id] = task
+
+    def _cleanup(completed: asyncio.Task) -> None:
+        if state.context_probe_tasks.get(resource_id) is completed:
+            state.context_probe_tasks.pop(resource_id, None)
+            state.context_probe_cancel.pop(resource_id, None)
+
+    task.add_done_callback(_cleanup)
+
+
+_PROCESS_STARTED_AT = int(time.time())
+
+
+def _sidecar_executable() -> str:
+    if getattr(sys, "frozen", False):
+        return os.path.abspath(sys.executable)
+    return os.path.abspath(sys.argv[0])
 
 
 @router.get("/health")
-async def health() -> dict[str, str]:
-    return {"status": "ok"}
+async def health() -> dict[str, str | int]:
+    return {
+        "status": "ok",
+        "pid": os.getpid(),
+        "chunker_version": CHUNKER_VERSION,
+        "core_version": CORE_VERSION,
+        "executable": _sidecar_executable(),
+        "started_at": _PROCESS_STARTED_AT,
+    }
 
 
 @router.post("/books/import")
@@ -418,9 +695,14 @@ async def list_books(
                 summarize_queued_count=state_by_book.get(b["id"], {}).get(
                     "summarize_queued_count", 0
                 ),
+                summary_tier=state_by_book.get(b["id"], {}).get(
+                    "summary_tier", "normal"
+                ),
+                processing_kind=_processing_kind(state, b["id"]),
             )
             for b in books
         ]
+        result = apply_book_list_filter(result, filter)
         if sort == "recent":
             result = _prioritize_summarize_activity(result)
         return {"books": result}
@@ -470,6 +752,71 @@ async def delete_book(book_id: str, request: Request) -> dict[str, str]:
     return {"status": "deleted"}
 
 
+@router.post("/books/{book_id}/resegment", status_code=202)
+async def resegment_book(
+    book_id: str, body: ResegmentRequest, request: Request
+) -> dict[str, int | str]:
+    state = _state(request)
+    book = await asyncio.to_thread(BookRepo(state.conn).get, book_id)
+    if not book:
+        raise HTTPException(404, "Book not found")
+    if book.get("status") == "processing":
+        raise HTTPException(409, "Book is already processing")
+    file_path = Path(str(book.get("file_path") or ""))
+    if not book.get("file_path") or not await asyncio.to_thread(file_path.exists):
+        raise HTTPException(400, "Original book file is missing")
+
+    previous_status = str(book.get("status") or "reading")
+    _wire_job_events(state)
+    claimed = await asyncio.to_thread(BookRepo(state.conn).claim_processing, book_id)
+    if not claimed:
+        raise HTTPException(409, "Book is already processing")
+    _schedule_resegment(
+        state,
+        book_id=book_id,
+        chunk_target_chars=body.chunk_target_chars,
+        previous_status=previous_status,
+    )
+    return {
+        "status": "processing",
+        "book_id": book_id,
+        "chunk_target_chars": body.chunk_target_chars,
+        "processing_kind": "resegment",
+    }
+
+
+@router.post("/books/{book_id}/ingest/cancel", status_code=202)
+async def cancel_ingest_book(
+    book_id: str, request: Request
+) -> dict[str, str]:
+    state = _state(request)
+    book = await asyncio.to_thread(BookRepo(state.conn).get, book_id)
+    if not book:
+        raise HTTPException(404, "Book not found")
+    cancel_event = state.ingest_cancel_events.get(book_id)
+    task = state.ingest_tasks.get(book_id)
+    if cancel_event is None or task is None or task.done():
+        raise HTTPException(409, "Book is not being imported")
+    cancel_event.set()
+    return {"status": "cancelling", "book_id": book_id}
+
+
+@router.post("/books/{book_id}/resegment/cancel", status_code=202)
+async def cancel_resegment_book(
+    book_id: str, request: Request
+) -> dict[str, str]:
+    state = _state(request)
+    book = await asyncio.to_thread(BookRepo(state.conn).get, book_id)
+    if not book:
+        raise HTTPException(404, "Book not found")
+    cancel_event = state.resegment_cancel_events.get(book_id)
+    task = state.resegment_tasks.get(book_id)
+    if cancel_event is None or task is None or task.done():
+        raise HTTPException(409, "Book is not being resegmented")
+    cancel_event.set()
+    return {"status": "cancelling", "book_id": book_id}
+
+
 @router.post("/books/{book_id}/classify")
 async def classify_book_endpoint(book_id: str, request: Request) -> dict[str, str]:
     state = _state(request)
@@ -513,6 +860,7 @@ async def get_book(book_id: str, request: Request) -> dict[str, Any]:
         summarize_queued_count=state.job_queue._summarize_queued_count_for_book(
             book_id
         ),
+        processing_kind=_processing_kind(state, book_id),
     )
 
 
@@ -558,20 +906,180 @@ async def get_segment_summary(book_id: str, idx: int, request: Request) -> dict[
     return seg
 
 
+def _boundary_pair(
+    conn: sqlite3.Connection, book_id: str, idx: int
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+    book = BookRepo(conn).get(book_id)
+    if not book:
+        raise HTTPException(404, "Book not found")
+    if book.get("status") == "processing":
+        raise HTTPException(409, "Book is still processing")
+    repo = SegmentRepo(conn)
+    left = repo.get_by_index(book_id, idx)
+    right = repo.get_by_index(book_id, idx + 1)
+    if not left or not right:
+        raise HTTPException(404, "Adjacent segments not found")
+    return book, left, right
+
+
+def _boundary_payload(
+    left: dict[str, Any],
+    right: dict[str, Any],
+    *,
+    oversized: bool = False,
+    unchanged: bool = False,
+) -> dict[str, Any]:
+    return {
+        "left_idx": left["idx"],
+        "right_idx": right["idx"],
+        "left_char_count": left.get("char_count") or len(left.get("raw_text") or ""),
+        "right_char_count": right.get("char_count") or len(right.get("raw_text") or ""),
+        "left_anchor_label": left.get("anchor_label"),
+        "right_anchor_label": right.get("anchor_label"),
+        "left_chapter": left.get("chapter"),
+        "right_chapter": right.get("chapter"),
+        "left_page_range": left.get("page_range"),
+        "right_page_range": right.get("page_range"),
+        "left_status": left.get("summary_status"),
+        "right_status": right.get("summary_status"),
+        "oversized": oversized,
+        "unchanged": unchanged,
+        "oversized_limit": CHUNK_MAX_CHARS,
+    }
+
+
+@router.get("/books/{book_id}/segments/{idx}/boundary")
+async def get_segment_boundary(
+    book_id: str, idx: int, request: Request
+) -> dict[str, Any]:
+    state = _state(request)
+
+    def _load() -> dict[str, Any]:
+        _book, left, right = _boundary_pair(state.conn, book_id, idx)
+        concat = f"{left.get('raw_text') or ''}{right.get('raw_text') or ''}"
+        current = len(left.get("raw_text") or "")
+        candidates = [
+            {"offset": item.offset, "kind": item.kind}
+            for item in list_cut_offsets(concat, current_offset=current)
+        ]
+        return {
+            "left_idx": idx,
+            "right_idx": idx + 1,
+            "total_chars": len(concat),
+            "left_char_count": current,
+            "candidates": candidates,
+            "oversized_limit": CHUNK_MAX_CHARS,
+        }
+
+    try:
+        return await asyncio.to_thread(_load)
+    except HTTPException:
+        raise
+    except sqlite3.OperationalError as exc:
+        _raise_on_db_schema_error(exc)
+        raise  # pragma: no cover
+
+
+@router.post("/books/{book_id}/segments/{idx}/boundary")
+async def move_segment_boundary(
+    book_id: str, idx: int, body: MoveBoundaryRequest, request: Request
+) -> dict[str, Any]:
+    state = _state(request)
+    if book_id in state.resegment_tasks:
+        raise HTTPException(409, "Book is being resegmented")
+
+    def _persist() -> tuple[dict[str, Any], dict[str, Any], bool, bool]:
+        book, left, right = _boundary_pair(state.conn, book_id, idx)
+        try:
+            moved = apply_cut(
+                left.get("raw_text") or "",
+                right.get("raw_text") or "",
+                body.left_char_count,
+            )
+        except BoundaryError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        if moved.unchanged:
+            return left, right, False, False
+        left_anchor = segment_anchor_label(
+            left["idx"], moved.left_chapter, moved.left_page_range
+        )
+        right_anchor = segment_anchor_label(
+            right["idx"], moved.right_chapter, moved.right_page_range
+        )
+        summary_tier = (
+            left.get("summary_tier") or right.get("summary_tier") or "normal"
+        )
+        updated_left, updated_right = SegmentRepo(state.conn).apply_boundary_move(
+            left,
+            right,
+            left_text=moved.left_text,
+            right_text=moved.right_text,
+            left_chapter=moved.left_chapter,
+            right_chapter=moved.right_chapter,
+            left_page_range=moved.left_page_range,
+            right_page_range=moved.right_page_range,
+            left_anchor=left_anchor,
+            right_anchor=right_anchor,
+            summary_tier=summary_tier,
+        )
+        index_segment(state.conn, book, updated_left)
+        index_segment(state.conn, book, updated_right)
+        return updated_left, updated_right, moved.oversized, True
+
+    try:
+        left, right, oversized, changed = await asyncio.to_thread(_persist)
+    except HTTPException:
+        raise
+    except sqlite3.OperationalError as exc:
+        _raise_on_db_schema_error(exc)
+        raise  # pragma: no cover
+
+    _wire_job_events(state)
+    if changed:
+        state.job_queue.cancel_active_jobs_for_segments(
+            book_id, {left["id"], right["id"]}
+        )
+        await _queue_segment_retry(state, book_id, idx, seg=left)
+        payload = _boundary_payload(
+            left, right, oversized=oversized, unchanged=False
+        )
+        payload["type"] = "segment_boundary_moved"
+        await state.job_queue.emit(book_id, payload)
+        for side in (left, right):
+            await state.job_queue.emit(
+                book_id,
+                {
+                    "type": "segment_status",
+                    "idx": side["idx"],
+                    "status": "pending",
+                },
+            )
+    return _boundary_payload(left, right, oversized=oversized, unchanged=not changed)
+
+
 @router.post("/books/{book_id}/open")
 async def open_book(book_id: str, request: Request) -> dict[str, Any]:
     state = _state(request)
-    book = BookRepo(state.conn).get(book_id)
+
+    def _open_book() -> dict[str, Any] | None:
+        repo = BookRepo(state.conn)
+        book = repo.get(book_id)
+        if not book:
+            return None
+        fields: dict[str, Any] = {"last_opened_at": _now_iso()}
+        if book.get("status") == "unread":
+            fields["status"] = "reading"
+        try:
+            repo.update(book_id, **fields)
+        except sqlite3.OperationalError as exc:
+            raise HTTPException(503, _SCHEMA_STALE_DETAIL) from exc
+        return book
+
+    # Opening writes recency metadata and can wait behind an ingest writer.
+    # Keep that wait off the single uvicorn event-loop thread.
+    book = await asyncio.to_thread(_open_book)
     if not book:
         raise HTTPException(404, "Book not found")
-    now = _now_iso()
-    fields: dict[str, Any] = {"last_opened_at": now}
-    if book.get("status") == "unread":
-        fields["status"] = "reading"
-    try:
-        BookRepo(state.conn).update(book_id, **fields)
-    except sqlite3.OperationalError as e:
-        raise HTTPException(503, _SCHEMA_STALE_DETAIL) from e
     _wire_job_events(state)
     if state.job_queue.auto_start_summary:
         await state.job_queue.enqueue_book_prefetch(book_id)
@@ -585,18 +1093,24 @@ async def open_book(book_id: str, request: Request) -> dict[str, Any]:
 async def update_reading_progress(
     book_id: str, body: ReadingProgressUpdate, request: Request
 ) -> dict[str, int]:
-    book = BookRepo(_state(request).conn).get(book_id)
-    if not book:
-        raise HTTPException(404, "Book not found")
-    segment_count = book.get("segment_count") or 0
-    if segment_count > 0 and not (0 <= body.segment_index < segment_count):
-        raise HTTPException(
-            400,
-            f"segment_index must be between 0 and {segment_count - 1}",
+    state = _state(request)
+
+    def _save_progress() -> None:
+        repo = BookRepo(state.conn)
+        book = repo.get(book_id)
+        if not book:
+            raise HTTPException(404, "Book not found")
+        segment_count = book.get("segment_count") or 0
+        if segment_count > 0 and not (0 <= body.segment_index < segment_count):
+            raise HTTPException(
+                400,
+                f"segment_index must be between 0 and {segment_count - 1}",
+            )
+        repo.update(
+            book_id, current_segment_index=body.segment_index
         )
-    BookRepo(_state(request).conn).update(
-        book_id, current_segment_index=body.segment_index
-    )
+
+    await asyncio.to_thread(_save_progress)
     return {"current_segment_index": body.segment_index}
 
 
@@ -613,9 +1127,16 @@ async def start_summarize_batch(
     state = _state(request)
     _wire_job_events(state)
     book_ids = body.book_ids if body else []
+    summary_tier = body.summary_tier if body else "normal"
     if not book_ids:
-        await state.job_queue.start_all()
-        return {"status": "started", "scope": "all", "book_ids": [], "affected_count": 0}
+        await state.job_queue.start_all(summary_tier=summary_tier)
+        return {
+            "status": "started",
+            "scope": "all",
+            "book_ids": [],
+            "affected_count": 0,
+            "summary_tier": summary_tier,
+        }
 
     repo = BookRepo(state.conn)
     affected: list[str] = []
@@ -624,7 +1145,7 @@ async def start_summarize_batch(
         if not repo.get(book_id):
             skipped.append(book_id)
             continue
-        await state.job_queue.start_book(book_id)
+        await state.job_queue.start_book(book_id, summary_tier=summary_tier)
         affected.append(book_id)
     return {
         "status": "started",
@@ -632,6 +1153,7 @@ async def start_summarize_batch(
         "book_ids": affected,
         "affected_count": len(affected),
         "skipped": skipped,
+        "summary_tier": summary_tier,
     }
 
 
@@ -665,14 +1187,23 @@ async def stop_summarize_batch(
 
 
 @router.post("/books/{book_id}/summarize/start")
-async def start_summarize_book(book_id: str, request: Request) -> dict[str, str]:
+async def start_summarize_book(
+    book_id: str, request: Request, body: SummaryTierRequest | None = None
+) -> dict[str, str]:
+    """Resume incomplete summaries. Ready segments are kept even if the tier changes."""
     state = _state(request)
     book = BookRepo(state.conn).get(book_id)
     if not book:
         raise HTTPException(404, "Book not found")
     _wire_job_events(state)
-    await state.job_queue.start_book(book_id)
-    return {"status": "started", "scope": "book", "book_id": book_id}
+    summary_tier = body.summary_tier if body else "normal"
+    await state.job_queue.start_book(book_id, summary_tier=summary_tier)
+    return {
+        "status": "started",
+        "scope": "book",
+        "book_id": book_id,
+        "summary_tier": summary_tier,
+    }
 
 
 @router.post("/books/{book_id}/summarize/stop")
@@ -687,9 +1218,19 @@ async def stop_summarize_book(book_id: str, request: Request) -> dict[str, str]:
 
 
 @router.post("/books/{book_id}/segments/{idx}/retry")
-async def retry_segment(book_id: str, idx: int, request: Request) -> dict[str, str]:
+async def retry_segment(
+    book_id: str,
+    idx: int,
+    request: Request,
+    body: SummaryTierRequest | None = None,
+) -> dict[str, str]:
     state = _state(request)
-    await _queue_segment_retry(state, book_id, idx)
+    await _queue_segment_retry(
+        state,
+        book_id,
+        idx,
+        summary_tier=body.summary_tier if body else None,
+    )
     return {"status": "queued"}
 
 
@@ -713,14 +1254,21 @@ async def retry_segments(
         segments.append((idx, seg))
     _wire_job_events(state)
     for idx, seg in segments:
-        await _queue_segment_retry(state, book_id, idx, seg=seg)
+        await _queue_segment_retry(
+            state,
+            book_id,
+            idx,
+            seg=seg,
+            summary_tier=body.summary_tier,
+        )
     return {"status": "queued", "count": len(segments)}
 
 
 @router.post("/books/{book_id}/summarize/regenerate")
 async def regenerate_book_summaries(
-    book_id: str, request: Request
+    book_id: str, request: Request, body: SummaryTierRequest | None = None
 ) -> dict[str, int | str]:
+    """Overwrite every segment summary. Clients must confirm with the user first."""
     state = _state(request)
     book = BookRepo(state.conn).get(book_id)
     if not book:
@@ -728,8 +1276,11 @@ async def regenerate_book_summaries(
     _wire_job_events(state)
     if book.get("status") == "summarized":
         BookRepo(state.conn).update(book_id, status="reading")
-    count = await state.job_queue.enqueue_book_regenerate(book_id)
-    return {"status": "queued", "count": count}
+    summary_tier = body.summary_tier if body else "normal"
+    count = await state.job_queue.enqueue_book_regenerate(
+        book_id, summary_tier=summary_tier
+    )
+    return {"status": "queued", "count": count, "summary_tier": summary_tier}
 
 
 @router.get("/books/{book_id}/events")
@@ -760,18 +1311,34 @@ async def book_events(book_id: str, request: Request) -> StreamingResponse:
     return StreamingResponse(stream(), media_type="text/event-stream")
 
 
+BOOK_INDEX_NOT_READY = "全书索引生成中"
+
+
+def _require_book_chat_index(book: dict[str, Any], scope: str) -> None:
+    if scope != "book":
+        return
+    if book.get("index_status") == "ready":
+        return
+    raise HTTPException(409, BOOK_INDEX_NOT_READY)
+
+
 @router.post("/books/{book_id}/chat")
 async def book_chat(book_id: str, body: ChatRequest, request: Request):
     state = _state(request)
     book = BookRepo(state.conn).get(book_id)
     if not book:
         raise HTTPException(404, "Book not found")
+    _require_book_chat_index(book, body.scope)
 
     if body.stream:
         return await book_chat_stream(book_id, body, request)
 
     title = book.get("title") or book_id
-    segment_detail = f"深聊 · 段 {body.segment_index + 1}"
+    segment_detail = (
+        "深聊 · 全书"
+        if body.scope == "book"
+        else f"深聊 · 段 {body.segment_index + 1}"
+    )
     record = register_book_task(
         state.task_registry,
         kind="book_chat",
@@ -794,8 +1361,10 @@ async def book_chat(book_id: str, body: ChatRequest, request: Request):
                 message=body.message,
                 current_segment_idx=body.segment_index,
                 quote=body.quote,
+                scope=body.scope,
                 web_search_provider=state.settings.web_search_provider,
                 tavily_api_key=state.settings.tavily_api_key,
+                web_search_enabled=state.settings.web_search_enabled,
                 prompts=_prompts(state),
             ),
             router_resource=lambda: state.router.last_resource_id,
@@ -809,9 +1378,14 @@ async def book_chat_stream(book_id: str, body: ChatRequest, request: Request) ->
     book = BookRepo(state.conn).get(book_id)
     if not book:
         raise HTTPException(404, "Book not found")
+    _require_book_chat_index(book, body.scope)
 
     title = book.get("title") or book_id
-    segment_detail = f"深聊 · 段 {body.segment_index + 1}"
+    segment_detail = (
+        "深聊 · 全书"
+        if body.scope == "book"
+        else f"深聊 · 段 {body.segment_index + 1}"
+    )
     cancel_event = asyncio.Event()
     record = register_book_task(
         state.task_registry,
@@ -836,8 +1410,10 @@ async def book_chat_stream(book_id: str, body: ChatRequest, request: Request) ->
                 message=body.message,
                 current_segment_idx=body.segment_index,
                 quote=body.quote,
+                scope=body.scope,
                 web_search_provider=state.settings.web_search_provider,
                 tavily_api_key=state.settings.tavily_api_key,
+                web_search_enabled=state.settings.web_search_enabled,
                 prompts=_prompts(state),
             )
             async for event in track_stream_events(
@@ -900,10 +1476,22 @@ async def update_settings(body: SettingsUpdate, request: Request) -> dict[str, A
         state.job_queue.target_language = body.target_language
     if body.web_search_provider is not None:
         state.settings.web_search_provider = normalize_web_search_provider(body.web_search_provider)
+    if body.web_search_enabled is not None:
+        state.settings.web_search_enabled = body.web_search_enabled
     if "tavily_api_key" in body.model_fields_set:
         state.settings.tavily_api_key = merge_tavily_api_key(
             body.tavily_api_key, state.settings.tavily_api_key
         )
+    if body.ocr_cloud_base_url is not None:
+        state.settings.ocr_cloud_base_url = body.ocr_cloud_base_url.strip()
+    if body.ocr_cloud_model is not None:
+        state.settings.ocr_cloud_model = body.ocr_cloud_model.strip()
+    if "ocr_cloud_api_key" in body.model_fields_set:
+        state.settings.ocr_cloud_api_key = merge_ocr_cloud_api_key(
+            body.ocr_cloud_api_key, state.settings.ocr_cloud_api_key
+        )
+    if body.ocr_cloud_timeout_seconds is not None:
+        state.settings.ocr_cloud_timeout_seconds = body.ocr_cloud_timeout_seconds
     if body.debug_mode is not None:
         state.settings.debug_mode = body.debug_mode
     if body.auto_start_summary is not None:
@@ -938,6 +1526,11 @@ async def all_resource_status(request: Request) -> dict[str, Any]:
     return {"resources": results}
 
 
+@router.get("/settings/ocr/status")
+async def ocr_status(request: Request) -> dict[str, Any]:
+    return (await probe_ocr(_state(request).settings)).to_dict()
+
+
 @router.get("/settings/resources/{resource_id}/status")
 async def resource_status(resource_id: str, request: Request) -> dict[str, Any]:
     state = _state(request)
@@ -946,6 +1539,51 @@ async def resource_status(resource_id: str, request: Request) -> dict[str, Any]:
         raise HTTPException(404, "Resource not found")
     status = await probe_resource(resource)
     return status.to_dict()
+
+
+@router.get("/settings/resources/{resource_id}/context-probe")
+async def get_context_probe(resource_id: str, request: Request) -> dict[str, Any]:
+    state = _state(request)
+    resource = state.models.resource_by_id(resource_id)
+    if resource is None:
+        raise HTTPException(404, "Resource not found")
+    status = state.context_probe_status.get(resource_id)
+    if status is None:
+        return idle_probe_status(resource_id, resource.model).to_dict()
+    return status.to_dict()
+
+
+@router.post("/settings/resources/{resource_id}/context-probe", status_code=202)
+async def start_context_probe(
+    resource_id: str,
+    request: Request,
+    body: ContextProbeRequest | None = None,
+) -> dict[str, Any]:
+    state = _state(request)
+    resource = state.models.resource_by_id(resource_id)
+    if resource is None:
+        raise HTTPException(404, "Resource not found")
+    existing = state.context_probe_tasks.get(resource_id)
+    if existing is not None and not existing.done():
+        raise HTTPException(409, "Context probe already running")
+    target = _probe_resource_with_overrides(resource, body or ContextProbeRequest())
+    _schedule_context_probe(state, target)
+    status = state.context_probe_status[resource_id]
+    return {"status": "started", **status.to_dict()}
+
+
+@router.post("/settings/resources/{resource_id}/context-probe/cancel", status_code=202)
+async def cancel_context_probe(resource_id: str, request: Request) -> dict[str, str]:
+    state = _state(request)
+    resource = state.models.resource_by_id(resource_id)
+    if resource is None:
+        raise HTTPException(404, "Resource not found")
+    task = state.context_probe_tasks.get(resource_id)
+    cancel_event = state.context_probe_cancel.get(resource_id)
+    if task is None or task.done() or cancel_event is None:
+        raise HTTPException(409, "Context probe is not running")
+    cancel_event.set()
+    return {"status": "cancelling"}
 
 
 @router.get("/settings/ollama/status")
@@ -1217,6 +1855,7 @@ async def news_article_chat(article_id: str, body: NewsChatRequest, request: Req
             quote=body.quote,
             web_search_provider=state.settings.web_search_provider,
             tavily_api_key=state.settings.tavily_api_key,
+            web_search_enabled=state.settings.web_search_enabled,
             prompts=_prompts(state),
         ),
         router_resource=lambda: state.router.last_resource_id,
@@ -1254,6 +1893,7 @@ async def news_article_chat_stream(
                 quote=body.quote,
                 web_search_provider=state.settings.web_search_provider,
                 tavily_api_key=state.settings.tavily_api_key,
+                web_search_enabled=state.settings.web_search_enabled,
                 prompts=_prompts(state),
             )
             async for event in track_stream_events(

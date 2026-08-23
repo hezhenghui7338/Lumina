@@ -6,17 +6,39 @@ struct IngestProgress: Equatable {
     var message: String
 
     var label: String {
-        guard total > 0 else { return message.isEmpty ? "处理中" : message }
-        return "处理中 · OCR \(page)/\(total)"
+        if !message.isEmpty { return message }
+        guard total > 0 else { return "处理中" }
+        return "处理中 · \(page)/\(total)"
+    }
+}
+
+enum BookshelfViewMode: String, CaseIterable, Identifiable {
+    case grid, list
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .grid: return "网格"
+        case .list: return "列表"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .grid: return "square.grid.2x2"
+        case .list: return "list.bullet"
+        }
     }
 }
 
 @MainActor
 final class LibraryViewModel: ObservableObject {
     @Published var books: [BookSummary] = []
-    @Published var filter: LibraryFilter = .all
-    @Published var summarizeStateFilter: SummarizeStateFilter = .all
+    @Published var collection: LibraryCollection = .recent
     @Published var sort: LibrarySort = .recent
+    @Published var viewMode: BookshelfViewMode = .grid
+    @Published var titleQuery: String = ""
     @Published var categories: [String] = LibraryFilter.fallbackCategories
     @Published var classifyingIds: Set<String> = []
     @Published var ingestProgress: [String: IngestProgress] = [:]
@@ -24,31 +46,53 @@ final class LibraryViewModel: ObservableObject {
 
     private var ingestEventTasks: [String: Task<Void, Never>] = [:]
 
-    var filterOptions: [LibraryFilter] {
-        LibraryFilter.standardFilters(categories: categories)
+    var sidebarCollections: [LibraryCollection] {
+        LibraryCollection.sidebarItems(categories: categories)
     }
 
     var displayedBooks: [BookSummary] {
-        let filtered = books.filter { summarizeStateFilter.matches($0) }
-        guard sort == .recent, summarizeStateFilter == .all else { return filtered }
-        return Self.prioritizeSummarizeActivity(filtered)
+        var result = books.filter { collection.matches($0) }
+        let query = titleQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !query.isEmpty {
+            result = result.filter { $0.title.localizedCaseInsensitiveContains(query) }
+        }
+        result = Self.sorted(result, by: sort)
+        if collection == .recent, sort == .recent {
+            result = Self.prioritizeSummarizeActivity(result)
+        }
+        return result
+    }
+
+    var recentBooks: [BookSummary] {
+        books
+            .filter { $0.last_opened_at != nil }
+            .sorted { ($0.last_opened_at ?? "") > ($1.last_opened_at ?? "") }
+    }
+
+    func count(for item: LibraryCollection) -> Int {
+        books.filter { item.matches($0) }.count
     }
 
     func loadPreferences() {
         if let raw = UserDefaults.standard.string(forKey: Self.filterKey) {
-            filter = LibraryFilter.fromPersisted(raw)
+            collection = LibraryCollection.fromPersisted(raw)
         } else if let legacy = UserDefaults.standard.string(forKey: Self.legacyCollectionKey) {
-            filter = LibraryFilter.fromPersisted(legacy)
+            collection = LibraryCollection.fromPersisted(legacy)
         }
         if let raw = UserDefaults.standard.string(forKey: Self.sortKey),
            let value = LibrarySort(rawValue: raw) {
             sort = value
         }
+        if let raw = UserDefaults.standard.string(forKey: Self.viewModeKey),
+           let value = BookshelfViewMode(rawValue: raw) {
+            viewMode = value
+        }
     }
 
     func persistPreferences() {
-        UserDefaults.standard.set(filter.rawValue, forKey: Self.filterKey)
+        UserDefaults.standard.set(collection.rawValue, forKey: Self.filterKey)
         UserDefaults.standard.set(sort.rawValue, forKey: Self.sortKey)
+        UserDefaults.standard.set(viewMode.rawValue, forKey: Self.viewModeKey)
     }
 
     func loadCategories(using core: CoreClient) async {
@@ -58,7 +102,7 @@ final class LibraryViewModel: ObservableObject {
     }
 
     func refresh(using core: CoreClient, preserveOrder: Bool = false) async throws {
-        let fetched = try await core.listBooks(filter: filter, sort: sort)
+        let fetched = try await core.listBooks(filter: .all, sort: sort)
         summarizeOverview = try? await core.fetchSummarizeOverview()
         books = preserveOrder && !books.isEmpty
             ? Self.mergePreservingOrder(existing: books, fetched: fetched)
@@ -68,6 +112,14 @@ final class LibraryViewModel: ObservableObject {
 
     func syncIngestSubscriptions(using core: CoreClient) {
         let processingIds = Set(books.filter(\.isProcessing).map(\.id))
+        for book in books where
+            book.processing_kind == "resegment" && ingestProgress[book.id] == nil {
+            ingestProgress[book.id] = IngestProgress(
+                page: 0,
+                total: 0,
+                message: "正在重新分段…"
+            )
+        }
         for (bookId, task) in ingestEventTasks where !processingIds.contains(bookId) {
             task.cancel()
             ingestEventTasks.removeValue(forKey: bookId)
@@ -85,6 +137,12 @@ final class LibraryViewModel: ObservableObject {
     private func handleIngestEvent(bookId: String, event: [String: Any], core: CoreClient) {
         let type = event["type"] as? String
         switch type {
+        case "resegment_started":
+            ingestProgress[bookId] = IngestProgress(
+                page: 0,
+                total: 0,
+                message: "正在重新分段…"
+            )
         case "ingest_progress":
             let page = event["page"] as? Int ?? 0
             let total = event["total"] as? Int ?? 0
@@ -98,11 +156,14 @@ final class LibraryViewModel: ObservableObject {
                 try? await refresh(using: core, preserveOrder: true)
                 NotificationCenter.default.post(name: .luminaLibraryRefresh, object: nil)
             }
-        case "ingest_failed":
+        case "ingest_failed", "ingest_cancelled", "resegment_failed", "resegment_cancelled":
             ingestProgress.removeValue(forKey: bookId)
             ingestEventTasks[bookId]?.cancel()
             ingestEventTasks.removeValue(forKey: bookId)
-            Task { try? await refresh(using: core, preserveOrder: true) }
+            Task {
+                try? await refresh(using: core, preserveOrder: true)
+                NotificationCenter.default.post(name: .luminaLibraryRefresh, object: nil)
+            }
         default:
             break
         }
@@ -133,16 +194,64 @@ final class LibraryViewModel: ObservableObject {
         return running + queued + rest
     }
 
-    func setFilter(_ value: LibraryFilter, using core: CoreClient) async throws {
-        filter = value
-        persistPreferences()
-        try await refresh(using: core)
+    static func sorted(_ books: [BookSummary], by sort: LibrarySort) -> [BookSummary] {
+        switch sort {
+        case .recent:
+            return books.sorted { lhs, rhs in
+                switch (lhs.last_opened_at, rhs.last_opened_at) {
+                case (nil, nil):
+                    return (lhs.created_at ?? "") > (rhs.created_at ?? "")
+                case (nil, _):
+                    return false
+                case (_, nil):
+                    return true
+                case let (left?, right?):
+                    return left > right
+                }
+            }
+        case .added:
+            return books.sorted { ($0.created_at ?? "") > ($1.created_at ?? "") }
+        case .title:
+            return books.sorted {
+                $0.title.localizedStandardCompare($1.title) == .orderedAscending
+            }
+        case .segments:
+            return books.sorted { lhs, rhs in
+                let left = lhs.segment_count ?? 0
+                let right = rhs.segment_count ?? 0
+                if left != right { return left > right }
+                return lhs.title.localizedStandardCompare(rhs.title) == .orderedAscending
+            }
+        case .favorite:
+            return books.sorted { lhs, rhs in
+                if lhs.isFavorite != rhs.isFavorite { return lhs.isFavorite && !rhs.isFavorite }
+                switch (lhs.last_opened_at, rhs.last_opened_at) {
+                case (nil, nil):
+                    return (lhs.created_at ?? "") > (rhs.created_at ?? "")
+                case (nil, _):
+                    return false
+                case (_, nil):
+                    return true
+                case let (left?, right?):
+                    return left > right
+                }
+            }
+        }
     }
 
-    func setSort(_ value: LibrarySort, using core: CoreClient) async throws {
+    func setCollection(_ value: LibraryCollection) {
+        collection = value
+        persistPreferences()
+    }
+
+    func setSort(_ value: LibrarySort) {
         sort = value
         persistPreferences()
-        try await refresh(using: core)
+    }
+
+    func setViewMode(_ value: BookshelfViewMode) {
+        viewMode = value
+        persistPreferences()
     }
 
     func toggleFavorite(_ book: BookSummary, using core: CoreClient) async throws {
@@ -190,6 +299,14 @@ final class LibraryViewModel: ObservableObject {
         books[index] = book
     }
 
+    func applyReadingProgress(bookId: String, segmentIndex: Int, openedAt: Date = Date()) {
+        guard let index = books.firstIndex(where: { $0.id == bookId }) else { return }
+        books[index].current_segment_index = segmentIndex
+        if books[index].last_opened_at == nil {
+            books[index].last_opened_at = ISO8601DateFormatter().string(from: openedAt)
+        }
+    }
+
     var hasIncompleteSummaries: Bool {
         books.contains { $0.summaryTotal > 0 && $0.summaryReady < $0.summaryTotal }
     }
@@ -214,4 +331,5 @@ final class LibraryViewModel: ObservableObject {
     private static let filterKey = "lumina.library.filter"
     private static let legacyCollectionKey = "lumina.library.collection"
     private static let sortKey = "lumina.library.sort"
+    private static let viewModeKey = "lumina.library.viewMode"
 }

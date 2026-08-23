@@ -24,6 +24,7 @@ class HangingMockRouter(MockModelRouter):
         prompt: str,
         *,
         profile="summarize",
+        summary_tier="normal",
         json_mode: bool = False,
         on_slot_acquired=None,
     ) -> str:
@@ -33,6 +34,7 @@ class HangingMockRouter(MockModelRouter):
         return await super().complete(
             prompt,
             profile=profile,
+            summary_tier=summary_tier,
             json_mode=json_mode,
             on_slot_acquired=None,
         )

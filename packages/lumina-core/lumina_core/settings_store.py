@@ -11,6 +11,7 @@ from lumina_core.config import (
     ModelsConfig,
     Settings,
     apply_env_keys,
+    default_data_dir,
     is_legacy_models_format,
     load_models_config,
     migrate_legacy_models,
@@ -62,30 +63,78 @@ def _apply_search_env(settings: Settings) -> Settings:
     return settings
 
 
+def _apply_ocr_env(settings: Settings) -> Settings:
+    base_url = os.getenv("LUMINA_OCR_CLOUD_BASE_URL")
+    model = os.getenv("LUMINA_OCR_CLOUD_MODEL")
+    api_key = os.getenv("LUMINA_OCR_CLOUD_API_KEY")
+    timeout = os.getenv("LUMINA_OCR_CLOUD_TIMEOUT_SECONDS")
+    if base_url:
+        settings.ocr_cloud_base_url = base_url.strip()
+    if model:
+        settings.ocr_cloud_model = model.strip()
+    if api_key:
+        settings.ocr_cloud_api_key = api_key.strip()
+    if timeout:
+        settings.ocr_cloud_timeout_seconds = max(1.0, float(timeout))
+    return settings
+
+
+_SETTINGS_SKIP_PERSIST = frozenset(
+    {
+        "host",
+        "port",
+        "data_dir",
+        "prompts",
+        "tavily_api_key",
+        "ocr_cloud_api_key",
+    }
+)
+
+
 def load_settings(data_dir: Path) -> Settings:
     path = settings_path(data_dir)
     if path.exists():
         raw = json.loads(path.read_text(encoding="utf-8"))
-        raw.pop("web_search_enabled", None)  # migrated away
+        for key in _SETTINGS_SKIP_PERSIST:
+            raw.pop(key, None)
         raw["data_dir"] = str(data_dir)
         settings = Settings(**raw)
     else:
         settings = Settings(data_dir=data_dir)
     settings = apply_secrets_to_settings(settings, load_secrets(data_dir))
     settings = _apply_search_env(settings)
+    settings = _apply_ocr_env(settings)
     settings.prompts = load_prompts(data_dir)
     return settings
+
+
+def hydrate_startup_settings(settings: Settings | None = None) -> Settings:
+    """Load persisted user prefs, then overlay CLI/test constructor fields."""
+    if settings is None:
+        return load_settings(default_data_dir())
+    persisted = load_settings(settings.data_dir)
+    overlay = {name: getattr(settings, name) for name in settings.model_fields_set}
+    if not overlay:
+        return persisted
+    return persisted.model_copy(update=overlay)
 
 
 def save_settings(settings: Settings) -> None:
     settings.data_dir.mkdir(parents=True, exist_ok=True)
     path = settings_path(settings.data_dir)
     payload = settings.model_dump(mode="json")
-    payload.pop("tavily_api_key", None)  # never persist secrets
+    for key in _SETTINGS_SKIP_PERSIST:
+        payload.pop(key, None)
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def merge_tavily_api_key(incoming: str | None, existing: str | None) -> str | None:
+    if incoming is None or incoming == "" or incoming == API_KEY_MASK:
+        return existing
+    return incoming
+
+
+def merge_ocr_cloud_api_key(incoming: str | None, existing: str | None) -> str | None:
     if incoming is None or incoming == "" or incoming == API_KEY_MASK:
         return existing
     return incoming
@@ -96,7 +145,12 @@ def settings_public_dict(settings: Settings) -> dict[str, Any]:
     return {
         "target_language": settings.target_language,
         "web_search_provider": normalize_web_search_provider(settings.web_search_provider),
+        "web_search_enabled": bool(settings.web_search_enabled),
         "tavily_api_key": API_KEY_MASK if settings.tavily_api_key else None,
+        "ocr_cloud_base_url": settings.ocr_cloud_base_url,
+        "ocr_cloud_model": settings.ocr_cloud_model,
+        "ocr_cloud_api_key": API_KEY_MASK if settings.ocr_cloud_api_key else None,
+        "ocr_cloud_timeout_seconds": settings.ocr_cloud_timeout_seconds,
         "debug_mode": settings.debug_mode,
         "auto_start_summary": settings.auto_start_summary,
         "prompts": prompts_to_dict(prompts),

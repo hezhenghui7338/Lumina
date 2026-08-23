@@ -1,0 +1,29 @@
+---
+description: 最高原则 — 永远不应卡住用户的应用
+alwaysApply: true
+---
+
+# 永不卡住用户（最高原则）
+
+PRD 章程 0：**任何导入、摘要、OCR、联网、切书、深聊都不得冻结 UI**。后台可慢，前台必须可点、可取消、可离开。
+
+## 每次改动自检
+
+改完后问自己：**用户此刻还能点别的吗？** 若不能，改法错误。
+
+## 禁止
+
+- `async` HTTP handler 内同步 CPU / 网络 / 大文件 I/O（须 `asyncio.to_thread` 或 JobQueue）
+- JobQueue worker / rollup 落库 / FTS `index_segment` 占用 uvicorn 事件循环（须 `asyncio.to_thread`）
+- `GET .../segments` 返回 `raw_text` / 全书原文；`segment_ready` 后再拉全量段表
+- 阅读器为摘要去拉含 `raw_text` 的段详情（须 `GET .../segments/{idx}/summary`）
+- NSTextView 在 `layout`/`setFrameSize` 里无条件 `invalidateIntrinsicContentSize`；宽度未稳定时对无空格 CJK `ensureLayout`
+- 在 MainActor 上解码大体量 JSON 或做同步重 I/O
+- 全屏 blocking spinner；不可取消的长任务占死 UI
+
+## 要求
+
+- ≥200ms 操作：skeleton / 进度 / 局部状态
+- 列表瘦、详情按需；SSE 增量更新
+- 流式 UI 批处理刷新，勿每 token 强制整表重绘
+- 切书 / 离开页面须取消进行中的网络与加载任务

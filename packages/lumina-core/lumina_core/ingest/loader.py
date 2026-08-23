@@ -1,17 +1,39 @@
-"""Document ingestion — TXT / PDF / EPUB."""
+"""Document ingestion and format dispatch."""
 
 from __future__ import annotations
 
 import hashlib
 import shutil
+import threading
 import uuid
 from pathlib import Path
 from typing import Any
 
 from lumina_core.chunker.chunker import chunk_text
-from lumina_core.config import ChunkBudget, MAX_FILE_BYTES
+from lumina_core.chunker.semantic import PairScorer
+from lumina_core.config import MAX_FILE_BYTES, ChunkBudget, Settings
+from lumina_core.ingest.docx import load_docx
 from lumina_core.ingest.epub import load_epub
+from lumina_core.ingest.fb2 import load_fb2
+from lumina_core.ingest.html import load_html
+from lumina_core.ingest.odt import load_odt
 from lumina_core.ingest.pdf import load_pdf
+from lumina_core.ingest.rtf import load_rtf
+from lumina_core.ingest.text import decode_text_bytes
+
+TEXT_EXTENSIONS = {"txt", "text", "md", "markdown", "mdown", "mkd", "log"}
+FORMAT_EXTENSIONS = {
+    "htm": "html",
+    "html": "html",
+    "xhtml": "html",
+    "rtf": "rtf",
+    "docx": "docx",
+    "odt": "odt",
+    "fb2": "fb2",
+    "pdf": "pdf",
+    "epub": "epub",
+    "mobi": "mobi",
+}
 
 
 def file_hash(path: Path) -> str:
@@ -24,20 +46,15 @@ def file_hash(path: Path) -> str:
 
 def detect_format(path: Path) -> str:
     ext = path.suffix.lower().lstrip(".")
-    if ext in {"txt", "md"}:
+    if ext in TEXT_EXTENSIONS:
         return "txt"
-    if ext in {"pdf", "epub", "mobi"}:
-        return ext
+    if ext in FORMAT_EXTENSIONS:
+        return FORMAT_EXTENSIONS[ext]
     raise ValueError(f"Unsupported format: {path.suffix}")
 
 
 def load_txt(path: Path) -> str:
-    for enc in ("utf-8", "utf-8-sig", "gb18030", "latin-1"):
-        try:
-            return path.read_text(encoding=enc)
-        except UnicodeDecodeError:
-            continue
-    return path.read_text(encoding="utf-8", errors="replace")
+    return decode_text_bytes(path.read_bytes())
 
 
 def load_document(
@@ -45,18 +62,35 @@ def load_document(
     fmt: str,
     *,
     on_progress=None,
+    settings: Settings | None = None,
+    cancel_event: threading.Event | None = None,
 ) -> tuple[str, dict[str, Any]]:
     """Return (annotated_text, metadata)."""
     if fmt == "txt":
         return load_txt(path), {}
     if fmt == "pdf":
-        return load_pdf(path, on_progress=on_progress)
+        return load_pdf(
+            path,
+            on_progress=on_progress,
+            settings=settings,
+            cancel_event=cancel_event,
+        )
     if fmt == "epub":
         return load_epub(path)
     if fmt == "mobi":
         from lumina_core.ingest.mobi import load_mobi
 
         return load_mobi(path)
+    if fmt == "html":
+        return load_html(path)
+    if fmt == "rtf":
+        return load_rtf(path)
+    if fmt == "docx":
+        return load_docx(path)
+    if fmt == "odt":
+        return load_odt(path)
+    if fmt == "fb2":
+        return load_fb2(path)
     raise ValueError(f"Format not implemented: {fmt}")
 
 
@@ -86,8 +120,22 @@ def author_from_metadata(metadata: dict[str, Any] | None) -> str | None:
     return None
 
 
-def build_segments(book_id: str, text: str, *, budget: ChunkBudget | None = None) -> list[dict]:
-    chunks = chunk_text(text, budget=budget)
+def build_segments(
+    book_id: str,
+    text: str,
+    *,
+    budget: ChunkBudget | None = None,
+    scorer: PairScorer | None = None,
+    document_map: list | None = None,
+    structure_roles: list | None = None,
+) -> list[dict]:
+    chunks = chunk_text(
+        text,
+        budget=budget,
+        scorer=scorer,
+        document_map=document_map,
+        structure_roles=structure_roles,
+    )
     segments: list[dict] = []
     for chunk in chunks:
         anchor = f"段 {chunk.index + 1}"

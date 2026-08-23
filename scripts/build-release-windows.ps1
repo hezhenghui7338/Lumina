@@ -3,7 +3,17 @@
 $ErrorActionPreference = "Stop"
 
 $Root = Resolve-Path (Join-Path $PSScriptRoot "..")
-$Version = if ($env:LUMINA_VERSION) { $env:LUMINA_VERSION } else { "0.8.1" }
+Write-Host "==> Syncing release identity (app version, sidecar, handshake)…"
+$sync = Join-Path $Root "scripts\sync-release-identity.py"
+if ($env:LUMINA_VERSION) {
+    python $sync --version $env:LUMINA_VERSION
+    if ($LASTEXITCODE -ne 0) { throw "sync-release-identity.py failed" }
+} else {
+    python $sync
+    if ($LASTEXITCODE -ne 0) { throw "sync-release-identity.py failed" }
+}
+$Version = (python $sync --print-version).Trim()
+if (-not $Version) { throw "sync-release-identity.py --print-version returned empty" }
 $Dist = Join-Path $Root "dist"
 $CorePkg = Join-Path $Root "packages\lumina-core"
 $WinApp = Join-Path $Root "apps\windows\Lumina"
@@ -67,6 +77,7 @@ dotnet publish $WinApp `
     -c Release `
     -r win-x64 `
     -p:Platform=x64 `
+    -p:Version=$Version `
     -p:WindowsPackageType=None `
     -p:EnableMsixTooling=true `
     -p:WindowsAppSDKSelfContained=true `

@@ -57,7 +57,7 @@ final class CoreClientDecodingTests: XCTestCase {
             summary_ready_count: 10,
             summary_total_count: 10
         )
-        XCTAssertEqual(complete.progressLabel, "已摘要")
+        XCTAssertEqual(complete.progressLabel, "未读")
 
         let processing = BookSummary(
             id: "b3",
@@ -68,6 +68,59 @@ final class CoreClientDecodingTests: XCTestCase {
             summary_total_count: nil
         )
         XCTAssertEqual(processing.progressLabel, "处理中")
+    }
+
+    func testBookSummary_completedSummaryUsesReadingStatus() {
+        var book = BookSummary(
+            id: "b1",
+            title: "Reading",
+            status: "summarized",
+            segment_count: 10,
+            summary_ready_count: 10,
+            summary_total_count: 10
+        )
+
+        XCTAssertTrue(book.hasCompletedSummary)
+        XCTAssertEqual(book.readingCurrent, 0)
+        XCTAssertEqual(book.readingStatusLabel, "未读")
+        XCTAssertEqual(book.progressLabel, "未读")
+
+        book.last_opened_at = "2026-08-22T12:00:00Z"
+        book.current_segment_index = 4
+        XCTAssertEqual(book.readingCurrent, 5)
+        XCTAssertEqual(book.readingStatusLabel, "在读 · 5/10 段")
+        XCTAssertEqual(book.progressLabel, "在读 · 5/10 段")
+
+        book.current_segment_index = 9
+        XCTAssertEqual(book.readingCurrent, 10)
+        XCTAssertEqual(book.readingStatusLabel, "已读完")
+
+        book.current_segment_index = 2
+        XCTAssertEqual(book.readingStatusLabel, "在读 · 3/10 段")
+
+        book.current_segment_index = -3
+        XCTAssertEqual(book.readingCurrent, 1)
+        XCTAssertEqual(book.readingStatusLabel, "在读 · 1/10 段")
+
+        book.current_segment_index = 100
+        XCTAssertEqual(book.readingCurrent, 10)
+        XCTAssertEqual(book.readingStatusLabel, "已读完")
+        XCTAssertEqual(book.readingProgressBucket, .finished)
+    }
+
+    func testBookSummary_singleSegmentOpenedStaysReading() {
+        var book = BookSummary(
+            id: "short",
+            title: "Short",
+            status: "reading",
+            segment_count: 1,
+            last_opened_at: "2026-08-22T12:00:00Z",
+            current_segment_index: 0
+        )
+        XCTAssertEqual(book.readingProgressBucket, .reading)
+        XCTAssertEqual(book.readingStatusLabel, "在读 · 1/1 段")
+        book.last_opened_at = nil
+        XCTAssertEqual(book.readingProgressBucket, .unread)
     }
 
     func testBookSummary_decodesLanguageFields() throws {
@@ -97,13 +150,62 @@ final class CoreClientDecodingTests: XCTestCase {
         )
     }
 
+    func testBookSummary_decodesResegmentMetadata() throws {
+        let json = """
+        {
+          "books": [{
+            "id": "b1",
+            "title": "Sample",
+            "status": "reading",
+            "segment_count": 7,
+            "total_char_count": 17500,
+            "chunk_target_chars": 2500,
+            "chunker_version": "5",
+            "processing_kind": "resegment"
+          }]
+        }
+        """
+        let data = Data(json.utf8)
+        let resp = try JSONDecoder().decode(BooksListResponse.self, from: data)
+        XCTAssertEqual(resp.books[0].total_char_count, 17_500)
+        XCTAssertEqual(resp.books[0].chunk_target_chars, 2_500)
+        XCTAssertEqual(resp.books[0].chunker_version, "5")
+        XCTAssertEqual(resp.books[0].processing_kind, "resegment")
+    }
+
+    func testBookSummary_errorStatusIncludesIngestError() throws {
+        let json = """
+        {
+          "books": [{
+            "id": "b1",
+            "title": "金阁寺",
+            "status": "error",
+            "segment_count": 0,
+            "ingest_error": "unknown encoding: utf-8-sig"
+          }]
+        }
+        """
+        let data = Data(json.utf8)
+        let resp = try JSONDecoder().decode(BooksListResponse.self, from: data)
+        XCTAssertEqual(resp.books[0].ingest_error, "unknown encoding: utf-8-sig")
+        XCTAssertEqual(resp.books[0].statusLabel, "导入失败：unknown encoding: utf-8-sig")
+
+        let bare = BookSummary(id: "b2", title: "失败", status: "error", segment_count: 0)
+        XCTAssertEqual(bare.statusLabel, "导入失败")
+    }
+
     func testAppSettings_decodesDefaultSettings() throws {
         let data = try loadFixture("settings_default")
         let settings = try JSONDecoder().decode(AppSettings.self, from: data)
         XCTAssertEqual(settings.target_language, "zh-CN")
         XCTAssertFalse(settings.debug_mode)
         XCTAssertFalse(settings.auto_start_summary)
+        XCTAssertEqual(settings.ocr_cloud_base_url, "")
+        XCTAssertEqual(settings.ocr_cloud_model, "")
+        XCTAssertNil(settings.ocr_cloud_api_key)
+        XCTAssertEqual(settings.ocr_cloud_timeout_seconds, 60)
         XCTAssertEqual(settings.models.resource(id: "ollama")?.model, "qwen3.5:4b")
+        XCTAssertEqual(settings.models.resource(id: "openai")?.advanced_model, "gpt-4o")
         XCTAssertEqual(settings.models.resource(id: "openai")?.base_url, "https://api.openai.com/v1")
         XCTAssertEqual(settings.models.chat.priority, ["openai", "ollama"])
         XCTAssertEqual(settings.models.summarize.priority.first, "ollama")
@@ -171,6 +273,26 @@ final class CoreClientDecodingTests: XCTestCase {
         XCTAssertEqual(resp.books[0].summarizeQueuedCount, 3)
         XCTAssertTrue(resp.books[0].canStopSummarize)
         XCTAssertFalse(resp.books[0].canStartSummarize)
+    }
+
+    func testBookSummary_decodesIndexStatus() throws {
+        let json = """
+        {
+          "books": [{
+            "id": "b1",
+            "title": "Sample",
+            "status": "summarized",
+            "segment_count": 5,
+            "summary_ready_count": 5,
+            "summary_total_count": 5,
+            "index_status": "ready"
+          }]
+        }
+        """
+        let resp = try JSONDecoder().decode(BooksListResponse.self, from: json.data(using: .utf8)!)
+        XCTAssertEqual(resp.books[0].index_status, "ready")
+        XCTAssertTrue(resp.books[0].canChatBook)
+        XCTAssertEqual(resp.books[0].bookIndexLabel, "全书")
     }
 
     func testSummarizeOverview_decodesCounts() throws {
@@ -259,9 +381,14 @@ final class CoreClientDecodingTests: XCTestCase {
             "completion_tokens": 380,
             "total_tokens": 1580,
             "tps": 118.7,
+            "web_refs": [
+                ["title": "Example", "url": "https://example.com", "source": "ddgs"],
+            ],
         ]
         let resp = ChatResponse.fromSSEDone(obj, citations: [])
         XCTAssertEqual(resp.answer, "hello")
+        XCTAssertEqual(resp.webRefs.first?.url, "https://example.com")
+        XCTAssertEqual(resp.webRefs.first?.title, "Example")
         XCTAssertEqual(resp.provider, "openai")
         XCTAssertEqual(resp.model, "gpt-4o-mini")
         XCTAssertEqual(resp.duration_ms, 3200)
@@ -306,5 +433,89 @@ final class CoreClientDecodingTests: XCTestCase {
             durationMs: 1500
         )
         XCTAssertEqual(label, "深聊 · Ollama · qwen3.5:4b · 2s")
+    }
+
+    func testContextProbeStatus_decodesRecommendation() throws {
+        let json = """
+        {
+          "resource_id": "ollama",
+          "status": "done",
+          "model": "qwen3.5:4b",
+          "current_chars": 3500,
+          "max_ok_chars": 3500,
+          "recommended_chars": 2800,
+          "steps": [{"chars": 1500, "ok": true, "message": ""}],
+          "message": "实测后面内容仍被理解约 3500 字 · 建议分段 2800 字（80%，上限 3500）",
+          "waiting_for_slot": false
+        }
+        """.data(using: .utf8)!
+        let status = try JSONDecoder().decode(ContextProbeStatus.self, from: json)
+        XCTAssertEqual(status.resource_id, "ollama")
+        XCTAssertEqual(status.status, "done")
+        XCTAssertEqual(status.recommended_chars, 2800)
+        XCTAssertEqual(status.max_ok_chars, 3500)
+        XCTAssertFalse(status.isRunning)
+        XCTAssertTrue(status.displayMessage.contains("2800"))
+    }
+
+    func testSummaryTier_startDoesNotOverwriteReady() {
+        XCTAssertEqual(SummaryTier.advanced.startMenuLabel, "高级摘要（仅未摘要）")
+        XCTAssertEqual(SummaryTier.normal.startMenuLabel, "正常摘要")
+        XCTAssertEqual(SummaryTier.advanced.regenerateMenuLabel, "高级摘要（覆盖全书）")
+        XCTAssertEqual(SummaryTier.normal.regenerateMenuLabel, "正常摘要（覆盖全书）")
+    }
+
+    func testSegmentBoundaryPreview_decodesCandidates() throws {
+        let json = """
+        {
+          "left_idx": 2,
+          "right_idx": 3,
+          "total_chars": 900,
+          "left_char_count": 420,
+          "candidates": [
+            {"offset": 210, "kind": "paragraph"},
+            {"offset": 420, "kind": "current"},
+            {"offset": 630, "kind": "sentence"}
+          ],
+          "oversized_limit": 6000
+        }
+        """.data(using: .utf8)!
+        let preview = try JSONDecoder().decode(SegmentBoundaryPreview.self, from: json)
+        XCTAssertEqual(preview.left_idx, 2)
+        XCTAssertEqual(preview.candidates.count, 3)
+        XCTAssertEqual(preview.candidates[1].kind, "current")
+
+        let movedJson = """
+        {
+          "left_idx": 2,
+          "right_idx": 3,
+          "left_char_count": 630,
+          "right_char_count": 270,
+          "left_status": "pending",
+          "right_status": "pending",
+          "oversized": false,
+          "unchanged": false
+        }
+        """.data(using: .utf8)!
+        let moved = try JSONDecoder().decode(SegmentBoundaryMoveResult.self, from: movedJson)
+        XCTAssertEqual(moved.left_char_count, 630)
+        XCTAssertFalse(moved.unchanged)
+    }
+
+    func testSegmentSummaryDetail_decodesWithoutRawText() throws {
+        let json = """
+        {
+          "idx": 0,
+          "summary_json": "{\\"sentences\\":[\\"x\\"]}",
+          "summary_status": "ready",
+          "label": "段 1",
+          "anchor_label": "§1"
+        }
+        """.data(using: .utf8)!
+        let detail = try JSONDecoder().decode(SegmentSummaryDetail.self, from: json)
+        XCTAssertEqual(detail.idx, 0)
+        XCTAssertEqual(detail.summary_status, "ready")
+        XCTAssertEqual(detail.label, "段 1")
+        XCTAssertNotNil(detail.summary_json)
     }
 }

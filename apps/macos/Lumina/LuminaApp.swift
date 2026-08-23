@@ -15,8 +15,9 @@ struct LuminaApp: App {
                 .environmentObject(core)
                 .environmentObject(theme)
                 .preferredColorScheme(theme.colorScheme)
-                .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in
-                    sidecar.stop()
+                .onAppear {
+                    appDelegate.sidecar = sidecar
+                    ReadingProgressStore.shared.attach(core: core)
                 }
         }
         .defaultSize(width: 1200, height: 800)
@@ -32,6 +33,8 @@ struct LuminaApp: App {
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    var sidecar: SidecarManager?
+
     func applicationWillFinishLaunching(_ notification: Notification) {
         guard let bundleID = Bundle.main.bundleIdentifier else { return }
         let others = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID)
@@ -48,5 +51,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
         return true
+    }
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        Task { @MainActor in
+            await ReadingProgressStore.shared.flush()
+            sidecar?.stop()
+            sender.reply(toApplicationShouldTerminate: true)
+        }
+        return .terminateLater
     }
 }

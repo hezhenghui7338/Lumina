@@ -29,7 +29,8 @@ struct SegmentReadingBlock: View, Equatable {
     var onToggleSource: () -> Void
     var onToggleSummary: () -> Void
     var onFollowUp: (String) -> Void
-    var onRetrySummary: () -> Void
+    var onRetrySummary: (SummaryTier) -> Void
+    var onAdjustBoundary: (() -> Void)? = nil
     var onSourceAppear: (() -> Void)?
     var onSummaryAppear: (() -> Void)?
 
@@ -59,9 +60,17 @@ struct SegmentReadingBlock: View, Equatable {
         }
 
         if !isLast {
-            Divider()
-                .background(LuminaTheme.border)
-                .padding(.vertical, 24)
+            VStack(spacing: 8) {
+                Divider()
+                    .background(LuminaTheme.border)
+                if let onAdjustBoundary {
+                    Button("调整与下一段的边界", action: onAdjustBoundary)
+                        .buttonStyle(.plain)
+                        .font(.caption)
+                        .foregroundStyle(LuminaTheme.accent)
+                }
+            }
+            .padding(.vertical, 16)
         }
     }
 
@@ -221,9 +230,16 @@ struct SegmentReadingBlock: View, Equatable {
     }
 
     private func handleSummaryHeightChange(_ height: CGFloat) {
-        guard height > 0, shouldMeasureSummaryHeight else { return }
+        guard shouldMeasureSummaryHeight else { return }
+        guard ReaderSegmentPanelHeight.shouldCommitMeasurement(
+            current: measuredContentHeight,
+            incoming: height
+        ) else { return }
         measuredContentHeight = height
-        lockedViewportHeight = ReaderSegmentPanelHeight.clamp(height)
+        let locked = ReaderSegmentPanelHeight.clamp(height)
+        if lockedViewportHeight != locked {
+            lockedViewportHeight = locked
+        }
     }
 
     @ViewBuilder
@@ -253,7 +269,7 @@ struct SegmentReadingBlock: View, Equatable {
         if let parsedSummary {
             SummaryBlock(
                 parsedSummary: parsedSummary,
-                rawJSON: segment.summary_json,
+                rawJSON: nil,
                 provider: segment.summary_provider,
                 model: segment.summary_model,
                 charCount: effectiveCharCount,
@@ -268,18 +284,10 @@ struct SegmentReadingBlock: View, Equatable {
             )
         } else if isSummaryLoading {
             summaryLoadingSkeleton
-        } else if let summary = segment.summary_json, !summary.isEmpty {
-            SummaryBlock(
-                parsedSummary: nil,
-                rawJSON: summary,
-                provider: segment.summary_provider,
-                model: segment.summary_model,
-                summaryDurationS: segment.summary_duration_s,
-                summaryLlmAttempts: segment.summary_llm_attempts,
-                onFollowUp: onFollowUp,
-                showsBackground: showsBackground,
-                showsHeader: false
-            )
+        } else if !(segment.summary_json ?? "").isEmpty {
+            Text("摘要格式异常，请重试")
+                .font(.system(size: LuminaTheme.summaryBulletSize))
+                .foregroundStyle(LuminaTheme.textSecondary)
         } else {
             summaryPlaceholder
         }
@@ -321,10 +329,7 @@ struct SegmentReadingBlock: View, Equatable {
             }
 
             if showsRegenerateSummaryButton {
-                Button("重新摘要", action: onRetrySummary)
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                    .accessibilityIdentifier("lumina.reader.control.regenerateSummary")
+                regenerateSummaryButton
             }
 
             if let count = effectiveCharCount, count > 0 {
@@ -345,9 +350,7 @@ struct SegmentReadingBlock: View, Equatable {
 
     private var resolvedAnchorText: String? {
         let raw: String? = {
-            if let summary = segment.summary_json, !summary.isEmpty,
-               let parsed = ParsedSummary(json: summary),
-               let anchor = parsed.anchor, !anchor.isEmpty {
+            if let anchor = parsedSummary?.anchor, !anchor.isEmpty {
                 return anchor
             }
             if let label = segment.anchor_label, !label.isEmpty {
@@ -386,10 +389,7 @@ struct SegmentReadingBlock: View, Equatable {
     }
 
     private var isSummaryInProgress: Bool {
-        switch segment.summary_status {
-        case "pending", "running": true
-        default: false
-        }
+        segment.summary_status == "running"
     }
 
     private var hasSummaryContent: Bool {
@@ -400,6 +400,45 @@ struct SegmentReadingBlock: View, Equatable {
 
     private var showsRegenerateSummaryButton: Bool {
         segment.summary_status == "ready" && hasSummaryContent
+    }
+
+    private var generateSummaryButton: some View {
+        summaryTierButton(
+            title: "生成摘要",
+            identifier: "lumina.reader.control.generateSummary",
+            advancedIdentifier: "lumina.reader.control.generateAdvancedSummary"
+        )
+    }
+
+    private var regenerateSummaryButton: some View {
+        summaryTierButton(
+            title: "重新摘要",
+            identifier: "lumina.reader.control.regenerateSummary",
+            advancedIdentifier: "lumina.reader.control.regenerateAdvancedSummary"
+        )
+    }
+
+    private func summaryTierButton(
+        title: String,
+        identifier: String,
+        advancedIdentifier: String
+    ) -> some View {
+        Button(title) {
+            onRetrySummary(.normal)
+        }
+        .buttonStyle(.bordered)
+        .controlSize(.small)
+        .help("点击生成正常摘要；右键可选高级摘要")
+        .contextMenu {
+            Button("高级摘要") {
+                onRetrySummary(.advanced)
+            }
+            .accessibilityIdentifier(advancedIdentifier)
+        }
+        .accessibilityIdentifier(identifier)
+        .accessibilityAction(named: "高级摘要") {
+            onRetrySummary(.advanced)
+        }
     }
 
     private var failureMessage: String {
@@ -426,7 +465,7 @@ struct SegmentReadingBlock: View, Equatable {
     private var summaryPlaceholder: some View {
         VStack(alignment: .leading, spacing: 8) {
             switch segment.summary_status {
-            case "running", "pending":
+            case "running":
                 EmptyView()
             case "failed", "error":
                 VStack(alignment: .leading, spacing: 8) {
@@ -438,10 +477,14 @@ struct SegmentReadingBlock: View, Equatable {
                             .foregroundStyle(LuminaTheme.textSecondary)
                             .lineLimit(3)
                     }
-                    Button("重新摘要", action: onRetrySummary)
-                        .buttonStyle(.bordered)
-                        .controlSize(.small)
-                        .accessibilityIdentifier("lumina.reader.control.regenerateSummary")
+                    regenerateSummaryButton
+                }
+            case "pending":
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("尚无摘要")
+                        .font(.system(size: LuminaTheme.summaryBulletSize))
+                        .foregroundStyle(LuminaTheme.textSecondary)
+                    generateSummaryButton
                 }
             default:
                 Text("尚无摘要")

@@ -1,6 +1,35 @@
 import AppKit
 import SwiftUI
 
+/// Layout rules for reader NSTextView so CJK with no spaces cannot explode
+/// into one-glyph-per-line when SwiftUI briefly proposes width 0.
+enum LuminaTextLayoutSizing {
+    static let minLayoutWidth: CGFloat = 8
+    static let widthChangeEpsilon: CGFloat = 0.5
+    static let placeholderHeight: CGFloat = 1
+    /// Used before the first real bounds pass so CJK never lays out at width 0.
+    static let fallbackLayoutWidth: CGFloat = 640
+
+    static func shouldEnsureLayout(containerWidth: CGFloat) -> Bool {
+        containerWidth >= minLayoutWidth
+    }
+
+    static func layoutWidth(for viewWidth: CGFloat) -> CGFloat? {
+        viewWidth >= minLayoutWidth ? viewWidth : nil
+    }
+
+    static func widthDidChange(from previous: CGFloat, to next: CGFloat) -> Bool {
+        abs(next - previous) >= widthChangeEpsilon
+    }
+
+    static func intrinsicHeight(usedRectHeight: CGFloat, containerWidth: CGFloat) -> CGFloat {
+        guard shouldEnsureLayout(containerWidth: containerWidth) else {
+            return placeholderHeight
+        }
+        return ceil(usedRectHeight)
+    }
+}
+
 /// Non-selectable display text with AppKit intrinsic height (reader body copy).
 struct LuminaSelectableText: NSViewRepresentable {
     let text: String
@@ -46,6 +75,12 @@ struct LuminaSelectableText: NSViewRepresentable {
 // MARK: - AppKit views
 
 final class LuminaSelectableTextView: NSTextView {
+    private var lastLayoutWidth: CGFloat = -1
+
+    override var acceptsFirstResponder: Bool { false }
+
+    override func becomeFirstResponder() -> Bool { false }
+
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 
     override func resetCursorRects() {
@@ -56,19 +91,54 @@ final class LuminaSelectableTextView: NSTextView {
         guard let layoutManager, let textContainer else {
             return super.intrinsicContentSize
         }
+        let width = textContainer.containerSize.width
+        guard LuminaTextLayoutSizing.shouldEnsureLayout(containerWidth: width) else {
+            return NSSize(
+                width: NSView.noIntrinsicMetric,
+                height: LuminaTextLayoutSizing.placeholderHeight
+            )
+        }
         layoutManager.ensureLayout(for: textContainer)
         let usedRect = layoutManager.usedRect(for: textContainer)
-        return NSSize(width: NSView.noIntrinsicMetric, height: ceil(usedRect.height))
+        return NSSize(
+            width: NSView.noIntrinsicMetric,
+            height: LuminaTextLayoutSizing.intrinsicHeight(
+                usedRectHeight: usedRect.height,
+                containerWidth: width
+            )
+        )
     }
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
-        invalidateIntrinsicContentSize()
+        applyLayoutWidth(bounds.width, invalidate: true)
     }
 
     override func setFrameSize(_ newSize: NSSize) {
+        let widthChanged = LuminaTextLayoutSizing.widthDidChange(
+            from: lastLayoutWidth,
+            to: newSize.width
+        )
         super.setFrameSize(newSize)
-        invalidateIntrinsicContentSize()
+        applyLayoutWidth(newSize.width, invalidate: widthChanged)
+    }
+
+    func applyLayoutWidth(_ width: CGFloat, invalidate: Bool) {
+        guard let textContainer else { return }
+        guard let layoutWidth = LuminaTextLayoutSizing.layoutWidth(for: width) else { return }
+        let sizeChanged = LuminaTextLayoutSizing.widthDidChange(
+            from: textContainer.containerSize.width,
+            to: layoutWidth
+        )
+        guard sizeChanged || lastLayoutWidth < 0 else { return }
+        textContainer.containerSize = NSSize(
+            width: layoutWidth,
+            height: CGFloat.greatestFiniteMagnitude
+        )
+        lastLayoutWidth = layoutWidth
+        if invalidate {
+            invalidateIntrinsicContentSize()
+        }
     }
 }
 
@@ -87,9 +157,9 @@ final class IntrinsicSizingTextContainer: NSView {
         textView.isVerticallyResizable = true
         textView.isHorizontallyResizable = false
         textView.autoresizingMask = [.width]
-        textView.textContainer?.widthTracksTextView = true
+        textView.textContainer?.widthTracksTextView = false
         textView.textContainer?.containerSize = NSSize(
-            width: 0,
+            width: LuminaTextLayoutSizing.fallbackLayoutWidth,
             height: CGFloat.greatestFiniteMagnitude
         )
 
@@ -104,7 +174,7 @@ final class IntrinsicSizingTextContainer: NSView {
 
     override func layout() {
         super.layout()
-        invalidateIntrinsicContentSize()
+        textView?.applyLayoutWidth(bounds.width, invalidate: true)
     }
 
     override var intrinsicContentSize: NSSize {

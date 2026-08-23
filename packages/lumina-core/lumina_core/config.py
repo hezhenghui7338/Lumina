@@ -13,7 +13,14 @@ import yaml
 from pydantic import BaseModel, Field, field_validator
 from pydantic_settings import BaseSettings
 
-CHUNKER_VERSION = "4"
+# App / engine identity. Must match pyproject version and desktop marketing versions.
+# Clients replace a leftover sidecar when this disagrees, even if CHUNKER_VERSION matches.
+CORE_VERSION = "0.9.0"
+# Segmentation algorithm id only. Do not use this as the "engine is current" signal.
+CHUNKER_VERSION = "10"
+DOCUMENT_MAP_TIMEOUT_SECONDS = float(
+    os.getenv("LUMINA_DOCUMENT_MAP_TIMEOUT", "20")
+)
 MAX_FILE_BYTES = 500 * 1024 * 1024  # 500MB
 SHORT_BOOK_CHARS = 12_000
 SHORT_BOOK_MAX_CHARS = SHORT_BOOK_CHARS
@@ -22,6 +29,8 @@ CHUNK_TARGET_CHARS = READING_TARGET_CHARS
 READING_HARD_MAX = 6000
 CHUNK_MAX_CHARS = READING_HARD_MAX
 CHUNK_MIN_CHARS = int(READING_TARGET_CHARS * 0.6)
+RESEGMENT_MIN_TARGET_CHARS = 200
+RESEGMENT_MAX_TARGET_CHARS = 8000
 OLLAMA_CHUNK_TARGET = 2500
 OLLAMA_CHUNK_MAX = 3000
 OPENROUTER_CHUNK_TARGET = 3500
@@ -36,10 +45,17 @@ SUMMARY_JOB_MAX_RETRIES = 2
 OLLAMA_SUMMARY_MIN_BODY_CHARS = 12
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434")
 LUMINA_SUMMARIZE_MODEL = os.getenv("LUMINA_SUMMARIZE_MODEL", "qwen3.5:4b")
+SEMANTIC_TOPIC_SHIFT_THRESHOLD = float(
+    os.getenv("LUMINA_SEMANTIC_TOPIC_SHIFT_THRESHOLD", "0.72")
+)
+SEMANTIC_EMBED_TIMEOUT_SECONDS = float(
+    os.getenv("LUMINA_SEMANTIC_EMBED_TIMEOUT", "3.0")
+)
 
 # News / document summarize
 SUMMARIZE_SHORT_MAX_CHARS = int(os.getenv("LUMINA_SUMMARIZE_SHORT_MAX_CHARS", "12000"))
 SUMMARIZE_LLM_INPUT_CHARS = int(os.getenv("LUMINA_SUMMARIZE_LLM_INPUT_CHARS", "14000"))
+CHAT_CONTEXT_MAX_CHARS = int(os.getenv("LUMINA_CHAT_CONTEXT_MAX_CHARS", "10000"))
 NEWS_FETCH_MIN_CHARS = int(os.getenv("LUMINA_NEWS_FETCH_MIN_CHARS", "500"))
 NEWS_FETCH_USE_JINA = os.getenv("LUMINA_NEWS_FETCH_USE_JINA", "1").lower() in (
     "1",
@@ -112,8 +128,15 @@ def resolve_resource_chunk_budget(resource: ModelResource) -> ChunkBudget:
     return _chunk_budget_from_target(target)
 
 
-def resolve_chunk_budget(models: ModelsConfig | None = None) -> ChunkBudget:
+def resolve_chunk_budget(
+    models: ModelsConfig | None = None,
+    *,
+    target_chars: int | None = None,
+) -> ChunkBudget:
     """Resolve segment chunk sizes from summarize primary resource or env overrides."""
+    if target_chars is not None:
+        return _chunk_budget_from_target(target_chars)
+
     env_target = os.getenv("LUMINA_CHUNK_TARGET_CHARS")
     env_max = os.getenv("LUMINA_CHUNK_MAX_CHARS")
 
@@ -171,10 +194,23 @@ class ModelResource(BaseModel):
     provider: str
     base_url: str = ""
     model: str = ""
+    advanced_model: str | None = None
     api_key: str | None = None
     chat_timeout: float = 12.0
     concurrency: int = 0  # 0 = use provider default
     chunk_target_chars: int = 0  # 0 = use provider default
+
+    @field_validator("chunk_target_chars")
+    @classmethod
+    def _validate_chunk_target_chars(cls, value: int) -> int:
+        if value <= 0:
+            return 0
+        if value < RESEGMENT_MIN_TARGET_CHARS or value > RESEGMENT_MAX_TARGET_CHARS:
+            raise ValueError(
+                f"chunk_target_chars must be 0 or {RESEGMENT_MIN_TARGET_CHARS}"
+                f"–{RESEGMENT_MAX_TARGET_CHARS}"
+            )
+        return value
 
     @field_validator("id")
     @classmethod
@@ -185,6 +221,11 @@ class ModelResource(BaseModel):
     @classmethod
     def _normalize_provider(cls, value: str) -> str:
         return value.strip().lower()
+
+    def summary_model(self, tier: str = "normal") -> str:
+        if tier == "advanced" and (self.advanced_model or "").strip():
+            return (self.advanced_model or "").strip()
+        return self.model
 
 
 class ProfileRoute(BaseModel):
@@ -398,11 +439,14 @@ PROMPT_PLACEHOLDERS: dict[str, tuple[str, ...]] = {
     "segment": ("{text}", "{anchor}"),
     "segment_ollama": ("{text}",),
     "segment_cloud": ("{text}",),
+    "segment_quality": ("{original_text}", "{summary_json}"),
     "document": ("{filename}", "{annotated}"),
     "translate": ("{target_language}", "{text}"),
     "classify": ("{categories}", "{title}", "{author}", "{text}"),
     "chat": (),
     "news_chat": (),
+    "rollup": ("{text}",),
+    "document_map": ("{units}",),
 }
 
 
@@ -410,18 +454,27 @@ class PromptsConfig(BaseModel):
     segment: str
     segment_ollama: str | None = None
     segment_cloud: str | None = None
+    segment_quality: str | None = None
     document: str
     chat: str
     news_chat: str
     translate: str
     classify: str
+    rollup: str | None = None
+    document_map: str | None = None
 
     def validate_placeholders(self) -> None:
         errors: list[str] = []
         for field, required in PROMPT_PLACEHOLDERS.items():
             value = getattr(self, field)
             if value is None:
-                if field in ("segment_ollama", "segment_cloud"):
+                if field in (
+                    "segment_ollama",
+                    "segment_cloud",
+                    "segment_quality",
+                    "rollup",
+                    "document_map",
+                ):
                     continue
                 errors.append(f"{field}: missing value")
                 continue
@@ -438,10 +491,13 @@ def load_prompts_config(path: Path | None = None) -> PromptsConfig:
         DEFAULT_CLASSIFY,
         DEFAULT_DOCUMENT,
         DEFAULT_NEWS_CHAT,
+        DEFAULT_ROLLUP,
         DEFAULT_SEGMENT,
         DEFAULT_SEGMENT_CLOUD,
         DEFAULT_SEGMENT_OLLAMA,
+        DEFAULT_SEGMENT_QUALITY,
         DEFAULT_TRANSLATE,
+        DEFAULT_DOCUMENT_MAP,
     )
 
     if path is None:
@@ -455,14 +511,21 @@ def load_prompts_config(path: Path | None = None) -> PromptsConfig:
             segment=DEFAULT_SEGMENT,
             segment_ollama=DEFAULT_SEGMENT_OLLAMA,
             segment_cloud=DEFAULT_SEGMENT_CLOUD,
+            segment_quality=DEFAULT_SEGMENT_QUALITY,
             document=DEFAULT_DOCUMENT,
             chat=DEFAULT_CHAT,
             news_chat=DEFAULT_NEWS_CHAT,
             translate=DEFAULT_TRANSLATE,
             classify=DEFAULT_CLASSIFY,
+            rollup=DEFAULT_ROLLUP,
+            document_map=DEFAULT_DOCUMENT_MAP,
         )
     raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     cfg = PromptsConfig.model_validate(raw)
+    if not cfg.rollup:
+        cfg.rollup = DEFAULT_ROLLUP
+    if not cfg.document_map:
+        cfg.document_map = DEFAULT_DOCUMENT_MAP
     cfg.validate_placeholders()
     return cfg
 
@@ -488,7 +551,12 @@ class Settings(BaseSettings):
     data_dir: Path = Field(default_factory=_platform_default_data_dir)
     target_language: str = "zh-CN"
     web_search_provider: str = "ddgs"  # ddgs | tavily
+    web_search_enabled: bool = True
     tavily_api_key: str | None = None
+    ocr_cloud_base_url: str = ""
+    ocr_cloud_model: str = ""
+    ocr_cloud_api_key: str | None = None
+    ocr_cloud_timeout_seconds: float = 60.0
     debug_mode: bool = False
     auto_start_summary: bool = False
     prompts: PromptsConfig | None = None
@@ -509,6 +577,17 @@ def bundle_root() -> Path | None:
     if getattr(sys, "frozen", False):
         return Path(sys.executable).resolve().parent
     return None
+
+
+def semantic_onnx_model_dir() -> Path:
+    """Optional local encoder assets; absence means deterministic rule fallback."""
+    override = os.getenv("LUMINA_SEMANTIC_ONNX_MODEL_DIR")
+    if override:
+        return Path(override).expanduser()
+    root = bundle_root()
+    if root is not None:
+        return root / "models" / "embedding"
+    return Path(__file__).resolve().parents[1] / "models" / "embedding"
 
 
 def load_models_config(path: Path | None = None) -> ModelsConfig:

@@ -2,7 +2,7 @@
 
 **版本**：v1.0  
 **真源**：[PRD.md](PRD.md) · [TDD.md](TDD.md)  
-**子文档**：[chunking-review.md](testing/chunking-review.md) · [snapshot-guide.md](testing/snapshot-guide.md) · [refusal-corpus.md](testing/refusal-corpus.md)
+**子文档**：[chunking-review.md](testing/chunking-review.md) · [snapshot-guide.md](testing/snapshot-guide.md) · [refusal-corpus.md](testing/refusal-corpus.md) · [bad case 目录](../tests/badcases/README.md)
 
 ---
 
@@ -59,6 +59,7 @@ flowchart TB
 |------|---------|--------------|-----------|------|
 | chunker 边界算法 | unit（纯逻辑） | unit（同 PR） | — | 不依赖 LLM |
 | **长文切割 + 摘要段 0/1** | unit + mock e2e | **mock 全量（同 PR）** | **`@live_chunk` 全量** | [E2E-CHUNK-LIVE](#41-e2e-chunk-live) |
+| **段摘要质量监督** | 本地规则 unit + Mock 复核/重试 | **同 PR** | `@live_chunk` 人工语义抽检 | 超过 1 个独立问题自动重摘要；资讯摘要暂不覆盖 |
 | 段 2+ prefetch | Mock | Mock（同 PR） | nightly optional | |
 | 深聊 chat | Mock | Mock（同 PR） | nightly optional | |
 | 翻译 | Mock | Mock（同 PR） | nightly optional | |
@@ -109,6 +110,7 @@ Lumina/
 │   └── LuminaUITests/
 ├── tests/
 │   ├── fixtures/chat/              # 拒答 corpus
+│   ├── badcases/                   # 对话采集的回归目录（draft + catalog）
 │   ├── output/                     # chunking_report（gitignore）
 │   └── acceptance/                 # PRD §8 MVP 清单
 ├── docs/testing/                   # 本指南子文档
@@ -130,7 +132,7 @@ Lumina/
 
 实现：`tests/unit/test_api_swift_contract.py` · `LuminaTests/Unit/CoreClientDecodingTests.swift`
 
-实现（E2E-BOOT-02）：`tests/unit/test_sidecar_startup.py` · `LuminaTests/Unit/SidecarReadinessTests.swift` · `scripts/build-release.sh` sidecar smoke
+实现（E2E-BOOT-02）：`tests/unit/test_sidecar_startup.py`（含跨栈 `CHUNKER_VERSION` 契约）· `LuminaTests/Unit/SidecarReadinessTests.swift`（本地 XCTest）· `scripts/build-release.sh` sidecar smoke（断言 `/health` JSON `chunker_version`）
 
 ### 6.1 Wave 1 — 书库阅读核心（P0）
 
@@ -138,6 +140,7 @@ Lumina/
 |----|-----|------|------|-----|-----|
 | **E2E-CHUNK-LIVE** | §5.3 | 长文切割 + 摘要段 0/1 | 段长区间、无 overlap、schema、人工 report | live | **真实 Ollama** |
 | **E2E-B1** | §5.1 B1 | 批量导入混合格式 | 无 crash；复制到 App Support；元数据 ≥90% | API | Mock |
+| **E2E-B1-formats** | §5.2 | Markdown/HTML/RTF/DOCX/ODT/FB2 导入 | 立即返回 processing；后台 ready；正文可读 | API | Mock |
 | **E2E-B1-dup** | TDD §14 | 同 hash 二次导入 | 409 + overwrite 重建 | API | Mock |
 | **E2E-B1-reject** | TDD §14 | >500MB 拒绝 | 明确错误 | API | Mock |
 | **E2E-B2** | §5.3 B2 | 打开书 → 段列表 | 章节分组 + label；三句话+要点+锚点 | API | Mock |
@@ -162,15 +165,18 @@ Lumina/
 |----|-----|------|-----|-----|
 | **E2E-B3** | §5.4 B3 | 外文书自动译文 | API | Mock |
 | **E2E-B3-mode** | §5.4 | 原文/译文/对照切换 ≤200ms | perf | — |
-| **E2E-B5** | §5.5 B5 | 联网补充 `[网]` | API | Mock ddgs |
+| **E2E-B5** | §5.5 B5 | 联网补充 `[网]` | API + 双端 UI 可点链接 | Mock ddgs |
 | **E2E-B5-refuse** | §5.5 | 源中无信息 → 拒答 | API | Mock + corpus |
 | **E2E-B8** | §5.6 B8 | ⌘K 跨书搜索跳转 | API + XCUITest | Mock |
 | **E2E-B9** | §5.7 B9 | 100 段导出 Markdown ≤10s | API | Mock |
 | **E2E-ingest-ocr** | §5.2 | 扫描 PDF OCR → 摘要 | API | Mock |
+| **E2E-ingest-ocr-cloud** | §5.2 | 云端配置完整 → 优先云端 OCR；失败不回退 | API | Mock HTTP |
 | **E2E-N1** | §5.8 N1 | sync 50 篇 RSS ≤60s | API | Mock |
 | **E2E-N2** | §5.8 N2 | 简报列表 | API | Mock |
 | **E2E-N3** | §5.8 N3 | 单篇精读 + 深聊 | API | Mock |
 | **E2E-settings** | §5.9 | Ollama 状态 + 三 Profile | API | Mock |
+| **E2E-summary-tier** | §5.3 | 正常/高级模型选择、默认正常、空高级模型回退、切档覆盖 | unit + API + 双端契约 | Mock |
+| **E2E-boundary-move** | §5.3 | 手动拖动相邻段分界；原文拼接不变；只重摘要这两段 | unit + API | Mock |
 
 ### 6.3 非功能（PRD §7）
 
@@ -195,12 +201,13 @@ Lumina/
 | **E2E-BOOT-02** | `test_sidecar_startup` · `test_e2e_boot_02d_health_responds_immediately` · `test_e2e_priv_01_settings_default_localhost` | `SidecarReadinessTests` |
 | **E2E-CHUNK-LIVE** | `test_chunker_chapter_boundary` · `test_chunker_max_segment_size` · `test_chunker_no_overlap_offsets` · `test_short_book_single_segment` · `test_summary_json_schema` | — |
 | **B1 导入** | `test_detect_format` · `test_extract_metadata_epub` · `test_copy_to_app_support` · `test_file_hash_dedup` | `LibraryViewModel_importProgress` |
-| **B2 段列表** | `test_summary_json_parse` · `test_label_max_20_chars` | `SegmentListGroupingTests` · Snapshot |
-| **B11 prefetch** | `test_prefetch_priority_queue` · `test_chat_pauses_prefetch` · `test_segment_retry_3x` · `test_job_persist_on_restart` | `ReaderViewModel_SSEHandler` |
-| **B4/B5 深聊** | `test_evidence_sufficiency_router` · `test_rag_top_k` · `test_web_ref_annotation` · `test_refusal_when_no_source` · `test_dca_context_assembly` | `ChatViewModel_streamParse` · Snapshot |
+| **B2 段列表** | `test_summary_json_parse` · `test_label_max_20_chars` · `test_summary_quality`（0/1/2 问题边界、误报、复核降级、带反馈重试） | `SegmentListGroupingTests` · Snapshot |
+| **E2E-boundary-move** | `test_boundary_move` · `test_boundary_api` | `CoreClientDecodingTests.testSegmentBoundaryPreview_decodesCandidates` |
+| **B11 prefetch** | `test_same_book_summaries_are_strictly_ordered` · `test_different_books_still_summarize_in_parallel` · `test_final_failure_does_not_block_later_segments` · `test_chat_pauses_prefetch` · `test_job_persist_on_restart` | `ReaderViewModel_SSEHandler` |
+| **B4/B5 深聊** | `test_evidence_sufficiency_router` · `test_chat_dca` · `test_chat_evidence` · `test_web_search` · `test_rollup` · `test_book_scope_chat_after_index` | `CoreClientDecodingTests.testChatResponse_fromSSEDone_parsesMetrics` |
 | **B8 笔记/搜索** | `test_fts5_trigger_on_note_insert` · `test_search_group_by_kind` | `SearchViewModel_jumpToSegment` · Snapshot |
 | **B9 导出** | `test_export_markdown_structure` · `test_export_with_notes_optional` | — |
-| **E2E-ingest-ocr** | `test_ocr` · `test_ingest` · `test_import_ocr` · `test_release_ocr_bundle` | — |
+| **E2E-ingest-ocr / cloud** | `test_ocr` · `test_ingest` · `test_import_ocr` · `test_resource_probe` · `test_secrets_store` · `test_release_ocr_bundle` | `CoreClientDecodingTests.testAppSettings_decodesDefaultSettings` |
 
 **LocalAgent 参考测试**（移植为 unit，不直接依赖 LA 代码）：
 
@@ -208,6 +215,12 @@ Lumina/
 - `test_summarize_segment.py`
 - `test_segment_prefetch.py`
 - `test_web_search.py`
+
+**摘要质量 Mock 边界**：
+- PR 必须确定性覆盖黄金摘要、恰好 1 处允许、2 处触发、同位置去重、古文/专名误报边界，以及质检模型不可用时的本地降级。
+- 重试测试必须断言下一轮生成 prompt 含上轮具体字段、问题原因和短片段，并覆盖 full 与 Ollama minimal prompt。
+- 连续上下文必须覆盖上一章/本章前文选择、无章节降级、字符预算截断、prompt 消歧规则，以及同书顺序/跨书并行/前段最终失败后继续。
+- Mock 只验证可解释规则、调用编排和状态机；更广泛的事实准确性与语义质量仍由 `@live_chunk` report 人工 sign-off，不以不稳定的 live 输出阻塞 PR。
 
 ---
 
@@ -232,7 +245,10 @@ just test
 # 或
 pytest -m "not live and not live_chunk and not release_live and not perf" -q
 
-# Release 门禁（纯 mock 并行，~20s，与 PR 等价）
+# Bad case 目录完整性（draft 必须空，catalog 指针有效）
+python3 scripts/check-badcases.py
+
+# Release 门禁（先 check-badcases，再纯 mock 并行，~20s，与 PR 等价）
 just test-release
 # 或
 ./scripts/run-release-tests.sh
@@ -254,10 +270,10 @@ pytest packages/lumina-core/tests/live -m live_chunk -v -s
 # 生成 chunking 审阅报告
 just test-chunking-report
 
-# Swift 单测 + Snapshot
+# Swift 单测 + Snapshot（仅本地；PR / just release 默认不跑 XCTest）
 just test-macos
 # 或
-xcodebuild test -scheme Lumina -destination 'platform=macOS'
+xcodebuild test -project apps/macos/Lumina.xcodeproj -scheme Lumina -destination 'platform=macOS'
 
 # 录制 Snapshot 基线
 LUMINA_RECORD_SNAPSHOTS=1 just test-snapshots
@@ -285,14 +301,16 @@ markers = [
 
 ## 9. CI 流水线
 
+仓库里实际存在的 workflow 只有发布打包，没有 PR 级 `test-macos.yml`。
+
 | Workflow | 触发 | Ollama | 内容 |
 |----------|------|--------|------|
-| `test-core.yml` | 每 PR | 否 | pytest unit + e2e mock |
-| `test-macos.yml` | 每 PR | 否 | XCTest + Snapshot |
-| `test-chunking.yml` | PR path filter `chunker/**` `summarize/**` + manual | 是 | E2E-CHUNK-LIVE |
-| `test-nightly.yml` | cron | 是 | @live + perf + corpus 抽检 |
+| `release.yml` | tag `v*` / 手动 | 否 | `scripts/build-release.sh`（先 mock pytest，再打包；sidecar smoke 校验 `/health` 的 `chunker_version`） |
+| `release-windows.yml` | tag `v*` / 手动 | 否 | Windows 打包 |
 
-**PR 必过门禁**：全部 mock e2e + 核心 unit + Swift ViewModel + Snapshot 基线一致。
+**PR / `just test` 门禁**：lumina-core mock pytest。**默认不跑 XCTest。** Swift 与 Python 的 sidecar 握手由 pytest 读 [`SidecarReadiness.swift`](../apps/macos/Lumina/Services/SidecarReadiness.swift) 源码断言 `expectedChunkerVersion == CHUNKER_VERSION`（见 `test_macos_sidecar_expected_chunker_version_matches_core`）。本地可跑 `just test-macos`。
+
+**Release 必过门禁**：[`scripts/check-badcases.py`](../scripts/check-badcases.py)（`tests/badcases/draft.jsonl` 为空且 catalog 指针有效）+ mock pytest（见 [`run-release-tests.sh`](../scripts/run-release-tests.sh)）+ 嵌入 sidecar 的 `/health` JSON `chunker_version` 必须等于 Python `CHUNKER_VERSION`。`xcodebuild test` **不是** release 步骤（只 `build`）。
 
 **Wave 1 Dogfood Gate**：
 
@@ -310,6 +328,7 @@ markers = [
 - [ ] 若改 `chunker/` 或 `summarize/`：已跑 **`@live_chunk`** 并附 report 链接/截图
 - [ ] 若改 SwiftUI 组件：已更新 **Snapshot**（或说明无 UI 变更）
 - [ ] 若改深聊拒答逻辑：已更新 [refusal corpus](testing/refusal-corpus.md) 相关条目
+- [ ] 对话中确认的坑已写入 [bad case 目录](../tests/badcases/README.md)（draft 升 catalog，并补测试或规则）
 - [ ] 所有交互控件有 **`accessibilityIdentifier`**（XCUITest 需要）
 
 **推荐顺序**：先写 E2E（定义验收）→ 再拆 unit（覆盖边界）→ 最后 Snapshot / XCUITest。
@@ -362,6 +381,7 @@ Fixture 目录：`packages/lumina-core/tests/fixtures/llm/`
 | [testing/chunking-review.md](testing/chunking-review.md) | E2E-CHUNK-LIVE 人工审阅流程 |
 | [testing/snapshot-guide.md](testing/snapshot-guide.md) | Snapshot 录制与 CI |
 | [testing/refusal-corpus.md](testing/refusal-corpus.md) | 拒答测试集共建指南 |
+| [badcases/README.md](../tests/badcases/README.md) | 对话 bad case 采集、升格与发布检查 |
 
 ---
 

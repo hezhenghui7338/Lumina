@@ -154,7 +154,7 @@ struct NewsArticleView: View {
                                     if msg.role == "assistant", msg.content.isEmpty, viewModel.isSending {
                                         ProgressView()
                                             .controlSize(.small)
-                                        Text("正在响应…")
+                                        Text(viewModel.chatStatus ?? "正在响应…")
                                             .font(.caption)
                                             .foregroundStyle(.secondary)
                                     }
@@ -162,6 +162,12 @@ struct NewsArticleView: View {
                                 }
                                 if !msg.content.isEmpty {
                                     Text(msg.content)
+                                }
+                                ForEach(msg.webRefs) { ref in
+                                    if let url = URL(string: ref.url) {
+                                        Link(ref.displayLabel, destination: url)
+                                            .font(.caption)
+                                    }
                                 }
                                 if let attribution = ChatMetricsFormatter.attribution(for: msg) {
                                     Text(attribution)
@@ -282,6 +288,7 @@ protocol NewsArticleServing {
         articleId: String,
         message: String,
         quote: String?,
+        onStatus: ((String) -> Void)?,
         onToken: @escaping (String) -> Void
     ) async throws -> ChatResponse
 }
@@ -307,6 +314,7 @@ final class NewsArticleViewModel: ObservableObject {
     @Published var errorMessage: String?
     @Published var isRefreshingSummary = false
     @Published var isSending = false
+    @Published var chatStatus: String?
     @Published var messages: [ChatMessage] = []
 
     var readTimeoutSeconds: TimeInterval = 180
@@ -419,14 +427,27 @@ final class NewsArticleViewModel: ObservableObject {
         service: NewsArticleServing
     ) async {
         isSending = true
-        defer { isSending = false }
+        chatStatus = nil
+        defer {
+            isSending = false
+            chatStatus = nil
+        }
 
         messages.append(ChatMessage(role: "user", content: text))
         messages.append(ChatMessage(role: "assistant", content: ""))
         let idx = messages.count - 1
 
         do {
-            let resp = try await service.newsChatStream(articleId: articleId, message: text, quote: quote) { token in
+            let resp = try await service.newsChatStream(
+                articleId: articleId,
+                message: text,
+                quote: quote,
+                onStatus: { status in
+                    Task { @MainActor in
+                        self.chatStatus = status
+                    }
+                }
+            ) { token in
                 Task { @MainActor in
                     guard idx < self.messages.count else { return }
                     var msg = self.messages[idx]

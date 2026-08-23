@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import uuid
 from pathlib import Path
 
@@ -28,6 +29,7 @@ class SlowMockRouter(MockModelRouter):
         prompt: str,
         *,
         profile="summarize",
+        summary_tier="normal",
         json_mode: bool = False,
         on_slot_acquired=None,
     ) -> str:
@@ -37,6 +39,7 @@ class SlowMockRouter(MockModelRouter):
         return await super().complete(
             prompt,
             profile=profile,
+            summary_tier=summary_tier,
             json_mode=json_mode,
             on_slot_acquired=None,
         )
@@ -92,6 +95,23 @@ async def test_stop_book_drains_pending_jobs(conn):
     assert all(st in ("pending", "ready") for st in statuses.values())
     # Most should remain pending since stop drained the queue
     assert sum(1 for st in statuses.values() if st == "pending") >= 3
+
+
+@pytest.mark.asyncio
+async def test_prepare_book_resegment_preserves_previous_pause_state(conn):
+    router = MockModelRouter(responses={"summarize": SUMMARY, "translate": "译文"})
+    q = JobQueue(conn, router)
+    paused_book = _seed_book(conn, book_id="paused-book", n_segments=1)
+    active_book = _seed_book(conn, book_id="active-book", n_segments=1)
+
+    await q.stop_book(paused_book)
+    assert await q.prepare_book_resegment(paused_book) is True
+    assert q.is_user_paused(paused_book)
+
+    assert await q.prepare_book_resegment(active_book) is False
+    assert q.is_user_paused(active_book)
+    q.unpause_book(active_book)
+    assert not q.is_user_paused(active_book)
 
 
 @pytest.mark.asyncio
@@ -169,6 +189,82 @@ async def test_start_book_resets_failed_and_completes(conn):
         pytest.fail(f"failed segment not recovered: {statuses}")
 
     assert seg_repo.get_by_index(book_id, 0)["summary_status"] == "ready"
+
+
+@pytest.mark.asyncio
+async def test_start_book_advanced_does_not_reset_ready(conn):
+    router = MockModelRouter(responses={"summarize": SUMMARY, "translate": "译文"})
+    q = JobQueue(conn, router)
+    book_id = _seed_book(conn, n_segments=2)
+    segs = SegmentRepo(conn).list_for_book(book_id)
+    seg_repo = SegmentRepo(conn)
+    kept_json = '{"sentences":["KEEP-ME"],"bullets":[],"label":"kept","anchor":"a"}'
+    seg_repo.update_summary(
+        segs[0]["id"],
+        summary_json=kept_json,
+        label="kept",
+        summary_tier="normal",
+        status="ready",
+    )
+    await q.stop_book(book_id)
+    await q.start_book(book_id, summary_tier="advanced")
+
+    for _ in range(50):
+        pending = seg_repo.get_by_index(book_id, 1)
+        if pending["summary_status"] == "ready":
+            break
+        await asyncio.sleep(0.1)
+    else:
+        statuses = [s["summary_status"] for s in seg_repo.list_for_book(book_id)]
+        pytest.fail(f"pending segment not summarized: {statuses}")
+
+    kept = seg_repo.get_by_index(book_id, 0)
+    assert kept["summary_json"] == kept_json
+    assert kept["summary_tier"] == "normal"
+    assert kept["label"] == "kept"
+    done = seg_repo.get_by_index(book_id, 1)
+    assert done["summary_status"] == "ready"
+    assert done["summary_tier"] == "advanced"
+
+
+@pytest.mark.asyncio
+async def test_regenerate_advanced_resets_ready(conn):
+    router = MockModelRouter(responses={"summarize": SUMMARY, "translate": "译文"})
+    q = JobQueue(conn, router)
+    book_id = _seed_book(conn, n_segments=2)
+    segs = SegmentRepo(conn).list_for_book(book_id)
+    seg_repo = SegmentRepo(conn)
+    kept_json = '{"sentences":["KEEP-ME"],"bullets":[],"label":"kept","anchor":"a"}'
+    for seg in segs:
+        seg_repo.update_summary(
+            seg["id"],
+            summary_json=kept_json,
+            label="kept",
+            summary_tier="normal",
+            status="ready",
+        )
+    await q.stop_book(book_id)
+    count = await q.enqueue_book_regenerate(book_id, summary_tier="advanced")
+    assert count == 2
+
+    for _ in range(50):
+        updated = seg_repo.list_for_book(book_id)
+        if all(
+            s["summary_status"] == "ready" and s["summary_tier"] == "advanced"
+            for s in updated
+        ):
+            break
+        await asyncio.sleep(0.1)
+    else:
+        rows = seg_repo.list_for_book(book_id)
+        pytest.fail(
+            "regenerate did not finish: "
+            f"{[(s['summary_status'], s['summary_tier']) for s in rows]}"
+        )
+
+    for seg in seg_repo.list_for_book(book_id):
+        assert seg["summary_json"] != kept_json
+        assert seg["label"] != "kept"
 
 
 @pytest.mark.asyncio
@@ -437,16 +533,18 @@ async def test_stop_book_pauses_queued_registry_tasks(conn):
     await q.enqueue_book_prefetch(book_id)
     await asyncio.sleep(0.05)
 
-    queued = [t for t in registry.snapshot() if t["status"] == "queued"]
-    assert len(queued) >= 2
+    scheduled = [
+        t for t in registry.snapshot() if t["status"] in ("queued", "running")
+    ]
+    assert len(scheduled) == 1
 
     await q.stop_book(book_id)
 
     paused = [t for t in registry.snapshot() if t["status"] == "paused"]
-    assert len(paused) >= 2
+    assert len(paused) == 1
     assert all(t["duration_s"] is None for t in paused)
     assert registry.counts()["queued"] == 0
-    assert len(q._paused_backlog) >= 2
+    assert len(q._paused_backlog) == 1
 
 
 @pytest.mark.asyncio
@@ -538,7 +636,7 @@ async def test_stop_moves_queued_to_paused_backlog(conn):
 
     assert q.is_user_paused(book_id)
     assert q._queue.qsize() == 0
-    assert len(q._paused_backlog) >= 3
+    assert len(q._paused_backlog) == 1
 
 
 @pytest.mark.asyncio
@@ -574,7 +672,7 @@ async def test_resume_restores_backlog_to_queue(conn):
     await q.enqueue_book_prefetch(book_id)
     await asyncio.sleep(0.05)
     await q.stop_book(book_id)
-    assert len(q._paused_backlog) >= 2
+    assert len(q._paused_backlog) == 1
 
     await q.start_book(book_id)
     assert len(q._paused_backlog) == 0
@@ -635,7 +733,7 @@ async def test_registry_paused_not_cancelled(conn):
     await q.stop_book(book_id)
 
     counts = registry.counts()
-    assert counts["paused"] >= 2
+    assert counts["paused"] == 1
     assert counts["cancelled"] == 0
     paused_tasks = registry.snapshot(status="paused")
     assert all(t["status"] == "paused" for t in paused_tasks)
@@ -659,7 +757,10 @@ async def test_summarize_state_queued_after_enqueue(conn):
         total=int(progress["summary_total_count"]),
     )
     assert state in ("queued", "running")
-    assert q._summarize_queued_count_for_book(book_id) >= 1
+    assert (
+        q._summarize_queued_count_for_book(book_id) == 1
+        or q.summarize_active_for_book(book_id) is not None
+    )
 
 
 @pytest.mark.asyncio
@@ -681,6 +782,185 @@ async def test_summarize_state_paused_after_stop(conn):
         total=int(progress["summary_total_count"]),
     )
     assert state == "paused"
+
+
+class OrderingRouter(MockModelRouter):
+    def __init__(self, *, models: ModelsConfig, fail_first_segment: bool = False) -> None:
+        super().__init__(
+            responses={"summarize": SUMMARY, "translate": "译文"},
+            models=models,
+        )
+        self.fail_first_segment = fail_first_segment
+        self.started: list[tuple[str, int]] = []
+        self.active_by_book: dict[str, int] = {}
+        self.peak_by_book: dict[str, int] = {}
+        self.global_active = 0
+        self.global_peak = 0
+
+    async def complete(
+        self,
+        prompt: str,
+        *,
+        profile="summarize",
+        summary_tier="normal",
+        json_mode: bool = False,
+        on_slot_acquired=None,
+    ) -> str:
+        if profile != "summarize":
+            return await super().complete(
+                prompt,
+                profile=profile,
+                summary_tier=summary_tier,
+                json_mode=json_mode,
+                on_slot_acquired=on_slot_acquired,
+            )
+        if on_slot_acquired is not None:
+            await on_slot_acquired()
+        marker = next(
+            line for line in prompt.splitlines() if line.startswith("正文段落 ")
+        )
+        _, book_id, raw_idx = marker.split()
+        idx = int(raw_idx)
+        self.started.append((book_id, idx))
+        self.active_by_book[book_id] = self.active_by_book.get(book_id, 0) + 1
+        self.peak_by_book[book_id] = max(
+            self.peak_by_book.get(book_id, 0),
+            self.active_by_book[book_id],
+        )
+        self.global_active += 1
+        self.global_peak = max(self.global_peak, self.global_active)
+        try:
+            await asyncio.sleep(0.03)
+            if self.fail_first_segment and idx == 0:
+                return "{not-json"
+            return json.dumps(SUMMARY, ensure_ascii=False)
+        finally:
+            self.active_by_book[book_id] -= 1
+            self.global_active -= 1
+
+
+def _parallel_models() -> ModelsConfig:
+    resource = ModelResource(
+        id="ollama",
+        provider="ollama",
+        base_url="http://127.0.0.1:11434",
+        model="m",
+        concurrency=3,
+    )
+    return ModelsConfig(
+        resources=[resource],
+        summarize=ProfileRoute(priority=["ollama"]),
+    )
+
+
+def _seed_tracking_book(conn, *, book_id: str, n_segments: int) -> str:
+    _seed_book(conn, book_id=book_id, n_segments=n_segments)
+    with conn:
+        for idx in range(n_segments):
+            conn.execute(
+                "UPDATE segments SET raw_text = ? WHERE book_id = ? AND idx = ?",
+                (f"正文段落 {book_id} {idx}", book_id, idx),
+            )
+    return book_id
+
+
+@pytest.mark.asyncio
+async def test_same_book_summaries_are_strictly_ordered(conn):
+    router = OrderingRouter(models=_parallel_models())
+    q = JobQueue(conn, router)
+    book_id = _seed_tracking_book(conn, book_id="book-a", n_segments=3)
+
+    await q.enqueue_book_prefetch(book_id)
+    for _ in range(100):
+        if all(
+            seg["summary_status"] == "ready"
+            for seg in SegmentRepo(conn).list_for_book(book_id)
+        ):
+            break
+        await asyncio.sleep(0.03)
+    else:
+        pytest.fail("ordered summary chain did not finish")
+
+    assert router.started == [(book_id, 0), (book_id, 1), (book_id, 2)]
+    assert router.peak_by_book[book_id] == 1
+
+
+@pytest.mark.asyncio
+async def test_high_priority_later_segment_does_not_skip_context_chain(conn):
+    router = OrderingRouter(models=_parallel_models())
+    q = JobQueue(conn, router)
+    book_id = _seed_tracking_book(conn, book_id="book-a", n_segments=3)
+    target = SegmentRepo(conn).get_by_index(book_id, 2)
+    assert target is not None
+
+    await q.enqueue_summarize(
+        book_id,
+        target["id"],
+        target["idx"],
+        high=True,
+    )
+    for _ in range(100):
+        if all(
+            seg["summary_status"] == "ready"
+            for seg in SegmentRepo(conn).list_for_book(book_id)
+        ):
+            break
+        await asyncio.sleep(0.03)
+    else:
+        pytest.fail("high-priority request did not finish ordered chain")
+
+    assert router.started == [(book_id, 0), (book_id, 1), (book_id, 2)]
+
+
+@pytest.mark.asyncio
+async def test_different_books_still_summarize_in_parallel(conn):
+    router = OrderingRouter(models=_parallel_models())
+    q = JobQueue(conn, router)
+    _seed_tracking_book(conn, book_id="book-a", n_segments=2)
+    _seed_tracking_book(conn, book_id="book-b", n_segments=2)
+
+    await q.enqueue_book_prefetch("book-a")
+    await q.enqueue_book_prefetch("book-b")
+    for _ in range(100):
+        if all(
+            all(
+                seg["summary_status"] == "ready"
+                for seg in SegmentRepo(conn).list_for_book(book_id)
+            )
+            for book_id in ("book-a", "book-b")
+        ):
+            break
+        await asyncio.sleep(0.03)
+    else:
+        pytest.fail("cross-book summary chains did not finish")
+
+    assert router.global_peak >= 2
+    assert router.peak_by_book == {"book-a": 1, "book-b": 1}
+
+
+@pytest.mark.asyncio
+async def test_final_failure_does_not_block_later_segments(conn):
+    router = OrderingRouter(
+        models=_parallel_models(),
+        fail_first_segment=True,
+    )
+    q = JobQueue(conn, router)
+    book_id = _seed_tracking_book(conn, book_id="book-a", n_segments=2)
+
+    await q.enqueue_book_prefetch(book_id)
+    for _ in range(150):
+        statuses = [
+            seg["summary_status"]
+            for seg in SegmentRepo(conn).list_for_book(book_id)
+        ]
+        if statuses == ["failed", "ready"]:
+            break
+        await asyncio.sleep(0.03)
+    else:
+        pytest.fail(f"summary chain did not continue after failure: {statuses}")
+
+    first_idx_one = router.started.index((book_id, 1))
+    assert all(idx == 0 for _, idx in router.started[:first_idx_one])
 
 
 @pytest.mark.asyncio

@@ -69,3 +69,33 @@ def test_e2e_ingest_ocr_failure_marks_book_error(client, tmp_path, monkeypatch):
     book_id = client.post("/books/import", json={"paths": [str(pdf)]}).json()["books"][0]["book_id"]
     book = wait_for_ingest(client, book_id, timeout=10.0)
     assert book["status"] == "error"
+    assert "cv2 missing" in (book.get("ingest_error") or "")
+
+
+def test_e2e_ingest_prefers_configured_cloud_ocr(client, tmp_path, monkeypatch):
+    configured = client.put(
+        "/settings",
+        json={
+            "ocr_cloud_base_url": "https://example.test/v1",
+            "ocr_cloud_model": "vision",
+            "ocr_cloud_api_key": "secret",
+        },
+    )
+    assert configured.status_code == 200
+
+    monkeypatch.setattr(
+        "lumina_core.ingest.ocr._ocr_pdf_cloud",
+        lambda path, **kwargs: fake_ocr_pdf(path, **kwargs),
+    )
+    monkeypatch.setattr(
+        "lumina_core.ingest.ocr._ocr_pdf_local",
+        lambda *_args, **_kwargs: pytest.fail("云端 OCR 已配置，不应使用本地 OCR"),
+    )
+    pdf = tmp_path / "cloud-scan.pdf"
+    write_blank_pdf(pdf)
+
+    book_id = client.post("/books/import", json={"paths": [str(pdf)]}).json()["books"][0]["book_id"]
+    book = wait_for_ingest(client, book_id, timeout=10.0)
+    assert book["status"] != "error"
+    segment = client.get(f"/books/{book_id}/segments/0").json()
+    assert "扫描页" in segment["raw_text"]

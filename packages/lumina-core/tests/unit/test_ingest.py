@@ -4,7 +4,35 @@ from pathlib import Path
 
 import pytest
 
-from lumina_core.ingest.loader import build_segments, load_document
+from lumina_core.ingest.loader import build_segments, detect_format, load_document
+
+
+@pytest.mark.parametrize(
+    ("filename", "expected"),
+    [
+        ("book.txt", "txt"),
+        ("book.TEXT", "txt"),
+        ("book.md", "txt"),
+        ("book.markdown", "txt"),
+        ("book.mdown", "txt"),
+        ("book.mkd", "txt"),
+        ("book.log", "txt"),
+        ("book.html", "html"),
+        ("book.htm", "html"),
+        ("book.xhtml", "html"),
+        ("book.rtf", "rtf"),
+        ("book.docx", "docx"),
+        ("book.odt", "odt"),
+        ("book.fb2", "fb2"),
+    ],
+)
+def test_detect_format(filename, expected):
+    assert detect_format(Path(filename)) == expected
+
+
+def test_detect_format_rejects_unsupported_file():
+    with pytest.raises(ValueError, match="Unsupported format"):
+        detect_format(Path("legacy.doc"))
 
 
 def test_load_txt_roundtrip(tmp_path):
@@ -13,6 +41,207 @@ def test_load_txt_roundtrip(tmp_path):
     text, meta = load_document(p, "txt")
     assert "段落内容" in text
     assert meta == {}
+
+
+def test_load_txt_gb18030_golden_pavilion(tmp_path):
+    p = tmp_path / "金阁寺.txt"
+    p.write_bytes("『金阁寺/作者:三岛由纪夫』\n正文。".encode("gb18030"))
+    text, meta = load_document(p, "txt")
+    assert "金阁寺" in text
+    assert "三岛由纪夫" in text
+    assert meta == {}
+
+
+def _block_utf8_sig_codec(monkeypatch) -> None:
+    """Simulate a frozen sidecar that does not ship encodings.utf_8_sig."""
+    import codecs
+
+    from lumina_core.ingest import text as text_mod
+
+    real_try_decode = text_mod._try_decode
+    real_read_text = Path.read_text
+    real_lookup = codecs.lookup
+
+    def try_decode(data: bytes, encoding: str) -> str:
+        if encoding.lower().replace("_", "-") == "utf-8-sig":
+            raise LookupError(f"unknown encoding: {encoding}")
+        return real_try_decode(data, encoding)
+
+    def read_text(self, encoding=None, errors=None, newline=None):
+        if encoding and str(encoding).lower().replace("_", "-") == "utf-8-sig":
+            raise LookupError("unknown encoding: utf-8-sig")
+        return real_read_text(self, encoding=encoding, errors=errors, newline=newline)
+
+    def lookup(name):
+        if str(name).lower().replace("_", "-") == "utf-8-sig":
+            raise LookupError(f"unknown encoding: {name}")
+        return real_lookup(name)
+
+    monkeypatch.setattr(text_mod, "_try_decode", try_decode)
+    monkeypatch.setattr(Path, "read_text", read_text)
+    monkeypatch.setattr(codecs, "lookup", lookup)
+
+
+def test_decode_text_bytes_never_requests_utf8_sig():
+    from lumina_core.ingest.text import _CANDIDATE_ENCODINGS
+
+    assert "utf-8-sig" not in _CANDIDATE_ENCODINGS
+
+
+def test_pyinstaller_spec_bundles_text_encodings():
+    spec = Path(__file__).resolve().parents[2] / "lumina-core.spec"
+    text = spec.read_text(encoding="utf-8")
+    for name in ("encodings.utf_8_sig", "encodings.gb18030", "encodings.latin_1"):
+        assert name in text, f"{name} must be a PyInstaller hiddenimport"
+
+
+def test_load_txt_gb18030_when_utf8_sig_codec_missing(tmp_path, monkeypatch):
+    _block_utf8_sig_codec(monkeypatch)
+    p = tmp_path / "金阁寺.txt"
+    p.write_bytes("『金阁寺』第一章。".encode("gb18030"))
+    text, _ = load_document(p, "txt")
+    assert "金阁寺" in text
+
+
+def test_load_html_bom_when_utf8_sig_codec_missing(tmp_path, monkeypatch):
+    _block_utf8_sig_codec(monkeypatch)
+    p = tmp_path / "bom.html"
+    html = (
+        "<html><head><title>BOM 书</title></head>"
+        "<body><h1>第一章</h1><p>正文。</p></body></html>"
+    )
+    p.write_bytes(b"\xef\xbb\xbf" + html.encode("utf-8"))
+    text, meta = load_document(p, "html")
+    assert "正文" in text
+    assert meta["title"] == "BOM 书"
+    assert not text.startswith("\ufeff")
+
+
+def test_load_txt_strips_utf8_bom(tmp_path):
+    p = tmp_path / "bom.txt"
+    p.write_bytes(b"\xef\xbb\xbf" + "第一章\n".encode("utf-8"))
+    text, _ = load_document(p, "txt")
+    assert text.startswith("第一章")
+
+
+def test_load_html_preserves_headings_and_metadata(tmp_path):
+    p = tmp_path / "sample.html"
+    p.write_text(
+        """
+        <html><head><title>HTML 测试书</title><meta name="author" content="测试作者"></head>
+        <body><h1>第一章</h1><p>正文段落。</p><script>不要收录</script></body></html>
+        """,
+        encoding="utf-8",
+    )
+    text, meta = load_document(p, "html")
+    assert "## [§第一章]" in text
+    assert "正文段落" in text
+    assert "不要收录" not in text
+    assert meta == {"title": "HTML 测试书", "author": "测试作者"}
+
+
+def test_load_rtf_text_and_metadata(tmp_path):
+    p = tmp_path / "sample.rtf"
+    p.write_text(
+        r"{\rtf1\ansi{\info{\title RTF Test}{\author Alice}}"
+        r"\b Chapter One\b0\par Body text.}",
+        encoding="latin-1",
+    )
+    text, meta = load_document(p, "rtf")
+    assert "Chapter One" in text
+    assert "Body text" in text
+    assert meta == {"title": "RTF Test", "author": "Alice"}
+
+
+def test_load_docx_preserves_headings_tables_and_metadata(tmp_path):
+    docx = pytest.importorskip("docx")
+    p = tmp_path / "sample.docx"
+    document = docx.Document()
+    document.core_properties.title = "DOCX 测试书"
+    document.core_properties.author = "测试作者"
+    document.add_heading("第一章", level=1)
+    document.add_paragraph("正文段落。")
+    table = document.add_table(rows=1, cols=2)
+    table.cell(0, 0).text = "甲"
+    table.cell(0, 1).text = "乙"
+    document.save(p)
+
+    text, meta = load_document(p, "docx")
+    assert "## [§第一章]" in text
+    assert "正文段落" in text
+    assert "甲 | 乙" in text
+    assert meta == {"title": "DOCX 测试书", "author": "测试作者"}
+
+
+def test_load_odt_preserves_headings_and_metadata(tmp_path):
+    pytest.importorskip("odf")
+    from odf import dc, text
+    from odf.opendocument import OpenDocumentText
+
+    p = tmp_path / "sample.odt"
+    document = OpenDocumentText()
+    document.meta.addElement(dc.Title(text="ODT 测试书"))
+    document.meta.addElement(dc.Creator(text="测试作者"))
+    document.text.addElement(text.H(outlinelevel=1, text="第一章"))
+    document.text.addElement(text.P(text="正文段落。"))
+    document.save(str(p))
+
+    content, metadata = load_document(p, "odt")
+    assert "## [§第一章]" in content
+    assert "正文段落" in content
+    assert metadata == {"title": "ODT 测试书", "author": "测试作者"}
+
+
+def test_load_fb2_preserves_sections_and_metadata(tmp_path):
+    p = tmp_path / "sample.fb2"
+    p.write_text(
+        """<?xml version="1.0" encoding="utf-8"?>
+        <FictionBook xmlns="http://www.gribuser.ru/xml/fictionbook/2.0">
+          <description><title-info><book-title>FB2 测试书</book-title>
+            <author><first-name>小</first-name><last-name>明</last-name></author>
+          </title-info></description>
+          <body><section><title><p>第一章</p></title><p>正文段落。</p></section></body>
+        </FictionBook>""",
+        encoding="utf-8",
+    )
+    text, meta = load_document(p, "fb2")
+    assert "## [§第一章]" in text
+    assert "正文段落" in text
+    assert meta == {"title": "FB2 测试书", "author": "小 明"}
+
+
+def test_load_fb2_utf8_sig_declaration_when_codec_missing(tmp_path, monkeypatch):
+    _block_utf8_sig_codec(monkeypatch)
+    p = tmp_path / "sig.fb2"
+    p.write_text(
+        """<?xml version="1.0" encoding="utf-8-sig"?>
+        <FictionBook>
+          <description><title-info><book-title>声明测试</book-title>
+          </title-info></description>
+          <body><section><title><p>序</p></title><p>正文。</p></section></body>
+        </FictionBook>""",
+        encoding="utf-8",
+    )
+    text, meta = load_document(p, "fb2")
+    assert "正文" in text
+    assert meta["title"] == "声明测试"
+
+
+@pytest.mark.parametrize(
+    ("filename", "fmt", "content", "message"),
+    [
+        ("empty.html", "html", "<html><script>empty</script></html>", "no readable text"),
+        ("broken.rtf", "rtf", "not rtf", "Invalid RTF"),
+        ("broken.docx", "docx", "not a zip", "Invalid or encrypted DOCX"),
+        ("broken.odt", "odt", "not a zip", "Invalid or encrypted ODT"),
+        ("broken.fb2", "fb2", "<broken", "Invalid FB2"),
+    ],
+)
+def test_structured_formats_report_stable_errors(tmp_path, filename, fmt, content, message):
+    p = tmp_path / filename
+    p.write_text(content, encoding="utf-8")
+    with pytest.raises(ValueError, match=message):
+        load_document(p, fmt)
 
 
 def test_build_segments_from_txt():
@@ -129,6 +358,194 @@ def test_load_pdf_partial_ocr_for_mixed_pages(tmp_path, monkeypatch):
     assert meta.get("ocr_partial") is True
 
 
+def test_probe_page_indices_caps_large_pdfs():
+    from lumina_core.ingest.pdf import _PDF_PROBE_MAX, _probe_page_indices
+
+    assert _probe_page_indices(10) == list(range(1, 11))
+    probed = _probe_page_indices(213)
+    assert probed[0] == 1
+    assert probed[-1] == 213
+    assert len(probed) <= _PDF_PROBE_MAX
+
+
+def test_load_pdf_probe_skips_remaining_extract_on_scanned_doc(tmp_path, monkeypatch):
+    pytest.importorskip("pypdf")
+    from pypdf import PdfWriter
+
+    from lumina_core import config
+    from lumina_core.ingest import pdf as pdf_mod
+    from lumina_core.ingest.ocr import OcrDocumentResult, OcrPageResult
+
+    p = tmp_path / "scanned-long.pdf"
+    writer = PdfWriter()
+    for _ in range(20):
+        writer.add_blank_page(width=200, height=200)
+    with p.open("wb") as f:
+        writer.write(f)
+
+    monkeypatch.setattr(config, "OCR_ENABLED", True)
+    calls = {"n": 0}
+    original = pdf_mod._page_text
+
+    def counted(page):
+        calls["n"] += 1
+        return original(page)
+
+    monkeypatch.setattr(pdf_mod, "_page_text", counted)
+
+    def _fake(_path, **_kwargs):
+        return OcrDocumentResult(
+            text="## [p.1]\nocr-text",
+            pages=[OcrPageResult(1, "ocr-text", 0.9, False)],
+            avg_confidence=0.9,
+        )
+
+    monkeypatch.setattr(pdf_mod, "ocr_pdf", _fake)
+    text, meta = load_document(p, "pdf")
+    assert calls["n"] <= pdf_mod._PDF_PROBE_MAX
+    assert calls["n"] < 20
+    assert meta.get("text_layer_probed") is True
+    assert "ocr-text" in text
+
+
+def test_load_pdf_cancel_during_probe(tmp_path, monkeypatch):
+    pytest.importorskip("pypdf")
+    import threading
+
+    from pypdf import PdfWriter
+
+    from lumina_core.ingest.pdf import load_pdf
+    from lumina_core.ingest.progress import DocumentLoadCancelled
+
+    p = tmp_path / "cancel.pdf"
+    writer = PdfWriter()
+    for _ in range(8):
+        writer.add_blank_page(width=200, height=200)
+    with p.open("wb") as f:
+        writer.write(f)
+
+    cancel = threading.Event()
+    cancel.set()
+    with pytest.raises(DocumentLoadCancelled):
+        load_pdf(p, cancel_event=cancel)
+
+
+def test_load_pdf_emits_progress_before_ocr(tmp_path, monkeypatch):
+    pytest.importorskip("pypdf")
+    from pypdf import PdfWriter
+
+    from lumina_core import config
+    from lumina_core.ingest.ocr import OcrDocumentResult, OcrPageResult
+    from lumina_core.ingest.pdf import load_pdf
+
+    p = tmp_path / "progress.pdf"
+    writer = PdfWriter()
+    writer.add_blank_page(width=200, height=200)
+    with p.open("wb") as f:
+        writer.write(f)
+
+    monkeypatch.setattr(config, "OCR_ENABLED", True)
+    messages: list[str] = []
+
+    def on_progress(_page, _total, message):
+        messages.append(message)
+
+    monkeypatch.setattr(
+        "lumina_core.ingest.pdf.ocr_pdf",
+        lambda *_a, **_k: OcrDocumentResult(
+            text="## [p.1]\nocr-text",
+            pages=[OcrPageResult(1, "ocr-text", 0.9, False)],
+            avg_confidence=0.9,
+        ),
+    )
+    load_pdf(p, on_progress=on_progress)
+    assert any("打开 PDF" in m or "文本层" in m for m in messages)
+
+
+# pypdf extract of EasyRL_v1.0.6.pdf p.2 (FandolSong Identity-H, no ToUnicode)
+_EASYRL_PYPDF_PAGE2 = (
+    "భ\u0ffd\n\u0ce5\nႨທAtari\nေv a \u09d9॓\nದ\nb\n\u0d50Ⴈඪૼ\n"
+    "•ֻ4ֻ֞11 ᅣູ࿐༝vĠ\n•ֻ1ֻބ2ऌေvটĠ\n•ֻ3ֻބ12ऌ࿐༝vটb\n"
+    "߶\nщ\u0ebeğQi WangaYiyuan YangaJi Jiang\n"
+    "ᇁ྆\n྆ Sm1lesaLSGOMYPϺᇹაᆦӻb\n"
+    "Սo࿐༝ೆoEasy-RLੀಕp\nDatawhale\nህᇿႿ AIषჷቆᆮ\n"
+    "ϱಃലૼ\nЧቔ\u0bd6ҐႨཚඇ\u0b00-അြྟ\u0d50Ⴈ-ཚ 4.0ྸॖླྀၰྛྸॖb"
+)
+_EASYRL_FITZ_PAGE2 = (
+    "前言\n李宏毅老师的《深度强化学习》是强化学习领域经典的中文视频之一。"
+    "李老师幽默风趣的上课风格让晦涩难懂的强化学习理论变得轻松易懂，"
+    "他会通过很多有趣的例子来讲解强化学习理论。比如老师经常会用玩Atari"
+    "游戏的例子来讲解强化学习算法。"
+)
+
+
+def test_text_layer_garbled_identity_h_sample():
+    from lumina_core.ingest.pdf import text_layer_garbled
+
+    assert text_layer_garbled(_EASYRL_PYPDF_PAGE2)
+    assert not text_layer_garbled(_EASYRL_FITZ_PAGE2)
+    assert not text_layer_garbled("Chapter 1 Reinforcement Learning\n" * 8)
+    assert text_layer_garbled("body " * 20 + "(cid:1234) more")
+
+
+def test_load_pdf_prefers_pymupdf_cjk_text_layer(tmp_path, monkeypatch):
+    fitz = pytest.importorskip("fitz")
+
+    p = tmp_path / "easyrl-like.pdf"
+    doc = fitz.open()
+    page = doc.new_page()
+    page.insert_text((72, 72), "强化学习教程 EasyRL", fontname="china-s", fontsize=18)
+    page.insert_text((72, 120), "智能体在环境里面获取某个状态", fontname="china-s", fontsize=12)
+    doc.save(str(p))
+    doc.close()
+
+    monkeypatch.setattr(
+        "lumina_core.ingest.pdf.ocr_pdf",
+        lambda *_a, **_k: (_ for _ in ()).throw(
+            AssertionError("usable text layer must not OCR")
+        ),
+    )
+    text, meta = load_document(p, "pdf")
+    assert "强化学习" in text
+    assert "智能体" in text
+    assert meta.get("pdf_extractor") == "pymupdf"
+    assert meta.get("ocr_used") is not True
+
+
+def test_load_pdf_garbled_pypdf_layer_triggers_ocr(tmp_path, monkeypatch):
+    pytest.importorskip("pypdf")
+    fitz = pytest.importorskip("fitz")
+
+    from lumina_core import config
+    from lumina_core.ingest import pdf as pdf_mod
+    from lumina_core.ingest.ocr import OcrDocumentResult, OcrPageResult
+
+    p = tmp_path / "cid.pdf"
+    doc = fitz.open()
+    page = doc.new_page()
+    page.insert_text((72, 72), "placeholder text that pypdf would see as a layer")
+    doc.save(str(p))
+    doc.close()
+
+    monkeypatch.setattr(pdf_mod, "_open_fitz", lambda _path: None)
+    monkeypatch.setattr(config, "OCR_ENABLED", True)
+    monkeypatch.setattr(pdf_mod, "_page_text", lambda _page: _EASYRL_PYPDF_PAGE2)
+
+    def _fake(_path, **_kwargs):
+        return OcrDocumentResult(
+            text="## [p.1]\n强化学习概述",
+            pages=[OcrPageResult(1, "强化学习概述", 0.9, False)],
+            avg_confidence=0.9,
+        )
+
+    monkeypatch.setattr(pdf_mod, "ocr_pdf", _fake)
+    text, meta = load_document(p, "pdf")
+    assert "强化学习概述" in text
+    assert meta.get("ocr_used") is True
+    assert meta.get("pdf_extractor") == "pypdf"
+    assert meta.get("text_layer_garbled_pages") == [1]
+
+
 def _write_epub_with_id_href_mismatch(path: Path) -> None:
     """Typical EPUB: spine idref != file href (e.g. c0_gu_wang_yan vs c0_gu_wang_yan.xhtml)."""
     ebooklib = pytest.importorskip("ebooklib")
@@ -185,3 +602,39 @@ def test_load_epub_falls_back_when_spine_empty(tmp_path, monkeypatch):
     monkeypatch.setattr(ebooklib_epub, "read_epub", _read_empty_spine)
     text, _meta = load_epub(p)
     assert "正文段落甲乙丙" in text
+
+
+def test_load_epub_landmarks_set_structure_roles_not_raw_text(tmp_path):
+    ebooklib = pytest.importorskip("ebooklib")
+    from ebooklib import epub
+
+    from lumina_core.ingest.epub import load_epub
+
+    book = epub.EpubBook()
+    book.set_identifier("lumina-landmark")
+    book.set_title("带序的书")
+    book.add_author("测试")
+
+    preface = epub.EpubHtml(title="序", file_name="preface.xhtml", uid="preface", lang="zh")
+    preface.set_content("<html><body><h1>序</h1><p>这是独立的序言文字。</p></body></html>")
+    chapter = epub.EpubHtml(title="第一章", file_name="ch1.xhtml", uid="ch1", lang="zh")
+    chapter.set_content("<html><body><h1>第一章</h1><p>这是正文第一章。</p></body></html>")
+    book.add_item(preface)
+    book.add_item(chapter)
+    book.add_item(epub.EpubNcx())
+    book.add_item(epub.EpubNav())
+    book.spine = [preface, chapter]
+    book.guide = [
+        {"type": "preface", "title": "序", "href": "preface.xhtml"},
+        {"type": "text", "title": "第一章", "href": "ch1.xhtml"},
+    ]
+    path = tmp_path / "with-preface.epub"
+    epub.write_epub(str(path), book)
+
+    text, meta = load_epub(path)
+    assert "role=" not in text
+    assert "这是独立的序言文字" in text
+    assert "这是正文第一章" in text
+    roles = meta.get("structure_roles") or []
+    assert any(item["role"] == "preface" and "序" in item["title"] for item in roles)
+    assert any(item["role"] == "bodymatter" for item in roles)

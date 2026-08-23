@@ -5,6 +5,9 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 CORE_PKG="$ROOT/packages/lumina-core"
 
+echo "==> Bad case catalog gate…"
+python3 "$ROOT/scripts/check-badcases.py"
+
 cd "$CORE_PKG"
 uv sync --extra dev --extra release
 

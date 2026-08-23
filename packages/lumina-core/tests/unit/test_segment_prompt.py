@@ -80,6 +80,18 @@ def test_segment_prompt_settings_cloud_primary_openai():
     assert minimal is True
 
 
+def test_segment_prompts_forbid_assistant_as_narrator():
+    from lumina_core.prompts_defaults import DEFAULT_ROLLUP
+    from lumina_core.summarize.segment import _CONTEXT_GUIDANCE
+
+    for template in (SUMMARY_PROMPT, SUMMARY_PROMPT_OLLAMA, SUMMARY_PROMPT_CLOUD, DEFAULT_ROLLUP):
+        assert "禁止写成「阅读助手」" in template
+        assert "第三方速读员" in template
+    assert "禁止写成「阅读助手」" in _CONTEXT_GUIDANCE
+    prompts = load_prompts_config()
+    assert "写成阅读助手" in (prompts.segment_quality or "")
+
+
 def test_segment_prompt_settings_cloud_primary_openrouter():
     router = _router(summarize_priority=["openrouter", "ollama"])
     prompts = load_prompts_config()

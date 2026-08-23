@@ -20,7 +20,7 @@
 | `Lumina-{version}-macOS.dmg` | ≤ 300 MB | UDZO 压缩安装包 |
 | `Lumina.app` | ≤ 500 MB | 安装后磁盘占用 |
 
-Sidecar 已裁剪：冗余 OCR small 模型、非中英文 Babel 语言包。OpenCV（`cv2/.dylibs`）**不得**手动删除，否则扫描 PDF OCR 会失败。构建脚本会在体积超限时失败，并在 prune 后运行 `--smoke-ocr` 校验。Cursor provider 已改为 OpenAI 兼容 HTTP 路径，不再依赖 `cursor-sdk`；`prune-sidecar.sh` 仍会校验 sidecar 不含历史残留的 `cursor_sdk/` 目录。
+Sidecar 已裁剪：冗余 OCR small 模型、非中英文 Babel 语言包、onnxruntime 推理用不到的 `transformers` / `quantization` / `tools` / `datasets`。OpenCV（`cv2/.dylibs`）**不得**手动删除，否则扫描 PDF OCR 会失败。构建脚本会在体积超限时失败，并在 prune 后运行 `--smoke-ocr` 校验。Cursor provider 已改为 OpenAI 兼容 HTTP 路径，不再依赖 `cursor-sdk`；`prune-sidecar.sh` 仍会校验 sidecar 不含历史残留的 `cursor_sdk/` 目录。
 
 ## 前置条件
 
@@ -45,7 +45,7 @@ Sidecar 已裁剪：冗余 OCR small 模型、非中英文 Babel 语言包。Ope
 ```bash
 ./scripts/build-release.sh
 
-# 指定版本号
+# 指定版本号（会写回 pyproject，并同步桌面工程 / CORE_VERSION / 握手常量）
 LUMINA_VERSION=0.7.0 ./scripts/build-release.sh
 ```
 
@@ -63,12 +63,13 @@ GitHub Actions：`Release Windows` workflow（`windows-latest`）。
 
 ## 构建步骤（脚本内部）
 
-0. `pytest -m "not perf"`（单元 + e2e + live；失败则中止，不进入打包）
-1. `uv sync --extra release` + PyInstaller → `packages/lumina-core/dist/lumina-core/`
-2. `scripts/prune-sidecar.sh` 裁剪冗余 sidecar 文件并校验不含历史残留的 `cursor_sdk/`
-3. `xcodebuild -configuration Release` → `Lumina.app`
-4. 复制 sidecar 到 `Lumina.app/Contents/Resources/lumina-core/`
-5. 打包 ZIP + DMG；断言 App ≤ 500 MB、DMG ≤ 300 MB
+0. `scripts/sync-release-identity.py`：以 `packages/lumina-core/pyproject.toml` 的 version（或 `LUMINA_VERSION`）为真源，同步 `CORE_VERSION`、`__version__`、Xcode `MARKETING_VERSION` / `CURRENT_PROJECT_VERSION`、Windows `<Version>`、Swift/C# `CHUNKER_VERSION` 握手常量；随后按该版本号命名产物并传给 `xcodebuild` / `dotnet publish`
+1. `pytest -m "not perf"`（单元 + e2e + live；失败则中止，不进入打包）
+2. `uv sync --extra release` + PyInstaller → `packages/lumina-core/dist/lumina-core/`
+3. `scripts/prune-sidecar.sh` 裁剪冗余 sidecar 文件并校验不含历史残留的 `cursor_sdk/`
+4. `xcodebuild -configuration Release` → `Lumina.app`
+5. 复制 sidecar 到 `Lumina.app/Contents/Resources/lumina-core/`
+6. 打包 ZIP + DMG；断言 App ≤ 500 MB、DMG ≤ 300 MB
 
 ## 验证清单
 

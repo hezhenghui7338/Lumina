@@ -23,6 +23,13 @@ if [[ -d "$INTERNAL/babel/locale-data" ]]; then
     ! -name "zh*" ! -name "en*" -delete
 fi
 
+# RapidOCR only needs onnxruntime capi at inference time. collect_all(onnxruntime)
+# also ships conversion/test ballast (~4MB) that pushed Lumina.app over 500MB.
+ORT="$INTERNAL/onnxruntime"
+if [[ -d "$ORT" ]]; then
+  rm -rf "$ORT/transformers" "$ORT/quantization" "$ORT/tools" "$ORT/datasets"
+fi
+
 # OpenCV (cv2) dylibs must stay intact — cv2.abi3.so links libavif/libav* at runtime.
 # Do NOT prune cv2/.dylibs; PyInstaller symlinks under _internal/ break if targets are removed.
 
@@ -49,6 +56,19 @@ fi
 if compgen -G "$INTERNAL/rapidocr/models/"'*_small.onnx' > /dev/null; then
   echo "ERROR: small OCR models must be pruned from release sidecar" >&2
   exit 1
+fi
+
+if [[ -d "$ORT" ]]; then
+  for ballast in transformers quantization tools datasets; do
+    if [[ -e "$ORT/$ballast" ]]; then
+      echo "ERROR: onnxruntime $ballast must be pruned from release sidecar" >&2
+      exit 1
+    fi
+  done
+  if [[ ! -d "$ORT/capi" ]]; then
+    echo "ERROR: onnxruntime capi missing after prune: $ORT/capi" >&2
+    exit 1
+  fi
 fi
 
 echo "==> Sidecar pruned ($(du -sh "$SIDECAR" | cut -f1))"

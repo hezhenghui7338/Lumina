@@ -18,6 +18,10 @@ test-release:
 test-all:
     cd packages/lumina-core && uv run pytest -q
 
+# Local only: PR/release gates do not run XCTest. Handshake lock is pytest reading Swift source.
+test-macos:
+    xcodebuild test -project apps/macos/Lumina.xcodeproj -scheme Lumina -destination 'platform=macOS'
+
 release:
     ./scripts/build-release.sh
 

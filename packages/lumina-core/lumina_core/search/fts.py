@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import sqlite3
 from typing import Any
 
@@ -96,3 +97,49 @@ def search(conn: sqlite3.Connection, query: str, *, limit: int = 30) -> list[dic
                     item["segment_index"] = seg["idx"]
             results.append(item)
     return results
+
+
+def search_book_segments(
+    conn: sqlite3.Connection,
+    book_id: str,
+    query: str,
+    *,
+    limit: int = 12,
+) -> list[dict[str, Any]]:
+    """FTS over one book's segment rows. Empty/invalid query → []."""
+    q = _sanitize_fts_query(query)
+    if not q:
+        return []
+    with db_lock(conn):
+        try:
+            rows = conn.execute(
+                """
+                SELECT book_id, segment_id, kind, title,
+                       snippet(search_fts, 4, '[', ']', '…', 10) AS snippet
+                FROM search_fts
+                WHERE search_fts MATCH ?
+                  AND book_id = ?
+                  AND kind = 'segment'
+                ORDER BY rank
+                LIMIT ?
+                """,
+                (q, book_id, limit),
+            ).fetchall()
+        except sqlite3.OperationalError:
+            return []
+        results: list[dict[str, Any]] = []
+        for row in rows:
+            item = dict(row)
+            if item["segment_id"]:
+                seg = conn.execute(
+                    "SELECT idx FROM segments WHERE id = ?", (item["segment_id"],)
+                ).fetchone()
+                if seg:
+                    item["segment_index"] = seg["idx"]
+            results.append(item)
+    return results
+
+
+def _sanitize_fts_query(query: str) -> str:
+    cleaned = re.sub(r'["\'*^:(){}[\]]', " ", query or "")
+    return " ".join(cleaned.split())

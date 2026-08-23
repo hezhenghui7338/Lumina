@@ -5,8 +5,8 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from lumina_core.config import ModelResource
-from lumina_core.resource_probe import probe_resource
+from lumina_core.config import ModelResource, Settings
+from lumina_core.resource_probe import probe_ocr, probe_resource
 
 
 def _client_factory(handler):
@@ -17,6 +17,42 @@ def _client_factory(handler):
         return real(*args, **kwargs)
 
     return factory
+
+
+@pytest.mark.asyncio
+async def test_ocr_probe_uses_local_when_cloud_is_empty(monkeypatch) -> None:
+    monkeypatch.setattr("lumina_core.resource_probe.ocr_dependency_warning", lambda: None)
+    status = await probe_ocr(Settings())
+    assert status.provider == "local"
+    assert status.ready is True
+    assert status.configured is False
+
+
+@pytest.mark.asyncio
+async def test_ocr_probe_reports_partial_cloud_configuration() -> None:
+    status = await probe_ocr(Settings(ocr_cloud_base_url="https://example.test/v1"))
+    assert status.provider == "cloud"
+    assert status.ready is False
+    assert "配置不完整" in status.message
+
+
+@pytest.mark.asyncio
+async def test_ocr_probe_checks_openai_compatible_models(monkeypatch) -> None:
+    monkeypatch.setattr(
+        httpx,
+        "AsyncClient",
+        _client_factory(lambda _request: httpx.Response(200, json={"data": [{"id": "vision"}]})),
+    )
+    status = await probe_ocr(
+        Settings(
+            ocr_cloud_base_url="https://example.test/v1",
+            ocr_cloud_model="vision",
+            ocr_cloud_api_key="secret",
+        )
+    )
+    assert status.provider == "cloud"
+    assert status.configured is True
+    assert status.ready is True
 
 
 @pytest.mark.asyncio

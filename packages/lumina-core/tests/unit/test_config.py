@@ -3,6 +3,8 @@
 import sys
 from pathlib import Path
 
+from pydantic import ValidationError
+
 from lumina_core.config import (
     CLOUD_CHUNK_MAX,
     CLOUD_CHUNK_TARGET,
@@ -10,6 +12,8 @@ from lumina_core.config import (
     OLLAMA_CHUNK_TARGET,
     OPENROUTER_CHUNK_MAX,
     OPENROUTER_CHUNK_TARGET,
+    RESEGMENT_MAX_TARGET_CHARS,
+    RESEGMENT_MIN_TARGET_CHARS,
     ModelsConfig,
     ProfileRoute,
     ModelResource,
@@ -61,6 +65,36 @@ def test_resolve_chunk_budget_cloud_when_summarize_not_ollama():
     budget = resolve_chunk_budget(cfg)
     assert budget.target_chars == CLOUD_CHUNK_TARGET
     assert budget.max_chars == CLOUD_CHUNK_MAX
+
+
+def test_resegment_target_floor_is_200():
+    assert RESEGMENT_MIN_TARGET_CHARS == 200
+    assert RESEGMENT_MAX_TARGET_CHARS == 8000
+    budget = resolve_chunk_budget(target_chars=RESEGMENT_MIN_TARGET_CHARS)
+    assert budget.target_chars == 200
+    assert budget.max_chars == 240
+    assert budget.min_chars == 120
+
+
+def test_model_resource_chunk_target_allows_200():
+    resource = ModelResource(
+        id="openai",
+        provider="openai",
+        model="m",
+        chunk_target_chars=200,
+    )
+    assert resource.chunk_target_chars == 200
+    budget = resolve_resource_chunk_budget(resource)
+    assert budget.target_chars == 200
+
+    defaulted = ModelResource(id="openai", provider="openai", model="m", chunk_target_chars=0)
+    assert defaulted.chunk_target_chars == 0
+
+    try:
+        ModelResource(id="openai", provider="openai", model="m", chunk_target_chars=199)
+        raise AssertionError("expected ValidationError for chunk_target_chars=199")
+    except ValidationError:
+        pass
 
 
 def test_resolve_chunk_budget_env_override(monkeypatch):

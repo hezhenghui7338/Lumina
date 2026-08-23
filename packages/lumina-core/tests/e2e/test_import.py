@@ -8,7 +8,13 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from lumina_core.config import Settings
+from lumina_core.config import (
+    CHUNKER_VERSION,
+    RESEGMENT_MAX_TARGET_CHARS,
+    RESEGMENT_MIN_TARGET_CHARS,
+    Settings,
+)
+from lumina_core.db.repos import BookRepo
 from lumina_core.main import create_app
 from lumina_core.models.router import set_router
 from tests.support.import_helpers import import_sample_book, wait_for_ingest
@@ -18,6 +24,54 @@ pytestmark = pytest.mark.e2e
 
 LLM_FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "llm"
 BOOK_FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "books"
+
+
+def _write_extended_format_fixture(tmp_path: Path, extension: str) -> Path:
+    path = tmp_path / f"extended-{extension}.{extension}"
+    title = f"{extension.upper()} 测试书"
+    body = f"{extension.upper()} 格式正文段落。"
+    if extension == "md":
+        path.write_text(f"# {title}\n\n{body}", encoding="utf-8")
+    elif extension == "html":
+        path.write_text(
+            f"<html><head><title>{title}</title></head>"
+            f"<body><h1>第一章</h1><p>{body}</p></body></html>",
+            encoding="utf-8",
+        )
+    elif extension == "rtf":
+        path.write_text(
+            rf"{{\rtf1\ansi{{\info{{\title {title}}}}}\b Chapter\b0\par {body}}}",
+            encoding="utf-8",
+        )
+    elif extension == "docx":
+        from docx import Document
+
+        document = Document()
+        document.core_properties.title = title
+        document.add_heading("第一章", level=1)
+        document.add_paragraph(body)
+        document.save(path)
+    elif extension == "odt":
+        from odf import dc, text
+        from odf.opendocument import OpenDocumentText
+
+        document = OpenDocumentText()
+        document.meta.addElement(dc.Title(text=title))
+        document.text.addElement(text.H(outlinelevel=1, text="第一章"))
+        document.text.addElement(text.P(text=body))
+        document.save(str(path))
+    elif extension == "fb2":
+        path.write_text(
+            f"""<?xml version="1.0" encoding="utf-8"?>
+            <FictionBook xmlns="http://www.gribuser.ru/xml/fictionbook/2.0">
+              <description><title-info><book-title>{title}</book-title></title-info></description>
+              <body><section><title><p>第一章</p></title><p>{body}</p></section></body>
+            </FictionBook>""",
+            encoding="utf-8",
+        )
+    else:
+        raise AssertionError(f"Unhandled fixture extension: {extension}")
+    return path
 
 
 @pytest.fixture
@@ -39,7 +93,10 @@ def client(tmp_path, monkeypatch):
 
 
 def test_health(client):
-    assert client.get("/health").json()["status"] == "ok"
+    health = client.get("/health").json()
+    assert health["status"] == "ok"
+    assert health["pid"] > 1
+    assert health["chunker_version"] == CHUNKER_VERSION
 
 
 def test_import_returns_processing_immediately(client):
@@ -54,6 +111,21 @@ def test_import_returns_processing_immediately(client):
     finished = wait_for_ingest(client, book_id)
     assert finished["status"] in ("unread", "reading", "summarized")
     assert finished.get("segment_count", 0) > 0
+
+
+@pytest.mark.parametrize("extension", ["md", "html", "rtf", "docx", "odt", "fb2"])
+def test_import_extended_text_formats(client, tmp_path, extension):
+    sample = _write_extended_format_fixture(tmp_path, extension)
+    response = client.post("/books/import", json={"paths": [str(sample)]})
+    assert response.status_code == 200
+    imported = response.json()["books"][0]
+    assert imported["status"] == "processing"
+
+    finished = wait_for_ingest(client, imported["book_id"])
+    assert finished["status"] in ("unread", "reading", "summarized")
+    assert finished["segment_count"] > 0
+    first_segment = client.get(f"/books/{imported['book_id']}/segments/0").json()
+    assert extension.upper() in first_segment["raw_text"]
 
 
 def test_import_txt_triggers_prefetch(client, tmp_path):
@@ -159,6 +231,165 @@ def test_import_overwrite_purges_old_data(client, tmp_path):
     assert notes == []
 
 
+def test_resegment_book_uses_new_size_and_clears_segment_bound_data(client, tmp_path):
+    sample = tmp_path / "long-book.txt"
+    sample.write_text(
+        "\n\n".join(
+            f"第 {i} 段。这是一段用于验证整书重新分段的测试文字，包含完整句子和稳定边界。"
+            for i in range(700)
+        ),
+        encoding="utf-8",
+    )
+    book_id = client.post(
+        "/books/import", json={"paths": [str(sample)]}
+    ).json()["books"][0]["book_id"]
+    imported = wait_for_ingest(client, book_id)
+    original_count = imported["segment_count"]
+
+    first_segment = client.get(f"/books/{book_id}/segments").json()["segments"][0]
+    note = client.post(
+        "/notes",
+        json={
+            "book_id": book_id,
+            "segment_id": first_segment["id"],
+            "content": "重新分段前的笔记",
+        },
+    )
+    assert note.status_code == 200
+
+    response = client.post(
+        f"/books/{book_id}/resegment",
+        json={"chunk_target_chars": 1500},
+    )
+    assert response.status_code == 202
+    finished = wait_for_ingest(client, book_id)
+
+    assert finished["segment_count"] > original_count
+    assert finished["current_segment_index"] == 0
+    assert finished["chunk_target_chars"] == 1500
+    assert client.get("/notes", params={"book_id": book_id}).json()["notes"] == []
+    segments = client.get(f"/books/{book_id}/segments").json()["segments"]
+    assert segments
+    assert all(segment["summary_status"] == "pending" for segment in segments)
+
+
+@pytest.mark.parametrize(
+    "target",
+    [RESEGMENT_MIN_TARGET_CHARS - 1, RESEGMENT_MAX_TARGET_CHARS + 1],
+)
+def test_resegment_rejects_out_of_range_size(client, target):
+    response = client.post(
+        "/books/missing/resegment",
+        json={"chunk_target_chars": target},
+    )
+    assert response.status_code == 422
+
+
+@pytest.mark.parametrize(
+    "target",
+    [RESEGMENT_MIN_TARGET_CHARS, RESEGMENT_MAX_TARGET_CHARS],
+)
+def test_resegment_accepts_boundary_target_size(client, target):
+    response = client.post(
+        "/books/missing/resegment",
+        json={"chunk_target_chars": target},
+    )
+    assert response.status_code == 404
+
+
+def test_resegment_rejects_missing_and_processing_books(client):
+    missing = client.post(
+        "/books/missing/resegment",
+        json={"chunk_target_chars": 3000},
+    )
+    assert missing.status_code == 404
+
+    book_id = import_sample_book(client)
+    BookRepo(client.app.state.lumina.conn).update(book_id, status="processing")
+    conflict = client.post(
+        f"/books/{book_id}/resegment",
+        json={"chunk_target_chars": 3000},
+    )
+    assert conflict.status_code == 409
+
+
+def test_cancel_resegment_preserves_existing_data(client, monkeypatch):
+    import time
+
+    from lumina_core.jobs import resegment as resegment_module
+
+    book_id = import_sample_book(client)
+    old_segments = client.get(f"/books/{book_id}/segments").json()["segments"]
+    old_segment_ids = [segment["id"] for segment in old_segments]
+    note = client.post(
+        "/notes",
+        json={
+            "book_id": book_id,
+            "segment_id": old_segment_ids[0],
+            "content": "取消后应保留",
+        },
+    )
+    assert note.status_code == 200
+
+    original_load_document = resegment_module.load_document
+
+    def slow_load_document(*args, **kwargs):
+        time.sleep(0.3)
+        return original_load_document(*args, **kwargs)
+
+    monkeypatch.setattr(resegment_module, "load_document", slow_load_document)
+    started = client.post(
+        f"/books/{book_id}/resegment",
+        json={"chunk_target_chars": 1500},
+    )
+    assert started.status_code == 202
+    assert started.json()["processing_kind"] == "resegment"
+    assert client.get(f"/books/{book_id}").json()["processing_kind"] == "resegment"
+    cancelled = client.post(f"/books/{book_id}/resegment/cancel", json={})
+    assert cancelled.status_code == 202
+    assert cancelled.json()["status"] == "cancelling"
+
+    restored = wait_for_ingest(client, book_id)
+    assert restored["status"] != "processing"
+    current_segments = client.get(f"/books/{book_id}/segments").json()["segments"]
+    assert [segment["id"] for segment in current_segments] == old_segment_ids
+    notes = client.get("/notes", params={"book_id": book_id}).json()["notes"]
+    assert [item["content"] for item in notes] == ["取消后应保留"]
+
+
+def test_cancel_ingest_marks_book_error(client, monkeypatch):
+    import threading
+    import time
+
+    from lumina_core.ingest.progress import DocumentLoadCancelled
+    from lumina_core.jobs import ingest as ingest_module
+
+    started = threading.Event()
+
+    def slow_load_document(*args, **kwargs):
+        started.set()
+        cancel = kwargs.get("cancel_event")
+        for _ in range(80):
+            if cancel is not None and cancel.is_set():
+                raise DocumentLoadCancelled("已取消")
+            time.sleep(0.05)
+        return "正文", {}
+
+    monkeypatch.setattr(ingest_module, "load_document", slow_load_document)
+    sample = BOOK_FIXTURES / "sample.txt"
+    book_id = client.post("/books/import", json={"paths": [str(sample)]}).json()["books"][0][
+        "book_id"
+    ]
+    assert started.wait(timeout=2)
+    assert client.get(f"/books/{book_id}").json()["processing_kind"] == "ingest"
+    cancelled = client.post(f"/books/{book_id}/ingest/cancel", json={})
+    assert cancelled.status_code == 202
+    assert cancelled.json()["status"] == "cancelling"
+    finished = wait_for_ingest(client, book_id, timeout=5.0)
+    assert finished["status"] == "error"
+    assert finished.get("ingest_error") == "已取消导入"
+
+
 def test_chat_json_mode(client, tmp_path):
     assert client.put("/settings", json={"auto_start_summary": True}).status_code == 200
     sample = BOOK_FIXTURES / "sample.txt"
@@ -176,6 +407,39 @@ def test_chat_json_mode(client, tmp_path):
     chat = client.post(
         f"/books/{book_id}/chat",
         json={"message": "这段讲了什么？", "segment_index": 0},
+    )
+    assert chat.status_code == 200
+    body = chat.json()
+    assert "answer" in body
+    assert body["citations"]
+
+
+def test_book_scope_chat_after_index(client, tmp_path):
+    assert client.put("/settings", json={"auto_start_summary": True}).status_code == 200
+    sample = BOOK_FIXTURES / "sample.txt"
+    book_id = client.post("/books/import", json={"paths": [str(sample)]}).json()["books"][0]["book_id"]
+    wait_for_ingest(client, book_id)
+
+    import time
+
+    too_early = client.post(
+        f"/books/{book_id}/chat",
+        json={"message": "全书主旨？", "segment_index": 0, "scope": "book"},
+    )
+    # Index may already be ready on a 1-segment mock book; either 409 or 200 is OK
+    # until summaries finish. Wait for ready, then require citations.
+    book = None
+    for _ in range(80):
+        book = client.get(f"/books/{book_id}").json()
+        if book.get("index_status") == "ready":
+            break
+        time.sleep(0.1)
+    assert book is not None
+    assert book["index_status"] == "ready"
+
+    chat = client.post(
+        f"/books/{book_id}/chat",
+        json={"message": "全书主旨是什么？", "segment_index": 0, "scope": "book"},
     )
     assert chat.status_code == 200
     body = chat.json()
@@ -248,6 +512,43 @@ def test_settings_roundtrip(client):
     assert resp2.status_code == 200
     assert resp2.json()["web_search_provider"] == "ddgs"
     assert resp2.json()["tavily_api_key"] == "***"
+
+
+def test_settings_ocr_and_search_persist_across_app_restart(tmp_path, monkeypatch):
+    """CLI-style Settings(host, port) must reload OCR / web search from disk."""
+    monkeypatch.setenv("LUMINA_DATA_DIR", str(tmp_path))
+    monkeypatch.delenv("TAVILY_API_KEY", raising=False)
+    monkeypatch.delenv("LUMINA_TAVILY_API_KEY", raising=False)
+    monkeypatch.delenv("LUMINA_OCR_CLOUD_API_KEY", raising=False)
+    monkeypatch.delenv("LUMINA_OCR_CLOUD_BASE_URL", raising=False)
+    monkeypatch.delenv("LUMINA_OCR_CLOUD_MODEL", raising=False)
+
+    app1 = create_app(Settings(host="127.0.0.1", port=17432))
+    with TestClient(app1) as client:
+        resp = client.put(
+            "/settings",
+            json={
+                "web_search_enabled": False,
+                "web_search_provider": "tavily",
+                "tavily_api_key": "tvly-restart",
+                "ocr_cloud_base_url": "https://example.test/v1",
+                "ocr_cloud_model": "vision",
+                "ocr_cloud_api_key": "ocr-restart",
+                "ocr_cloud_timeout_seconds": 88,
+            },
+        )
+        assert resp.status_code == 200
+
+    app2 = create_app(Settings(host="127.0.0.1", port=17432))
+    with TestClient(app2) as client:
+        body = client.get("/settings").json()
+        assert body["web_search_enabled"] is False
+        assert body["web_search_provider"] == "tavily"
+        assert body["tavily_api_key"] == "***"
+        assert body["ocr_cloud_base_url"] == "https://example.test/v1"
+        assert body["ocr_cloud_model"] == "vision"
+        assert body["ocr_cloud_api_key"] == "***"
+        assert body["ocr_cloud_timeout_seconds"] == 88
 
 
 def test_settings_secrets_persist_across_reload(client, tmp_path):

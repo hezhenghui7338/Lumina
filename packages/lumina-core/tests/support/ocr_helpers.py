@@ -2,9 +2,28 @@
 
 from __future__ import annotations
 
+import os
+from collections.abc import Mapping
 from pathlib import Path
 
 from lumina_core.ingest.ocr import OcrDocumentResult, OcrPageResult
+
+
+def live_ocr_skip_reason(environ: Mapping[str, str] | None = None) -> str | None:
+    """Skip real RapidOCR without constructing an ORT session.
+
+    Collection-time `ocr_dependency_warning()` calls `_ensure_engine()` and
+    poisons every xdist worker, which then hangs on Eigen thread-pool teardown.
+    """
+    env = os.environ if environ is None else environ
+    if env.get("PYTEST_XDIST_WORKER"):
+        return "RapidOCR/onnxruntime hangs pytest-xdist worker teardown"
+    try:
+        import fitz  # noqa: F401
+        import rapidocr  # noqa: F401
+    except ImportError:
+        return "OCR native deps unavailable"
+    return None
 
 
 def write_blank_pdf(path: Path, *, pages: int = 2) -> None:
