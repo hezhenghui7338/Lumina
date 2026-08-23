@@ -5,7 +5,7 @@ struct LibrarySelectionToolbar: View {
     let startableCount: Int
     let stoppableCount: Int
     let summarizeActionInFlight: Bool
-    var onStartSummarize: () -> Void
+    var onStartSummarize: (SummaryTier) -> Void
     var onStopSummarize: () -> Void
     var onDelete: () -> Void
     var onFavorite: () -> Void
@@ -48,8 +48,10 @@ struct LibrarySelectionToolbar: View {
 
     private var summarizeMenu: some View {
         Menu {
-            Button("开始摘要 (\(startableCount))") {
-                onStartSummarize()
+            Menu("开始摘要 (\(startableCount))") {
+                ForEach(SummaryTier.allCases) { tier in
+                    Button(tier.startMenuLabel) { onStartSummarize(tier) }
+                }
             }
             .disabled(startableCount == 0 || summarizeActionInFlight)
             Button("停止摘要 (\(stoppableCount))") {

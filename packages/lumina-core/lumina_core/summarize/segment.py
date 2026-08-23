@@ -19,11 +19,8 @@ from lumina_core.config import (
     resolve_chunk_budget,
 )
 from lumina_core.models.router import ProfileModelRouter
-from lumina_core.prompts_defaults import (
-    DEFAULT_SEGMENT as SUMMARY_PROMPT,
-    DEFAULT_SEGMENT_CLOUD as SUMMARY_PROMPT_CLOUD,
-    DEFAULT_SEGMENT_OLLAMA as SUMMARY_PROMPT_OLLAMA,
-)
+from lumina_core.prompts_defaults import DEFAULT_SEGMENT_QUALITY
+from lumina_core.summarize.quality import SummaryQualityError, inspect_summary_quality
 from lumina_core.summarize.schema import (
     SegmentSummary,
     parse_segment_summary,
@@ -34,6 +31,20 @@ from lumina_core.summarize.schema import (
 SummaryProgressCallback = Callable[[dict[str, Any]], Awaitable[None]]
 
 ProviderKind = Literal["ollama", "cloud", "full"]
+SUMMARY_CONTEXT_MAX_CHARS = 1600
+SUMMARY_CONTEXT_QUERY_LIMIT = 32
+
+_CONTEXT_GUIDANCE = """以下是当前段之前的摘要背景，仅用于消解人物、代词、时间线和因果关系：
+{context}
+
+背景使用规则：
+- 只总结当前待摘要段落，不能把背景中的事件当作当前段内容
+- 不得仅因段首出现某个人名，就把后文的“我”或其他代词认定为此人
+- 第一人称「我」是书中叙述者，禁止写成「阅读助手」或任何系统身份
+- 只有原文或背景明确支持时才能确定人物身份；无法确认时保留不确定性
+
+以下是当前待摘要段落：
+"""
 
 _OLLAMA_RETRY_SUFFIX = (
     '\n\n上次输出不是合法 JSON。请只输出 '
@@ -99,22 +110,100 @@ def _format_base_prompt(
     anchor_label: str,
     text: str,
     text_only: bool,
+    background_context: str | None = None,
 ) -> str:
     if text_only:
-        return template.format(text=text)
-    return template.format(anchor=anchor_label, text=text)
+        prompt = template.format(text=text)
+    else:
+        prompt = template.format(anchor=anchor_label, text=text)
+    if not background_context:
+        return prompt
+    return _CONTEXT_GUIDANCE.format(context=background_context) + prompt
+
+
+def _summary_row_text(row: dict[str, Any], *, scope: str) -> str | None:
+    try:
+        raw = row.get("summary_json")
+        parsed = json.loads(raw) if isinstance(raw, str) else raw
+    except (TypeError, json.JSONDecodeError):
+        return None
+    if not isinstance(parsed, dict):
+        return None
+    parts = [str(item).strip() for item in parsed.get("sentences", []) if str(item).strip()]
+    for bullet in parsed.get("bullets", []):
+        if not isinstance(bullet, dict):
+            continue
+        label = str(bullet.get("label") or "").strip()
+        body = str(bullet.get("body") or "").strip()
+        if body:
+            parts.append(f"{label}：{body}" if label else body)
+    if not parts:
+        return None
+    return f"[{scope}·段 {int(row['idx']) + 1}] " + " ".join(parts)
+
+
+def build_summary_context(
+    rows: list[dict[str, Any]],
+    *,
+    current_chapter: str | None,
+    max_chars: int = SUMMARY_CONTEXT_MAX_CHARS,
+) -> str | None:
+    """Build a bounded previous-chapter/current-chapter context from newest-first rows."""
+    if max_chars <= 0:
+        return None
+    normalized_current = (current_chapter or "").strip() or None
+    selected: list[tuple[dict[str, Any], str]] = []
+
+    if normalized_current is None:
+        selected = [(row, "前文") for row in rows[:6]]
+    else:
+        previous_chapter: str | None = None
+        previous_chapter_found = False
+        for row in rows:
+            chapter = (row.get("chapter") or "").strip() or None
+            if chapter == normalized_current:
+                selected.append((row, "本章前文"))
+                continue
+            if not previous_chapter_found:
+                previous_chapter = chapter
+                previous_chapter_found = True
+            if chapter == previous_chapter:
+                selected.append((row, "上一章"))
+            else:
+                break
+
+    # Favor the nearest summaries, then render retained items in reading order.
+    retained: list[tuple[int, str]] = []
+    used = 0
+    for row, scope in selected:
+        text = _summary_row_text(row, scope=scope)
+        if not text:
+            continue
+        remaining = max_chars - used
+        if remaining <= 0:
+            break
+        if len(text) > remaining:
+            if retained:
+                break
+            text = text[:remaining].rstrip()
+        retained.append((int(row["idx"]), text))
+        used += len(text) + 1
+    if not retained:
+        return None
+    retained.sort(key=lambda item: item[0])
+    return "\n".join(text for _, text in retained)
 
 
 def summarize_job_timeout_seconds(
     router: ProfileModelRouter,
     prompts: PromptsConfig | None = None,
 ) -> int:
-    """Wall-clock budget for one summarize job (each LLM attempt may use full segment timeout)."""
+    """Wall-clock budget for generation plus an optional quality review per attempt."""
     from lumina_core import config
 
     resolved = prompts or load_prompts_config()
     _, _, llm_retries, _, _, _, _ = _segment_prompt_settings(router, resolved)
-    return config.SUMMARY_SEGMENT_TIMEOUT_SECONDS * max(1, llm_retries)
+    return config.SUMMARY_SEGMENT_TIMEOUT_SECONDS * max(1, llm_retries) * 2
 
 
 async def summarize_segment(
@@ -122,10 +211,12 @@ async def summarize_segment(
     *,
     raw_text: str,
     anchor_label: str,
+    summary_tier: Literal["normal", "advanced"] = "normal",
     max_retries: int | None = None,
     failure_dump_path: Path | None = None,
     on_progress: SummaryProgressCallback | None = None,
     prompts: PromptsConfig | None = None,
+    background_context: str | None = None,
 ) -> SummarizeResult:
     resolved = prompts or load_prompts_config()
     prompt_template, text_limit, default_retries, min_body_chars, text_only, use_minimal_parse, provider_kind = (
@@ -137,6 +228,7 @@ async def summarize_segment(
         anchor_label=anchor_label,
         text=segment_text,
         text_only=text_only,
+        background_context=background_context,
     )
     prompt = base_prompt
     last_err: Exception | None = None
@@ -171,8 +263,8 @@ async def summarize_segment(
         await _emit_progress(phase="start", llm_attempt=llm_attempt)
         attempt_started = time.time()
 
-        async def _on_slot_acquired() -> None:
-            await _emit_progress(phase="llm_start", llm_attempt=llm_attempt)
+        async def _on_slot_acquired(current_attempt: int = llm_attempt) -> None:
+            await _emit_progress(phase="llm_start", llm_attempt=current_attempt)
 
         agent_log(
             hypothesis_id="B",
@@ -185,12 +277,14 @@ async def summarize_segment(
                 "text_limit": text_limit,
             },
         )
-        raw = await router.complete(
-            prompt,
-            profile="summarize",
-            json_mode=True,
-            on_slot_acquired=_on_slot_acquired,
-        )
+        complete_kwargs: dict[str, Any] = {
+            "profile": "summarize",
+            "json_mode": True,
+            "on_slot_acquired": _on_slot_acquired,
+        }
+        if summary_tier == "advanced":
+            complete_kwargs["summary_tier"] = summary_tier
+        raw = await router.complete(prompt, **complete_kwargs)
         llm_duration = round(time.time() - attempt_started, 2)
         total_llm_duration += llm_duration
         if isinstance(raw, str):
@@ -201,6 +295,18 @@ async def summarize_segment(
             else:
                 summary = parse_segment_summary(raw)
                 validate_summary_richness(summary, min_body_chars=min_body_chars)
+            quality = await inspect_summary_quality(
+                router,
+                raw_text=segment_text,
+                summary=summary,
+                review_prompt=resolved.segment_quality or DEFAULT_SEGMENT_QUALITY,
+                summary_tier=summary_tier,
+            )
+            if quality.review_duration_s:
+                llm_duration = round(llm_duration + quality.review_duration_s, 2)
+                total_llm_duration += quality.review_duration_s
+            if len(quality.issues) > 1:
+                raise SummaryQualityError(quality.issues)
             agent_log(
                 hypothesis_id="B",
                 location="segment.py:summarize_segment:success",
@@ -232,7 +338,14 @@ async def summarize_segment(
                 llm_duration_s=llm_duration,
             )
         if attempt + 1 < retries and last_err is not None:
-            if use_minimal_parse:
+            if isinstance(last_err, SummaryQualityError):
+                prompt = (
+                    base_prompt
+                    + f"\n\n上次摘要未通过质量检查：{last_err}。"
+                    "请逐项重写有问题的句子或要点，确保文字完整、清晰、无乱码；"
+                    "仍须严格输出规定的单个 JSON 对象，不要解释。"
+                )
+            elif use_minimal_parse:
                 suffix = _OLLAMA_RETRY_SUFFIX if provider_kind == "ollama" else _CLOUD_RETRY_SUFFIX
                 prompt = base_prompt + suffix
             elif isinstance(last_err, json.JSONDecodeError):
@@ -271,6 +384,7 @@ def segment_ready_event_payload(
     idx: int,
     resource_id: str,
     model: str,
+    summary_tier: Literal["normal", "advanced"] = "normal",
     summary_duration_s: float | None = None,
     summary_llm_attempts: int | None = None,
 ) -> dict[str, Any]:
@@ -285,6 +399,7 @@ def segment_ready_event_payload(
         "anchor_label": summary.anchor,
         "summary_provider": resource_id,
         "summary_model": model,
+        "summary_tier": summary_tier,
         "sentences": dumped["sentences"],
         "bullets": dumped["bullets"],
         "notes": dumped["notes"],

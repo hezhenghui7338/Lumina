@@ -1,14 +1,21 @@
-"""Local OCR via RapidOCR (PP-OCRv6) for scanned PDFs — algorithm aligned with LocalAgent."""
+"""Local and OpenAI-compatible cloud OCR for scanned PDFs."""
 
 from __future__ import annotations
 
+import base64
 import logging
 import sys
+import threading
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable
+
+import httpx
 
 from lumina_core import config
+from lumina_core.config import Settings
+from lumina_core.ingest.progress import report_progress, yield_ui
+from lumina_core.models.openai_compat import openai_compat_completions_url
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +44,14 @@ class OcrDocumentResult:
     @property
     def page_count(self) -> int:
         return len(self.pages)
+
+
+def ocr_cloud_configured(settings: Settings) -> bool:
+    return bool(
+        settings.ocr_cloud_base_url.strip()
+        and settings.ocr_cloud_model.strip()
+        and (settings.ocr_cloud_api_key or "").strip()
+    )
 
 
 def ocr_install_hint(*, enabled: bool | None = None) -> str:
@@ -159,21 +174,20 @@ def _run_image_ocr(engine, image) -> tuple[str, float]:
     return text, avg
 
 
-def ocr_pdf(
+def _ocr_pdf_local(
     path: Path,
     *,
     dpi: int | None = None,
     page_nums: list[int] | None = None,
     on_progress: OcrProgressCallback | None = None,
+    cancel_event: threading.Event | None = None,
 ) -> OcrDocumentResult:
-    """Render each PDF page and OCR it. Optionally limit to 1-based page_nums."""
+    """Render each PDF page and OCR it locally with RapidOCR."""
     path = Path(path)
     if not path.is_file():
         raise RuntimeError(f"PDF not found: {path}")
 
     _ensure_fitz()
-    engine = _ensure_engine()
-
     import fitz
     import numpy as np
 
@@ -187,26 +201,39 @@ def ocr_pdf(
         else:
             targets = list(range(1, doc_page_count + 1))
         total = len(targets)
+        report_progress(
+            on_progress, 0, total, "正在加载 OCR 引擎…", cancel_event
+        )
+        engine = _ensure_engine()
+        yield_ui()
         pages: list[OcrPageResult] = []
         sections: list[str] = []
         confidences: list[float] = []
         warnings: list[str] = []
 
         for progress_idx, page_num in enumerate(targets, start=1):
-            if on_progress:
-                on_progress(
-                    progress_idx,
-                    total,
-                    f"扫描版 PDF · 正在识别 {progress_idx}/{total} 页…",
-                )
+            report_progress(
+                on_progress,
+                progress_idx,
+                total,
+                f"扫描版 PDF · 本地 OCR {progress_idx}/{total} 页…",
+                cancel_event,
+            )
             page = doc.load_page(page_num - 1)
             pix = page.get_pixmap(dpi=render_dpi, alpha=False)
             samples = memoryview(pix.samples)
-            image = np.frombuffer(samples, dtype=np.uint8).reshape(pix.height, pix.width, pix.n)
+            image = np.frombuffer(samples, dtype=np.uint8).reshape(
+                pix.height, pix.width, pix.n
+            )
             if pix.n == 4:
-                image = image[:, :, :3]
+                image = image[:, :, :3].copy()
+            else:
+                image = image.copy()
+            del pix
 
             text, avg = _run_image_ocr(engine, image)
+            del image
+            yield_ui()
             confidences.append(avg)
             low = avg < config.OCR_MIN_CONF and bool(text)
             if low:
@@ -232,7 +259,178 @@ def ocr_pdf(
         text="\n\n".join(sections),
         pages=pages,
         avg_confidence=avg_conf,
+        engine="rapidocr/pp-ocrv6",
         warnings=warnings,
+    )
+
+
+_CLOUD_OCR_PROMPT = """你是 OCR 引擎。请逐字识别图片中的全部文字。
+要求：
+1. 只输出识别出的正文，不要解释、总结或添加前后缀。
+2. 保留自然段、标题、列表和表格的阅读顺序。
+3. 不确定的字符按最可能结果输出，不要编造图片中不存在的内容。
+4. 如果图片确实没有文字，输出空字符串。"""
+
+
+def _cloud_text(payload: dict) -> str:
+    try:
+        content = payload["choices"][0]["message"]["content"]
+    except (KeyError, IndexError, TypeError) as exc:
+        raise RuntimeError("云端 OCR 返回格式无效：缺少 choices[0].message.content") from exc
+    if isinstance(content, str):
+        text = content
+    elif isinstance(content, list):
+        text = "\n".join(
+            str(item.get("text") or "")
+            for item in content
+            if isinstance(item, dict) and item.get("type") in {"text", "output_text"}
+        )
+    else:
+        raise TypeError("云端 OCR 返回格式无效：content 不是文本")
+    stripped = text.strip()
+    if stripped.startswith("```") and stripped.endswith("```"):
+        lines = stripped.splitlines()
+        if len(lines) >= 2:
+            stripped = "\n".join(lines[1:-1]).strip()
+    return stripped
+
+
+def _cloud_request(client: httpx.Client, *, model: str, image_bytes: bytes) -> str:
+    image_data = base64.b64encode(image_bytes).decode("ascii")
+    response = client.post(
+        openai_compat_completions_url(str(client.base_url)),
+        json={
+            "model": model,
+            "temperature": 0,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": _CLOUD_OCR_PROMPT},
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": f"data:image/jpeg;base64,{image_data}"},
+                        },
+                    ],
+                }
+            ],
+        },
+    )
+    if response.status_code == 401:
+        raise RuntimeError("云端 OCR API Key 无效或未授权")
+    if response.status_code == 429:
+        raise RuntimeError("云端 OCR 请求受限或额度不足（HTTP 429）")
+    if response.status_code >= 400:
+        raise RuntimeError(f"云端 OCR 请求失败（HTTP {response.status_code}）")
+    try:
+        payload = response.json()
+    except ValueError as exc:
+        raise RuntimeError("云端 OCR 返回了无效 JSON") from exc
+    return _cloud_text(payload)
+
+
+def _ocr_pdf_cloud(
+    path: Path,
+    *,
+    settings: Settings,
+    dpi: int | None = None,
+    page_nums: list[int] | None = None,
+    on_progress: OcrProgressCallback | None = None,
+    cancel_event: threading.Event | None = None,
+) -> OcrDocumentResult:
+    _ensure_fitz()
+    import fitz
+
+    render_dpi = dpi if dpi is not None else config.OCR_PDF_DPI
+    base_url = settings.ocr_cloud_base_url.strip()
+    model = settings.ocr_cloud_model.strip()
+    headers = {"Authorization": f"Bearer {(settings.ocr_cloud_api_key or '').strip()}"}
+    doc = fitz.open(str(path))
+    try:
+        if page_nums:
+            targets = sorted({n for n in page_nums if 1 <= n <= doc.page_count})
+        else:
+            targets = list(range(1, doc.page_count + 1))
+        pages: list[OcrPageResult] = []
+        sections: list[str] = []
+        with httpx.Client(
+            base_url=base_url.rstrip("/") + "/",
+            headers=headers,
+            timeout=settings.ocr_cloud_timeout_seconds,
+        ) as client:
+            for progress_idx, page_num in enumerate(targets, start=1):
+                report_progress(
+                    on_progress,
+                    progress_idx,
+                    len(targets),
+                    f"扫描版 PDF · 云端 OCR {progress_idx}/{len(targets)} 页…",
+                    cancel_event,
+                )
+                page = doc.load_page(page_num - 1)
+                pix = page.get_pixmap(dpi=render_dpi, alpha=False)
+                text = _cloud_request(
+                    client,
+                    model=model,
+                    image_bytes=pix.tobytes("jpeg", jpg_quality=85),
+                )
+                pages.append(
+                    OcrPageResult(
+                        page_num=page_num,
+                        text=text,
+                        avg_confidence=1.0 if text else 0.0,
+                        low_confidence=False,
+                    )
+                )
+                section = _format_page_section(page_num, text)
+                if section:
+                    sections.append(section)
+    except httpx.TimeoutException as exc:
+        raise RuntimeError("云端 OCR 请求超时") from exc
+    except httpx.ConnectError as exc:
+        raise RuntimeError(f"无法连接云端 OCR：{base_url}") from exc
+    except httpx.HTTPError as exc:
+        raise RuntimeError(f"云端 OCR 网络请求失败：{type(exc).__name__}") from exc
+    finally:
+        doc.close()
+
+    nonempty = [page.avg_confidence for page in pages if page.text]
+    return OcrDocumentResult(
+        text="\n\n".join(sections),
+        pages=pages,
+        avg_confidence=sum(nonempty) / len(nonempty) if nonempty else 0.0,
+        engine=f"openai-compatible/{model}",
+    )
+
+
+def ocr_pdf(
+    path: Path,
+    *,
+    dpi: int | None = None,
+    page_nums: list[int] | None = None,
+    on_progress: OcrProgressCallback | None = None,
+    settings: Settings | None = None,
+    cancel_event: threading.Event | None = None,
+) -> OcrDocumentResult:
+    """OCR PDF pages with configured cloud provider, otherwise local RapidOCR."""
+    path = Path(path)
+    if not path.is_file():
+        raise RuntimeError(f"PDF not found: {path}")
+    runtime_settings = settings or Settings()
+    if ocr_cloud_configured(runtime_settings):
+        return _ocr_pdf_cloud(
+            path,
+            settings=runtime_settings,
+            dpi=dpi,
+            page_nums=page_nums,
+            on_progress=on_progress,
+            cancel_event=cancel_event,
+        )
+    return _ocr_pdf_local(
+        path,
+        dpi=dpi,
+        page_nums=page_nums,
+        on_progress=on_progress,
+        cancel_event=cancel_event,
     )
 
 
@@ -242,9 +440,18 @@ def ocr_pdf_pages(
     *,
     dpi: int | None = None,
     on_progress: OcrProgressCallback | None = None,
+    settings: Settings | None = None,
+    cancel_event: threading.Event | None = None,
 ) -> OcrDocumentResult:
     """OCR a subset of pages (1-based indices)."""
-    return ocr_pdf(path, dpi=dpi, page_nums=page_nums, on_progress=on_progress)
+    return ocr_pdf(
+        path,
+        dpi=dpi,
+        page_nums=page_nums,
+        on_progress=on_progress,
+        settings=settings,
+        cancel_event=cancel_event,
+    )
 
 
 def ocr_metadata_from_result(result: OcrDocumentResult) -> dict:

@@ -21,6 +21,7 @@ def secrets_path(data_dir: Path) -> Path:
 class SecretsPayload:
     resources: dict[str, str] = field(default_factory=dict)
     tavily: str | None = None
+    ocr_cloud: str | None = None
 
 
 def load_secrets(data_dir: Path) -> SecretsPayload:
@@ -41,7 +42,9 @@ def load_secrets(data_dir: Path) -> SecretsPayload:
     }
     tavily_raw = raw.get("tavily")
     tavily = str(tavily_raw) if tavily_raw not in (None, "") else None
-    return SecretsPayload(resources=resources, tavily=tavily)
+    ocr_cloud_raw = raw.get("ocr_cloud")
+    ocr_cloud = str(ocr_cloud_raw) if ocr_cloud_raw not in (None, "") else None
+    return SecretsPayload(resources=resources, tavily=tavily, ocr_cloud=ocr_cloud)
 
 
 def save_secrets(data_dir: Path, payload: SecretsPayload) -> None:
@@ -50,6 +53,8 @@ def save_secrets(data_dir: Path, payload: SecretsPayload) -> None:
     data: dict[str, object] = {"resources": payload.resources}
     if payload.tavily:
         data["tavily"] = payload.tavily
+    if payload.ocr_cloud:
+        data["ocr_cloud"] = payload.ocr_cloud
     fd, tmp_path = tempfile.mkstemp(dir=data_dir, prefix=".secrets-", suffix=".json")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
@@ -79,6 +84,8 @@ def apply_secrets_to_models(models: ModelsConfig, secrets: SecretsPayload) -> Mo
 def apply_secrets_to_settings(settings: Settings, secrets: SecretsPayload) -> Settings:
     if secrets.tavily and not settings.tavily_api_key:
         settings.tavily_api_key = secrets.tavily
+    if secrets.ocr_cloud and not settings.ocr_cloud_api_key:
+        settings.ocr_cloud_api_key = secrets.ocr_cloud
     return settings
 
 
@@ -90,8 +97,10 @@ def persist_secrets(data_dir: Path, models: ModelsConfig, settings: Settings) ->
         if key and key != _KEY_MASK:
             resources[resource.id] = key
     tavily = settings.tavily_api_key
+    ocr_cloud = settings.ocr_cloud_api_key
     payload = SecretsPayload(
         resources=resources,
         tavily=tavily if tavily and tavily != _KEY_MASK else None,
+        ocr_cloud=ocr_cloud if ocr_cloud and ocr_cloud != _KEY_MASK else None,
     )
     save_secrets(data_dir, payload)

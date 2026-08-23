@@ -21,6 +21,24 @@ final class SidecarManager: ObservableObject {
         case retryableError(String)
     }
 
+    private struct HealthStatus: Decodable {
+        let status: String
+        let pid: Int32?
+        let chunkerVersion: String?
+        let coreVersion: String?
+        let executable: String?
+        let startedAt: Int?
+
+        enum CodingKeys: String, CodingKey {
+            case status
+            case pid
+            case chunkerVersion = "chunker_version"
+            case coreVersion = "core_version"
+            case executable
+            case startedAt = "started_at"
+        }
+    }
+
     deinit {
         process?.terminate()
     }
@@ -42,11 +60,28 @@ final class SidecarManager: ObservableObject {
             return
         }
 
-        // Reuse a healthy sidecar already listening (orphan or dev server).
-        if process == nil, await isHealthy() {
-            isRunning = true
-            launchError = nil
-            return
+        // Reuse a leftover process only when it is this app version and this
+        // bundled binary. Chunker version matching is not enough: ingest fixes
+        // ship without bumping CHUNKER_VERSION, and in-place rebuilds keep the
+        // same marketing version.
+        if process == nil, let health = await healthStatus() {
+            let bundled = bundledSidecarExecutable()
+            if SidecarReadiness.shouldReplaceOrphan(
+                chunkerVersion: health.chunkerVersion,
+                coreVersion: health.coreVersion,
+                expectedCoreVersion: expectedCoreVersion,
+                hasBundledSidecar: bundled != nil,
+                orphanExecutable: health.executable,
+                bundledExecutable: bundled?.path,
+                orphanStartedAt: health.startedAt.map { Date(timeIntervalSince1970: TimeInterval($0)) },
+                bundledModifiedAt: bundledSidecarModifiedAt()
+            ) {
+                await terminateStaleSidecar(health)
+            } else {
+                isRunning = true
+                launchError = nil
+                return
+            }
         }
 
         var lastError: String?
@@ -121,14 +156,80 @@ final class SidecarManager: ObservableObject {
         isRunning = false
     }
 
+    private var expectedCoreVersion: String {
+        (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String) ?? ""
+    }
+
+    private func bundledSidecarModifiedAt() -> Date? {
+        guard let bundled = bundledSidecarExecutable() else { return nil }
+        let attrs = try? FileManager.default.attributesOfItem(atPath: bundled.path)
+        return attrs?[.modificationDate] as? Date
+    }
+
     private func isHealthy() async -> Bool {
-        guard let url = URL(string: "\(baseURL.absoluteString)/health") else { return false }
+        guard let health = await healthStatus() else { return false }
+        return SidecarReadiness.isCompatible(
+            chunkerVersion: health.chunkerVersion,
+            coreVersion: health.coreVersion,
+            expectedCoreVersion: expectedCoreVersion
+        )
+    }
+
+    private func healthStatus() async -> HealthStatus? {
+        guard let url = URL(string: "\(baseURL.absoluteString)/health") else { return nil }
         do {
-            let (_, resp) = try await URLSession.shared.data(from: url)
-            return (resp as? HTTPURLResponse)?.statusCode == 200
+            let (data, resp) = try await URLSession.shared.data(from: url)
+            guard (resp as? HTTPURLResponse)?.statusCode == 200 else { return nil }
+            let health = try JSONDecoder().decode(HealthStatus.self, from: data)
+            return health.status == "ok" ? health : nil
         } catch {
-            return false
+            return nil
         }
+    }
+
+    private func terminateStaleSidecar(_ health: HealthStatus) async {
+        let stalePID: Int32?
+        if let reportedPID = health.pid {
+            stalePID = reportedPID
+        } else {
+            stalePID = await legacyListenerPID()
+        }
+        guard let stalePID, stalePID > 1 else { return }
+        Darwin.kill(stalePID, SIGTERM)
+        for _ in 0..<20 {
+            try? await Task.sleep(nanoseconds: 100_000_000)
+            if await healthStatus() == nil { return }
+        }
+        Darwin.kill(stalePID, SIGKILL)
+    }
+
+    private func legacyListenerPID() async -> Int32? {
+        let targetPort = port
+        return await Task.detached(priority: .utility) {
+            let process = Process()
+            let output = Pipe()
+            process.executableURL = URL(fileURLWithPath: "/usr/sbin/lsof")
+            process.arguments = [
+                "-nP",
+                "-iTCP:\(targetPort)",
+                "-sTCP:LISTEN",
+                "-t",
+            ]
+            process.standardOutput = output
+            process.standardError = FileHandle.nullDevice
+            do {
+                try process.run()
+                process.waitUntilExit()
+                guard process.terminationStatus == 0 else { return nil }
+                let data = output.fileHandleForReading.readDataToEndOfFile()
+                let value = String(decoding: data, as: UTF8.self)
+                    .split(whereSeparator: \.isWhitespace)
+                    .first
+                return value.flatMap { Int32($0) }
+            } catch {
+                return nil
+            }
+        }.value
     }
 
     private func launchSidecar() -> LaunchOutcome {

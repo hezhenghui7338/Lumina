@@ -11,11 +11,14 @@ _PROMPT_FIELDS = (
     "segment",
     "segment_ollama",
     "segment_cloud",
+    "segment_quality",
     "document",
     "chat",
     "news_chat",
     "translate",
     "classify",
+    "rollup",
+    "document_map",
 )
 
 
@@ -29,10 +32,13 @@ def _overlay_prompts(base: dict[str, Any], raw: dict[str, Any]) -> dict[str, Any
         if field not in raw:
             continue
         value = raw[field]
-        if field in ("segment_ollama", "segment_cloud"):
+        if field in ("segment_ollama", "segment_cloud", "segment_quality"):
             if value is None or (isinstance(value, str) and not value.strip()):
                 merged[field] = None
             else:
+                merged[field] = value
+        elif field in ("rollup", "document_map"):
+            if isinstance(value, str) and value.strip():
                 merged[field] = value
         elif isinstance(value, str) and value.strip():
             merged[field] = value
@@ -61,10 +67,13 @@ def merge_prompts(incoming: PromptsConfig, existing: PromptsConfig) -> PromptsCo
         if field not in incoming_data:
             continue
         value = incoming_data[field]
-        if field in ("segment_ollama", "segment_cloud"):
+        if field in ("segment_ollama", "segment_cloud", "segment_quality"):
             if value is None or (isinstance(value, str) and not value.strip()):
                 data[field] = None
             else:
+                data[field] = value
+        elif field in ("rollup", "document_map"):
+            if isinstance(value, str) and value.strip():
                 data[field] = value
         elif isinstance(value, str) and value.strip():
             data[field] = value

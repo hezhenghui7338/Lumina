@@ -64,7 +64,12 @@ def test_load_models_overlays_user_file(tmp_path: Path, monkeypatch):
         tmp_path,
         _models(
             summarize_priority=["ollama"],
-            resource_overrides={"ollama": {"model": "qwen3.5:9b"}},
+            resource_overrides={
+                "ollama": {
+                    "model": "qwen3.5:9b",
+                    "advanced_model": "qwen3.5:27b",
+                }
+            },
         ),
     )
     path = models_path(tmp_path)
@@ -76,6 +81,7 @@ def test_load_models_overlays_user_file(tmp_path: Path, monkeypatch):
     ollama = loaded.resource_by_id("ollama")
     assert ollama is not None
     assert ollama.model == "qwen3.5:9b"
+    assert ollama.advanced_model == "qwen3.5:27b"
     assert ollama.api_key is None
 
 
@@ -215,8 +221,97 @@ def test_save_settings_strips_tavily_key(tmp_path: Path):
     save_settings(settings)
     raw = json.loads(settings_path(tmp_path).read_text(encoding="utf-8"))
     assert "tavily_api_key" not in raw
+    assert "ocr_cloud_api_key" not in raw
     assert raw["web_search_provider"] == "tavily"
 
     loaded = load_settings(tmp_path)
     assert loaded.web_search_provider == "tavily"
     assert loaded.tavily_api_key is None
+
+
+def test_save_settings_persists_ocr_and_web_search(tmp_path: Path):
+    from lumina_core.config import Settings
+    from lumina_core.secrets_store import persist_secrets
+    from lumina_core.settings_store import load_settings, save_settings, settings_path
+
+    settings = Settings(
+        data_dir=tmp_path,
+        web_search_enabled=False,
+        web_search_provider="tavily",
+        tavily_api_key="tvly-secret",
+        ocr_cloud_base_url="https://example.test/v1",
+        ocr_cloud_model="vision-model",
+        ocr_cloud_api_key="ocr-secret",
+        ocr_cloud_timeout_seconds=90.0,
+    )
+    save_settings(settings)
+    persist_secrets(tmp_path, ModelsConfig(), settings)
+
+    raw = json.loads(settings_path(tmp_path).read_text(encoding="utf-8"))
+    assert raw["web_search_enabled"] is False
+    assert raw["web_search_provider"] == "tavily"
+    assert raw["ocr_cloud_base_url"] == "https://example.test/v1"
+    assert raw["ocr_cloud_model"] == "vision-model"
+    assert raw["ocr_cloud_timeout_seconds"] == 90.0
+    assert "ocr_cloud_api_key" not in raw
+
+    loaded = load_settings(tmp_path)
+    assert loaded.web_search_enabled is False
+    assert loaded.web_search_provider == "tavily"
+    assert loaded.tavily_api_key == "tvly-secret"
+    assert loaded.ocr_cloud_base_url == "https://example.test/v1"
+    assert loaded.ocr_cloud_model == "vision-model"
+    assert loaded.ocr_cloud_api_key == "ocr-secret"
+    assert loaded.ocr_cloud_timeout_seconds == 90.0
+
+
+def test_hydrate_startup_settings_reloads_ocr_and_web_search_like_cli(
+    tmp_path: Path, monkeypatch
+):
+    from lumina_core.config import Settings
+    from lumina_core.secrets_store import persist_secrets
+    from lumina_core.settings_store import hydrate_startup_settings, save_settings
+
+    monkeypatch.delenv("TAVILY_API_KEY", raising=False)
+    monkeypatch.delenv("LUMINA_TAVILY_API_KEY", raising=False)
+    monkeypatch.delenv("LUMINA_OCR_CLOUD_API_KEY", raising=False)
+    monkeypatch.delenv("LUMINA_OCR_CLOUD_BASE_URL", raising=False)
+    monkeypatch.delenv("LUMINA_OCR_CLOUD_MODEL", raising=False)
+
+    saved = Settings(
+        data_dir=tmp_path,
+        web_search_enabled=False,
+        web_search_provider="tavily",
+        tavily_api_key="tvly-keep",
+        ocr_cloud_base_url="https://example.test/v1",
+        ocr_cloud_model="vision",
+        ocr_cloud_api_key="ocr-keep",
+        ocr_cloud_timeout_seconds=75.0,
+    )
+    save_settings(saved)
+    persist_secrets(tmp_path, ModelsConfig(), saved)
+
+    # Sidecar CLI only passes host/port; user prefs must still come from disk.
+    restarted = hydrate_startup_settings(
+        Settings(host="127.0.0.1", port=17432, data_dir=tmp_path)
+    )
+    assert restarted.host == "127.0.0.1"
+    assert restarted.port == 17432
+    assert restarted.web_search_enabled is False
+    assert restarted.web_search_provider == "tavily"
+    assert restarted.tavily_api_key == "tvly-keep"
+    assert restarted.ocr_cloud_base_url == "https://example.test/v1"
+    assert restarted.ocr_cloud_model == "vision"
+    assert restarted.ocr_cloud_api_key == "ocr-keep"
+    assert restarted.ocr_cloud_timeout_seconds == 75.0
+
+
+def test_hydrate_startup_settings_keeps_explicit_test_overrides(tmp_path: Path):
+    from lumina_core.config import Settings
+    from lumina_core.settings_store import hydrate_startup_settings
+
+    hydrated = hydrate_startup_settings(
+        Settings(data_dir=tmp_path, auto_start_summary=True)
+    )
+    assert hydrated.data_dir == tmp_path
+    assert hydrated.auto_start_summary is True

@@ -5,6 +5,7 @@ using Lumina.Services;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Input;
+using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Navigation;
 using Windows.Storage.Pickers;
 using Windows.System;
@@ -26,10 +27,15 @@ public sealed partial class ReaderPage : Page
     private readonly Dictionary<int, SegmentRow> _hydrated = [];
     private readonly List<JsonElement> _eventBuffer = [];
     private DispatcherTimer? _flushTimer;
+    private DispatcherTimer? _progressTimer;
+    private bool _restoringOffset;
+    private double _restoreOffsetY;
     private int _readyCount;
     private int _totalCount;
     private int? _pendingJump;
     private ChatMessage? _lastAssistant;
+    private string _chatScope = "segment";
+    private string _indexStatus = "idle";
 
     public ReaderPage()
     {
@@ -49,7 +55,48 @@ public sealed partial class ReaderPage : Page
             ShowRawToggle.IsChecked = !(ShowRawToggle.IsChecked ?? false);
             ShowRaw_Click(ShowRawToggle, new RoutedEventArgs());
             e.Handled = true;
+            return;
         }
+
+        if (e.Handled) return;
+        if (ShouldIgnoreReaderScrollKey(e.OriginalSource as DependencyObject)) return;
+
+        const double lineDelta = 80;
+        var offset = ContentScroll.VerticalOffset;
+        var viewport = ContentScroll.ViewportHeight;
+        switch (e.Key)
+        {
+            case VirtualKey.Up:
+                ContentScroll.ChangeView(null, Math.Max(0, offset - lineDelta), null);
+                e.Handled = true;
+                break;
+            case VirtualKey.Down:
+                ContentScroll.ChangeView(null, offset + lineDelta, null);
+                e.Handled = true;
+                break;
+            case VirtualKey.PageUp:
+                ContentScroll.ChangeView(null, Math.Max(0, offset - viewport * 0.9), null);
+                e.Handled = true;
+                break;
+            case VirtualKey.PageDown:
+                ContentScroll.ChangeView(null, offset + viewport * 0.9, null);
+                e.Handled = true;
+                break;
+        }
+    }
+
+    private static bool ShouldIgnoreReaderScrollKey(DependencyObject? source)
+    {
+        var current = source;
+        while (current != null)
+        {
+            if (current is TextBox or ComboBox or ListView or ListViewItem or Slider)
+            {
+                return true;
+            }
+            current = VisualTreeHelper.GetParent(current);
+        }
+        return false;
     }
 
     protected override void OnNavigatedTo(NavigationEventArgs e)
@@ -63,6 +110,9 @@ public sealed partial class ReaderPage : Page
             _pendingJump = args.SegmentIndex;
             _showRaw = LocalPrefs.GetShowRaw(_bookId);
             ShowRawToggle.IsChecked = _showRaw;
+            _chatScope = "segment";
+            _indexStatus = "idle";
+            if (ChatScopeBox is not null) ChatScopeBox.SelectedIndex = 0;
             ApplyFontSize();
             _ = OpenAsync(args);
         }
@@ -70,6 +120,8 @@ public sealed partial class ReaderPage : Page
 
     protected override void OnNavigatedFrom(NavigationEventArgs e)
     {
+        PersistReadingProgress(patchServer: true);
+        _progressTimer?.Stop();
         _pageCts?.Cancel();
         _eventsCts?.Cancel();
         _chatCts?.Cancel();
@@ -106,6 +158,8 @@ public sealed partial class ReaderPage : Page
         try
         {
             var open = await App.Core.OpenBookAsync(args.BookId, _pageCts!.Token);
+            var book = await App.Core.FetchBookAsync(args.BookId, _pageCts.Token);
+            _indexStatus = book.IndexStatus ?? "idle";
             var segments = await App.Core.ListSegmentsAsync(args.BookId, _pageCts.Token);
             _segments = segments.ToList();
             foreach (var s in _segments) s.RawText = null;
@@ -113,13 +167,34 @@ public sealed partial class ReaderPage : Page
             _totalCount = _segments.Count;
             _readyCount = _segments.Count(s => s.SummaryStatus is "ready" or "done");
             UpdateProgressBanner();
+            UpdateChatScopeUi();
 
-            var idx = _pendingJump ?? open.CurrentSegmentIndex;
+            var local = LocalPrefs.GetReadingProgress(_bookId, _segments.Count);
+            var idx = _pendingJump ?? ReadingProgressIndex.Restore(
+                open.CurrentSegmentIndex,
+                local,
+                local is null ? null : _segments.Count,
+                _segments.Count);
             idx = Math.Clamp(idx, 0, Math.Max(0, _segments.Count - 1));
+            _restoreOffsetY = _pendingJump is not null
+                ? 0
+                : ReadingProgressIndex.RestoreOffset(
+                    LocalPrefs.GetReadingProgressOffset(_bookId, _segments.Count),
+                    local is null ? null : _segments.Count,
+                    _segments.Count);
+            _restoringOffset = _restoreOffsetY > 1;
             if (_segments.Count > 0)
             {
                 var listIdx = _segments.FindIndex(s => s.Idx == idx);
                 SegmentList.SelectedIndex = listIdx >= 0 ? listIdx : idx;
+            }
+            if (_restoringOffset)
+            {
+                DispatcherQueue.TryEnqueue(() =>
+                {
+                    ContentScroll.ChangeView(null, _restoreOffsetY, null, true);
+                    _restoringOffset = false;
+                });
             }
             StartEvents();
             await ReloadNotesAsync();
@@ -171,9 +246,28 @@ public sealed partial class ReaderPage : Page
                     row.SummaryStatus = st.GetString() ?? row.SummaryStatus;
                 if (el.TryGetProperty("label", out var lb) && lb.GetString() is { Length: > 0 } label)
                     row.Label = label;
+                if (el.TryGetProperty("summary_tier", out var tier))
+                    row.SummaryTier = tier.GetString();
+                if (TryReadSummaryJson(el) is { Length: > 0 } summaryJson)
+                    row.SummaryJson = summaryJson;
                 _hydrated.Remove(idx);
                 _readyCount = _segments.Count(s => s.SummaryStatus is "ready" or "done");
-                if (_selected?.Idx == idx) _ = HydrateSelectedAsync();
+                if (_selected?.Idx == idx)
+                {
+                    if (!_showRaw && !string.IsNullOrEmpty(row.SummaryJson))
+                        RenderContent(row);
+                    _ = HydrateSelectedAsync();
+                }
+            }
+            else if (type is "segment_boundary_moved")
+            {
+                ApplyBoundaryEvent(el, "left");
+                ApplyBoundaryEvent(el, "right");
+            }
+            else if (type is "book_index_ready" or "book_index_progress")
+            {
+                if (el.TryGetProperty("index_status", out var st) && st.GetString() is string status)
+                    _indexStatus = status;
             }
             else if (type is "summarize_progress" or "book_updated")
             {
@@ -193,6 +287,50 @@ public sealed partial class ReaderPage : Page
             if (listIdx >= 0) SegmentList.SelectedIndex = listIdx;
         }
         UpdateProgressBanner();
+        UpdateChatScopeUi();
+    }
+
+    private static string? TryReadSummaryJson(JsonElement el)
+    {
+        if (!el.TryGetProperty("summary_json", out var jsonEl)) return null;
+        return jsonEl.ValueKind switch
+        {
+            JsonValueKind.String => jsonEl.GetString(),
+            JsonValueKind.Object => jsonEl.GetRawText(),
+            _ => null,
+        };
+    }
+
+    private void UpdateChatScopeUi()
+    {
+        var canBook = _totalCount > 0 && _readyCount >= _totalCount && _indexStatus == "ready";
+        if (ChatScopeBookItem is not null)
+        {
+            ChatScopeBookItem.IsEnabled = canBook;
+            ChatScopeBookItem.Content = _indexStatus switch
+            {
+                "ready" => "全书",
+                "building" => "全书（索引生成中）",
+                "error" => "全书（索引失败）",
+                _ => _readyCount >= _totalCount && _totalCount > 0 ? "全书（索引生成中）" : "全书",
+            };
+        }
+        if (!canBook && _chatScope == "book")
+        {
+            _chatScope = "segment";
+            if (ChatScopeBox is not null) ChatScopeBox.SelectedIndex = 0;
+        }
+        if (ChatInput is not null)
+            ChatInput.PlaceholderText = _chatScope == "book" ? "问全书…" : "针对本段提问…";
+    }
+
+    private void ChatScope_Changed(object sender, SelectionChangedEventArgs e)
+    {
+        if (ChatScopeBox?.SelectedItem is ComboBoxItem { Tag: string tag })
+            _chatScope = tag;
+        else
+            _chatScope = "segment";
+        UpdateChatScopeUi();
     }
 
     private void UpdateProgressBanner()
@@ -212,7 +350,41 @@ public sealed partial class ReaderPage : Page
         _selected = row;
         await HydrateSelectedAsync();
         await ReloadNotesAsync();
+        LocalPrefs.SetReadingProgress(
+            _bookId,
+            row.Idx,
+            _segments.Count,
+            _restoringOffset ? _restoreOffsetY : 0);
         try { _ = App.Core.SaveReadingProgressAsync(_bookId, row.Idx); }
+        catch { /* non-blocking */ }
+    }
+
+    private void ContentScroll_ViewChanged(object sender, ScrollViewerViewChangedEventArgs e)
+    {
+        if (_restoringOffset || _selected is null) return;
+        _progressTimer ??= new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(120) };
+        _progressTimer.Tick -= ProgressTimer_Tick;
+        _progressTimer.Tick += ProgressTimer_Tick;
+        _progressTimer.Stop();
+        _progressTimer.Start();
+    }
+
+    private void ProgressTimer_Tick(object sender, object e)
+    {
+        _progressTimer?.Stop();
+        PersistReadingProgress(patchServer: false);
+    }
+
+    private void PersistReadingProgress(bool patchServer)
+    {
+        if (_selected is null || string.IsNullOrEmpty(_bookId)) return;
+        LocalPrefs.SetReadingProgress(
+            _bookId,
+            _selected.Idx,
+            _segments.Count,
+            ContentScroll.VerticalOffset);
+        if (!patchServer) return;
+        try { _ = App.Core.SaveReadingProgressAsync(_bookId, _selected.Idx); }
         catch { /* non-blocking */ }
     }
 
@@ -242,6 +414,7 @@ public sealed partial class ReaderPage : Page
                     var sum = await App.Core.FetchSegmentSummaryAsync(_bookId, idx, ct);
                     detail.SummaryJson = sum.SummaryJson;
                     if (!string.IsNullOrEmpty(sum.Label)) detail.Label = sum.Label;
+                    detail.SummaryTier = sum.SummaryTier;
                 }
                 _hydrated[idx] = detail;
             }
@@ -301,7 +474,7 @@ public sealed partial class ReaderPage : Page
         }
 
         ThreeSentenceText.Text = parsed.ThreeSentence
-            ?? (detail.SummaryStatus is "ready" or "done" ? "（摘要为空）" : $"摘要状态：{detail.SummaryStatus}。可点击「开始摘要」。");
+            ?? SummaryStatusPlaceholder(detail.SummaryStatus);
         KeyPointsText.Text = parsed.KeyPoints.Count == 0
             ? ""
             : "要点\n" + string.Join("\n", parsed.KeyPoints.Select(p => "• " + p));
@@ -311,6 +484,14 @@ public sealed partial class ReaderPage : Page
         FollowUpChips.ItemsSource = parsed.FollowUps;
     }
 
+    private static string SummaryStatusPlaceholder(string? status) => status switch
+    {
+        "ready" or "done" => "（摘要为空）",
+        "running" => "摘要生成中…",
+        "failed" or "error" => "摘要失败。可点击「开始摘要」重试。",
+        _ => "尚无摘要。可点击「开始摘要」。",
+    };
+
     private async void ShowRaw_Click(object sender, RoutedEventArgs e)
     {
         _showRaw = ShowRawToggle.IsChecked == true;
@@ -318,11 +499,16 @@ public sealed partial class ReaderPage : Page
         await HydrateSelectedAsync();
     }
 
+    private SummaryTier SelectedSummaryTier() =>
+        SummaryTierBox.SelectedItem is ComboBoxItem { Tag: "advanced" }
+            ? SummaryTier.Advanced
+            : SummaryTier.Normal;
+
     private async void Summarize_Click(object sender, RoutedEventArgs e)
     {
         try
         {
-            await App.Core.StartSummarizeAsync(_bookId);
+            await App.Core.StartSummarizeAsync(_bookId, SelectedSummaryTier());
             ProgressText.Text = "摘要已开始…";
             ProgressBanner.Visibility = Visibility.Visible;
         }
@@ -345,18 +531,23 @@ public sealed partial class ReaderPage : Page
 
     private async void Regenerate_Click(object sender, RoutedEventArgs e)
     {
+        var tier = SelectedSummaryTier();
+        var tierLabel = tier == SummaryTier.Advanced ? "高级摘要" : "正常摘要";
         var dlg = new ContentDialog
         {
             Title = "全书重新摘要",
-            Content = "将重新生成全书段落摘要，可能耗时较长。",
-            PrimaryButtonText = "开始",
+            Content = $"将用「{tierLabel}」重新生成全书 {_totalCount} 个段的摘要。"
+                + "已有摘要会被全部覆盖，会消耗大量计算和 API 资源，且无法撤销。"
+                + "若只想用该档位补齐未摘要段落，请改用「开始摘要」。",
+            PrimaryButtonText = "确认覆盖全书",
             CloseButtonText = "取消",
+            DefaultButton = ContentDialogButton.Close,
             XamlRoot = XamlRoot,
         };
         if (await dlg.ShowAsync() != ContentDialogResult.Primary) return;
         try
         {
-            await App.Core.RegenerateBookSummariesAsync(_bookId);
+            await App.Core.RegenerateBookSummariesAsync(_bookId, tier);
             ProgressText.Text = "已开始重新摘要";
             ProgressBanner.Visibility = Visibility.Visible;
         }
@@ -373,6 +564,132 @@ public sealed partial class ReaderPage : Page
             ProgressBanner.Visibility = Visibility.Visible;
         }
         catch (Exception ex) { ProgressText.Text = ex.Message; }
+    }
+
+    private async void AdjustBoundary_Click(object sender, RoutedEventArgs e)
+    {
+        if (_selected is null || _segments.Count < 2) return;
+        var leftIdx = _selected.Idx >= _segments.Count - 1 ? _selected.Idx - 1 : _selected.Idx;
+        try
+        {
+            var preview = await App.Core.FetchSegmentBoundaryAsync(_bookId, leftIdx);
+            var left = await App.Core.GetSegmentAsync(_bookId, leftIdx);
+            var right = await App.Core.GetSegmentAsync(_bookId, leftIdx + 1);
+            var concat = (left.RawText ?? "") + (right.RawText ?? "");
+            if (preview.Candidates.Count == 0)
+            {
+                ProgressText.Text = "这两段之间没有可调整的语义边界";
+                ProgressBanner.Visibility = Visibility.Visible;
+                return;
+            }
+
+            var index = preview.Candidates.FindIndex(c => c.Offset == preview.LeftCharCount);
+            if (index < 0) index = 0;
+            var leftPreview = new TextBlock { TextWrapping = TextWrapping.WrapWholeWords, MaxHeight = 120 };
+            var rightPreview = new TextBlock { TextWrapping = TextWrapping.WrapWholeWords, MaxHeight = 120 };
+            var counts = new TextBlock { Opacity = 0.7, Margin = new Thickness(0, 8, 0, 0) };
+            var slider = new Slider
+            {
+                Minimum = 0,
+                Maximum = Math.Max(0, preview.Candidates.Count - 1),
+                Value = index,
+                StepFrequency = 1,
+                TickFrequency = 1,
+                SnapsTo = SliderSnapsTo.Ticks,
+            };
+            void Render(int candidateIndex)
+            {
+                candidateIndex = Math.Clamp(candidateIndex, 0, preview.Candidates.Count - 1);
+                var cut = preview.Candidates[candidateIndex].Offset;
+                var leftText = cut <= concat.Length ? concat[..cut] : concat;
+                var rightText = cut <= concat.Length ? concat[cut..] : "";
+                leftPreview.Text = leftText.Length <= 360 ? leftText : leftText[^360..];
+                rightPreview.Text = rightText.Length <= 360 ? rightText : rightText[..360];
+                counts.Text = $"段 {leftIdx + 1} · {leftText.Length} 字    段 {leftIdx + 2} · {rightText.Length} 字";
+            }
+            slider.ValueChanged += (_, args) => Render((int)Math.Round(args.NewValue));
+            Render(index);
+
+            var panel = new StackPanel { Spacing = 8, MaxWidth = 560 };
+            panel.Children.Add(new TextBlock
+            {
+                Text = "拖动滑块调整分界，切点会吸附到句子或段落边界。保存后只重新摘要这两段。",
+                TextWrapping = TextWrapping.WrapWholeWords,
+            });
+            panel.Children.Add(leftPreview);
+            panel.Children.Add(slider);
+            panel.Children.Add(rightPreview);
+            panel.Children.Add(counts);
+
+            var dlg = new ContentDialog
+            {
+                Title = "调整分段",
+                Content = panel,
+                PrimaryButtonText = "保存并重新摘要",
+                CloseButtonText = "取消",
+                DefaultButton = ContentDialogButton.Primary,
+                XamlRoot = XamlRoot,
+            };
+            if (await dlg.ShowAsync() != ContentDialogResult.Primary) return;
+            var chosen = preview.Candidates[(int)Math.Round(slider.Value)].Offset;
+            var result = await App.Core.MoveSegmentBoundaryAsync(_bookId, leftIdx, chosen);
+            ApplyMoveResult(result);
+            ProgressText.Text = result.Unchanged ? "分界未改变" : "已调整分界，正在重新摘要这两段";
+            ProgressBanner.Visibility = Visibility.Visible;
+            if (_selected?.Idx == leftIdx || _selected?.Idx == leftIdx + 1)
+                await HydrateSelectedAsync();
+        }
+        catch (Exception ex)
+        {
+            ProgressText.Text = ex.Message;
+            ProgressBanner.Visibility = Visibility.Visible;
+        }
+    }
+
+    private void ApplyBoundaryEvent(JsonElement el, string side)
+    {
+        if (!el.TryGetProperty($"{side}_idx", out var idxEl) || !idxEl.TryGetInt32(out var idx))
+            return;
+        var row = _segments.FirstOrDefault(s => s.Idx == idx);
+        if (row is null) return;
+        if (el.TryGetProperty($"{side}_status", out var st))
+            row.SummaryStatus = st.GetString() ?? "pending";
+        else
+            row.SummaryStatus = "pending";
+        row.SummaryJson = null;
+        row.Label = null;
+        row.Translation = null;
+        if (el.TryGetProperty($"{side}_anchor_label", out var anchor))
+            row.AnchorLabel = anchor.GetString();
+        if (el.TryGetProperty($"{side}_chapter", out var chapter))
+            row.Chapter = chapter.GetString();
+        if (el.TryGetProperty($"{side}_char_count", out var count) && count.TryGetInt32(out var chars))
+            row.CharCount = chars;
+        _hydrated.Remove(idx);
+        _readyCount = _segments.Count(s => s.SummaryStatus is "ready" or "done");
+        if (_selected?.Idx == idx) _ = HydrateSelectedAsync();
+    }
+
+    private void ApplyMoveResult(SegmentBoundaryMoveResult result)
+    {
+        ApplyMovedSide(result.LeftIdx, result.LeftStatus, result.LeftAnchorLabel, result.LeftChapter, result.LeftCharCount);
+        ApplyMovedSide(result.RightIdx, result.RightStatus, result.RightAnchorLabel, result.RightChapter, result.RightCharCount);
+        SegmentList.ItemsSource = null;
+        SegmentList.ItemsSource = _segments;
+    }
+
+    private void ApplyMovedSide(int idx, string? status, string? anchor, string? chapter, int charCount)
+    {
+        var row = _segments.FirstOrDefault(s => s.Idx == idx);
+        if (row is null) return;
+        row.SummaryStatus = status ?? "pending";
+        row.SummaryJson = null;
+        row.Label = null;
+        row.Translation = null;
+        if (!string.IsNullOrEmpty(anchor)) row.AnchorLabel = anchor;
+        row.Chapter = chapter;
+        row.CharCount = charCount;
+        _hydrated.Remove(idx);
     }
 
     private void ToggleNotes_Click(object sender, RoutedEventArgs e)
@@ -506,10 +823,18 @@ public sealed partial class ReaderPage : Page
                     });
                 },
                 quote: quote,
+                scope: _chatScope,
+                onStatus: status => DispatcherQueue.TryEnqueue(() =>
+                {
+                    ChatStatusText.Text = status;
+                    ChatStatusText.Visibility = Visibility.Visible;
+                }),
                 ct: ct);
 
+            ChatStatusText.Visibility = Visibility.Collapsed;
             assistant.Content = string.IsNullOrEmpty(resp.Answer) ? assistant.Content : resp.Answer;
             assistant.Citations = resp.Citations;
+            assistant.WebRefs = resp.WebRefs.Where(r => r.NavigateUri is not null).ToList();
             assistant.ApplyMetrics(resp);
             if (resp.DurationMs is int ms || resp.Tps is not null)
             {
@@ -535,11 +860,13 @@ public sealed partial class ReaderPage : Page
         }
         catch (OperationCanceledException)
         {
+            ChatStatusText.Visibility = Visibility.Collapsed;
             assistant.Content += "\n（已取消）";
             RefreshChatList();
         }
         catch (Exception ex)
         {
+            ChatStatusText.Visibility = Visibility.Collapsed;
             assistant.Content = ex.Message;
             RefreshChatList();
         }
@@ -599,8 +926,73 @@ public sealed partial class ReaderPage : Page
         }
     }
 
+    private async void Import_Click(object sender, RoutedEventArgs e)
+    {
+        var window = MainWindowLocator.Current;
+        if (window is null) return;
+
+        var picker = new FileOpenPicker();
+        InitializeWithWindow.Initialize(picker, WindowNative.GetWindowHandle(window));
+        picker.FileTypeFilter.Add(".pdf");
+        picker.FileTypeFilter.Add(".epub");
+        picker.FileTypeFilter.Add(".mobi");
+        picker.FileTypeFilter.Add(".txt");
+        picker.FileTypeFilter.Add(".text");
+        picker.FileTypeFilter.Add(".md");
+        picker.FileTypeFilter.Add(".markdown");
+        picker.FileTypeFilter.Add(".mdown");
+        picker.FileTypeFilter.Add(".mkd");
+        picker.FileTypeFilter.Add(".log");
+        picker.FileTypeFilter.Add(".html");
+        picker.FileTypeFilter.Add(".htm");
+        picker.FileTypeFilter.Add(".xhtml");
+        picker.FileTypeFilter.Add(".rtf");
+        picker.FileTypeFilter.Add(".docx");
+        picker.FileTypeFilter.Add(".odt");
+        picker.FileTypeFilter.Add(".fb2");
+
+        var files = await picker.PickMultipleFilesAsync();
+        if (files is null || files.Count == 0) return;
+
+        ProgressText.Text = $"导入中…（{files.Count} 个文件，可继续阅读）";
+        ProgressBanner.Visibility = Visibility.Visible;
+        foreach (var file in files)
+        {
+            try
+            {
+                await App.Core.ImportBookAsync(file.Path);
+            }
+            catch (ImportConflictException ex)
+            {
+                var dlg = new ContentDialog
+                {
+                    Title = "书已存在",
+                    Content = $"「{ex.BookTitle}」已在书库中。",
+                    PrimaryButtonText = "重新导入",
+                    SecondaryButtonText = "打开已有",
+                    CloseButtonText = "跳过",
+                    XamlRoot = XamlRoot,
+                };
+                var result = await dlg.ShowAsync();
+                if (result == ContentDialogResult.Primary)
+                    await App.Core.ImportBookAsync(ex.Path, overwrite: true);
+                else if (result == ContentDialogResult.Secondary && !string.IsNullOrEmpty(ex.ExistingBookId))
+                    MainWindowLocator.Current?.NavigateToReader(ex.ExistingBookId, ex.BookTitle);
+            }
+            catch (Exception ex)
+            {
+                ProgressText.Text = $"导入失败：{ex.Message}";
+                ProgressBanner.Visibility = Visibility.Visible;
+                return;
+            }
+        }
+        ProgressText.Text = "已加入书库，可继续阅读";
+        ProgressBanner.Visibility = Visibility.Visible;
+    }
+
     private void Back_Click(object sender, RoutedEventArgs e)
     {
+        PersistReadingProgress(patchServer: true);
         _pageCts?.Cancel();
         MainWindowLocator.Current?.NavigateToLibrary();
     }

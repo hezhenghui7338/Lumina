@@ -55,9 +55,11 @@ final class TaskManagerViewModel: ObservableObject {
         }
     }
 
-    func startSummarizeAll(core: CoreClient) async {
+    func startSummarizeAll(
+        core: CoreClient, summaryTier: SummaryTier = .normal
+    ) async {
         do {
-            try await core.startSummarizeAll()
+            try await core.startSummarizeAll(summaryTier: summaryTier)
             actionMessage = "已恢复全部摘要"
             await refresh(core: core)
         } catch {
@@ -136,8 +138,16 @@ struct TaskManagerView: View {
                 }
 
                 Section("控制") {
-                    Button("开始全部摘要") {
-                        Task { await viewModel.startSummarizeAll(core: core) }
+                    Menu("开始全部摘要") {
+                        ForEach(SummaryTier.allCases) { tier in
+                            Button(tier.startMenuLabel) {
+                                Task {
+                                    await viewModel.startSummarizeAll(
+                                        core: core, summaryTier: tier
+                                    )
+                                }
+                            }
+                        }
                     }
                     Button("停止全部摘要") {
                         Task { await viewModel.stopSummarizeAll(core: core) }

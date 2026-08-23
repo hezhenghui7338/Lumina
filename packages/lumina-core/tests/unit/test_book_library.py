@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 
 import pytest
 
-from lumina_core.db.repos import BookRepo, NoteRepo, SegmentRepo
+from lumina_core.db.repos import BookRepo, NoteRepo, SegmentRepo, reading_progress_bucket
 from lumina_core.db.schema import init_db
 
 
@@ -30,10 +30,10 @@ def _insert_book(conn, **overrides):
     conn.execute(
         """
         INSERT INTO books (
-          id, title, author, format, file_path, segment_count, status,
-          file_hash, metadata_json, is_favorite, category, last_opened_at,
+          id, title, author, format, file_path, segment_count, current_segment_index,
+          status, file_hash, metadata_json, is_favorite, category, last_opened_at,
           created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, '{}', ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '{}', ?, ?, ?, ?, ?)
         """,
         (
             defaults["id"],
@@ -42,6 +42,7 @@ def _insert_book(conn, **overrides):
             defaults["format"],
             defaults["file_path"],
             defaults["segment_count"],
+            defaults.get("current_segment_index", 0),
             defaults["status"],
             defaults["file_hash"],
             defaults.get("is_favorite", 0),
@@ -113,6 +114,86 @@ def test_list_books_filter_and_sort(db_conn):
 
     favorites = repo.list_books(sort="favorite")
     assert favorites[0]["title"] == "Beta"
+
+
+def test_reading_progress_bucket_ignores_status_summarized():
+    unread = {"last_opened_at": None, "segment_count": 10, "current_segment_index": 0}
+    reading = {
+        "last_opened_at": "2024-05-01T00:00:00+00:00",
+        "segment_count": 10,
+        "current_segment_index": 3,
+        "status": "summarized",
+    }
+    finished = {
+        "last_opened_at": "2024-05-01T00:00:00+00:00",
+        "segment_count": 10,
+        "current_segment_index": 9,
+    }
+    short_opened = {
+        "last_opened_at": "2024-05-01T00:00:00+00:00",
+        "segment_count": 1,
+        "current_segment_index": 0,
+    }
+    assert reading_progress_bucket(unread) == "unread"
+    assert reading_progress_bucket(reading) == "reading"
+    assert reading_progress_bucket(finished) == "finished"
+    assert reading_progress_bucket(short_opened) == "reading"
+
+
+def test_list_books_reading_progress_and_favorite_filters(db_conn):
+    repo = BookRepo(db_conn)
+    unread = _insert_book(
+        db_conn,
+        title="Unread",
+        last_opened_at=None,
+        segment_count=8,
+        current_segment_index=0,
+        status="unread",
+    )
+    reading = _insert_book(
+        db_conn,
+        title="Reading",
+        last_opened_at="2024-05-01T00:00:00+00:00",
+        segment_count=8,
+        current_segment_index=2,
+        status="summarized",
+        is_favorite=1,
+    )
+    finished = _insert_book(
+        db_conn,
+        title="Finished",
+        last_opened_at="2024-06-01T00:00:00+00:00",
+        segment_count=8,
+        current_segment_index=7,
+        status="summarized",
+    )
+    short = _insert_book(
+        db_conn,
+        title="ShortOpened",
+        last_opened_at="2024-07-01T00:00:00+00:00",
+        segment_count=1,
+        current_segment_index=0,
+        status="reading",
+    )
+
+    assert {b["title"] for b in repo.list_books(filter="unread")} == {"Unread"}
+    assert {b["title"] for b in repo.list_books(filter="reading")} == {"Reading", "ShortOpened"}
+    assert {b["title"] for b in repo.list_books(filter="finished")} == {"Finished"}
+    assert [b["title"] for b in repo.list_books(filter="favorite")] == ["Reading"]
+    assert unread["id"] in {b["id"] for b in repo.list_books(filter="all")}
+    assert reading["id"] in {b["id"] for b in repo.list_books(filter="all")}
+    assert finished["id"] in {b["id"] for b in repo.list_books(filter="all")}
+    assert short["id"] in {b["id"] for b in repo.list_books(filter="reading")}
+
+
+def test_list_books_sort_by_segment_count(db_conn):
+    repo = BookRepo(db_conn)
+    _insert_book(db_conn, title="Short", segment_count=3)
+    _insert_book(db_conn, title="Long", segment_count=40)
+    _insert_book(db_conn, title="Mid", segment_count=12)
+
+    titles = [b["title"] for b in repo.list_books(sort="segments")]
+    assert titles == ["Long", "Mid", "Short"]
 
 
 def test_delete_removes_fts(db_conn):

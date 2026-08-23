@@ -3,7 +3,14 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-VERSION="${LUMINA_VERSION:-0.8.1}"
+
+echo "==> Syncing release identity (app version, sidecar, handshake)…"
+if [[ -n "${LUMINA_VERSION:-}" ]]; then
+  python3 "$ROOT/scripts/sync-release-identity.py" --version "$LUMINA_VERSION"
+else
+  python3 "$ROOT/scripts/sync-release-identity.py"
+fi
+VERSION="$(python3 "$ROOT/scripts/sync-release-identity.py" --print-version)"
 DIST="$ROOT/dist"
 DERIVED="$ROOT/build/DerivedData"
 CORE_PKG="$ROOT/packages/lumina-core"
@@ -76,6 +83,8 @@ xcodebuild \
   -scheme Lumina \
   -configuration Release \
   -derivedDataPath "$DERIVED" \
+  MARKETING_VERSION="$VERSION" \
+  CURRENT_PROJECT_VERSION="$VERSION" \
   CODE_SIGN_IDENTITY="-" \
   CODE_SIGNING_ALLOWED=NO \
   build
@@ -107,8 +116,9 @@ trap cleanup_smoke EXIT
 "$RES/lumina-core" --host 127.0.0.1 --port "$SMOKE_PORT" &
 SMOKE_PID=$!
 SMOKE_OK=0
+HEALTH_JSON=""
 for _ in $(seq 1 60); do
-  if curl -sf "http://127.0.0.1:${SMOKE_PORT}/health" >/dev/null; then
+  if HEALTH_JSON=$(curl -sf "http://127.0.0.1:${SMOKE_PORT}/health"); then
     SMOKE_OK=1
     break
   fi
@@ -118,6 +128,7 @@ if [[ "$SMOKE_OK" -ne 1 ]]; then
   echo "ERROR: Embedded sidecar failed /health smoke within 30s" >&2
   exit 1
 fi
+printf '%s' "$HEALTH_JSON" | python3 "$ROOT/scripts/assert-health-chunker-version.py"
 cleanup_smoke
 trap - EXIT
 

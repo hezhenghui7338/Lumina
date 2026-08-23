@@ -1,0 +1,18 @@
+---
+description: Release 构建必须先同步应用版本、sidecar 身份和握手常量
+globs: scripts/build-release.sh,scripts/build-release-windows.ps1,packages/lumina-core/pyproject.toml,packages/lumina-core/lumina_core/config.py,apps/macos/Lumina.xcodeproj/project.pbxproj,apps/windows/Lumina/Lumina.csproj
+alwaysApply: false
+---
+
+# 发布身份随构建同步
+
+`just release` / `scripts/build-release.sh` / `scripts/build-release-windows.ps1` **第一步**必须跑 `scripts/sync-release-identity.py`。
+
+真源：
+
+- 应用 / 引擎版本：`packages/lumina-core/pyproject.toml` 的 `version`（可用 `LUMINA_VERSION` 覆盖并写回）
+- 切分算法号：`CHUNKER_VERSION`（只在切分行为变化时手改）
+
+同步目标不得手写分叉：`CORE_VERSION`、`lumina_core.__version__`、Xcode `MARKETING_VERSION` / `CURRENT_PROJECT_VERSION`、Windows `<Version>`、Swift `expectedChunkerVersion`、C# `ExpectedChunkerVersion`。
+
+打包时还要把同一版本传给 `xcodebuild MARKETING_VERSION=` 和 `dotnet publish -p:Version=`。不要在构建脚本里再写死 `0.8.1`。

@@ -171,28 +171,9 @@ assertSnapshot(of: view, as: .image(precision: 0.99))
 
 ---
 
-## 7. CI 集成
+## 7. 本地 Snapshot
 
-`test-macos.yml` PR 必跑 Snapshot 测试。
-
-失败时：
-
-1. CI 上传 **diff 图** artifact
-2. PR 状态失败，须更新 Snapshot 或修复回归
-
-```yaml
-# .github/workflows/test-macos.yml 片段
-- name: Run Snapshot tests
-  run: xcodebuild test -scheme Lumina -destination 'platform=macOS' \
-       -only-testing:LuminaTests/SnapshotTests
-
-- name: Upload snapshot diffs on failure
-  if: failure()
-  uses: actions/upload-artifact@v4
-  with:
-    name: snapshot-diffs
-    path: apps/macos/Lumina/LuminaTests/Snapshot/__Snapshots__/
-```
+Snapshot 测试走 `just test-macos`。PR / release **默认不跑** XCTest（仓库没有 `test-macos.yml`）。失败时本地看 xcresult / `__Snapshots__` 里的 diff 图，更新基线或修回归后再提交。
 
 ---
 

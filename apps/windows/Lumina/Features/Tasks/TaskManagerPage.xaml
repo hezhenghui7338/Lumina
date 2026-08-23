@@ -17,6 +17,10 @@
                 <TextBlock Text="任务管理" FontSize="28" FontWeight="SemiBold" VerticalAlignment="Center"/>
             </StackPanel>
             <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Spacing="8">
+                <ComboBox x:Name="SummaryTierBox" Width="110" SelectedIndex="0">
+                    <ComboBoxItem Content="正常摘要" Tag="normal"/>
+                    <ComboBoxItem Content="高级摘要" Tag="advanced"/>
+                </ComboBox>
                 <Button Content="全部开始摘要" Click="StartAll_Click"/>
                 <Button Content="全部停止" Click="StopAll_Click"/>
                 <Button Content="刷新" Click="Refresh_Click"/>

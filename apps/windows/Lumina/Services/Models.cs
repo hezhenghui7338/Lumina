@@ -2,6 +2,12 @@ using System.Text.Json.Serialization;
 
 namespace Lumina.Services;
 
+public enum SummaryTier
+{
+    Normal,
+    Advanced,
+}
+
 public sealed class BookSummary
 {
     public string Id { get; set; } = "";
@@ -23,6 +29,10 @@ public sealed class BookSummary
     public SummarizeActive? SummarizeActive { get; set; }
     public string? SummarizeState { get; set; }
     public int? SummarizeQueuedCount { get; set; }
+    public string? SummaryTier { get; set; }
+    public string? ProcessingKind { get; set; }
+    public string? IndexStatus { get; set; }
+    public string? IngestError { get; set; }
 
     [JsonIgnore]
     public bool Favorite => IsFavorite ?? false;
@@ -37,15 +47,94 @@ public sealed class BookSummary
     public int SummaryReady => SummaryReadyCount ?? 0;
 
     [JsonIgnore]
-    public string StatusLabel => Status switch
+    public string StatusLabel
     {
-        "unread" => "未读",
-        "reading" => "在读",
-        "summarized" => "已摘要",
-        "processing" => "处理中",
-        "error" => "导入失败",
-        _ => Status,
-    };
+        get
+        {
+            if (Status == "error")
+            {
+                var reason = IngestError?.Trim();
+                return string.IsNullOrEmpty(reason) ? "导入失败" : $"导入失败：{reason}";
+            }
+            return Status switch
+            {
+                "unread" => "未读",
+                "reading" => "在读",
+                "summarized" => "已摘要",
+                "processing" => "处理中",
+                _ => Status,
+            };
+        }
+    }
+
+    [JsonIgnore]
+    public int ReadingTotal => Math.Max(SegmentCount ?? 0, 0);
+
+    [JsonIgnore]
+    public int ReadingCurrent
+    {
+        get
+        {
+            if (LastOpenedAt is null || ReadingTotal <= 0) return 0;
+            var index = Math.Clamp(CurrentSegmentIndex ?? 0, 0, ReadingTotal - 1);
+            return index + 1;
+        }
+    }
+
+    [JsonIgnore]
+    public string ReadingStatusLabel
+    {
+        get
+        {
+            if (LastOpenedAt is null) return "未读";
+            if (ReadingTotal <= 0) return "在读";
+            if (ReadingTotal > 1 && ReadingCurrent >= ReadingTotal) return "已读完";
+            return $"在读 · {ReadingCurrent}/{ReadingTotal} 段";
+        }
+    }
+
+    [JsonIgnore]
+    public string ReadingProgressBucket
+    {
+        get
+        {
+            if (LastOpenedAt is null) return "unread";
+            if (ReadingTotal <= 1) return "reading";
+            return ReadingCurrent >= ReadingTotal ? "finished" : "reading";
+        }
+    }
+
+    [JsonIgnore]
+    public string SegmentCountLabel
+    {
+        get
+        {
+            var n = SegmentCount ?? 0;
+            return n > 0 ? $"{n} 段" : "未分段";
+        }
+    }
+
+    [JsonIgnore]
+    public string CoverInitial
+    {
+        get
+        {
+            var trimmed = Title?.Trim() ?? "";
+            return trimmed.Length == 0 ? "书" : trimmed[..1];
+        }
+    }
+
+    [JsonIgnore]
+    public string CardStatusLine
+    {
+        get
+        {
+            if (Status == "processing") return StatusLabel;
+            if (Status == "error") return StatusLabel;
+            if (SummaryTotal > 0 && SummaryReady < SummaryTotal) return ProgressLabel;
+            return ReadingStatusLabel;
+        }
+    }
 
     [JsonIgnore]
     public string ProgressLabel
@@ -56,7 +145,7 @@ public sealed class BookSummary
             var total = SummaryTotal;
             if (total <= 0) return StatusLabel;
             var ready = SummaryReady;
-            if (ready >= total) return "已摘要";
+            if (ready >= total) return ReadingStatusLabel;
             return $"{StatusLabel} · 摘要 {ready}/{total}";
         }
     }
@@ -75,6 +164,19 @@ public sealed class BookSummary
 
     [JsonIgnore]
     public bool HasExportableSummary => SummaryReady > 0;
+
+    [JsonIgnore]
+    public bool CanChatBook =>
+        SummaryTotal > 0 && SummaryReady >= SummaryTotal && IndexStatus == "ready";
+
+    [JsonIgnore]
+    public string BookChatLabel => IndexStatus switch
+    {
+        "ready" => "全书",
+        "building" => "全书（索引生成中）",
+        "error" => "全书（索引失败）",
+        _ => SummaryReady >= SummaryTotal && SummaryTotal > 0 ? "全书（索引生成中）" : "全书",
+    };
 }
 
 public sealed class SummarizeActive
@@ -102,18 +204,54 @@ public sealed class SummarizeOverviewCounts
     public int Summarized { get; set; }
 }
 
-public static class LibraryFilters
+public static class LibraryCollections
 {
-    public const string All = "all";
+    public const string Recent = "recent";
+    public const string Idle = "idle";
+    public const string Summarizing = "summarizing";
+    public const string Summarized = "summarized";
+    public const string Unread = "unread";
+    public const string Reading = "reading";
+    public const string Finished = "finished";
+    public const string Favorite = "favorite";
+
     public static readonly string[] FallbackCategories =
         ["文学", "历史", "科技", "哲学", "经济", "传记", "其他"];
 
     public static string Label(string raw) => raw switch
     {
-        "all" => "全部",
-        "summarized" => "已摘要",
+        Recent or "all" => "最近",
+        Idle => "未摘要",
+        Summarizing => "摘要中",
+        Summarized => "已摘要",
+        Unread => "未读",
+        Reading => "在读",
+        Finished => "已读完",
+        Favorite => "收藏",
         _ => raw,
     };
+
+    public static bool Matches(string collection, BookSummary book) => collection switch
+    {
+        Recent or "all" => true,
+        Idle => book.SummarizeState is "idle" or "paused",
+        Summarizing => book.SummarizeState is "running" or "queued",
+        Summarized => book.SummarizeState == "summarized"
+            || (book.SummaryTotal > 0 && book.SummaryReady >= book.SummaryTotal),
+        Unread => book.ReadingProgressBucket == "unread",
+        Reading => book.ReadingProgressBucket == "reading",
+        Finished => book.ReadingProgressBucket == "finished",
+        Favorite => book.Favorite,
+        _ => book.Category == collection,
+    };
+}
+
+public static class LibraryFilters
+{
+    public const string All = "all";
+    public static readonly string[] FallbackCategories = LibraryCollections.FallbackCategories;
+
+    public static string Label(string raw) => LibraryCollections.Label(raw);
 }
 
 public static class LibrarySorts
@@ -121,23 +259,45 @@ public static class LibrarySorts
     public const string Recent = "recent";
     public const string Added = "added";
     public const string Title = "title";
+    public const string Segments = "segments";
     public const string Favorite = "favorite";
 
     public static string Label(string raw) => raw switch
     {
-        "recent" => "最近打开",
+        "recent" => "最近访问",
         "added" => "添加时间",
         "title" => "标题",
+        "segments" => "段落数",
         "favorite" => "收藏优先",
         _ => raw,
     };
+
+    public static IReadOnlyList<BookSummary> Sorted(IEnumerable<BookSummary> books, string sort)
+    {
+        return sort switch
+        {
+            Added => books.OrderByDescending(b => b.CreatedAt ?? "").ToList(),
+            Title => books.OrderBy(b => b.Title, StringComparer.CurrentCultureIgnoreCase).ToList(),
+            Segments => books
+                .OrderByDescending(b => b.SegmentCount ?? 0)
+                .ThenBy(b => b.Title, StringComparer.CurrentCultureIgnoreCase)
+                .ToList(),
+            Favorite => books
+                .OrderByDescending(b => b.Favorite)
+                .ThenByDescending(b => b.LastOpenedAt ?? "")
+                .ToList(),
+            _ => books
+                .OrderBy(b => b.LastOpenedAt is null)
+                .ThenByDescending(b => b.LastOpenedAt ?? "")
+                .ToList(),
+        };
+    }
 }
 
 public static class SummarizeStateFilters
 {
     public const string All = "all";
     public const string Running = "running";
-    public const string Queued = "queued";
     public const string Idle = "idle";
     public const string Summarized = "summarized";
 
@@ -145,7 +305,6 @@ public static class SummarizeStateFilters
     {
         "all" => "全部",
         "running" => "正在摘要",
-        "queued" => "排队中",
         "idle" => "待摘要",
         "summarized" => "已摘要",
         _ => raw,
@@ -153,8 +312,7 @@ public static class SummarizeStateFilters
 
     public static bool Matches(string filter, BookSummary book) => filter switch
     {
-        Running => book.SummarizeState == "running",
-        Queued => book.SummarizeState == "queued",
+        Running => book.SummarizeState is "running" or "queued",
         Idle => book.SummarizeState is "idle" or "paused",
         Summarized => book.SummarizeState == "summarized"
             || (book.SummaryTotal > 0 && book.SummaryReady >= book.SummaryTotal),
@@ -181,6 +339,7 @@ public sealed class SegmentRow
     public string? AnchorLabel { get; set; }
     public string? SummaryProvider { get; set; }
     public string? SummaryModel { get; set; }
+    public string? SummaryTier { get; set; }
     public int? CharCount { get; set; }
     public int? RetryCount { get; set; }
     public double? SummaryDurationS { get; set; }
@@ -202,8 +361,42 @@ public sealed class SegmentSummaryDetail
     public string? SummaryStatus { get; set; }
     public string? SummaryProvider { get; set; }
     public string? SummaryModel { get; set; }
+    public string? SummaryTier { get; set; }
     public double? SummaryDurationS { get; set; }
     public int? SummaryLlmAttempts { get; set; }
+}
+
+public sealed class SegmentBoundaryCandidate
+{
+    public int Offset { get; set; }
+    public string Kind { get; set; } = "sentence";
+}
+
+public sealed class SegmentBoundaryPreview
+{
+    public int LeftIdx { get; set; }
+    public int RightIdx { get; set; }
+    public int TotalChars { get; set; }
+    public int LeftCharCount { get; set; }
+    public List<SegmentBoundaryCandidate> Candidates { get; set; } = [];
+    public int OversizedLimit { get; set; }
+}
+
+public sealed class SegmentBoundaryMoveResult
+{
+    public int LeftIdx { get; set; }
+    public int RightIdx { get; set; }
+    public int LeftCharCount { get; set; }
+    public int RightCharCount { get; set; }
+    public string? LeftAnchorLabel { get; set; }
+    public string? RightAnchorLabel { get; set; }
+    public string? LeftChapter { get; set; }
+    public string? RightChapter { get; set; }
+    public string? LeftStatus { get; set; }
+    public string? RightStatus { get; set; }
+    public bool Oversized { get; set; }
+    public bool Unchanged { get; set; }
+    public int? OversizedLimit { get; set; }
 }
 
 public sealed class ChatCitation
@@ -212,10 +405,31 @@ public sealed class ChatCitation
     public string Label { get; set; } = "";
 }
 
+public sealed class ChatWebRef
+{
+    public string Title { get; set; } = "";
+    public string Url { get; set; } = "";
+    public string? Source { get; set; }
+
+    [JsonIgnore]
+    public string DisplayTitle
+    {
+        get
+        {
+            var name = string.IsNullOrWhiteSpace(Title) ? Url : Title;
+            return string.IsNullOrWhiteSpace(Source) ? $"[网] {name}" : $"[网] {name} · {Source}";
+        }
+    }
+
+    [JsonIgnore]
+    public Uri? NavigateUri => Uri.TryCreate(Url, UriKind.Absolute, out var uri) ? uri : null;
+}
+
 public sealed class ChatResponse
 {
     public string Answer { get; set; } = "";
     public List<ChatCitation> Citations { get; set; } = [];
+    public List<ChatWebRef> WebRefs { get; set; } = [];
     public bool? EvidenceSufficient { get; set; }
     public string? Provider { get; set; }
     public string? Model { get; set; }
@@ -232,6 +446,7 @@ public sealed class ChatMessage
     public string Role { get; set; } = "";
     public string Content { get; set; } = "";
     public List<ChatCitation> Citations { get; set; } = [];
+    public List<ChatWebRef> WebRefs { get; set; } = [];
     public string? Provider { get; set; }
     public string? Model { get; set; }
     public int? DurationMs { get; set; }
@@ -249,6 +464,7 @@ public sealed class ChatMessage
         CompletionTokens = resp.CompletionTokens;
         TotalTokens = resp.TotalTokens;
         Tps = resp.Tps;
+        WebRefs = resp.WebRefs;
     }
 }
 
@@ -489,6 +705,7 @@ public sealed class OpsTask
     public string? JobKey { get; set; }
     public int? LlmAttempt { get; set; }
     public int? MaxLlmAttempts { get; set; }
+    public string? SummaryTier { get; set; }
     public double? DurationS { get; set; }
 }
 
@@ -520,12 +737,74 @@ public sealed class AppSettings
 {
     public string TargetLanguage { get; set; } = "zh-CN";
     public string WebSearchProvider { get; set; } = "ddgs";
+    public bool WebSearchEnabled { get; set; } = true;
     public string? TavilyApiKey { get; set; }
+    public string OcrCloudBaseUrl { get; set; } = "";
+    public string OcrCloudModel { get; set; } = "";
+    public string? OcrCloudApiKey { get; set; }
+    public double OcrCloudTimeoutSeconds { get; set; } = 60;
     public bool DebugMode { get; set; }
     public bool AutoStartSummary { get; set; }
     public ModelsSettings Models { get; set; } = new();
     public PromptsSettings Prompts { get; set; } = new();
     public PromptsSettings PromptsDefaults { get; set; } = new();
+}
+
+public sealed class OcrStatus
+{
+    public string Provider { get; set; } = "local";
+    public bool Ready { get; set; }
+    public bool ProbeOk { get; set; }
+    public bool Configured { get; set; }
+    public bool KeyConfigured { get; set; }
+    public bool ModelReady { get; set; }
+    public string? Message { get; set; }
+    public string? BaseUrl { get; set; }
+
+    [JsonIgnore]
+    public string DisplayMessage => string.IsNullOrWhiteSpace(Message)
+        ? (Ready ? "已就绪" : "未就绪")
+        : Message;
+}
+
+public sealed class ContextProbeStep
+{
+    public int Chars { get; set; }
+    public bool Ok { get; set; }
+    public string? Message { get; set; }
+}
+
+public sealed class ContextProbeStatus
+{
+    public string ResourceId { get; set; } = "";
+    public string Status { get; set; } = "idle";
+    public string? Model { get; set; }
+    public int? CurrentChars { get; set; }
+    public int? MaxOkChars { get; set; }
+    public int? RecommendedChars { get; set; }
+    public List<ContextProbeStep> Steps { get; set; } = [];
+    public string? Message { get; set; }
+    public bool WaitingForSlot { get; set; }
+
+    [JsonIgnore]
+    public bool IsRunning => Status == "running";
+
+    [JsonIgnore]
+    public string DisplayMessage
+    {
+        get
+        {
+            if (!string.IsNullOrWhiteSpace(Message)) return Message;
+            return Status switch
+            {
+                "running" => "正在测试后面的段是否仍被理解…",
+                "done" => "测试完成",
+                "cancelled" => "已取消",
+                "failed" => "测试失败",
+                _ => "",
+            };
+        }
+    }
 }
 
 public sealed class ModelsSettings
@@ -547,6 +826,7 @@ public sealed class ModelResourceSettings
     public string Provider { get; set; } = "";
     public string BaseUrl { get; set; } = "";
     public string Model { get; set; } = "";
+    public string? AdvancedModel { get; set; }
     public string? ApiKey { get; set; }
     public double? ChatTimeout { get; set; }
     public int? Concurrency { get; set; }
@@ -591,4 +871,37 @@ public sealed class StructuredSummary
     public List<string> WatchOuts { get; set; } = [];
     public List<string> FollowUps { get; set; } = [];
     public string? RawFallback { get; set; }
+}
+
+public static class ReadingProgressIndex
+{
+    public static int Restore(
+        int serverIndex,
+        int? localIndex,
+        int? localSegmentCount,
+        int currentSegmentCount)
+    {
+        var last = Math.Max(currentSegmentCount - 1, 0);
+        if (localIndex is int local && localSegmentCount == currentSegmentCount && currentSegmentCount > 0)
+            return Math.Clamp(local, 0, last);
+        return Math.Clamp(serverIndex, 0, last);
+    }
+
+    public static double RestoreOffset(
+        double? localOffset,
+        int? localSegmentCount,
+        int currentSegmentCount)
+    {
+        if (localSegmentCount == currentSegmentCount && currentSegmentCount > 0)
+            return Math.Max(0, localOffset ?? 0);
+        return 0;
+    }
+
+    /// Reject a jump to segment 0 unless the viewport really contains it.
+    public static bool ShouldCommit(int? previousIndex, int nextIndex, bool hitContained)
+    {
+        if (nextIndex == 0 && previousIndex is int prev && prev > 0 && !hitContained)
+            return false;
+        return true;
+    }
 }

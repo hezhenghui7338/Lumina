@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Net.Http;
+using System.Text.Json;
 
 namespace Lumina.Services;
 
@@ -34,16 +35,39 @@ public sealed class SidecarHost : IDisposable
 
         try
         {
-            if (_process is { HasExited: false } && await IsHealthyAsync(ct).ConfigureAwait(false))
+            if (_process is { HasExited: false } && await MatchesThisAppAsync(ct).ConfigureAwait(false))
             {
                 IsRunning = true;
                 return;
             }
 
-            if (_process is null && await IsHealthyAsync(ct).ConfigureAwait(false))
+            var health = await FetchHealthAsync(ct).ConfigureAwait(false);
+            if (_process is null && health is not null)
             {
-                IsRunning = true;
-                return;
+                var bundled = BundledSidecarExecutable();
+                DateTimeOffset? bundledModified = bundled is not null && File.Exists(bundled)
+                    ? new DateTimeOffset(File.GetLastWriteTimeUtc(bundled), TimeSpan.Zero)
+                    : null;
+                DateTimeOffset? started = health.StartedAt is long unix
+                    ? DateTimeOffset.FromUnixTimeSeconds(unix)
+                    : null;
+                if (SidecarReadiness.ShouldReplaceOrphan(
+                        health.ChunkerVersion,
+                        health.CoreVersion,
+                        ExpectedCoreVersion(),
+                        bundled is not null,
+                        health.Executable,
+                        bundled,
+                        started,
+                        bundledModified))
+                {
+                    await TerminatePidAsync(health.Pid, ct).ConfigureAwait(false);
+                }
+                else
+                {
+                    IsRunning = true;
+                    return;
+                }
             }
 
             string? lastError = null;
@@ -62,7 +86,7 @@ public sealed class SidecarHost : IDisposable
                     for (var i = 0; i < HealthPollAttempts; i++)
                     {
                         await Task.Delay(250, ct).ConfigureAwait(false);
-                        if (await IsHealthyAsync(ct).ConfigureAwait(false))
+                        if (await MatchesThisAppAsync(ct).ConfigureAwait(false))
                         {
                             IsRunning = true;
                             LaunchError = null;
@@ -127,17 +151,70 @@ public sealed class SidecarHost : IDisposable
         _http.Dispose();
     }
 
-    private async Task<bool> IsHealthyAsync(CancellationToken ct)
+    private static string ExpectedCoreVersion()
+    {
+        var version = typeof(SidecarHost).Assembly.GetName().Version;
+        return version is null ? "" : SidecarReadiness.NormalizeVersion(version.ToString());
+    }
+
+    private async Task<bool> MatchesThisAppAsync(CancellationToken ct)
+    {
+        var health = await FetchHealthAsync(ct).ConfigureAwait(false);
+        return health is not null
+            && SidecarReadiness.IsCompatible(
+                health.ChunkerVersion,
+                health.CoreVersion,
+                ExpectedCoreVersion());
+    }
+
+    private async Task<SidecarHealth?> FetchHealthAsync(CancellationToken ct)
     {
         try
         {
             using var resp = await _http.GetAsync(new Uri(BaseUrl, "/health"), ct).ConfigureAwait(false);
-            return resp.IsSuccessStatusCode;
+            if (!resp.IsSuccessStatusCode) return null;
+            var json = await resp.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
+            var health = JsonSerializer.Deserialize<SidecarHealth>(json, CoreClient.JsonOptions);
+            if (health is null) return null;
+            if (!string.Equals(health.Status, "ok", StringComparison.OrdinalIgnoreCase)) return null;
+            return health;
         }
         catch
         {
-            return false;
+            return null;
         }
+    }
+
+    private static async Task TerminatePidAsync(int? pid, CancellationToken ct)
+    {
+        if (pid is not int value || value <= 1) return;
+        try
+        {
+            using var proc = Process.GetProcessById(value);
+            proc.Kill(entireProcessTree: true);
+        }
+        catch
+        {
+            /* already gone */
+        }
+
+        for (var i = 0; i < 20; i++)
+        {
+            await Task.Delay(100, ct).ConfigureAwait(false);
+            try
+            {
+                Process.GetProcessById(value);
+            }
+            catch
+            {
+                return;
+            }
+        }
+    }
+
+    private async Task<bool> IsHealthyAsync(CancellationToken ct)
+    {
+        return await MatchesThisAppAsync(ct).ConfigureAwait(false);
     }
 
     private LaunchOutcome LaunchSidecar()

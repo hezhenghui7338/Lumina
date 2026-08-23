@@ -12,9 +12,10 @@ public sealed partial class LibraryPage : Page
 {
     private CancellationTokenSource? _loadCts;
     private List<BookSummary> _allBooks = [];
-    private string _categoryFilter = LibraryFilters.All;
-    private string _stateFilter = SummarizeStateFilters.All;
+    private string _collection = LibraryCollections.Recent;
     private string _sort = LibrarySorts.Recent;
+    private string _titleQuery = "";
+    private bool _gridMode = true;
     private bool _suppressFilter;
 
     public LibraryPage()
@@ -58,23 +59,18 @@ public sealed partial class LibraryPage : Page
                 {
                     StatusText.Text = App.Sidecar.LaunchError ?? "引擎未就绪";
                     BooksList.ItemsSource = null;
+                    BooksGrid.ItemsSource = null;
                     return;
                 }
             }
 
             var catsTask = App.Core.ListBookCategoriesAsync(ct);
-            var booksTask = App.Core.ListBooksAsync(_categoryFilter, _sort, ct);
+            var booksTask = App.Core.ListBooksAsync(LibraryFilters.All, _sort, ct);
             await Task.WhenAll(catsTask, booksTask);
             ct.ThrowIfCancellationRequested();
 
             _suppressFilter = true;
-            var cats = catsTask.Result;
-            CategoryBox.Items.Clear();
-            CategoryBox.Items.Add(new ComboBoxItem { Content = "全部", Tag = LibraryFilters.All, IsSelected = true });
-            foreach (var c in cats.Concat(LibraryFilters.FallbackCategories).Distinct())
-                CategoryBox.Items.Add(new ComboBoxItem { Content = c, Tag = c });
-            SelectCombo(CategoryBox, _categoryFilter);
-            SelectCombo(StateBox, _stateFilter);
+            RebuildCollections(catsTask.Result);
             SelectCombo(SortBox, _sort);
             _suppressFilter = false;
 
@@ -92,24 +88,107 @@ public sealed partial class LibraryPage : Page
         }
     }
 
+    private void RebuildCollections(IReadOnlyList<string> categories)
+    {
+        var selected = _collection;
+        CollectionNav.MenuItems.Clear();
+        AddNavItem("最近", LibraryCollections.Recent);
+        CollectionNav.MenuItems.Add(new NavigationViewItemHeader { Content = "摘要" });
+        AddNavItem("未摘要", LibraryCollections.Idle);
+        AddNavItem("摘要中", LibraryCollections.Summarizing);
+        AddNavItem("已摘要", LibraryCollections.Summarized);
+        CollectionNav.MenuItems.Add(new NavigationViewItemHeader { Content = "阅读" });
+        AddNavItem("未读", LibraryCollections.Unread);
+        AddNavItem("在读", LibraryCollections.Reading);
+        AddNavItem("已读完", LibraryCollections.Finished);
+        AddNavItem("收藏", LibraryCollections.Favorite);
+        CollectionNav.MenuItems.Add(new NavigationViewItemHeader { Content = "分类" });
+        foreach (var c in categories.Concat(LibraryCollections.FallbackCategories).Distinct())
+            AddNavItem(c, c);
+
+        foreach (var item in CollectionNav.MenuItems.OfType<NavigationViewItem>())
+        {
+            if (item.Tag as string == selected)
+            {
+                CollectionNav.SelectedItem = item;
+                return;
+            }
+        }
+        CollectionNav.SelectedItem = CollectionNav.MenuItems.OfType<NavigationViewItem>().FirstOrDefault();
+    }
+
+    private void AddNavItem(string content, string tag)
+    {
+        var count = _allBooks.Count(b => LibraryCollections.Matches(tag, b));
+        CollectionNav.MenuItems.Add(new NavigationViewItem
+        {
+            Content = count > 0 ? $"{content}  {count}" : content,
+            Tag = tag,
+        });
+    }
+
     private void ApplyLocalFilters()
     {
-        IEnumerable<BookSummary> q = _allBooks;
-        if (_stateFilter != SummarizeStateFilters.All)
-            q = q.Where(b => SummarizeStateFilters.Matches(_stateFilter, b));
-        var list = q.ToList();
+        IEnumerable<BookSummary> q = _allBooks.Where(b => LibraryCollections.Matches(_collection, b));
+        if (!string.IsNullOrWhiteSpace(_titleQuery))
+            q = q.Where(b => b.Title.Contains(_titleQuery, StringComparison.CurrentCultureIgnoreCase));
+        var list = LibrarySorts.Sorted(q, _sort);
+        if (_collection == LibraryCollections.Recent && _sort == LibrarySorts.Recent)
+        {
+            list = list
+                .OrderBy(b => b.SummarizeState == "running" ? 0 : b.SummarizeState == "queued" ? 1 : 2)
+                .ThenBy(b => b.LastOpenedAt is null)
+                .ThenByDescending(b => b.LastOpenedAt ?? "")
+                .ToList();
+        }
         BooksList.ItemsSource = list;
+        BooksGrid.ItemsSource = list;
+        TitleText.Text = LibraryCollections.Label(_collection);
         StatusText.Text = list.Count == 0 ? "暂无书籍，点击「导入」开始" : $"共 {list.Count} 本";
         UpdateBatchBar();
+        RefreshNavCounts();
+    }
+
+    private void RefreshNavCounts()
+    {
+        foreach (var item in CollectionNav.MenuItems.OfType<NavigationViewItem>())
+        {
+            if (item.Tag is not string tag) continue;
+            var label = LibraryCollections.Label(tag);
+            var count = _allBooks.Count(b => LibraryCollections.Matches(tag, b));
+            item.Content = count > 0 ? $"{label}  {count}" : label;
+        }
+    }
+
+    private void CollectionNav_SelectionChanged(
+        NavigationView sender,
+        NavigationViewSelectionChangedEventArgs args)
+    {
+        if (_suppressFilter) return;
+        if (args.SelectedItem is not NavigationViewItem { Tag: string tag }) return;
+        _collection = tag;
+        ApplyLocalFilters();
+    }
+
+    private void TitleFilter_Changed(object sender, TextChangedEventArgs e)
+    {
+        _titleQuery = TitleFilterBox.Text?.Trim() ?? "";
+        ApplyLocalFilters();
+    }
+
+    private void ViewMode_Changed(object sender, SelectionChangedEventArgs e)
+    {
+        if (_suppressFilter) return;
+        _gridMode = (ViewModeBox.SelectedItem as ComboBoxItem)?.Tag as string != "list";
+        BooksGrid.Visibility = _gridMode ? Visibility.Visible : Visibility.Collapsed;
+        BooksList.Visibility = _gridMode ? Visibility.Collapsed : Visibility.Visible;
     }
 
     private async void Filter_Changed(object sender, SelectionChangedEventArgs e)
     {
         if (_suppressFilter) return;
-        _categoryFilter = (CategoryBox.SelectedItem as ComboBoxItem)?.Tag as string ?? LibraryFilters.All;
-        _stateFilter = (StateBox.SelectedItem as ComboBoxItem)?.Tag as string ?? SummarizeStateFilters.All;
         var newSort = (SortBox.SelectedItem as ComboBoxItem)?.Tag as string ?? LibrarySorts.Recent;
-        if (newSort != _sort || ReferenceEquals(sender, CategoryBox))
+        if (newSort != _sort)
         {
             _sort = newSort;
             await ReloadAsync();
@@ -145,7 +224,19 @@ public sealed partial class LibraryPage : Page
         picker.FileTypeFilter.Add(".epub");
         picker.FileTypeFilter.Add(".mobi");
         picker.FileTypeFilter.Add(".txt");
-        picker.FileTypeFilter.Add("*");
+        picker.FileTypeFilter.Add(".text");
+        picker.FileTypeFilter.Add(".md");
+        picker.FileTypeFilter.Add(".markdown");
+        picker.FileTypeFilter.Add(".mdown");
+        picker.FileTypeFilter.Add(".mkd");
+        picker.FileTypeFilter.Add(".log");
+        picker.FileTypeFilter.Add(".html");
+        picker.FileTypeFilter.Add(".htm");
+        picker.FileTypeFilter.Add(".xhtml");
+        picker.FileTypeFilter.Add(".rtf");
+        picker.FileTypeFilter.Add(".docx");
+        picker.FileTypeFilter.Add(".odt");
+        picker.FileTypeFilter.Add(".fb2");
 
         var files = await picker.PickMultipleFilesAsync();
         if (files is null || files.Count == 0) return;
@@ -185,10 +276,14 @@ public sealed partial class LibraryPage : Page
     private void BooksList_ItemClick(object sender, ItemClickEventArgs e)
     {
         if (e.ClickedItem is not BookSummary book) return;
-        if (BooksList.SelectedItems.Count > 1) return;
+        if (ActiveList().SelectedItems.Count > 1) return;
         if (book.Status is "processing" or "error")
         {
-            StatusText.Text = book.Status == "processing" ? "仍在处理中，请稍候" : "导入失败，请删除后重试";
+            StatusText.Text = book.Status == "processing"
+                ? "正在后台解析，可继续使用书库；删除该书即可取消"
+                : string.IsNullOrWhiteSpace(book.IngestError)
+                    ? "导入失败，请删除后重试"
+                    : $"导入失败：{book.IngestError}";
             return;
         }
         MainWindowLocator.Current?.NavigateToReader(book.Id, book.Title);
@@ -198,14 +293,16 @@ public sealed partial class LibraryPage : Page
 
     private void UpdateBatchBar()
     {
-        var n = BooksList.SelectedItems.Count;
+        var n = ActiveList().SelectedItems.Count;
         BatchBar.Visibility = n > 0 ? Visibility.Visible : Visibility.Collapsed;
         BatchCountText.Text = $"已选 {n} 本";
         if (n > 0) StatusText.Text = "";
     }
 
+    private ListViewBase ActiveList() => _gridMode ? BooksGrid : BooksList;
+
     private List<string> SelectedIds() =>
-        BooksList.SelectedItems.OfType<BookSummary>().Select(b => b.Id).ToList();
+        ActiveList().SelectedItems.OfType<BookSummary>().Select(b => b.Id).ToList();
 
     private async void BatchFavorite_Click(object sender, RoutedEventArgs e)
     {
@@ -231,7 +328,10 @@ public sealed partial class LibraryPage : Page
     {
         try
         {
-            await App.Core.StartSummarizeBooksAsync(SelectedIds());
+            var tier = BatchSummaryTierBox.SelectedItem is ComboBoxItem { Tag: "advanced" }
+                ? SummaryTier.Advanced
+                : SummaryTier.Normal;
+            await App.Core.StartSummarizeBooksAsync(SelectedIds(), tier);
             StatusText.Text = "已开始摘要";
             await ReloadAsync();
         }
@@ -269,7 +369,11 @@ public sealed partial class LibraryPage : Page
         catch (Exception ex) { StatusText.Text = ex.Message; }
     }
 
-    private void ClearSelection_Click(object sender, RoutedEventArgs e) => BooksList.SelectedItems.Clear();
+    private void ClearSelection_Click(object sender, RoutedEventArgs e)
+    {
+        BooksList.SelectedItems.Clear();
+        BooksGrid.SelectedItems.Clear();
+    }
 
     private async void Favorite_Click(object sender, RoutedEventArgs e)
     {

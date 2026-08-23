@@ -32,4 +32,85 @@ public class SseReaderTests
         };
         Assert.Equal("在读 · 摘要 3/10", book.ProgressLabel);
     }
+
+    [Fact]
+    public void BookSummary_error_status_includes_ingest_error()
+    {
+        var bare = new BookSummary { Title = "金阁寺", Status = "error" };
+        Assert.Equal("导入失败", bare.StatusLabel);
+        Assert.Equal("导入失败", bare.CardStatusLine);
+
+        var withReason = new BookSummary
+        {
+            Title = "金阁寺",
+            Status = "error",
+            IngestError = "unknown encoding: utf-8-sig",
+        };
+        Assert.Equal("导入失败：unknown encoding: utf-8-sig", withReason.StatusLabel);
+        Assert.Equal("导入失败：unknown encoding: utf-8-sig", withReason.CardStatusLine);
+    }
+
+    [Fact]
+    public void BookSummary_completed_summary_uses_reading_status()
+    {
+        var unread = new BookSummary
+        {
+            Title = "t",
+            Status = "summarized",
+            SegmentCount = 10,
+            SummaryReadyCount = 10,
+            SummaryTotalCount = 10,
+        };
+        Assert.Equal("未读", unread.ProgressLabel);
+
+        var reading = new BookSummary
+        {
+            Title = "t",
+            Status = "summarized",
+            SegmentCount = 10,
+            SummaryReadyCount = 10,
+            SummaryTotalCount = 10,
+            LastOpenedAt = "2026-08-22T12:00:00Z",
+            CurrentSegmentIndex = 4,
+        };
+        Assert.Equal("在读 · 5/10 段", reading.ProgressLabel);
+
+        var finished = new BookSummary
+        {
+            Title = "t",
+            Status = "summarized",
+            SegmentCount = 10,
+            SummaryReadyCount = 10,
+            SummaryTotalCount = 10,
+            LastOpenedAt = "2026-08-22T12:00:00Z",
+            CurrentSegmentIndex = 9,
+        };
+        Assert.Equal("已读完", finished.ProgressLabel);
+    }
+
+    [Fact]
+    public void BookSummary_can_chat_book_requires_ready_index()
+    {
+        var notReady = new BookSummary
+        {
+            Status = "summarized",
+            SegmentCount = 3,
+            SummaryReadyCount = 3,
+            SummaryTotalCount = 3,
+            IndexStatus = "building",
+        };
+        Assert.False(notReady.CanChatBook);
+        Assert.Equal("全书（索引生成中）", notReady.BookChatLabel);
+
+        var ready = new BookSummary
+        {
+            Status = "summarized",
+            SegmentCount = 3,
+            SummaryReadyCount = 3,
+            SummaryTotalCount = 3,
+            IndexStatus = "ready",
+        };
+        Assert.True(ready.CanChatBook);
+        Assert.Equal("全书", ready.BookChatLabel);
+    }
 }

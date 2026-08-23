@@ -1,6 +1,7 @@
 {
   "target_language": "zh-CN",
   "web_search_provider": "ddgs",
+  "web_search_enabled": true,
   "tavily_api_key": null,
   "debug_mode": false,
   "auto_start_summary": false,
@@ -19,6 +20,7 @@
         "id": "openai",
         "provider": "openai",
         "model": "gpt-4o-mini",
+        "advanced_model": "gpt-4o",
         "base_url": "https://api.openai.com/v1",
         "api_key": "***",
         "chat_timeout": 12,

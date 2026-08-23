@@ -66,6 +66,30 @@ def test_list_books_filter_and_patch_favorite(client):
     assert favorites[0]["id"] == book_id
 
 
+def test_list_books_filter_unread_reading_finished(client):
+    book_id = _import_sample(client)
+    unread = client.get("/books", params={"filter": "unread"}).json()["books"]
+    assert any(b["id"] == book_id for b in unread)
+
+    client.post(f"/books/{book_id}/open")
+    reading = client.get("/books", params={"filter": "reading"}).json()["books"]
+    assert any(b["id"] == book_id for b in reading)
+    unread_after = client.get("/books", params={"filter": "unread"}).json()["books"]
+    assert not any(b["id"] == book_id for b in unread_after)
+
+    long_id = import_sample_book(client, sample_name="chunk_long_novel.txt")
+    client.post(f"/books/{long_id}/open")
+    book = client.get(f"/books/{long_id}").json()
+    last_idx = max(int(book.get("segment_count") or 1) - 1, 0)
+    patched = client.patch(
+        f"/books/{long_id}/reading-progress",
+        json={"segment_index": last_idx},
+    )
+    assert patched.status_code == 200
+    finished = client.get("/books", params={"filter": "finished"}).json()["books"]
+    assert any(b["id"] == long_id for b in finished)
+
+
 def test_list_books_filter_by_category(client):
     book_id = _import_sample(client)
     assert client.post(f"/books/{book_id}/classify").status_code == 200

@@ -19,6 +19,7 @@ def test_segment_ready_event_payload_includes_flat_fields():
         idx=2,
         resource_id="openrouter",
         model="gpt-4o-mini",
+        summary_tier="advanced",
     )
 
     assert payload["type"] == "segment_ready"
@@ -26,6 +27,7 @@ def test_segment_ready_event_payload_includes_flat_fields():
     assert payload["summary_status"] == "ready"
     assert payload["summary_provider"] == "openrouter"
     assert payload["summary_model"] == "gpt-4o-mini"
+    assert payload["summary_tier"] == "advanced"
     assert payload["sentences"] == summary.sentences
     assert payload["bullets"] == [b.model_dump() for b in summary.bullets]
     assert payload["notes"] == summary.notes

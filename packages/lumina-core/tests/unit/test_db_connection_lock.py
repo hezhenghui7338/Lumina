@@ -13,7 +13,8 @@ from lumina_core.jobs.ingest import _persist_ingest_sync
 
 def test_concurrent_get_during_persist_ingest(tmp_path):
     """Regression: unlocked reads raced ingest to_thread writes → InterfaceError."""
-    conn = init_db(tmp_path / "lock.db")
+    db_path = tmp_path / "lock.db"
+    conn = init_db(db_path)
     book_id = str(uuid.uuid4())
     books = BookRepo(conn)
     books.insert(
@@ -59,7 +60,7 @@ def test_concurrent_get_during_persist_ingest(tmp_path):
     time.sleep(0.02)
     try:
         _persist_ingest_sync(
-            conn,
+            db_path,
             book_id=book_id,
             src=tmp_path / "sample.txt",
             metadata={},

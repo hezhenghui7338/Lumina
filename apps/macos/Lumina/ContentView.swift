@@ -38,6 +38,8 @@ struct ContentView: View {
     @State private var showSearch = false
     @State private var showOnboarding = false
     @State private var importConflict: ImportConflictError?
+    @State private var pendingImportPaths: [String] = []
+    @State private var isImportingBook = false
 
     var body: some View {
         TabView(selection: $tab) {
@@ -95,23 +97,28 @@ struct ContentView: View {
             titleVisibility: .visible
         ) {
             if let conflict = importConflict {
-                Button("重新导入", role: .destructive) {
+                Button("覆盖", role: .destructive) {
                     let path = conflict.path
+                    let existingBookId = conflict.existingBookId
                     importConflict = nil
-                    Task { await importBook(path: path, overwrite: true) }
+                    startImport(
+                        path: path,
+                        overwrite: true,
+                        replacingBookId: existingBookId
+                    )
                 }
-                Button("打开已有书籍") {
-                    tab = .library
-                    selectedBookId = conflict.existingBookId
+                Button("跳过") {
                     importConflict = nil
+                    importNextBook()
                 }
             }
-            Button("取消", role: .cancel) {
+            Button("取消剩余导入", role: .cancel) {
                 importConflict = nil
+                pendingImportPaths.removeAll()
             }
         } message: {
             if let conflict = importConflict {
-                Text("《\(conflict.title)》已在书库中。重新导入将删除原有摘要、笔记，并重新分段与摘要。是否继续？")
+                Text("《\(conflict.title)》已在书库中。覆盖将删除原有摘要、笔记，并重新分段与摘要；跳过会继续导入其他书籍。")
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: .luminaOpenSearch)) { _ in
@@ -129,30 +136,13 @@ struct ContentView: View {
             selectedBookId: $selectedBookId,
             jumpSegmentIndex: $jumpSegmentIndex,
             onImport: importBook,
+            onImportPaths: { enqueueImports(paths: $0) },
             onSearch: { showSearch = true },
-            onStartSummarize: { Task { await startSummarizeAction() } },
-            onStopSummarize: { Task { await stopSummarizeAction() } },
-            emptyDetail: { libraryEmptyDetail }
+            onStartSummarize: { tier in
+                Task { await startSummarizeAction(summaryTier: tier) }
+            },
+            onStopSummarize: { Task { await stopSummarizeAction() } }
         )
-    }
-
-    private var libraryEmptyDetail: some View {
-        ContentUnavailableView {
-            Label(
-                "选择一本书",
-                systemImage: "book"
-            )
-        } description: {
-            Text("从左侧书库选择，或继续导入新书")
-        } actions: {
-            Button {
-                importBook()
-            } label: {
-                Label("导入书籍", systemImage: "square.and.arrow.down")
-            }
-            .buttonStyle(.borderedProminent)
-            .tint(LuminaTheme.accent)
-        }
     }
 
     private func finishBootstrap() async {
@@ -170,22 +160,58 @@ struct ContentView: View {
     private func importBook() {
         Task {
             let panel = NSOpenPanel()
-            panel.allowedContentTypes = [
-                .plainText,
-                .pdf,
-                UTType(filenameExtension: "epub")!,
-                UTType(filenameExtension: "mobi")!,
+            let importExtensions = [
+                "txt", "text", "md", "markdown", "mdown", "mkd", "log",
+                "pdf", "epub", "mobi",
+                "html", "htm", "xhtml", "rtf", "docx", "odt", "fb2",
             ]
-            panel.allowsMultipleSelection = false
-            guard panel.runModal() == .OK, let url = panel.url else { return }
-            await importBook(path: url.path, overwrite: false)
+            panel.allowedContentTypes = importExtensions.compactMap {
+                UTType(filenameExtension: $0)
+            }
+            panel.allowsMultipleSelection = true
+            guard panel.runModal() == .OK else { return }
+            enqueueImports(paths: panel.urls.map(\.path))
         }
     }
 
-    private func importBook(path: String, overwrite: Bool) async {
+    private func enqueueImports(paths: [String]) {
+        guard !paths.isEmpty else { return }
+        pendingImportPaths.append(contentsOf: paths)
+        importNextBook()
+    }
+
+    private func importNextBook() {
+        guard !isImportingBook, importConflict == nil, !pendingImportPaths.isEmpty else { return }
+        let path = pendingImportPaths.removeFirst()
+        startImport(path: path, overwrite: false)
+    }
+
+    private func startImport(
+        path: String,
+        overwrite: Bool,
+        replacingBookId: String? = nil
+    ) {
+        guard !isImportingBook else { return }
+        isImportingBook = true
+        Task {
+            await importBook(
+                path: path,
+                overwrite: overwrite,
+                replacingBookId: replacingBookId
+            )
+        }
+    }
+
+    private func importBook(
+        path: String,
+        overwrite: Bool,
+        replacingBookId: String?
+    ) async {
         do {
             await sidecar.ensureRunning()
             guard sidecar.isRunning else {
+                isImportingBook = false
+                pendingImportPaths.removeAll()
                 connectionError = sidecar.launchError ?? "无法连接到 AI 引擎，请重试或退出。"
                 return
             }
@@ -195,10 +221,17 @@ struct ContentView: View {
                 object: nil,
                 userInfo: ["afterImport": true]
             )
-            selectedBookId = book.id
+            if selectedBookId == replacingBookId {
+                selectedBookId = book.id
+            }
+            isImportingBook = false
+            importNextBook()
         } catch let conflict as ImportConflictError {
+            isImportingBook = false
             importConflict = conflict
         } catch {
+            isImportingBook = false
+            pendingImportPaths.removeAll()
             if ConnectionError.isConnectionFailure(error) {
                 connectionError = "无法连接到 AI 引擎，请重试或退出。"
             } else {
@@ -207,12 +240,14 @@ struct ContentView: View {
         }
     }
 
-    private func startSummarizeAction() async {
+    private func startSummarizeAction(summaryTier: SummaryTier = .normal) async {
         do {
             if let id = selectedBookId {
-                try await core.startSummarize(bookId: id)
+                try await core.startSummarize(
+                    bookId: id, summaryTier: summaryTier
+                )
             } else {
-                try await core.startSummarizeAll()
+                try await core.startSummarizeAll(summaryTier: summaryTier)
             }
         } catch {
             if ConnectionError.isConnectionFailure(error) {
@@ -242,22 +277,26 @@ struct ContentView: View {
 
 // MARK: - Library tab chrome (library sidebar via toolbar toggle)
 
-private struct LibraryTabView<EmptyDetail: View>: View {
+private struct LibraryTabView: View {
     @Binding var selectedBookId: String?
     @Binding var jumpSegmentIndex: Int?
     var onImport: () -> Void
+    var onImportPaths: ([String]) -> Void
     var onSearch: () -> Void
-    var onStartSummarize: () -> Void
+    var onStartSummarize: (SummaryTier) -> Void
     var onStopSummarize: () -> Void
-    @ViewBuilder var emptyDetail: () -> EmptyDetail
 
+    @EnvironmentObject private var core: CoreClient
+    @EnvironmentObject private var sidecar: SidecarManager
+    @StateObject private var viewModel = LibraryViewModel()
     @AppStorage("lumina.library.sidebarPinned") private var librarySidebarPinned = false
     @State private var segmentListPeeking = false
     @State private var showingAllNotes = false
     @State private var readerOverlayActive = false
     @State private var readerChromeVisible = false
 
-    private let libraryWidth: CGFloat = 260
+    private let collectionWidth: CGFloat = 200
+    private let recentsWidth: CGFloat = 260
 
     private var windowToolbarVisible: Bool {
         selectedBookId == nil || readerChromeVisible || librarySidebarPinned
@@ -266,24 +305,30 @@ private struct LibraryTabView<EmptyDetail: View>: View {
     var body: some View {
         Group {
             if selectedBookId == nil {
-                // Browse: system split keeps library resident. No reading edge-gesture conflict.
                 NavigationSplitView(columnVisibility: .constant(.doubleColumn)) {
-                    librarySidebarContent
+                    LibraryCollectionSidebar(viewModel: viewModel)
+                        .navigationSplitViewColumnWidth(
+                            min: collectionWidth, ideal: collectionWidth, max: 260
+                        )
+                        .toolbar(removing: .sidebarToggle)
                 } detail: {
                     detailContent
                 }
                 .navigationSplitViewStyle(.balanced)
             } else {
-                // Reading: self-managed sidebar so system left-edge cannot reveal the library.
                 HStack(spacing: 0) {
                     if LibrarySidebarVisibilityPolicy.showsLibrarySidebar(
                         hasSelectedBook: true,
                         pinned: librarySidebarPinned
                     ) {
                         NavigationStack {
-                            librarySidebarContent
+                            LibraryRecentsView(
+                                viewModel: viewModel,
+                                selectedBookId: $selectedBookId
+                            )
+                            .toolbar(removing: .sidebarToggle)
                         }
-                        .frame(width: libraryWidth)
+                        .frame(width: recentsWidth)
                         .transition(.move(edge: .leading))
                     }
                     NavigationStack {
@@ -297,11 +342,31 @@ private struct LibraryTabView<EmptyDetail: View>: View {
         .background {
             WindowToolbarVisibility(visible: windowToolbarVisible)
         }
-        .onChange(of: selectedBookId) { _, newId in
+        .onAppear { viewModel.loadPreferences() }
+        .task(id: sidecar.isRunning) {
+            guard sidecar.isRunning else { return }
+            await viewModel.loadCategories(using: core)
+            await refreshBooks()
+        }
+        .task(id: viewModel.needsSummarizePolling) {
+            await pollSummaryProgress()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .luminaLibraryRefresh)) { _ in
+            Task { await refreshBooks() }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .luminaReadingProgressDidChange)) { note in
+            guard let bookId = note.userInfo?["bookId"] as? String,
+                  let segmentIndex = note.userInfo?["segmentIndex"] as? Int else { return }
+            viewModel.applyReadingProgress(bookId: bookId, segmentIndex: segmentIndex)
+        }
+        .onChange(of: selectedBookId) { oldId, newId in
             if newId != nil {
                 showingAllNotes = false
             } else {
                 readerChromeVisible = false
+            }
+            if oldId != nil, newId == nil {
+                Task { await refreshBooks() }
             }
         }
     }
@@ -324,12 +389,23 @@ private struct LibraryTabView<EmptyDetail: View>: View {
                 segmentListPeeking: $segmentListPeeking,
                 readerOverlayActive: $readerOverlayActive,
                 readerChromeVisible: $readerChromeVisible,
-                librarySidebarPinned: $librarySidebarPinned
+                librarySidebarPinned: $librarySidebarPinned,
+                onReturnToBookshelf: returnToBookshelf,
+                onImport: onImport
             )
             .id(id)
             .onAppear { jumpSegmentIndex = nil }
         } else {
-            emptyDetail()
+            BookshelfView(
+                viewModel: viewModel,
+                selectedBookId: $selectedBookId,
+                onImport: onImport,
+                onImportPaths: onImportPaths,
+                onSearch: onSearch,
+                onShowAllNotes: showAllNotes,
+                onStartSummarize: onStartSummarize,
+                onStopSummarize: onStopSummarize
+            )
         }
     }
 
@@ -338,23 +414,29 @@ private struct LibraryTabView<EmptyDetail: View>: View {
         showingAllNotes = true
     }
 
-    private var librarySidebarContent: some View {
-        LibraryView(
-            selectedBookId: $selectedBookId,
-            onImport: onImport,
-            onSearch: onSearch,
-            onShowAllNotes: showAllNotes,
-            onStartSummarize: onStartSummarize,
-            onStopSummarize: onStopSummarize
-        )
-        .navigationSplitViewColumnWidth(min: libraryWidth, ideal: libraryWidth, max: 340)
-        .toolbar(removing: .sidebarToggle)
+    private func returnToBookshelf() {
+        showingAllNotes = false
+        selectedBookId = nil
     }
 
+    private func refreshBooks(preserveOrder: Bool = false) async {
+        guard await sidecar.waitUntilReady() else { return }
+        try? await viewModel.refresh(using: core, preserveOrder: preserveOrder)
+    }
+
+    private func pollSummaryProgress() async {
+        while !Task.isCancelled {
+            guard viewModel.needsSummarizePolling else { return }
+            try? await Task.sleep(nanoseconds: 3_000_000_000)
+            guard !Task.isCancelled, viewModel.needsSummarizePolling else { return }
+            await refreshBooks(preserveOrder: true)
+        }
+    }
 }
 
 extension Notification.Name {
     static let luminaOpenSearch = Notification.Name("luminaOpenSearch")
     static let luminaImportBook = Notification.Name("luminaImportBook")
     static let luminaLibraryRefresh = Notification.Name("luminaLibraryRefresh")
+    static let luminaReadingProgressDidChange = Notification.Name("luminaReadingProgressDidChange")
 }

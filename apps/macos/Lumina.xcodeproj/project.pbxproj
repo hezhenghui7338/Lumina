@@ -26,7 +26,6 @@
 		A1000111 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000211 /* SettingsView.swift */; };
 		A1000112 /* NotesPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000212 /* NotesPanel.swift */; };
 		A1000120 /* AllNotesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000220 /* AllNotesView.swift */; };
-		A1000121 /* LibraryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000221 /* LibraryView.swift */; };
 		A1000122 /* BookRow.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000222 /* BookRow.swift */; };
 		A1000123 /* LibraryViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000223 /* LibraryViewModel.swift */; };
 		A1000113 /* ExportSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000213 /* ExportSheet.swift */; };
@@ -73,6 +72,15 @@
 		A1000291 /* LibrarySelectionToolbar.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000290 /* LibrarySelectionToolbar.swift */; };
 		A1000293 /* LibrarySidebarVisibilityPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000292 /* LibrarySidebarVisibilityPolicy.swift */; };
 		A1000295 /* LibrarySidebarVisibilityPolicyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000294 /* LibrarySidebarVisibilityPolicyTests.swift */; };
+		A1000320 /* BookCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000310 /* BookCard.swift */; };
+		A1000321 /* BookshelfView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000311 /* BookshelfView.swift */; };
+		A1000322 /* LibraryCollectionSidebar.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000312 /* LibraryCollectionSidebar.swift */; };
+		A1000323 /* LibraryRecentsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000313 /* LibraryRecentsView.swift */; };
+		A1000324 /* LibraryChromeActionPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000314 /* LibraryChromeActionPolicy.swift */; };
+		A1000325 /* LibraryChromeActionPolicyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000315 /* LibraryChromeActionPolicyTests.swift */; };
+		A1000381 /* SegmentBoundaryEditor.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000380 /* SegmentBoundaryEditor.swift */; };
+		A1000391 /* SummarizeActivityChip.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000390 /* SummarizeActivityChip.swift */; };
+		A1000393 /* SummarizeActivityChipTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000392 /* SummarizeActivityChipTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -95,7 +103,6 @@
 		A1000211 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		A1000212 /* NotesPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotesPanel.swift; sourceTree = "<group>"; };
 		A1000220 /* AllNotesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AllNotesView.swift; sourceTree = "<group>"; };
-		A1000221 /* LibraryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryView.swift; sourceTree = "<group>"; };
 		A1000222 /* BookRow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BookRow.swift; sourceTree = "<group>"; };
 		A1000223 /* LibraryViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryViewModel.swift; sourceTree = "<group>"; };
 		A1000213 /* ExportSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExportSheet.swift; sourceTree = "<group>"; };
@@ -145,6 +152,15 @@
 		A1000290 /* LibrarySelectionToolbar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibrarySelectionToolbar.swift; sourceTree = "<group>"; };
 		A1000292 /* LibrarySidebarVisibilityPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibrarySidebarVisibilityPolicy.swift; sourceTree = "<group>"; };
 		A1000294 /* LibrarySidebarVisibilityPolicyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibrarySidebarVisibilityPolicyTests.swift; sourceTree = "<group>"; };
+		A1000310 /* BookCard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BookCard.swift; sourceTree = "<group>"; };
+		A1000311 /* BookshelfView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BookshelfView.swift; sourceTree = "<group>"; };
+		A1000312 /* LibraryCollectionSidebar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryCollectionSidebar.swift; sourceTree = "<group>"; };
+		A1000313 /* LibraryRecentsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryRecentsView.swift; sourceTree = "<group>"; };
+		A1000314 /* LibraryChromeActionPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryChromeActionPolicy.swift; sourceTree = "<group>"; };
+		A1000315 /* LibraryChromeActionPolicyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryChromeActionPolicyTests.swift; sourceTree = "<group>"; };
+		A1000380 /* SegmentBoundaryEditor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SegmentBoundaryEditor.swift; sourceTree = "<group>"; };
+		A1000390 /* SummarizeActivityChip.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SummarizeActivityChip.swift; sourceTree = "<group>"; };
+		A1000392 /* SummarizeActivityChipTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SummarizeActivityChipTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -235,6 +251,7 @@
 				A1000219 /* SummaryReadingView.swift */,
 				A1000233 /* LazyParagraphText.swift */,
 				A1000235 /* SegmentReadingBlock.swift */,
+				A1000380 /* SegmentBoundaryEditor.swift */,
 				A1000274 /* SegmentSidebarModels.swift */,
 				A1000284 /* ReaderSegmentListGeometry.swift */,
 				A1000278 /* SegmentSidebarView.swift */,
@@ -327,11 +344,16 @@
 		A1000513 /* Library */ = {
 			isa = PBXGroup;
 			children = (
-				A1000221 /* LibraryView.swift */,
+				A1000312 /* LibraryCollectionSidebar.swift */,
+				A1000311 /* BookshelfView.swift */,
+				A1000313 /* LibraryRecentsView.swift */,
+				A1000310 /* BookCard.swift */,
 				A1000222 /* BookRow.swift */,
 				A1000223 /* LibraryViewModel.swift */,
 				A1000290 /* LibrarySelectionToolbar.swift */,
 				A1000292 /* LibrarySidebarVisibilityPolicy.swift */,
+				A1000314 /* LibraryChromeActionPolicy.swift */,
+				A1000390 /* SummarizeActivityChip.swift */,
 			);
 			path = Library;
 			sourceTree = "<group>";
@@ -358,6 +380,8 @@
 				A1000276 /* SegmentSidebarTests.swift */,
 				A1000286 /* ReaderSegmentListGeometryTests.swift */,
 				A1000294 /* LibrarySidebarVisibilityPolicyTests.swift */,
+				A1000315 /* LibraryChromeActionPolicyTests.swift */,
+				A1000392 /* SummarizeActivityChipTests.swift */,
 			);
 			path = Unit;
 			sourceTree = "<group>";
@@ -508,6 +532,7 @@
 				A1000119 /* SummaryReadingView.swift in Sources */,
 				A1000138 /* LazyParagraphText.swift in Sources */,
 				A1000139 /* SegmentReadingBlock.swift in Sources */,
+				A1000381 /* SegmentBoundaryEditor.swift in Sources */,
 				A1000275 /* SegmentSidebarModels.swift in Sources */,
 				A1000285 /* ReaderSegmentListGeometry.swift in Sources */,
 				A1000279 /* SegmentSidebarView.swift in Sources */,
@@ -540,11 +565,16 @@
 				A1000262 /* ResourceRuntimeSection.swift in Sources */,
 				A1000112 /* NotesPanel.swift in Sources */,
 				A1000120 /* AllNotesView.swift in Sources */,
-				A1000121 /* LibraryView.swift in Sources */,
+				A1000320 /* BookCard.swift in Sources */,
+				A1000321 /* BookshelfView.swift in Sources */,
+				A1000322 /* LibraryCollectionSidebar.swift in Sources */,
+				A1000323 /* LibraryRecentsView.swift in Sources */,
 				A1000122 /* BookRow.swift in Sources */,
 				A1000123 /* LibraryViewModel.swift in Sources */,
 				A1000291 /* LibrarySelectionToolbar.swift in Sources */,
 				A1000293 /* LibrarySidebarVisibilityPolicy.swift in Sources */,
+				A1000324 /* LibraryChromeActionPolicy.swift in Sources */,
+				A1000391 /* SummarizeActivityChip.swift in Sources */,
 				A1000113 /* ExportSheet.swift in Sources */,
 				A1000114 /* OnboardingView.swift in Sources */,
 				A1000115 /* OllamaSetupHelper.swift in Sources */,
@@ -565,6 +595,8 @@
 				A1000277 /* SegmentSidebarTests.swift in Sources */,
 				A1000287 /* ReaderSegmentListGeometryTests.swift in Sources */,
 				A1000295 /* LibrarySidebarVisibilityPolicyTests.swift in Sources */,
+				A1000325 /* LibraryChromeActionPolicyTests.swift in Sources */,
+				A1000393 /* SummarizeActivityChipTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -627,7 +659,7 @@
 				CODE_SIGN_IDENTITY = "-";
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 0.9.0;
 				DEVELOPMENT_TEAM = "";
 				ENABLE_APP_SANDBOX = NO;
 				ENABLE_HARDENED_RUNTIME = NO;
@@ -638,7 +670,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 0.8.1;
+				MARKETING_VERSION = 0.9.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.lumina.app;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
@@ -653,7 +685,7 @@
 				CODE_SIGN_IDENTITY = "-";
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 0.9.0;
 				DEVELOPMENT_TEAM = "";
 				ENABLE_APP_SANDBOX = NO;
 				ENABLE_HARDENED_RUNTIME = NO;
@@ -664,7 +696,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 0.8.1;
+				MARKETING_VERSION = 0.9.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.lumina.app;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
@@ -677,11 +709,11 @@
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 0.9.0;
 				DEVELOPMENT_TEAM = "";
 				GENERATE_INFOPLIST_FILE = YES;
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
-				MARKETING_VERSION = 0.8.1;
+				MARKETING_VERSION = 0.9.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.lumina.app.tests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = NO;
@@ -695,11 +727,11 @@
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 0.9.0;
 				DEVELOPMENT_TEAM = "";
 				GENERATE_INFOPLIST_FILE = YES;
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
-				MARKETING_VERSION = 0.8.1;
+				MARKETING_VERSION = 0.9.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.lumina.app.tests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = NO;

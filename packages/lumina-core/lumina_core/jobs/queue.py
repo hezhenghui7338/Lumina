@@ -7,7 +7,7 @@ import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, Callable, Coroutine
+from typing import Any, Callable, Coroutine, TypeVar
 
 import sqlite3
 
@@ -18,10 +18,12 @@ from lumina_core.config import (
     load_prompts_config,
 )
 from lumina_core.db.connection import db_transaction
-from lumina_core.db.repos import BookRepo, SegmentRepo
+from lumina_core.db.repos import BookRepo, SegmentRepo, SummaryNodeRepo
 from lumina_core.models.router import ProfileModelRouter
 from lumina_core.ops.task_registry import TaskRegistry
 from lumina_core.summarize.segment import (
+    SUMMARY_CONTEXT_QUERY_LIMIT,
+    build_summary_context,
     segment_ready_event_payload,
     summarize_job_timeout_seconds,
     summarize_segment,
@@ -32,10 +34,14 @@ from lumina_core.translate.translator import translate_segment
 
 logger = logging.getLogger(__name__)
 
+# start_book must not wipe these; only regenerate/retry may overwrite ready summaries.
+_KEEP_SUMMARY_STATUSES = frozenset({"ready", "done"})
+
 
 class JobKind(str, Enum):
     SUMMARIZE = "summarize"
     TRANSLATE = "translate"
+    ROLLUP = "book_index"
 
 
 @dataclass(order=True)
@@ -46,9 +52,11 @@ class JobItem:
     segment_idx: int = field(compare=False)
     kind: JobKind = field(compare=False)
     retry_count: int = field(default=0, compare=False)
+    summary_tier: str = field(default="normal", compare=False)
 
 
 EventCallback = Callable[[str, dict[str, Any]], Coroutine[Any, Any, None]]
+T = TypeVar("T")
 
 
 def _utc_now() -> str:
@@ -56,7 +64,12 @@ def _utc_now() -> str:
 
 
 def _job_key(item: JobItem) -> str:
-    return f"{item.book_id}:{item.segment_id}:{item.kind.value}"
+    suffix = (
+        f"{item.kind.value}:{item.summary_tier}"
+        if item.kind == JobKind.SUMMARIZE
+        else item.kind.value
+    )
+    return f"{item.book_id}:{item.segment_id}:{suffix}"
 
 
 class JobQueue:
@@ -83,6 +96,7 @@ class JobQueue:
         self._event_callback: EventCallback | None = None
         self._books_repo = BookRepo(conn)
         self._segments_repo = SegmentRepo(conn)
+        self._nodes_repo = SummaryNodeRepo(conn)
         # User-controlled summarize pause (separate from chat pause_ollama)
         self._user_paused_all = False
         self._user_paused_books: set[str] = set()
@@ -91,6 +105,8 @@ class JobQueue:
         self._queued_keys: set[str] = set()
         self._paused_backlog: dict[str, JobItem] = {}
         self._active_summarize: dict[tuple[str, int], dict[str, Any]] = {}
+        self._book_summarize_locks: dict[str, asyncio.Lock] = {}
+        self._desired_summary_tier: dict[str, str] = {}
 
     def summarize_active_for_book(self, book_id: str) -> dict[str, Any] | None:
         for (bid, idx), state in self._active_summarize.items():
@@ -100,8 +116,16 @@ class JobQueue:
                     "started_at": state.get("started_at"),
                     "llm_attempt": state.get("llm_attempt", 1),
                     "max_llm_attempts": state.get("max_llm_attempts"),
+                    "summary_tier": state.get("summary_tier", "normal"),
                 }
         return None
+
+    def summary_tier_for_book(self, book_id: str) -> str:
+        if book_id not in self._desired_summary_tier:
+            self._desired_summary_tier[book_id] = (
+                self._segments_repo.summary_tier_for_book(book_id)
+            )
+        return self._desired_summary_tier[book_id]
 
     def summarize_active_by_book(self) -> dict[str, dict[str, Any]]:
         out: dict[str, dict[str, Any]] = {}
@@ -111,13 +135,14 @@ class JobQueue:
                 "started_at": state.get("started_at"),
                 "llm_attempt": state.get("llm_attempt", 1),
                 "max_llm_attempts": state.get("max_llm_attempts"),
+                "summary_tier": state.get("summary_tier", "normal"),
             }
         return out
 
     def _key_is_summarize_for_book(self, key: str, book_id: str) -> bool:
         prefix = f"{book_id}:"
-        suffix = f":{JobKind.SUMMARIZE.value}"
-        return key.startswith(prefix) and key.endswith(suffix)
+        marker = f":{JobKind.SUMMARIZE.value}:"
+        return key.startswith(prefix) and marker in key
 
     def _summarize_queued_count_for_book(self, book_id: str) -> int:
         return sum(
@@ -128,6 +153,21 @@ class JobQueue:
 
     def _has_queued_summarize_jobs(self, book_id: str) -> bool:
         return self._summarize_queued_count_for_book(book_id) > 0
+
+    def _has_active_summarize_job(self, book_id: str) -> bool:
+        return any(
+            item.book_id == book_id and item.kind == JobKind.SUMMARIZE
+            for item in self._active.values()
+        )
+
+    def _has_scheduled_summarize_job(self, book_id: str) -> bool:
+        return self._has_active_summarize_job(book_id) or self._has_queued_summarize_jobs(book_id)
+
+    def has_book_work(self, book_id: str) -> bool:
+        prefix = f"{book_id}:"
+        return any(item.book_id == book_id for item in self._active.values()) or any(
+            key.startswith(prefix) for key in self._queued_keys
+        )
 
     def summarize_state_for_book(
         self, book_id: str, *, ready: int, total: int
@@ -156,6 +196,7 @@ class JobQueue:
                 "summarize_queued_count": self._summarize_queued_count_for_book(
                     book_id
                 ),
+                "summary_tier": self._desired_summary_tier.get(book_id, "normal"),
             }
         return out
 
@@ -190,11 +231,13 @@ class JobQueue:
         started_at: str,
         max_llm_attempts: int | None = None,
         llm_attempt: int = 1,
+        summary_tier: str = "normal",
     ) -> None:
         self._active_summarize[(book_id, segment_idx)] = {
             "started_at": started_at,
             "llm_attempt": llm_attempt,
             "max_llm_attempts": max_llm_attempts,
+            "summary_tier": summary_tier,
         }
 
     def _update_active_summarize(
@@ -214,8 +257,14 @@ class JobQueue:
         if max_llm_attempts is not None:
             state["max_llm_attempts"] = max_llm_attempts
 
-    def _clear_active_summarize(self, book_id: str, segment_idx: int) -> None:
-        self._active_summarize.pop((book_id, segment_idx), None)
+    def _clear_active_summarize(
+        self, book_id: str, segment_idx: int, *, summary_tier: str | None = None
+    ) -> None:
+        key = (book_id, segment_idx)
+        state = self._active_summarize.get(key)
+        if summary_tier is not None and state and state.get("summary_tier") != summary_tier:
+            return
+        self._active_summarize.pop(key, None)
 
     def _clear_active_summarize_for_book(self, book_id: str) -> None:
         for key in list(self._active_summarize.keys()):
@@ -232,11 +281,15 @@ class JobQueue:
         if self._event_callback:
             await self._event_callback(book_id, payload)
 
+    async def _run_db(self, fn: Callable[[], T]) -> T:
+        """Keep SQLite/FTS off the uvicorn event loop (never-freeze)."""
+        return await asyncio.to_thread(fn)
+
     def _summary_progress(self, book_id: str) -> dict[str, int]:
         return self._books_repo.summary_progress(book_id)
 
     async def _emit_segment_event(self, book_id: str, payload: dict[str, Any]) -> None:
-        payload.update(self._summary_progress(book_id))
+        payload.update(await self._run_db(lambda: self._summary_progress(book_id)))
         await self.emit(book_id, payload)
 
     def refresh_workers(self) -> None:
@@ -316,6 +369,17 @@ class JobQueue:
             return
         book = self._books_repo.get(item.book_id)
         title = (book or {}).get("title") or item.book_id
+        if item.kind == JobKind.ROLLUP:
+            self._task_registry.register(
+                kind="book_index",
+                subject_type="book",
+                subject_id=item.book_id,
+                subject_label=title,
+                detail="全书分层索引",
+                profile="summarize",
+                job_key=_job_key(item),
+            )
+            return
         kind_label = "摘要" if item.kind == JobKind.SUMMARIZE else "翻译"
         profile = "summarize" if item.kind == JobKind.SUMMARIZE else "translate"
         self._task_registry.register(
@@ -353,10 +417,27 @@ class JobQueue:
             self._task_registry.pause_by_job_key(key)
 
     async def enqueue_summarize(
-        self, book_id: str, segment_id: str, segment_idx: int, *, high: bool = False
+        self,
+        book_id: str,
+        segment_id: str,
+        segment_idx: int,
+        *,
+        high: bool = False,
+        summary_tier: str | None = None,
     ) -> None:
         if self.is_user_paused(book_id):
             return
+        if self._has_scheduled_summarize_job(book_id):
+            return
+        for candidate in self._segments_repo.list_for_book(
+            book_id, include_body=False
+        ):
+            if candidate["summary_status"] not in ("pending", "error"):
+                continue
+            if int(candidate["idx"]) < segment_idx:
+                segment_id = candidate["id"]
+                segment_idx = int(candidate["idx"])
+            break
         priority = 0 if high else segment_idx + 1
         job = JobItem(
             priority=priority,
@@ -364,6 +445,8 @@ class JobQueue:
             segment_id=segment_id,
             segment_idx=segment_idx,
             kind=JobKind.SUMMARIZE,
+            summary_tier=summary_tier
+            or self._desired_summary_tier.get(book_id, "normal"),
         )
         key = _job_key(job)
         if self._is_job_scheduled(key):
@@ -411,35 +494,108 @@ class JobQueue:
         self._register_job_task(job)
         self.ensure_workers()
 
-    async def enqueue_book_prefetch(self, book_id: str) -> None:
+    async def clear_book_index(self, book_id: str) -> None:
+        """Drop persisted tree and cancel in-flight rollup for this book."""
+        await self._suspend_jobs(
+            lambda item: item.book_id == book_id and item.kind == JobKind.ROLLUP
+        )
+        for key, item in list(self._paused_backlog.items()):
+            if item.book_id != book_id or item.kind != JobKind.ROLLUP:
+                continue
+            del self._paused_backlog[key]
+            self._cancelled.discard(key)
+            if self._task_registry:
+                self._task_registry.cancel_by_job_key(key)
+        self._nodes_repo.delete_for_book(book_id)
+        self._books_repo.update(book_id, index_status="idle")
+
+    async def enqueue_rollup(self, book_id: str) -> None:
+        book = await self._run_db(lambda: self._books_repo.get(book_id))
+        if not book:
+            return
+        progress = await self._run_db(lambda: self._books_repo.summary_progress(book_id))
+        ready = int(progress["summary_ready_count"] or 0)
+        total = int(progress["summary_total_count"] or 0)
+        if total <= 0 or ready < total:
+            return
+        if book.get("index_status") == "ready" and await self._run_db(
+            lambda: self._nodes_repo.get_root(book_id)
+        ):
+            return
+        job = JobItem(
+            priority=2000,
+            book_id=book_id,
+            segment_id="index",
+            segment_idx=-1,
+            kind=JobKind.ROLLUP,
+        )
+        key = _job_key(job)
+        if self._is_job_scheduled(key):
+            return
+        await self._queue.put(job)
+        self._queued_keys.add(key)
+        self._register_job_task(job)
+        self.ensure_workers()
+
+    async def enqueue_book_prefetch(
+        self, book_id: str, *, summary_tier: str | None = None
+    ) -> None:
         if self.is_user_paused(book_id):
             return
+        tier = summary_tier or self._desired_summary_tier.get(book_id, "normal")
+        self._desired_summary_tier[book_id] = tier
         await self._recover_stale_running(book_id)
-        segments = self._segments_repo.list_for_book(book_id, include_body=False)
+        await self._enqueue_next_book_summary(book_id, summary_tier=tier)
+
+    async def _enqueue_next_book_summary(
+        self, book_id: str, *, summary_tier: str | None = None
+    ) -> None:
+        if self.is_user_paused(book_id) or self._has_scheduled_summarize_job(book_id):
+            return
+        tier = summary_tier or self._desired_summary_tier.get(book_id, "normal")
+        segments = await self._run_db(
+            lambda: self._segments_repo.list_for_book(book_id, include_body=False)
+        )
         for seg in segments:
-            if seg["summary_status"] in ("pending", "failed", "error"):
+            if seg["summary_status"] in ("pending", "error"):
                 await self.enqueue_summarize(
-                    book_id, seg["id"], seg["idx"], high=(seg["idx"] == 0)
+                    book_id,
+                    seg["id"],
+                    seg["idx"],
+                    high=(seg["idx"] == 0),
+                    summary_tier=tier,
                 )
+                return
 
     async def recover_on_startup(self) -> None:
         """Reset orphan running segments; resume prefetch only if auto-start is on."""
         for book in self._books_repo.list_books():
-            self._books_repo.maybe_mark_summarized(book["id"])
+            marked = self._books_repo.maybe_mark_summarized(book["id"])
             await self._recover_stale_running(book["id"])
             if self.auto_start_summary:
-                await self.enqueue_book_prefetch(book["id"])
+                await self.start_book(book["id"], summary_tier="normal")
+            elif marked or (book.get("status") == "summarized"):
+                await self.enqueue_rollup(book["id"])
         self.ensure_workers()
 
-    async def enqueue_book_regenerate(self, book_id: str) -> int:
-        """Force re-summarize every segment (including ready)."""
+    async def enqueue_book_regenerate(
+        self, book_id: str, *, summary_tier: str = "normal"
+    ) -> int:
+        """Force re-summarize every segment, including ready ones.
+
+        This is the only book-level path that overwrites existing summaries.
+        Clients must confirm with the user first — it is expensive.
+        """
+        await self._supersede_book_tier(book_id, summary_tier)
+        await self.clear_book_index(book_id)
         self.unpause_book(book_id)
+        self._desired_summary_tier[book_id] = summary_tier
         segments = self._segments_repo.list_for_book(book_id, include_body=False)
         for seg in segments:
-            self._segments_repo.set_status(seg["id"], "pending", retry_count=0)
-            await self.enqueue_summarize(
-                book_id, seg["id"], seg["idx"], high=True
-            )
+            self._segments_repo.reset_summary(seg["id"], summary_tier=summary_tier)
+        await self._enqueue_next_book_summary(
+            book_id, summary_tier=summary_tier
+        )
         return len(segments)
 
     async def stop_book(self, book_id: str) -> None:
@@ -451,6 +607,38 @@ class JobQueue:
             book_id,
             {"type": "summarize_paused", "scope": "book", "book_id": book_id},
         )
+
+    async def prepare_book_resegment(self, book_id: str) -> bool:
+        """Cancel stale segment jobs and wait until workers stop touching the book."""
+        was_paused = self.is_user_paused(book_id)
+        await self.stop_book(book_id)
+
+        while any(item.book_id == book_id for item in self._active.values()):
+            await asyncio.sleep(0.05)
+        return was_paused
+
+    def discard_book_suspended(self, book_id: str) -> None:
+        """Discard jobs tied to segment IDs that are about to be replaced."""
+        for key, item in list(self._paused_backlog.items()):
+            if item.book_id != book_id:
+                continue
+            del self._paused_backlog[key]
+            self._cancelled.discard(key)
+            if self._task_registry:
+                self._task_registry.cancel_by_job_key(key)
+
+    def cancel_active_jobs_for_segments(
+        self, book_id: str, segment_ids: set[str]
+    ) -> None:
+        """Abort in-flight jobs that already loaded stale segment text."""
+        if not segment_ids:
+            return
+        for key, item in list(self._active.items()):
+            if item.book_id != book_id or item.segment_id not in segment_ids:
+                continue
+            self._cancelled.add(key)
+            if self._task_registry:
+                self._task_registry.cancel_by_job_key(key)
 
     async def stop_all(self) -> None:
         self._user_paused_all = True
@@ -465,28 +653,54 @@ class JobQueue:
                 {"type": "summarize_paused", "scope": "all", "book_id": book["id"]},
             )
 
-    async def start_book(self, book_id: str) -> None:
+    async def _supersede_book_tier(self, book_id: str, summary_tier: str) -> None:
+        """Cancel queued work from another tier without waiting on slow LLM calls."""
+        previous = self._desired_summary_tier.get(book_id, "normal")
+        self._desired_summary_tier[book_id] = summary_tier
+        if previous == summary_tier:
+            return
+        await self._suspend_jobs(
+            lambda item: item.book_id == book_id and item.kind == JobKind.SUMMARIZE
+        )
+        for key, item in list(self._paused_backlog.items()):
+            if item.book_id != book_id or item.kind != JobKind.SUMMARIZE:
+                continue
+            del self._paused_backlog[key]
+            if self._task_registry:
+                self._task_registry.cancel_by_job_key(key)
+        self._clear_active_summarize_for_book(book_id)
+
+    async def start_book(
+        self, book_id: str, *, summary_tier: str = "normal"
+    ) -> None:
+        """Resume summarization. A new tier applies only to incomplete segments.
+
+        Ready summaries are kept even if the user switches to advanced/normal.
+        Use enqueue_book_regenerate to overwrite the whole book.
+        """
+        await self._supersede_book_tier(book_id, summary_tier)
         self.unpause_book(book_id)
         await self._restore_suspended(book_id)
+        self._apply_tier_to_incomplete_segments(book_id, summary_tier)
         await self._reset_segments_for_user_resume(book_id)
-        await self.enqueue_book_prefetch(book_id)
+        await self.enqueue_book_prefetch(book_id, summary_tier=summary_tier)
+        await self.enqueue_rollup(book_id)
         await self.emit(
             book_id,
-            {"type": "summarize_resumed", "scope": "book", "book_id": book_id},
+            {
+                "type": "summarize_resumed",
+                "scope": "book",
+                "book_id": book_id,
+                "summary_tier": summary_tier,
+            },
         )
 
-    async def start_all(self) -> None:
+    async def start_all(self, *, summary_tier: str = "normal") -> None:
         self._user_paused_all = False
         self._user_paused_books.clear()
-        await self._restore_suspended(None)
         books = self._books_repo.list_books()
         for book in books:
-            await self._reset_segments_for_user_resume(book["id"])
-            await self.enqueue_book_prefetch(book["id"])
-            await self.emit(
-                book["id"],
-                {"type": "summarize_resumed", "scope": "all", "book_id": book["id"]},
-            )
+            await self.start_book(book["id"], summary_tier=summary_tier)
 
     async def _suspend_jobs(self, match: Callable[[JobItem], bool]) -> None:
         kept: list[JobItem] = []
@@ -560,13 +774,30 @@ class JobQueue:
                 },
             )
 
+    def _apply_tier_to_incomplete_segments(
+        self, book_id: str, summary_tier: str
+    ) -> None:
+        """Stamp a new tier onto pending/error/running segments; keep ready summaries."""
+        for seg in self._segments_repo.list_for_book(book_id, include_body=False):
+            if seg["summary_status"] in _KEEP_SUMMARY_STATUSES:
+                continue
+            existing_tier = seg.get("summary_tier") or "normal"
+            if existing_tier != summary_tier:
+                self._segments_repo.reset_summary(
+                    seg["id"], summary_tier=summary_tier
+                )
+
     async def _recover_stale_running(self, book_id: str) -> None:
         """Reset running segments with no active worker (crash/restart orphans)."""
         for seg in self._segments_repo.list_for_book(book_id, include_body=False):
             if seg["summary_status"] != "running":
                 continue
-            key = f"{book_id}:{seg['id']}:{JobKind.SUMMARIZE.value}"
-            if key in self._active:
+            if any(
+                item.book_id == book_id
+                and item.segment_id == seg["id"]
+                and item.kind == JobKind.SUMMARIZE
+                for item in self._active.values()
+            ):
                 continue
             self._segments_repo.set_status(seg["id"], "pending")
             await self._emit_segment_event(
@@ -580,6 +811,13 @@ class JobQueue:
 
     def _was_cancelled(self, item: JobItem) -> bool:
         return _job_key(item) in self._cancelled or self.is_user_paused(item.book_id)
+
+    def _is_superseded(self, item: JobItem) -> bool:
+        return (
+            item.kind == JobKind.SUMMARIZE
+            and self._desired_summary_tier.get(item.book_id, "normal")
+            != item.summary_tier
+        )
 
     async def _worker(self) -> None:
         while True:
@@ -596,12 +834,20 @@ class JobQueue:
                     self._task_registry.mark_running_by_job_key(key)
                 try:
                     if item.kind == JobKind.SUMMARIZE:
-                        await self._run_summarize(item)
+                        lock = self._book_summarize_locks.setdefault(
+                            item.book_id, asyncio.Lock()
+                        )
+                        async with lock:
+                            await self._run_summarize(item)
                     elif item.kind == JobKind.TRANSLATE:
                         await self._run_translate(item)
+                    elif item.kind == JobKind.ROLLUP:
+                        await self._run_rollup(item)
                 finally:
+                    was_cancelled = self._was_cancelled(item)
+                    was_superseded = self._is_superseded(item)
                     if self._task_registry:
-                        if self._was_cancelled(item):
+                        if was_cancelled:
                             record = self._task_registry.get_by_job_key(key)
                             if record and record.status == "paused":
                                 pass
@@ -618,6 +864,12 @@ class JobQueue:
                             self._task_registry.complete_by_job_key(key)
                     self._active.pop(key, None)
                     self._cancelled.discard(key)
+                    if item.kind == JobKind.SUMMARIZE:
+                        paused = was_cancelled and self.is_user_paused(
+                            item.book_id
+                        ) and not was_superseded
+                        if not paused:
+                            await self._enqueue_next_book_summary(item.book_id)
             except Exception:
                 logger.exception("Job failed: %s", item)
                 if self._task_registry:
@@ -625,16 +877,71 @@ class JobQueue:
             finally:
                 self._queue.task_done()
 
+    def _load_summarize_inputs(
+        self, book_id: str, segment_idx: int
+    ) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
+        seg = self._segments_repo.get_by_index(book_id, segment_idx)
+        if not seg:
+            return None, []
+        rows = self._segments_repo.list_ready_summaries_before(
+            book_id,
+            segment_idx,
+            limit=SUMMARY_CONTEXT_QUERY_LIMIT,
+        )
+        return seg, rows
+
+    def _persist_ready_summary(
+        self,
+        *,
+        book_id: str,
+        segment_id: str,
+        segment_idx: int,
+        summary_json: str,
+        label: str,
+        anchor_label: str | None,
+        resource_id: str,
+        model: str,
+        summary_tier: str,
+        summary_duration_s: float,
+        summary_llm_attempts: int,
+    ) -> bool:
+        self._segments_repo.update_summary(
+            segment_id,
+            summary_json=summary_json,
+            label=label,
+            anchor_label=anchor_label,
+            status="ready",
+            summary_provider=resource_id,
+            summary_model=model,
+            summary_tier=summary_tier,
+            summary_duration_s=summary_duration_s,
+            summary_llm_attempts=summary_llm_attempts,
+        )
+        book = self._books_repo.get(book_id)
+        if book:
+            from lumina_core.search.fts import index_segment
+
+            updated = self._segments_repo.get_by_index(book_id, segment_idx)
+            if updated:
+                index_segment(self.conn, book, updated)
+        return bool(self._books_repo.maybe_mark_summarized(book_id))
+
     async def _run_summarize(self, item: JobItem) -> None:
         import time
 
         from lumina_core.debug_agent_log import agent_log
 
-        seg = self._segments_repo.get_by_index(item.book_id, item.segment_idx)
+        seg, context_rows = await self._run_db(
+            lambda: self._load_summarize_inputs(item.book_id, item.segment_idx)
+        )
         if not seg:
             return
         if self._was_cancelled(item):
             return
+        background_context = build_summary_context(
+            context_rows,
+            current_chapter=seg.get("chapter"),
+        )
         job_started = time.time()
         job_key = _job_key(item)
         text_len = len(seg.get("raw_text") or "")
@@ -664,8 +971,9 @@ class JobQueue:
                 item.book_id,
                 item.segment_idx,
                 started_at=started_at,
+                summary_tier=item.summary_tier,
             )
-            self._segments_repo.set_status(seg["id"], "running")
+            await self._run_db(lambda: self._segments_repo.set_status(seg["id"], "running"))
             await self._emit_segment_event(
                 item.book_id,
                 {
@@ -673,6 +981,7 @@ class JobQueue:
                     "idx": item.segment_idx,
                     "status": "running",
                     "started_at": started_at,
+                    "summary_tier": item.summary_tier,
                 },
             )
 
@@ -705,14 +1014,24 @@ class JobQueue:
                     self.router,
                     raw_text=seg["raw_text"] or "",
                     anchor_label=seg.get("anchor_label") or f"段 {item.segment_idx + 1}",
+                    summary_tier=item.summary_tier,
                     on_progress=_on_progress,
                     prompts=self.prompts,
+                    background_context=background_context,
                 ),
                 timeout=job_timeout,
             )
             if self._was_cancelled(item):
-                self._clear_active_summarize(item.book_id, item.segment_idx)
-                self._segments_repo.set_status(seg["id"], "pending")
+                self._clear_active_summarize(
+                    item.book_id,
+                    item.segment_idx,
+                    summary_tier=item.summary_tier,
+                )
+                if self._is_superseded(item):
+                    return
+                await self._run_db(
+                    lambda: self._segments_repo.set_status(seg["id"], "pending")
+                )
                 await self._emit_segment_event(
                     item.book_id,
                     {
@@ -726,25 +1045,26 @@ class JobQueue:
             provider = self.router.last_provider or "unknown"
             model = self.router.last_model or ""
             resource_id = self.router.last_resource_id or provider
-            self._segments_repo.update_summary(
-                seg["id"],
-                summary_json=summary_to_json(result.summary),
-                label=result.summary.label,
-                anchor_label=result.summary.anchor,
-                status="ready",
-                summary_provider=resource_id,
-                summary_model=model,
-                summary_duration_s=summary_duration_s,
-                summary_llm_attempts=result.llm_attempts,
+            summarized = await self._run_db(
+                lambda: self._persist_ready_summary(
+                    book_id=item.book_id,
+                    segment_id=seg["id"],
+                    segment_idx=item.segment_idx,
+                    summary_json=summary_to_json(result.summary),
+                    label=result.summary.label,
+                    anchor_label=result.summary.anchor,
+                    resource_id=resource_id,
+                    model=model,
+                    summary_tier=item.summary_tier,
+                    summary_duration_s=summary_duration_s,
+                    summary_llm_attempts=result.llm_attempts,
+                )
             )
-            book = self._books_repo.get(item.book_id)
-            if book:
-                from lumina_core.search.fts import index_segment
-
-                updated = self._segments_repo.get_by_index(item.book_id, item.segment_idx)
-                if updated:
-                    index_segment(self.conn, book, updated)
-            self._clear_active_summarize(item.book_id, item.segment_idx)
+            self._clear_active_summarize(
+                item.book_id,
+                item.segment_idx,
+                summary_tier=item.summary_tier,
+            )
             await self._emit_segment_event(
                 item.book_id,
                 segment_ready_event_payload(
@@ -752,6 +1072,7 @@ class JobQueue:
                     idx=item.segment_idx,
                     resource_id=resource_id,
                     model=model,
+                    summary_tier=item.summary_tier,
                     summary_duration_s=summary_duration_s,
                     summary_llm_attempts=result.llm_attempts,
                 ),
@@ -763,7 +1084,8 @@ class JobQueue:
                     duration_s=summary_duration_s,
                 )
             await self.enqueue_translate(item.book_id, seg["id"], item.segment_idx)
-            self._books_repo.maybe_mark_summarized(item.book_id)
+            if summarized:
+                await self.enqueue_rollup(item.book_id)
             agent_log(
                 hypothesis_id="E",
                 location="queue.py:_run_summarize:success",
@@ -776,6 +1098,7 @@ class JobQueue:
                     "resource_id": resource_id,
                     "provider": provider,
                     "model": model,
+                    "summary_tier": item.summary_tier,
                 },
             )
         except Exception as exc:
@@ -792,9 +1115,17 @@ class JobQueue:
                     "error": str(exc)[:500],
                 },
             )
-            self._clear_active_summarize(item.book_id, item.segment_idx)
+            self._clear_active_summarize(
+                item.book_id,
+                item.segment_idx,
+                summary_tier=item.summary_tier,
+            )
             if self._was_cancelled(item):
-                self._segments_repo.set_status(seg["id"], "pending")
+                if self._is_superseded(item):
+                    return
+                await self._run_db(
+                    lambda: self._segments_repo.set_status(seg["id"], "pending")
+                )
                 await self._emit_segment_event(
                     item.book_id,
                     {
@@ -814,7 +1145,11 @@ class JobQueue:
                 )
             else:
                 err_msg = str(exc)[:300] or type(exc).__name__
-            self._segments_repo.set_status(seg["id"], status, retry_count=retry)
+            await self._run_db(
+                lambda: self._segments_repo.set_status(
+                    seg["id"], status, retry_count=retry
+                )
+            )
             await self._emit_segment_event(
                 item.book_id,
                 {
@@ -831,17 +1166,39 @@ class JobQueue:
                     job_key,
                     duration_s=summary_duration_s,
                 )
-            if retry < SUMMARY_JOB_MAX_RETRIES:
-                await self.enqueue_summarize(
-                    item.book_id, seg["id"], item.segment_idx, high=True
-                )
+
+    async def _run_rollup(self, item: JobItem) -> None:
+        from lumina_core.summarize.rollup import rollup_book
+
+        if self._was_cancelled(item):
+            return
+
+        async def _on_progress(payload: dict[str, Any]) -> None:
+            payload.setdefault("type", "book_index_progress")
+            await self.emit(item.book_id, payload)
+
+        status = await rollup_book(
+            self.conn,
+            self.router,
+            item.book_id,
+            prompts=self.prompts,
+            cancelled=lambda: self._was_cancelled(item),
+            on_progress=_on_progress,
+        )
+        event_type = "book_index_ready" if status == "ready" else "book_index_progress"
+        await self.emit(
+            item.book_id,
+            {"type": event_type, "index_status": status},
+        )
 
     async def _run_translate(self, item: JobItem) -> None:
         if self._was_cancelled(item):
             return
-        if not self._book_needs_translation(item.book_id):
+        if not await self._run_db(lambda: self._book_needs_translation(item.book_id)):
             return
-        seg = self._segments_repo.get_by_index(item.book_id, item.segment_idx)
+        seg = await self._run_db(
+            lambda: self._segments_repo.get_by_index(item.book_id, item.segment_idx)
+        )
         if not seg or not seg.get("raw_text"):
             return
         try:
@@ -853,11 +1210,15 @@ class JobQueue:
             )
             if self._was_cancelled(item):
                 return
-            with db_transaction(self.conn):
-                self.conn.execute(
-                    "UPDATE segments SET translation = ? WHERE id = ?",
-                    (translation, seg["id"]),
-                )
+
+            def _save_translation() -> None:
+                with db_transaction(self.conn):
+                    self.conn.execute(
+                        "UPDATE segments SET translation = ? WHERE id = ?",
+                        (translation, seg["id"]),
+                    )
+
+            await self._run_db(_save_translation)
             await self.emit(
                 item.book_id,
                 {

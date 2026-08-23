@@ -20,6 +20,7 @@ from lumina_core.settings_store import (
     load_models,
     load_settings,
     merge_incoming_models,
+    merge_ocr_cloud_api_key,
     merge_tavily_api_key,
 )
 
@@ -28,11 +29,13 @@ def test_save_and_load_secrets_roundtrip(tmp_path: Path):
     payload = SecretsPayload(
         resources={"openai": "sk-test", "openrouter": "or-key"},
         tavily="tvly-test",
+        ocr_cloud="ocr-test",
     )
     save_secrets(tmp_path, payload)
     loaded = load_secrets(tmp_path)
     assert loaded.resources == payload.resources
     assert loaded.tavily == "tvly-test"
+    assert loaded.ocr_cloud == "ocr-test"
     # POSIX mode bits are not meaningful on Windows NTFS.
     if platform.system() != "Windows":
         assert oct(secrets_path(tmp_path).stat().st_mode & 0o777) == oct(0o600)
@@ -54,11 +57,16 @@ def test_persist_secrets_writes_only_real_keys(tmp_path: Path):
         chat=models.chat,
         summarize=models.summarize,
     )
-    settings = Settings(data_dir=tmp_path, tavily_api_key="tvly-live")
+    settings = Settings(
+        data_dir=tmp_path,
+        tavily_api_key="tvly-live",
+        ocr_cloud_api_key="ocr-live",
+    )
     persist_secrets(tmp_path, models, settings)
     raw = json.loads(secrets_path(tmp_path).read_text(encoding="utf-8"))
     assert raw["resources"]["openai"] == "sk-live"
     assert raw["tavily"] == "tvly-live"
+    assert raw["ocr_cloud"] == "ocr-live"
 
 
 def test_persist_secrets_clears_removed_keys(tmp_path: Path):
@@ -98,6 +106,13 @@ def test_load_settings_applies_tavily_secret(tmp_path: Path, monkeypatch):
     save_secrets(tmp_path, SecretsPayload(tavily="tvly-from-file"))
     loaded = load_settings(tmp_path)
     assert loaded.tavily_api_key == "tvly-from-file"
+
+
+def test_load_settings_applies_ocr_secret_and_env_override(tmp_path: Path, monkeypatch):
+    save_secrets(tmp_path, SecretsPayload(ocr_cloud="ocr-from-file"))
+    monkeypatch.setenv("LUMINA_OCR_CLOUD_API_KEY", "ocr-from-env")
+    loaded = load_settings(tmp_path)
+    assert loaded.ocr_cloud_api_key == "ocr-from-env"
 
 
 def test_restart_simulation_keeps_resource_and_tavily_keys(tmp_path: Path, monkeypatch):
@@ -155,3 +170,7 @@ def test_merge_incoming_models_mask_preserves_existing():
 
 def test_merge_tavily_api_key_mask_preserves_existing():
     assert merge_tavily_api_key(API_KEY_MASK, "tvly-keep") == "tvly-keep"
+
+
+def test_merge_ocr_cloud_api_key_mask_preserves_existing():
+    assert merge_ocr_cloud_api_key(API_KEY_MASK, "ocr-keep") == "ocr-keep"

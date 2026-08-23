@@ -12,11 +12,23 @@ from lumina_core.config import (
 )
 
 
-def test_short_book_single_segment():
-    text = "短" * (SHORT_BOOK_MAX_CHARS - 100)
+def test_short_book_within_hard_max_stays_single_segment():
+    text = "短" * (CHUNK_MAX_CHARS - 100)
     segments = chunk_text(text)
     assert len(segments) == 1
     assert segments[0].start_offset == 0
+
+
+def test_8000_char_short_book_respects_model_hard_max():
+    text = "扬州城中旧事。百姓奔走相告。" * 500
+    assert len(text) < SHORT_BOOK_MAX_CHARS
+
+    budget = ChunkBudget(target_chars=2500, max_chars=3000, min_chars=1500)
+    segments = chunk_text(text, budget=budget)
+
+    assert len(segments) >= 3
+    assert all(len(segment.raw_text) <= budget.max_chars for segment in segments)
+    assert "".join(segment.raw_text for segment in segments) == text
 
 
 def test_long_text_multiple_segments():
@@ -57,6 +69,22 @@ def test_structure_marker_epub():
     assert joined == text
 
 
+def test_epub_toc_markers_do_not_create_tiny_segments():
+    toc = "\n\n".join(
+        f"## [§目录第{i}项]\n第{i}章" for i in range(160)
+    )
+    body = "\n\n## [§正文]\n" + ("这是正文内容，不应被目录拆成十几个字的小段。" * 500)
+    text = toc + body
+    budget = ChunkBudget(target_chars=2000, max_chars=2400, min_chars=1200)
+
+    segments = chunk_text(text, budget=budget)
+
+    assert len(segments) > 1
+    assert min(len(segment.raw_text) for segment in segments[:-1]) >= budget.min_chars
+    assert min(len(segment.raw_text) for segment in segments) >= 1000
+    assert "".join(segment.raw_text for segment in segments) == text
+
+
 def test_structure_marker_pdf():
     text = "## [p.1]\n\n" + ("第一页内容。" * 500) + "\n\n## [p.2 无文本]\n\n## [p.3]\n\n" + ("第三页内容。" * 500)
     segments = chunk_text(text)
@@ -75,6 +103,19 @@ def test_sentence_boundary_without_paragraphs():
         assert seg.raw_text.endswith("。") or seg.raw_text.endswith("！") or seg.raw_text.endswith("？")
     joined = "".join(s.raw_text for s in segments)
     assert joined == text
+
+
+def test_does_not_cut_inside_sentence_when_period_is_past_target():
+    first = ("山" * 849) + "。"
+    rest = ("随后情节继续展开并补足人物地点与事件的完整背景" * 30) + "。"
+    text = first + rest
+    budget = ChunkBudget(target_chars=700, max_chars=900, min_chars=500)
+    segments = chunk_text(text, budget=budget)
+    assert "".join(segment.raw_text for segment in segments) == text
+    assert len(segments) >= 2
+    assert first in segments[0].raw_text
+    for segment in segments[:-1]:
+        assert segment.raw_text.rstrip().endswith("。")
 
 
 def test_segments_within_max_chars():

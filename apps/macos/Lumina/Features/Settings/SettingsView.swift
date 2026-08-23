@@ -12,6 +12,10 @@ struct SettingsView: View {
     @State private var autoSaveEnabled = false
     @State private var tavilyAPIKey = ""
     @State private var tavilyKeyConfigured = false
+    @State private var ocrCloudAPIKey = ""
+    @State private var ocrCloudKeyConfigured = false
+    @State private var ocrStatus: OcrStatus?
+    @State private var testingOcr = false
     @State private var resourceAPIKeys: [String: String] = [:]
     @State private var resourceKeyConfigured: Set<String> = []
     @State private var editingResource: ModelResourceSettings?
@@ -32,6 +36,10 @@ struct SettingsView: View {
             Task { await save() }
         }
         .onChange(of: settings?.web_search_provider) { _, _ in
+            guard autoSaveEnabled else { return }
+            Task { await save() }
+        }
+        .onChange(of: settings?.web_search_enabled) { _, _ in
             guard autoSaveEnabled else { return }
             Task { await save() }
         }
@@ -81,6 +89,7 @@ struct SettingsView: View {
     private func loadedSettingsForm(settings: AppSettings) -> some View {
         readingSection
         webSearchSection(settings: settings)
+        ocrSection
         apiResourcesSection(settings: settings)
         prioritySection(
             title: "深聊",
@@ -216,6 +225,7 @@ struct SettingsView: View {
     @ViewBuilder
     private func webSearchSection(settings: AppSettings) -> some View {
         Section {
+            Toggle("启用联网搜索", isOn: boolBinding(\.web_search_enabled))
             Picker("检索后端", selection: binding(\.web_search_provider)) {
                 Text("ddgs（免费）").tag("ddgs")
                 Text("Tavily（效果更好）").tag("tavily")
@@ -235,7 +245,43 @@ struct SettingsView: View {
         } header: {
             Text("联网搜索")
         } footer: {
-            Text("免费默认 ddgs；要更稳的检索结果建议配置 Tavily。")
+            Text("默认开启。关闭后深聊只依据文档；无网时也会自动退回文档模式。免费默认 ddgs；要更稳的检索结果建议配置 Tavily。")
+        }
+    }
+
+    @ViewBuilder
+    private var ocrSection: some View {
+        Section {
+            TextField(
+                "Base URL（如 https://api.openai.com/v1）",
+                text: binding(\.ocr_cloud_base_url)
+            )
+            TextField("视觉模型（如 gpt-4o-mini）", text: binding(\.ocr_cloud_model))
+            SecureField(
+                ocrCloudKeyConfigured && ocrCloudAPIKey.isEmpty
+                    ? "已保存（输入新 Key 可替换）"
+                    : "API Key",
+                text: $ocrCloudAPIKey
+            )
+            if let status = ocrStatus {
+                LabeledContent("当前路径", value: status.provider == "cloud" ? "云端 OCR" : "本地 OCR")
+                Text(status.displayMessage)
+                    .font(.caption)
+                    .foregroundStyle(status.ready ? Color.secondary : Color.orange)
+            }
+            HStack {
+                Button("保存 OCR 配置") {
+                    Task { await save() }
+                }
+                Button(testingOcr ? "测试中…" : "保存并测试") {
+                    Task { await testOcrConnectivity() }
+                }
+                .disabled(testingOcr)
+            }
+        } header: {
+            Text("文档识别")
+        } footer: {
+            Text("Base URL、模型和 Key 均配置后优先使用云端 OCR，扫描页图片会上传至该服务；任一项为空则仅在本机使用 RapidOCR。云端失败不会静默回退。")
         }
     }
 
@@ -503,7 +549,10 @@ struct SettingsView: View {
             syncKeyState(from: loaded.models)
             tavilyKeyConfigured = loaded.tavily_api_key == "***"
             tavilyAPIKey = ""
+            ocrCloudKeyConfigured = loaded.ocr_cloud_api_key == "***"
+            ocrCloudAPIKey = ""
             resourceAPIKeys = [:]
+            ocrStatus = try? await core.fetchOcrStatus()
             await refreshResourceStatuses()
             autoSaveEnabled = true
         } catch {
@@ -559,12 +608,24 @@ struct SettingsView: View {
         } else if tavilyKeyConfigured {
             tavilyToSend = "***"
         }
+        var ocrKeyToSend: String? = nil
+        if !ocrCloudAPIKey.isEmpty {
+            ocrKeyToSend = ocrCloudAPIKey
+            ocrCloudKeyConfigured = true
+        } else if ocrCloudKeyConfigured {
+            ocrKeyToSend = "***"
+        }
 
         do {
             let updated = try await core.updateSettings(
                 targetLanguage: snapshot.target_language,
                 webSearchProvider: snapshot.web_search_provider,
+                webSearchEnabled: snapshot.web_search_enabled,
                 tavilyAPIKey: tavilyToSend,
+                ocrCloudBaseURL: snapshot.ocr_cloud_base_url,
+                ocrCloudModel: snapshot.ocr_cloud_model,
+                ocrCloudAPIKey: ocrKeyToSend,
+                ocrCloudTimeoutSeconds: snapshot.ocr_cloud_timeout_seconds,
                 debugMode: snapshot.debug_mode,
                 autoStartSummary: snapshot.auto_start_summary,
                 models: snapshot.models,
@@ -574,8 +635,11 @@ struct SettingsView: View {
             promptsDefaults = updated.prompts_defaults
             syncKeyState(from: updated.models)
             tavilyAPIKey = ""
+            ocrCloudAPIKey = ""
             resourceAPIKeys = [:]
             tavilyKeyConfigured = updated.tavily_api_key == "***"
+            ocrCloudKeyConfigured = updated.ocr_cloud_api_key == "***"
+            ocrStatus = try? await core.fetchOcrStatus()
             await refreshResourceStatuses()
         } catch {
             self.error = error.localizedDescription
@@ -590,7 +654,12 @@ struct SettingsView: View {
             let updated = try await core.updateSettings(
                 targetLanguage: snapshot.target_language,
                 webSearchProvider: snapshot.web_search_provider,
+                webSearchEnabled: snapshot.web_search_enabled,
                 tavilyAPIKey: tavilyKeyConfigured ? "***" : nil,
+                ocrCloudBaseURL: snapshot.ocr_cloud_base_url,
+                ocrCloudModel: snapshot.ocr_cloud_model,
+                ocrCloudAPIKey: ocrCloudKeyConfigured ? "***" : nil,
+                ocrCloudTimeoutSeconds: snapshot.ocr_cloud_timeout_seconds,
                 debugMode: snapshot.debug_mode,
                 autoStartSummary: snapshot.auto_start_summary,
                 models: snapshot.models,
@@ -601,6 +670,13 @@ struct SettingsView: View {
         } catch {
             self.error = error.localizedDescription
         }
+    }
+
+    private func testOcrConnectivity() async {
+        testingOcr = true
+        defer { testingOcr = false }
+        await save()
+        ocrStatus = try? await core.fetchOcrStatus()
     }
 }
 
@@ -617,6 +693,8 @@ private struct ResourceEditorSheet: View {
     @State private var refreshingStatus = false
     @State private var pullingModel = false
     @State private var probeFeedback: String?
+    @State private var contextProbe: ContextProbeStatus?
+    @State private var probingContext = false
 
     private var kind: ModelProviderKind {
         ModelProviderKind.from(provider: resource.provider, baseURL: resource.base_url)
@@ -630,7 +708,14 @@ private struct ResourceEditorSheet: View {
                         Text(item.label).tag(item)
                     }
                 }
-                TextField(kind.modelPlaceholder, text: $resource.model)
+                TextField("正常\(kind.modelPlaceholder)", text: $resource.model)
+                TextField(
+                    "高级模型（留空则使用正常模型）",
+                    text: Binding(
+                        get: { resource.advanced_model ?? "" },
+                        set: { resource.advanced_model = $0 }
+                    )
+                )
                 if kind.showsBaseURL {
                     TextField("Base URL", text: $resource.base_url)
                 }
@@ -655,6 +740,7 @@ private struct ResourceEditorSheet: View {
                     Text(kind.chunkTargetHint)
                 }
                 probeControls
+                contextProbeControls
             }
             .navigationTitle(resource.id)
             .toolbar {
@@ -670,9 +756,10 @@ private struct ResourceEditorSheet: View {
             }
             .task {
                 await refreshResourceStatus()
+                await refreshContextProbe()
             }
         }
-        .frame(minWidth: 420, minHeight: resource.provider == "ollama" ? 580 : 420)
+        .frame(minWidth: 420, minHeight: resource.provider == "ollama" ? 680 : 520)
     }
 
     private var chunkTargetLabel: String {
@@ -781,6 +868,34 @@ private struct ResourceEditorSheet: View {
         }
     }
 
+    @ViewBuilder
+    private var contextProbeControls: some View {
+        Section {
+            if probingContext {
+                ProgressView(contextProbe?.displayMessage ?? "正在测试上下文长度…")
+            } else if let probe = contextProbe, probe.status != "idle" {
+                Text(probe.displayMessage)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            HStack {
+                Button(probingContext ? "测试中…" : "智能测试上下文") {
+                    Task { await startContextProbe() }
+                }
+                .disabled(probingContext || refreshingStatus)
+                if probingContext {
+                    Button("取消") {
+                        Task { await cancelContextProbe() }
+                    }
+                }
+            }
+        } header: {
+            Text("智能测试上下文")
+        } footer: {
+            Text("把多段不同主题的文字拼在一起，检查模型会不会只读前面、丢掉最后几段。按仍能理解后面内容的长度取 80%，并封顶 3500 字作为分段目标。云端会消耗少量 token；更换模型后请重测。测试只填充分段目标，需点保存才会写入。")
+        }
+    }
+
     private func refreshResourceStatus() async {
         refreshingStatus = true
         defer { refreshingStatus = false }
@@ -803,6 +918,76 @@ private struct ResourceEditorSheet: View {
             probeFeedback = status.displayMessage.isEmpty ? "已连通，模型未下载" : status.displayMessage
         } else {
             probeFeedback = status.displayMessage
+        }
+    }
+
+    private func refreshContextProbe() async {
+        guard let status = try? await core.fetchContextProbe(resourceId: resource.id) else { return }
+        contextProbe = status
+        if status.isRunning {
+            probingContext = true
+            await pollContextProbe()
+        }
+    }
+
+    private func startContextProbe() async {
+        probingContext = true
+        probeFeedback = nil
+        do {
+            let key = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+            contextProbe = try await core.startContextProbe(
+                resourceId: resource.id,
+                model: resource.model,
+                baseURL: resource.base_url,
+                apiKey: key.isEmpty ? nil : key
+            )
+            await pollContextProbe()
+        } catch {
+            probingContext = false
+            contextProbe = nil
+            probeFeedback = error.localizedDescription
+        }
+    }
+
+    private func pollContextProbe() async {
+        while !Task.isCancelled {
+            do {
+                let status = try await core.fetchContextProbe(resourceId: resource.id)
+                contextProbe = status
+                if status.isRunning {
+                    try await Task.sleep(nanoseconds: 500_000_000)
+                    continue
+                }
+                probingContext = false
+                applyProbeRecommendation(status)
+                return
+            } catch {
+                if error.isCancellation { return }
+                probingContext = false
+                probeFeedback = error.localizedDescription
+                return
+            }
+        }
+    }
+
+    private func cancelContextProbe() async {
+        do {
+            try await core.cancelContextProbe(resourceId: resource.id)
+            await pollContextProbe()
+        } catch {
+            probingContext = false
+            probeFeedback = error.localizedDescription
+        }
+    }
+
+    private func applyProbeRecommendation(_ status: ContextProbeStatus) {
+        guard status.status == "done", let recommended = status.recommended_chars, recommended > 0 else {
+            return
+        }
+        if recommended == kind.defaultChunkTarget {
+            resource.chunk_target_chars = 0
+        } else {
+            resource.chunk_target_chars = recommended
         }
     }
 }
@@ -861,7 +1046,12 @@ private struct AddResourceSheet: View {
 struct AppSettings: Codable {
     var target_language: String
     var web_search_provider: String
+    var web_search_enabled: Bool
     var tavily_api_key: String?
+    var ocr_cloud_base_url: String
+    var ocr_cloud_model: String
+    var ocr_cloud_api_key: String?
+    var ocr_cloud_timeout_seconds: Double
     var debug_mode: Bool
     var auto_start_summary: Bool
     var models: ModelsSettings
@@ -871,7 +1061,12 @@ struct AppSettings: Codable {
     init(
         target_language: String,
         web_search_provider: String = "ddgs",
+        web_search_enabled: Bool = true,
         tavily_api_key: String? = nil,
+        ocr_cloud_base_url: String = "",
+        ocr_cloud_model: String = "",
+        ocr_cloud_api_key: String? = nil,
+        ocr_cloud_timeout_seconds: Double = 60,
         debug_mode: Bool = false,
         auto_start_summary: Bool = false,
         models: ModelsSettings = .defaults,
@@ -880,7 +1075,12 @@ struct AppSettings: Codable {
     ) {
         self.target_language = target_language
         self.web_search_provider = web_search_provider
+        self.web_search_enabled = web_search_enabled
         self.tavily_api_key = tavily_api_key
+        self.ocr_cloud_base_url = ocr_cloud_base_url
+        self.ocr_cloud_model = ocr_cloud_model
+        self.ocr_cloud_api_key = ocr_cloud_api_key
+        self.ocr_cloud_timeout_seconds = ocr_cloud_timeout_seconds
         self.debug_mode = debug_mode
         self.auto_start_summary = auto_start_summary
         self.models = models
@@ -900,7 +1100,12 @@ struct AppSettings: Codable {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         target_language = try c.decode(String.self, forKey: .target_language)
         web_search_provider = try c.decodeIfPresent(String.self, forKey: .web_search_provider) ?? "ddgs"
+        web_search_enabled = try c.decodeIfPresent(Bool.self, forKey: .web_search_enabled) ?? true
         tavily_api_key = try c.decodeIfPresent(String.self, forKey: .tavily_api_key)
+        ocr_cloud_base_url = try c.decodeIfPresent(String.self, forKey: .ocr_cloud_base_url) ?? ""
+        ocr_cloud_model = try c.decodeIfPresent(String.self, forKey: .ocr_cloud_model) ?? ""
+        ocr_cloud_api_key = try c.decodeIfPresent(String.self, forKey: .ocr_cloud_api_key)
+        ocr_cloud_timeout_seconds = try c.decodeIfPresent(Double.self, forKey: .ocr_cloud_timeout_seconds) ?? 60
         debug_mode = try c.decodeIfPresent(Bool.self, forKey: .debug_mode) ?? false
         auto_start_summary = try c.decodeIfPresent(Bool.self, forKey: .auto_start_summary) ?? false
         models = try c.decodeIfPresent(ModelsSettings.self, forKey: .models) ?? .defaults
@@ -920,7 +1125,12 @@ struct AppSettings: Codable {
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encode(target_language, forKey: .target_language)
         try c.encode(web_search_provider, forKey: .web_search_provider)
+        try c.encode(web_search_enabled, forKey: .web_search_enabled)
         try c.encodeIfPresent(tavily_api_key, forKey: .tavily_api_key)
+        try c.encode(ocr_cloud_base_url, forKey: .ocr_cloud_base_url)
+        try c.encode(ocr_cloud_model, forKey: .ocr_cloud_model)
+        try c.encodeIfPresent(ocr_cloud_api_key, forKey: .ocr_cloud_api_key)
+        try c.encode(ocr_cloud_timeout_seconds, forKey: .ocr_cloud_timeout_seconds)
         try c.encode(debug_mode, forKey: .debug_mode)
         try c.encode(auto_start_summary, forKey: .auto_start_summary)
         try c.encode(models, forKey: .models)
@@ -928,7 +1138,10 @@ struct AppSettings: Codable {
     }
 
     enum CodingKeys: String, CodingKey {
-        case target_language, web_search_provider, tavily_api_key, debug_mode, auto_start_summary, models, prompts, prompts_defaults
+        case target_language, web_search_provider, web_search_enabled, tavily_api_key
+        case ocr_cloud_base_url, ocr_cloud_model, ocr_cloud_api_key
+        case ocr_cloud_timeout_seconds
+        case debug_mode, auto_start_summary, models, prompts, prompts_defaults
     }
 }
 
@@ -972,6 +1185,7 @@ struct ModelResourceSettings: Codable, Identifiable, Equatable {
     var provider: String
     var base_url: String
     var model: String
+    var advanced_model: String?
     var api_key: String?
     var chat_timeout: Double?
     var concurrency: Int?
@@ -982,6 +1196,7 @@ struct ModelResourceSettings: Codable, Identifiable, Equatable {
         provider: String,
         base_url: String = "",
         model: String = "",
+        advanced_model: String? = nil,
         api_key: String? = nil,
         chat_timeout: Double? = 12,
         concurrency: Int? = nil,
@@ -991,6 +1206,7 @@ struct ModelResourceSettings: Codable, Identifiable, Equatable {
         self.provider = provider
         self.base_url = base_url
         self.model = model
+        self.advanced_model = advanced_model
         self.api_key = api_key
         self.chat_timeout = chat_timeout
         self.concurrency = concurrency
@@ -1136,8 +1352,8 @@ enum ModelProviderKind: String, CaseIterable, Identifiable {
 
     var chunkTargetRange: ClosedRange<Int> {
         switch self {
-        case .ollama: return 1500...4000
-        default: return 2000...8000
+        case .ollama: return 200...4000
+        default: return 200...8000
         }
     }
 

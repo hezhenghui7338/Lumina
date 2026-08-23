@@ -16,5 +16,6 @@
     <Compile Include="..\Lumina\Services\Models.cs" Link="Models.cs" />
     <Compile Include="..\Lumina\Services\CoreClient.cs" Link="CoreClient.cs" />
     <Compile Include="..\Lumina\Services\SummaryJsonParser.cs" Link="SummaryJsonParser.cs" />
+    <Compile Include="..\Lumina\Services\SidecarReadiness.cs" Link="SidecarReadiness.cs" />
   </ItemGroup>
 </Project>

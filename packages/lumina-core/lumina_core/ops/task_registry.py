@@ -13,7 +13,10 @@ TaskKind = Literal[
     "summarize",
     "translate",
     "classify",
+    "resegment",
+    "ingest",
     "book_chat",
+    "book_index",
     "news_read",
     "news_chat",
 ]

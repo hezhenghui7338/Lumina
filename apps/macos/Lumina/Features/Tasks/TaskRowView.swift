@@ -94,7 +94,7 @@ struct TaskRowView: View {
         case "summarize": return "text.alignleft"
         case "translate": return "character.bubble"
         case "classify": return "tag"
-        case "book_chat", "news_chat": return "bubble.left.and.bubble.right"
+        case "book_index": return "list.bullet.rectangle"
         case "news_read": return "newspaper"
         default: return "cpu"
         }

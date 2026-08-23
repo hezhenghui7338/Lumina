@@ -74,4 +74,140 @@ final class SidecarReadinessTests: XCTestCase {
         XCTAssertFalse(SidecarReadiness.isReady(isRunning: false, launchError: nil))
         XCTAssertFalse(SidecarReadiness.isReady(isRunning: true, launchError: "failed"))
     }
+
+    func testCompatibleHandshake_requiresChunkerAndCoreVersion() {
+        XCTAssertTrue(
+            SidecarReadiness.isCompatible(
+                chunkerVersion: SidecarReadiness.expectedChunkerVersion,
+                coreVersion: "0.8.1",
+                expectedCoreVersion: "0.8.1"
+            )
+        )
+        XCTAssertFalse(
+            SidecarReadiness.isCompatible(
+                chunkerVersion: "7",
+                coreVersion: "0.8.1",
+                expectedCoreVersion: "0.8.1"
+            )
+        )
+        XCTAssertFalse(
+            SidecarReadiness.isCompatible(
+                chunkerVersion: SidecarReadiness.expectedChunkerVersion,
+                coreVersion: "0.8.0",
+                expectedCoreVersion: "0.8.1"
+            )
+        )
+        XCTAssertFalse(
+            SidecarReadiness.isCompatible(
+                chunkerVersion: SidecarReadiness.expectedChunkerVersion,
+                coreVersion: nil,
+                expectedCoreVersion: "0.8.1"
+            )
+        )
+    }
+
+    func testShouldReplaceOrphan_whenCoreVersionDiffers() {
+        XCTAssertTrue(
+            replaceOrphan(
+                coreVersion: "0.8.0",
+                expectedCoreVersion: "0.8.1",
+                hasBundledSidecar: true,
+                orphanExecutable: "/app/Contents/Resources/lumina-core/lumina-core",
+                bundledExecutable: "/app/Contents/Resources/lumina-core/lumina-core",
+                orphanStartedAt: Date(timeIntervalSince1970: 200),
+                bundledModifiedAt: Date(timeIntervalSince1970: 100)
+            )
+        )
+    }
+
+    func testShouldReplaceOrphan_whenBundledBinaryIsNewer() {
+        XCTAssertTrue(
+            replaceOrphan(
+                coreVersion: "0.8.1",
+                expectedCoreVersion: "0.8.1",
+                hasBundledSidecar: true,
+                orphanExecutable: "/app/Contents/Resources/lumina-core/lumina-core",
+                bundledExecutable: "/app/Contents/Resources/lumina-core/lumina-core",
+                orphanStartedAt: Date(timeIntervalSince1970: 100),
+                bundledModifiedAt: Date(timeIntervalSince1970: 200)
+            )
+        )
+    }
+
+    func testShouldReplaceOrphan_keepsSameBuild() {
+        XCTAssertFalse(
+            replaceOrphan(
+                coreVersion: "0.8.1",
+                expectedCoreVersion: "0.8.1",
+                hasBundledSidecar: true,
+                orphanExecutable: "/app/Contents/Resources/lumina-core/lumina-core",
+                bundledExecutable: "/app/Contents/Resources/lumina-core/lumina-core",
+                orphanStartedAt: Date(timeIntervalSince1970: 200),
+                bundledModifiedAt: Date(timeIntervalSince1970: 100)
+            )
+        )
+    }
+
+    func testShouldReplaceOrphan_debugReusesCompatibleUvSidecar() {
+        XCTAssertFalse(
+            replaceOrphan(
+                coreVersion: "0.8.1",
+                expectedCoreVersion: "0.8.1",
+                hasBundledSidecar: false,
+                orphanExecutable: "/Users/dev/.local/share/uv/python",
+                bundledExecutable: nil,
+                orphanStartedAt: Date(timeIntervalSince1970: 50),
+                bundledModifiedAt: nil
+            )
+        )
+    }
+
+    func testShouldReplaceOrphan_debugReplacesLeftoverFrozenSidecar() {
+        XCTAssertTrue(
+            replaceOrphan(
+                coreVersion: "0.8.1",
+                expectedCoreVersion: "0.8.1",
+                hasBundledSidecar: false,
+                orphanExecutable: "/dist/Lumina.app/Contents/Resources/lumina-core/lumina-core",
+                bundledExecutable: nil,
+                orphanStartedAt: Date(timeIntervalSince1970: 50),
+                bundledModifiedAt: nil
+            )
+        )
+    }
+
+    func testShouldReplaceOrphan_legacyHealthWithoutCoreVersion() {
+        XCTAssertTrue(
+            replaceOrphan(
+                coreVersion: nil,
+                expectedCoreVersion: "0.8.1",
+                hasBundledSidecar: true,
+                orphanExecutable: "/app/Contents/Resources/lumina-core/lumina-core",
+                bundledExecutable: "/app/Contents/Resources/lumina-core/lumina-core",
+                orphanStartedAt: Date(timeIntervalSince1970: 200),
+                bundledModifiedAt: Date(timeIntervalSince1970: 100)
+            )
+        )
+    }
+
+    private func replaceOrphan(
+        coreVersion: String?,
+        expectedCoreVersion: String,
+        hasBundledSidecar: Bool,
+        orphanExecutable: String?,
+        bundledExecutable: String?,
+        orphanStartedAt: Date?,
+        bundledModifiedAt: Date?
+    ) -> Bool {
+        SidecarReadiness.shouldReplaceOrphan(
+            chunkerVersion: SidecarReadiness.expectedChunkerVersion,
+            coreVersion: coreVersion,
+            expectedCoreVersion: expectedCoreVersion,
+            hasBundledSidecar: hasBundledSidecar,
+            orphanExecutable: orphanExecutable,
+            bundledExecutable: bundledExecutable,
+            orphanStartedAt: orphanStartedAt,
+            bundledModifiedAt: bundledModifiedAt
+        )
+    }
 }

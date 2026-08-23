@@ -31,6 +31,43 @@ def test_evidence_sufficient_on_long_context():
     assert assess_evidence_sufficiency("总结本段", ctx)
 
 
+def test_evidence_insufficient_on_low_overlap():
+    ctx = "甲乙丙丁" * 80
+    assert not assess_evidence_sufficiency("牛顿运动定律是什么", ctx)
+
+
+@pytest.mark.asyncio
+async def test_wikipedia_uses_zh_for_cjk_query(monkeypatch):
+    captured: dict[str, str] = {}
+
+    class _Resp:
+        status_code = 200
+
+        def json(self):
+            return {"query": {"search": [{"title": "牛顿", "snippet": "物理学家"}]}}
+
+    class _Client:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def get(self, url, params=None, headers=None):
+            captured["url"] = url
+            return _Resp()
+
+    import lumina_core.search.web as web
+
+    monkeypatch.setattr(web.httpx, "AsyncClient", _Client)
+    results = await web._search_wikipedia("牛顿 生平")
+    assert "zh.wikipedia.org" in captured["url"]
+    assert results and "zh.wikipedia.org" in results[0].url
+
+
 def test_normalize_web_search_provider():
     assert normalize_web_search_provider("ddgs") == "ddgs"
     assert normalize_web_search_provider("Tavily") == "tavily"

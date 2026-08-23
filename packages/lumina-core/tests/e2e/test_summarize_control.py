@@ -156,6 +156,39 @@ def test_regenerate_book_reruns_ready_segments(client):
     pytest.fail(f"regenerate did not complete: {statuses}")
 
 
+def test_start_book_advanced_keeps_ready_summaries(client):
+    book_id = import_sample_book(client)
+    _wait_ready(client, book_id)
+
+    from lumina_core.db.repos import SegmentRepo
+
+    conn = client.app.state.lumina.conn  # type: ignore[attr-defined]
+    repo = SegmentRepo(conn)
+    seg = repo.get_by_index(book_id, 0)
+    assert seg is not None
+    kept_json = '{"sentences":["KEEP-ME"],"bullets":[],"label":"kept","anchor":"a"}'
+    repo.update_summary(
+        seg["id"],
+        summary_json=kept_json,
+        label="kept",
+        summary_tier="normal",
+    )
+
+    assert client.post(f"/books/{book_id}/summarize/stop").status_code == 200
+    start = client.post(
+        f"/books/{book_id}/summarize/start",
+        json={"summary_tier": "advanced"},
+    )
+    assert start.status_code == 200
+    time.sleep(0.3)
+
+    after = client.get(f"/books/{book_id}/segments/0").json()
+    assert after["summary_status"] == "ready"
+    assert after["summary_json"] == kept_json
+    assert after["summary_tier"] == "normal"
+    assert after["label"] == "kept"
+
+
 def test_start_book_resumes_failed_segment(client):
     book_id = import_sample_book(client)
     _wait_ready(client, book_id)

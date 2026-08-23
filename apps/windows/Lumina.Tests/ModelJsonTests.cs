@@ -29,11 +29,29 @@ public class ModelJsonTests
         Assert.Equal(1, brief.Count);
         Assert.Equal("a1", brief.Articles[0].Id);
 
-        var settingsJson = """{"target_language":"zh-CN","web_search_provider":"ddgs","debug_mode":true,"auto_start_summary":false,"models":{"resources":[{"id":"ollama","provider":"ollama","base_url":"http://127.0.0.1:11434","model":"qwen3.5:4b"}],"chat":{"priority":["ollama"]},"summarize":{"priority":["ollama"]}},"prompts":{"segment":"s","document":"d","chat":"c","news_chat":"nc","translate":"t","classify":"cl"},"prompts_defaults":{"segment":"","document":"","chat":"","news_chat":"","translate":"","classify":""}}""";
+        var settingsJson = """{"target_language":"zh-CN","web_search_provider":"ddgs","web_search_enabled":true,"debug_mode":true,"auto_start_summary":false,"models":{"resources":[{"id":"ollama","provider":"ollama","base_url":"http://127.0.0.1:11434","model":"qwen3.5:4b","advanced_model":"qwen3.5:9b"}],"chat":{"priority":["ollama"]},"summarize":{"priority":["ollama"]}},"prompts":{"segment":"s","document":"d","chat":"c","news_chat":"nc","translate":"t","classify":"cl"},"prompts_defaults":{"segment":"","document":"","chat":"","news_chat":"","translate":"","classify":""}}""";
         var settings = JsonSerializer.Deserialize<AppSettings>(settingsJson, Opts)!;
         Assert.True(settings.DebugMode);
+        Assert.True(settings.WebSearchEnabled);
         Assert.Equal("ollama", settings.Models.Resources[0].Id);
-        Assert.Equal("nc", settings.Prompts.NewsChat);
+        Assert.Equal("qwen3.5:9b", settings.Models.Resources[0].AdvancedModel);
+        var refJson = """{"title":"牛顿","url":"https://zh.wikipedia.org/wiki/牛顿","source":"Wikipedia"}""";
+        var webRef = JsonSerializer.Deserialize<ChatWebRef>(refJson, Opts)!;
+        Assert.Equal("牛顿", webRef.Title);
+        Assert.Contains("[网]", webRef.DisplayTitle);
+        Assert.NotNull(webRef.NavigateUri);
+    }
+
+    [Fact]
+    public void Deserializes_context_probe_status()
+    {
+        var json = """{"resource_id":"ollama","status":"done","model":"qwen3.5:4b","current_chars":3500,"max_ok_chars":3500,"recommended_chars":2800,"steps":[{"chars":1500,"ok":true,"message":""}],"message":"实测后面内容仍被理解约 3500 字","waiting_for_slot":false}""";
+        var status = JsonSerializer.Deserialize<ContextProbeStatus>(json, Opts)!;
+        Assert.Equal("ollama", status.ResourceId);
+        Assert.Equal("done", status.Status);
+        Assert.Equal(2800, status.RecommendedChars);
+        Assert.False(status.IsRunning);
+        Assert.Contains("3500", status.DisplayMessage);
     }
 
     [Fact]
@@ -47,11 +65,104 @@ public class ModelJsonTests
     }
 
     [Fact]
+    public void Deserializes_segment_boundary_preview()
+    {
+        var json = """{"left_idx":2,"right_idx":3,"total_chars":900,"left_char_count":420,"candidates":[{"offset":210,"kind":"paragraph"},{"offset":420,"kind":"current"}],"oversized_limit":6000}""";
+        var preview = JsonSerializer.Deserialize<SegmentBoundaryPreview>(json, Opts)!;
+        Assert.Equal(2, preview.LeftIdx);
+        Assert.Equal(2, preview.Candidates.Count);
+        Assert.Equal(420, preview.Candidates[1].Offset);
+
+        var movedJson = """{"left_idx":2,"right_idx":3,"left_char_count":630,"right_char_count":270,"left_status":"pending","right_status":"pending","oversized":false,"unchanged":false}""";
+        var moved = JsonSerializer.Deserialize<SegmentBoundaryMoveResult>(movedJson, Opts)!;
+        Assert.Equal(630, moved.LeftCharCount);
+        Assert.False(moved.Unchanged);
+    }
+
+    [Fact]
+    public void Deserializes_book_index_status()
+    {
+        var json = """{"id":"b1","title":"Sample","status":"summarized","segment_count":5,"summary_ready_count":5,"summary_total_count":5,"index_status":"ready"}""";
+        var book = JsonSerializer.Deserialize<BookSummary>(json, Opts)!;
+        Assert.Equal("ready", book.IndexStatus);
+        Assert.True(book.CanChatBook);
+        Assert.Equal("全书", book.BookChatLabel);
+    }
+
+    [Fact]
     public void SummarizeStateFilters_match_books()
     {
         var running = new BookSummary { SummarizeState = "running", SummaryTotalCount = 10, SummaryReadyCount = 1 };
+        var queued = new BookSummary { SummarizeState = "queued", SummaryTotalCount = 10 };
         Assert.True(SummarizeStateFilters.Matches(SummarizeStateFilters.Running, running));
+        Assert.True(SummarizeStateFilters.Matches(SummarizeStateFilters.Running, queued));
         Assert.False(SummarizeStateFilters.Matches(SummarizeStateFilters.Idle, running));
+    }
+
+    [Fact]
+    public void LibraryCollections_match_reading_and_summary_buckets()
+    {
+        var unread = new BookSummary { Title = "A", SegmentCount = 10 };
+        var reading = new BookSummary
+        {
+            Title = "B",
+            SegmentCount = 10,
+            LastOpenedAt = "2024-05-01T00:00:00Z",
+            CurrentSegmentIndex = 2,
+            SummarizeState = "idle",
+        };
+        var finished = new BookSummary
+        {
+            Title = "C",
+            SegmentCount = 10,
+            LastOpenedAt = "2024-06-01T00:00:00Z",
+            CurrentSegmentIndex = 9,
+            Status = "summarized",
+        };
+        var shortOpened = new BookSummary
+        {
+            Title = "D",
+            SegmentCount = 1,
+            LastOpenedAt = "2024-07-01T00:00:00Z",
+            CurrentSegmentIndex = 0,
+        };
+        var summarizing = new BookSummary { Title = "E", SummarizeState = "queued", SegmentCount = 8 };
+
+        Assert.True(LibraryCollections.Matches(LibraryCollections.Unread, unread));
+        Assert.True(LibraryCollections.Matches(LibraryCollections.Reading, reading));
+        Assert.True(LibraryCollections.Matches(LibraryCollections.Finished, finished));
+        Assert.True(LibraryCollections.Matches(LibraryCollections.Reading, shortOpened));
+        Assert.False(LibraryCollections.Matches(LibraryCollections.Finished, shortOpened));
+        Assert.True(LibraryCollections.Matches(LibraryCollections.Summarizing, summarizing));
+        Assert.Equal("段落数", LibrarySorts.Label(LibrarySorts.Segments));
+
+        var sorted = LibrarySorts.Sorted([unread, reading, summarizing], LibrarySorts.Segments);
+        Assert.Equal(["A", "B", "E"], sorted.Select(b => b.Title).ToList());
+    }
+
+    [Fact]
+    public void ReadingProgressIndex_prefers_local_until_resegment()
+    {
+        Assert.Equal(6, ReadingProgressIndex.Restore(1, 6, 10, 10));
+        Assert.Equal(0, ReadingProgressIndex.Restore(0, 8, 12, 4));
+        Assert.Equal(9, ReadingProgressIndex.Restore(0, 99, 10, 10));
+        Assert.Equal(3, ReadingProgressIndex.Restore(3, null, null, 10));
+    }
+
+    [Fact]
+    public void ReadingProgressIndex_restore_offset_until_resegment()
+    {
+        Assert.Equal(120, ReadingProgressIndex.RestoreOffset(120, 10, 10));
+        Assert.Equal(0, ReadingProgressIndex.RestoreOffset(120, 12, 4));
+        Assert.Equal(0, ReadingProgressIndex.RestoreOffset(null, 10, 10));
+    }
+
+    [Fact]
+    public void ReadingProgressIndex_should_commit_rejects_unconfirmed_jump_home()
+    {
+        Assert.False(ReadingProgressIndex.ShouldCommit(20, 0, false));
+        Assert.True(ReadingProgressIndex.ShouldCommit(20, 0, true));
+        Assert.True(ReadingProgressIndex.ShouldCommit(0, 0, false));
     }
 }
 

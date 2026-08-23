@@ -24,12 +24,9 @@ struct SummaryBlock: View {
         }
     }
 
-    /// Prefer pre-parsed cache; fall back to synchronous parse when cache is not wired yet.
+    /// Prefer the pre-parsed cache. Reader never parses JSON on the view body path.
     private var resolvedSummary: ParsedSummary? {
         if let parsedSummary, parsedSummary.hasContent { return parsedSummary }
-        if let rawJSON, let parsed = ParsedSummary(json: rawJSON), parsed.hasContent {
-            return parsed
-        }
         return nil
     }
 

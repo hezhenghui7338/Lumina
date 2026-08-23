@@ -2,16 +2,20 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
 import httpx
 
-from lumina_core.config import ModelResource
-from lumina_core.models.openai_compat import openai_compat_client_base, openai_compat_paths
+from lumina_core.config import ModelResource, Settings
+from lumina_core.ingest.ocr import ocr_cloud_configured, ocr_dependency_warning
+from lumina_core.models.openai_compat import (
+    openai_compat_client_base,
+    openai_compat_paths,
+)
 from lumina_core.ollama_setup import check_ollama_status, is_local_base_url
 from lumina_core.ollama_setup import recommended_tiers as ollama_recommended_tiers
-
 
 _CLOUD_PROVIDERS = frozenset({"openai", "openrouter", "cursor", "aiping", "custom"})
 _KEY_REQUIRED_PROVIDERS = frozenset({"openai", "openrouter", "cursor", "aiping", "custom"})
@@ -37,6 +41,75 @@ class ResourceProbeResult:
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+
+@dataclass
+class OcrProbeResult:
+    provider: str
+    ready: bool
+    probe_ok: bool
+    configured: bool
+    key_configured: bool
+    model_ready: bool
+    message: str = ""
+    base_url: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+async def probe_ocr(settings: Settings) -> OcrProbeResult:
+    base_url = settings.ocr_cloud_base_url.strip()
+    model = settings.ocr_cloud_model.strip()
+    key = (settings.ocr_cloud_api_key or "").strip()
+    any_cloud = bool(base_url or model or key)
+    if not any_cloud:
+        warning = await asyncio.to_thread(ocr_dependency_warning)
+        return OcrProbeResult(
+            provider="local",
+            ready=warning is None,
+            probe_ok=warning is None,
+            configured=False,
+            key_configured=True,
+            model_ready=warning is None,
+            message=warning or "本地 OCR 已就绪",
+        )
+
+    if not ocr_cloud_configured(settings):
+        missing = [
+            label
+            for label, value in (("Base URL", base_url), ("模型", model), ("API Key", key))
+            if not value
+        ]
+        return OcrProbeResult(
+            provider="cloud",
+            ready=False,
+            probe_ok=False,
+            configured=False,
+            key_configured=bool(key),
+            model_ready=bool(model),
+            message=f"云端 OCR 配置不完整：缺少{'、'.join(missing)}；导入时将使用本地 OCR",
+            base_url=base_url,
+        )
+
+    resource = ModelResource(
+        id="ocr",
+        provider="custom",
+        base_url=base_url,
+        model=model,
+        api_key=key,
+    )
+    result = await _probe_openai_compatible(resource, key_ok=True, model_ok=True)
+    return OcrProbeResult(
+        provider="cloud",
+        ready=result.ready,
+        probe_ok=result.probe_ok,
+        configured=True,
+        key_configured=True,
+        model_ready=result.model_ready,
+        message=result.message,
+        base_url=base_url,
+    )
 
 
 def _key_configured(resource: ModelResource) -> bool:

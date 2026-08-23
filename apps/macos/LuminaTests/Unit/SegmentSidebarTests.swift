@@ -34,8 +34,8 @@ final class SegmentSidebarTests: XCTestCase {
 
     func testCenterIndex_forSegmentIdx() {
         let segments = [
-            SegmentRow(id: "a", idx: 0, label: nil, chapter: nil, summary_status: "ready", summary_json: nil, raw_text: nil, translation: nil, anchor_label: nil, summary_provider: nil, summary_model: nil, char_count: nil, retry_count: nil, summary_duration_s: nil, summary_llm_attempts: nil),
-            SegmentRow(id: "b", idx: 5, label: nil, chapter: nil, summary_status: "pending", summary_json: nil, raw_text: nil, translation: nil, anchor_label: nil, summary_provider: nil, summary_model: nil, char_count: nil, retry_count: nil, summary_duration_s: nil, summary_llm_attempts: nil),
+            SegmentRow(id: "a", idx: 0, label: nil, chapter: nil, summary_status: "ready", summary_json: nil, raw_text: nil, translation: nil, anchor_label: nil, summary_provider: nil, summary_model: nil, summary_tier: nil, char_count: nil, retry_count: nil, summary_duration_s: nil, summary_llm_attempts: nil),
+            SegmentRow(id: "b", idx: 5, label: nil, chapter: nil, summary_status: "pending", summary_json: nil, raw_text: nil, translation: nil, anchor_label: nil, summary_provider: nil, summary_model: nil, summary_tier: nil, char_count: nil, retry_count: nil, summary_duration_s: nil, summary_llm_attempts: nil),
         ]
         XCTAssertEqual(SegmentRenderWindow.centerIndex(forSegmentIdx: 5, in: segments), 1)
         XCTAssertEqual(SegmentRenderWindow.centerIndex(forSegmentIdx: 99, in: segments), 0)
@@ -46,7 +46,7 @@ final class SegmentSidebarTests: XCTestCase {
             SegmentRow(
                 id: "s\(i)", idx: i, label: nil, chapter: nil, summary_status: "ready",
                 summary_json: nil, raw_text: nil, translation: nil, anchor_label: nil,
-                summary_provider: nil, summary_model: nil, char_count: nil, retry_count: nil,
+                summary_provider: nil, summary_model: nil, summary_tier: nil, char_count: nil, retry_count: nil,
                 summary_duration_s: nil, summary_llm_attempts: nil
             )
         }
@@ -58,7 +58,7 @@ final class SegmentSidebarTests: XCTestCase {
         let segment = SegmentRow(
             id: "s1", idx: 0, label: "引子", chapter: "第一章", summary_status: "ready",
             summary_json: nil, raw_text: nil, translation: nil, anchor_label: nil,
-            summary_provider: nil, summary_model: nil, char_count: nil, retry_count: nil,
+            summary_provider: nil, summary_model: nil, summary_tier: nil, char_count: nil, retry_count: nil,
             summary_duration_s: nil, summary_llm_attempts: nil
         )
         let item = SidebarSegmentItem.make(from: segment, bulletPreview: "preview", runningMetrics: nil)
@@ -71,52 +71,136 @@ final class SegmentSidebarTests: XCTestCase {
         let segment = SegmentRow(
             id: "s1", idx: 0, label: nil, chapter: nil, summary_status: "pending",
             summary_json: nil, raw_text: nil, translation: nil, anchor_label: nil,
-            summary_provider: nil, summary_model: nil, char_count: nil, retry_count: nil,
+            summary_provider: nil, summary_model: nil, summary_tier: nil, char_count: nil, retry_count: nil,
             summary_duration_s: nil, summary_llm_attempts: nil
         )
         let item = SidebarSegmentItem.make(from: segment, bulletPreview: nil, runningMetrics: nil)
         XCTAssertEqual(item.outlineLabel, "等待摘要…")
     }
+
+    func testSidebarSegmentItem_runningUsesGeneratingCopy() {
+        let segment = SegmentRow(
+            id: "s1", idx: 0, label: nil, chapter: nil, summary_status: "running",
+            summary_json: nil, raw_text: nil, translation: nil, anchor_label: nil,
+            summary_provider: nil, summary_model: nil, summary_tier: nil, char_count: nil, retry_count: nil,
+            summary_duration_s: nil, summary_llm_attempts: nil
+        )
+        let item = SidebarSegmentItem.make(from: segment, bulletPreview: nil, runningMetrics: nil)
+        XCTAssertEqual(item.outlineLabel, "摘要生成中…")
+    }
 }
 
 @MainActor
 final class ReaderViewModelSidebarTests: XCTestCase {
-    func testArrayIndex_forSegmentIdx() {
-        let vm = ReaderViewModel()
-        vm.segments = Self.sampleSegments(count: 10)
-        vm.rebuildSidebarItems()
-
-        XCTAssertEqual(vm.arrayIndex(forSegmentIdx: 0), 0)
-        XCTAssertEqual(vm.arrayIndex(forSegmentIdx: 9), 9)
-        XCTAssertNil(vm.arrayIndex(forSegmentIdx: 99))
+    func testNormalizedResegmentTarget_usesCurrentTargetAndClampsRange() {
+        XCTAssertEqual(
+            ReaderViewModel.normalizedResegmentTarget(
+                currentTarget: 3_449,
+                totalChars: nil,
+                segmentCount: 0
+            ),
+            3_400
+        )
+        XCTAssertEqual(
+            ReaderViewModel.normalizedResegmentTarget(
+                currentTarget: 900,
+                totalChars: nil,
+                segmentCount: 0
+            ),
+            900
+        )
+        XCTAssertEqual(
+            ReaderViewModel.normalizedResegmentTarget(
+                currentTarget: 50,
+                totalChars: nil,
+                segmentCount: 0
+            ),
+            ReaderViewModel.resegmentMinTargetChars
+        )
+        XCTAssertEqual(
+            ReaderViewModel.normalizedResegmentTarget(
+                currentTarget: 200,
+                totalChars: nil,
+                segmentCount: 0
+            ),
+            200
+        )
+        XCTAssertEqual(
+            ReaderViewModel.normalizedResegmentTarget(
+                currentTarget: 9_000,
+                totalChars: nil,
+                segmentCount: 0
+            ),
+            8_000
+        )
     }
 
-    func testPatchSidebarItems_updatesOnlyTarget() {
-        let vm = ReaderViewModel()
-        vm.segments = Self.sampleSegments(count: 5)
-        vm.rebuildSidebarItems()
-
-        let before0 = vm.sidebarItems[0]
-        let before2 = vm.sidebarItems[2]
-        let before1 = vm.sidebarItems[1]
-
-        vm.segments[1].label = "更新标签"
-        vm.patchSidebarItems(atSegmentIndices: [1])
-
-        XCTAssertEqual(vm.sidebarItems[0], before0)
-        XCTAssertEqual(vm.sidebarItems[2], before2)
-        XCTAssertNotEqual(vm.sidebarItems[1], before1)
-        XCTAssertEqual(vm.sidebarItems[1].outlineLabel, "更新标签")
+    func testNormalizedResegmentTarget_fallsBackToAverageSegmentSize() {
+        XCTAssertEqual(
+            ReaderViewModel.normalizedResegmentTarget(
+                currentTarget: nil,
+                totalChars: 10_100,
+                segmentCount: 3
+            ),
+            3_400
+        )
     }
 
-    private static func sampleSegments(count: Int) -> [SegmentRow] {
-        (0..<count).map { i in
+    func testResegmentEventsUpdateReaderState() {
+        let vm = ReaderViewModel()
+        let core = CoreClient(baseURL: URL(string: "http://127.0.0.1:8765")!)
+
+        vm.handleEvent(
+            ["type": "resegment_started", "chunk_target_chars": 2_500],
+            core: core
+        )
+        XCTAssertTrue(vm.isResegmenting)
+        XCTAssertFalse(vm.isResegmentCancelling)
+        XCTAssertEqual(vm.chunkTargetChars, 2_500)
+        XCTAssertEqual(vm.ingestProgress?.message, "正在重新分段…")
+
+        vm.handleEvent(
+            ["type": "resegment_failed", "status": "reading", "message": "测试失败"],
+            core: core
+        )
+        XCTAssertFalse(vm.isResegmenting)
+        XCTAssertEqual(vm.bookStatus, "reading")
+        XCTAssertEqual(vm.loadError, "测试失败")
+    }
+
+    func testSegmentProgressMessage_pendingDoesNotClaimGenerating() {
+        let vm = ReaderViewModel()
+        vm.segments = [
             SegmentRow(
-                id: "s\(i)", idx: i, label: nil, chapter: "章 \(i + 1)", summary_status: "ready",
+                id: "s1", idx: 0, label: nil, chapter: nil, summary_status: "pending",
                 summary_json: nil, raw_text: nil, translation: nil, anchor_label: nil,
-                summary_provider: nil, summary_model: nil, char_count: nil, retry_count: nil,
+                summary_provider: nil, summary_model: nil, summary_tier: nil, char_count: nil, retry_count: nil,
                 summary_duration_s: nil, summary_llm_attempts: nil
             )
+        ]
+        XCTAssertNil(vm.segmentProgressMessage(for: 0))
+        XCTAssertNil(vm.activeSummarizeLabel())
+    }
+
+    func testSegmentProgressMessage_runningShowsGenerating() {
+        let vm = ReaderViewModel()
+        vm.segments = [
+            SegmentRow(
+                id: "s1", idx: 0, label: nil, chapter: nil, summary_status: "running",
+                summary_json: nil, raw_text: nil, translation: nil, anchor_label: nil,
+                summary_provider: nil, summary_model: nil, summary_tier: nil, char_count: nil, retry_count: nil,
+                summary_duration_s: nil, summary_llm_attempts: nil
+            )
+        ]
+        XCTAssertEqual(vm.segmentProgressMessage(for: 0), "摘要生成中…")
+        XCTAssertEqual(vm.activeSummarizeLabel(), "段 1 · 摘要生成中…")
+    }
+
+    func testSettingsChunkTargetRange_allows200() {
+        for kind in ModelProviderKind.allCases {
+            XCTAssertEqual(kind.chunkTargetRange.lowerBound, 200)
+            XCTAssertTrue(kind.chunkTargetRange.contains(200))
         }
     }
+
 }

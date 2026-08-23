@@ -51,6 +51,37 @@ public static class LocalPrefs
         Save();
     }
 
+    public static int? GetReadingProgress(string bookId, int segmentCount)
+    {
+        if (_data.ReadingProgressByBook.TryGetValue(bookId, out var cached)
+            && cached.SegmentCount == segmentCount)
+        {
+            return cached.Index;
+        }
+        return null;
+    }
+
+    public static double GetReadingProgressOffset(string bookId, int segmentCount)
+    {
+        if (_data.ReadingProgressByBook.TryGetValue(bookId, out var cached)
+            && cached.SegmentCount == segmentCount)
+        {
+            return Math.Max(0, cached.OffsetY);
+        }
+        return 0;
+    }
+
+    public static void SetReadingProgress(string bookId, int index, int segmentCount, double offsetY = 0)
+    {
+        _data.ReadingProgressByBook[bookId] = new ProgressPref
+        {
+            Index = index,
+            SegmentCount = segmentCount,
+            OffsetY = Math.Max(0, offsetY),
+        };
+        Save();
+    }
+
     private static PrefsData Load()
     {
         try
@@ -78,5 +109,13 @@ public static class LocalPrefs
         public bool OnboardingDone { get; set; }
         public double ReaderFontSize { get; set; } = 15;
         public Dictionary<string, bool> ShowRawByBook { get; set; } = new();
+        public Dictionary<string, ProgressPref> ReadingProgressByBook { get; set; } = new();
+    }
+
+    private sealed class ProgressPref
+    {
+        public int Index { get; set; }
+        public int SegmentCount { get; set; }
+        public double OffsetY { get; set; }
     }
 }

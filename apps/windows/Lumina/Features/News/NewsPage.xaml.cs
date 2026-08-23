@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using System.Linq;
 using Lumina.Services;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
@@ -220,9 +221,20 @@ public sealed partial class NewsPage : Page
                             _chatLines[assistantIdx] += token;
                     });
                 },
+                onStatus: status => DispatcherQueue.TryEnqueue(() =>
+                {
+                    if (assistantIdx < _chatLines.Count && _chatLines[assistantIdx] == "Lumina：")
+                        _chatLines[assistantIdx] = "Lumina：" + status;
+                }),
                 ct: _chatCts.Token);
             if (!string.IsNullOrEmpty(resp.Answer))
                 _chatLines[assistantIdx] = "Lumina：" + resp.Answer;
+            if (resp.WebRefs.Count > 0)
+            {
+                _chatLines[assistantIdx] += "\n" + string.Join(
+                    "\n",
+                    resp.WebRefs.Select(r => r.DisplayTitle + " " + r.Url));
+            }
         }
         catch (OperationCanceledException)
         {

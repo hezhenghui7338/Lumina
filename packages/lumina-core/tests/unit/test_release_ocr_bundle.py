@@ -32,3 +32,28 @@ def test_prune_sidecar_preserves_opencv_dylibs(tmp_path: Path):
 
     assert libavif.is_file(), "libavif dylib must survive prune-sidecar"
     assert (internal / "libavif.16.3.0.dylib").exists(), "symlink target must remain valid"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="uses prune-sidecar.sh")
+def test_prune_sidecar_strips_onnxruntime_ballast(tmp_path: Path):
+    """Conversion/test extras must leave; capi must remain for RapidOCR inference."""
+    sidecar = tmp_path / "lumina-core"
+    internal = sidecar / "_internal"
+    ort = internal / "onnxruntime"
+    (ort / "capi").mkdir(parents=True)
+    (ort / "capi" / "onnxruntime_inference_collection.py").write_text("ok\n")
+    for name in ("transformers", "quantization", "tools", "datasets"):
+        ballast = ort / name
+        ballast.mkdir()
+        (ballast / "deadweight.py").write_text("unused\n")
+    (internal / "rapidocr" / "models").mkdir(parents=True)
+
+    subprocess.run(
+        ["bash", str(PRUNE_SCRIPT), str(sidecar)],
+        check=True,
+        cwd=ROOT,
+    )
+
+    assert (ort / "capi" / "onnxruntime_inference_collection.py").is_file()
+    for name in ("transformers", "quantization", "tools", "datasets"):
+        assert not (ort / name).exists(), f"onnxruntime/{name} must be pruned"
