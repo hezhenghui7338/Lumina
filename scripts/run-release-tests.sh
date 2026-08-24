@@ -5,6 +5,10 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 CORE_PKG="$ROOT/packages/lumina-core"
 
+# Runner default CPython (3.14 on macos-15) inflates the PyInstaller sidecar
+# past the 500MB Lumina.app cap. Release must follow the repo pin.
+export UV_PYTHON="${UV_PYTHON:-$(tr -d '[:space:]' < "$ROOT/.python-version")}"
+
 echo "==> Bad case catalog gate…"
 python3 "$ROOT/scripts/check-badcases.py"
 
