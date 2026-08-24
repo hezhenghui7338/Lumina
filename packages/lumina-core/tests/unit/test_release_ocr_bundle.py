@@ -57,3 +57,43 @@ def test_prune_sidecar_strips_onnxruntime_ballast(tmp_path: Path):
     assert (ort / "capi" / "onnxruntime_inference_collection.py").is_file()
     for name in ("transformers", "quantization", "tools", "datasets"):
         assert not (ort / name).exists(), f"onnxruntime/{name} must be pruned"
+
+
+def test_release_scripts_pin_cpython_from_python_version():
+    """GitHub runners default to CPython 3.14; that sidecar made Lumina.app 501MB."""
+    pin = (ROOT / ".python-version").read_text(encoding="utf-8").strip()
+    assert pin == "3.11"
+    sh = (ROOT / "scripts" / "build-release.sh").read_text(encoding="utf-8")
+    tests = (ROOT / "scripts" / "run-release-tests.sh").read_text(encoding="utf-8")
+    ps1 = (ROOT / "scripts" / "build-release-windows.ps1").read_text(encoding="utf-8")
+    mac_wf = (ROOT / ".github" / "workflows" / "release.yml").read_text(
+        encoding="utf-8"
+    )
+    win_wf = (ROOT / ".github" / "workflows" / "release-windows.yml").read_text(
+        encoding="utf-8"
+    )
+    for body in (sh, tests, ps1):
+        assert "UV_PYTHON" in body
+        assert ".python-version" in body
+    assert 'python-version: "3.11"' in mac_wf
+    assert 'python-version: "3.11"' in win_wf
+
+
+def test_windows_probe_overrides_switch_has_semicolon():
+    """CS1002: expression-bodied switch must end with }; or Release Windows fails."""
+    import re
+
+    text = (
+        ROOT
+        / "apps"
+        / "windows"
+        / "Lumina"
+        / "Features"
+        / "Settings"
+        / "SettingsPage.xaml.cs"
+    ).read_text(encoding="utf-8")
+    assert re.search(
+        r"ProbeOverrides\([^)]*\) => resourceId switch\s*\{.*?\n    \};",
+        text,
+        re.S,
+    )

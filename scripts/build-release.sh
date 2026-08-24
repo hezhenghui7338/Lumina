@@ -11,6 +11,7 @@ else
   python3 "$ROOT/scripts/sync-release-identity.py"
 fi
 VERSION="$(python3 "$ROOT/scripts/sync-release-identity.py" --print-version)"
+export UV_PYTHON="${UV_PYTHON:-$(tr -d '[:space:]' < "$ROOT/.python-version")}"
 DIST="$ROOT/dist"
 DERIVED="$ROOT/build/DerivedData"
 CORE_PKG="$ROOT/packages/lumina-core"

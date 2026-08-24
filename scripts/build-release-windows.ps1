@@ -14,6 +14,9 @@ if ($env:LUMINA_VERSION) {
 }
 $Version = (python $sync --print-version).Trim()
 if (-not $Version) { throw "sync-release-identity.py --print-version returned empty" }
+if (-not $env:UV_PYTHON) {
+    $env:UV_PYTHON = (Get-Content (Join-Path $Root ".python-version") -Raw).Trim()
+}
 $Dist = Join-Path $Root "dist"
 $CorePkg = Join-Path $Root "packages\lumina-core"
 $WinApp = Join-Path $Root "apps\windows\Lumina"
