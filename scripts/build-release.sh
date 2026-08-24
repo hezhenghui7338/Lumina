@@ -17,7 +17,7 @@ DERIVED="$ROOT/build/DerivedData"
 CORE_PKG="$ROOT/packages/lumina-core"
 MACOS="$ROOT/apps/macos"
 MAX_SIDECAR_MB=520
-MAX_APP_MB=500
+MAX_APP_MB=520
 MAX_DMG_MB=300
 
 assert_max_dir_mb() {

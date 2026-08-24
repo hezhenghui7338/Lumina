@@ -4,6 +4,7 @@ using Lumina.Design;
 using Lumina.Services;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Controls.Primitives;
 using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Navigation;
@@ -60,13 +61,6 @@ public sealed partial class ReaderPage : Page
 
         if (e.Handled) return;
         if (ShouldIgnoreReaderScrollKey(e.OriginalSource as DependencyObject)) return;
-
-        if (e.Key is VirtualKey.OemOpenBrackets or VirtualKey.OemCloseBrackets)
-        {
-            if (TurnSegment(e.Key == VirtualKey.OemCloseBrackets ? 1 : -1))
-                e.Handled = true;
-            return;
-        }
 
         const double lineDelta = 80;
         var offset = ContentScroll.VerticalOffset;
