@@ -79,6 +79,33 @@ def test_release_scripts_pin_cpython_from_python_version():
     assert 'python-version: "3.11"' in win_wf
 
 
+def test_app_size_cap_is_not_tighter_than_sidecar():
+    """Lumina.app embeds the sidecar; a 500MB app cap with a 520MB sidecar is unreachable."""
+    import re
+
+    sh = (ROOT / "scripts" / "build-release.sh").read_text(encoding="utf-8")
+    sidecar = int(re.search(r"MAX_SIDECAR_MB=(\d+)", sh).group(1))
+    app = int(re.search(r"MAX_APP_MB=(\d+)", sh).group(1))
+    assert app >= sidecar
+
+
+def test_windows_reader_avoids_missing_winui_symbols():
+    """WinUI VirtualKey has no Oem*Brackets; SliderSnapsTo lives in Primitives."""
+    text = (
+        ROOT
+        / "apps"
+        / "windows"
+        / "Lumina"
+        / "Features"
+        / "Reader"
+        / "ReaderPage.xaml.cs"
+    ).read_text(encoding="utf-8")
+    assert "OemOpenBrackets" not in text
+    assert "OemCloseBrackets" not in text
+    assert "Microsoft.UI.Xaml.Controls.Primitives" in text
+    assert "CharacterReceived" in text
+
+
 def test_windows_probe_overrides_switch_has_semicolon():
     """CS1002: expression-bodied switch must end with }; or Release Windows fails."""
     import re

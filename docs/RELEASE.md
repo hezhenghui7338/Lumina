@@ -18,7 +18,7 @@
 | 产物 | 目标大小 | 说明 |
 |------|----------|------|
 | `Lumina-{version}-macOS.dmg` | ≤ 300 MB | UDZO 压缩安装包 |
-| `Lumina.app` | ≤ 500 MB | 安装后磁盘占用 |
+| `Lumina.app` | ≤ 520 MB | 安装后磁盘占用（含 sidecar） |
 
 Sidecar 已裁剪：冗余 OCR small 模型、非中英文 Babel 语言包、onnxruntime 推理用不到的 `transformers` / `quantization` / `tools` / `datasets`。OpenCV（`cv2/.dylibs`）**不得**手动删除，否则扫描 PDF OCR 会失败。构建脚本会在体积超限时失败，并在 prune 后运行 `--smoke-ocr` 校验。Cursor provider 已改为 OpenAI 兼容 HTTP 路径，不再依赖 `cursor-sdk`；`prune-sidecar.sh` 仍会校验 sidecar 不含历史残留的 `cursor_sdk/` 目录。
 
