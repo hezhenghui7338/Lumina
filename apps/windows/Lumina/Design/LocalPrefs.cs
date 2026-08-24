@@ -71,13 +71,38 @@ public static class LocalPrefs
         return 0;
     }
 
-    public static void SetReadingProgress(string bookId, int index, int segmentCount, double offsetY = 0)
+    public readonly record struct CachedReadingProgress(
+        int Index,
+        int SegmentCount,
+        double OffsetY,
+        double? Percent);
+
+    public static CachedReadingProgress? GetCachedProgress(string bookId)
+    {
+        if (!_data.ReadingProgressByBook.TryGetValue(bookId, out var cached))
+            return null;
+        return new CachedReadingProgress(cached.Index, cached.SegmentCount, cached.OffsetY, cached.Percent);
+    }
+
+    public static void ClearCachedProgress(string bookId)
+    {
+        if (_data.ReadingProgressByBook.Remove(bookId))
+            Save();
+    }
+
+    public static void SetReadingProgress(
+        string bookId,
+        int index,
+        int segmentCount,
+        double offsetY = 0,
+        double? percent = null)
     {
         _data.ReadingProgressByBook[bookId] = new ProgressPref
         {
             Index = index,
             SegmentCount = segmentCount,
             OffsetY = Math.Max(0, offsetY),
+            Percent = percent,
         };
         Save();
     }
@@ -117,5 +142,6 @@ public static class LocalPrefs
         public int Index { get; set; }
         public int SegmentCount { get; set; }
         public double OffsetY { get; set; }
+        public double? Percent { get; set; }
     }
 }

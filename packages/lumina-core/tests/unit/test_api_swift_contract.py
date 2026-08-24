@@ -261,6 +261,30 @@ def test_summarize_batch_start_stop(client):
     assert "nonexistent-id" in missing.json()["skipped"]
 
 
+def test_summarize_overview_exposes_indexing_and_stall_reason(client):
+    """The chip needs a reason whenever work is queued but nothing runs."""
+    _import_sample(client)
+    body = client.get("/books/summarize/overview").json()
+    counts = body["counts"]
+    assert isinstance(counts["indexing"], int)
+    assert isinstance(body["indexing_queued"], int)
+    assert "stalled_reason" in body
+    if counts["queued"] > 0 and counts["running"] == 0:
+        assert body["stalled_reason"], "queued work with nothing running needs a reason"
+
+
+def test_build_book_index_requires_complete_summaries(client):
+    """Whole-book index is opt-in and only valid once every segment is ready."""
+    book_id = _import_sample(client)
+    client.post(f"/books/{book_id}/summarize/stop")
+
+    too_early = client.post(f"/books/{book_id}/index")
+    assert too_early.status_code == 409
+
+    missing = client.post("/books/nonexistent-id/index")
+    assert missing.status_code == 404
+
+
 def test_put_settings_rejects_invalid_prompts(client):
     body = client.get("/settings").json()
     prompts = body["prompts"]

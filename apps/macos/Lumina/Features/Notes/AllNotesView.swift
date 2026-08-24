@@ -254,10 +254,10 @@ struct AllNotesView: View {
             if notes.isEmpty {
                 exitSelectionMode()
             }
-        } catch is CancellationError {
-            return
         } catch {
-            self.error = error.localizedDescription
+            if let message = error.userFacingMessage {
+                self.error = message
+            }
         }
     }
 
@@ -270,11 +270,11 @@ struct AllNotesView: View {
             if checkedNoteIds.isEmpty && isSelectionMode && notes.isEmpty {
                 exitSelectionMode()
             }
-        } catch is CancellationError {
-            return
         } catch {
-            self.error = error.localizedDescription
-            await reload()
+            if let message = error.userFacingMessage {
+                self.error = message
+                await reload()
+            }
         }
     }
 }

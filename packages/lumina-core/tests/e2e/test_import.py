@@ -244,9 +244,13 @@ def test_resegment_book_uses_new_size_and_clears_segment_bound_data(client, tmp_
         "/books/import", json={"paths": [str(sample)]}
     ).json()["books"][0]["book_id"]
     imported = wait_for_ingest(client, book_id)
+    assert imported["status"] in ("unread", "reading", "summarized"), imported
+    assert imported.get("segment_count", 0) > 0, imported
     original_count = imported["segment_count"]
 
-    first_segment = client.get(f"/books/{book_id}/segments").json()["segments"][0]
+    segments = client.get(f"/books/{book_id}/segments").json()["segments"]
+    assert segments, imported
+    first_segment = segments[0]
     note = client.post(
         "/notes",
         json={
@@ -422,12 +426,22 @@ def test_book_scope_chat_after_index(client, tmp_path):
 
     import time
 
+    # Nothing builds the index in the background, so book-scope chat must refuse.
     too_early = client.post(
         f"/books/{book_id}/chat",
         json={"message": "全书主旨？", "segment_index": 0, "scope": "book"},
     )
-    # Index may already be ready on a 1-segment mock book; either 409 or 200 is OK
-    # until summaries finish. Wait for ready, then require citations.
+    assert too_early.status_code == 409
+    assert client.get(f"/books/{book_id}").json()["index_status"] != "ready"
+
+    for _ in range(80):
+        segs = client.get(f"/books/{book_id}/segments").json()["segments"]
+        if segs and all(s["summary_status"] == "ready" for s in segs):
+            break
+        time.sleep(0.1)
+
+    assert client.post(f"/books/{book_id}/index").status_code == 200
+
     book = None
     for _ in range(80):
         book = client.get(f"/books/{book_id}").json()

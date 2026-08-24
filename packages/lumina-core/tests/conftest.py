@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import os
-from collections.abc import Mapping
+import sys
+from collections.abc import Container, Mapping
 from pathlib import Path
 
 import pytest
@@ -96,9 +97,22 @@ def _reset_router_between_tests(request):
     set_router(None)
 
 
-def xdist_worker_should_force_exit(environ: Mapping[str, str]) -> bool:
-    """xdist workers that loaded ORT can hang in session teardown; force-exit them."""
-    return bool(environ.get("PYTEST_XDIST_WORKER"))
+# Eigen/ORT thread pools can deadlock xdist session teardown. Only force-exit
+# workers that actually imported those native modules — mock workers that
+# os._exit anyway look "Not properly terminated" and xdist restarts them,
+# killing in-flight tests on other nodes.
+_XDIST_FORCE_EXIT_MODULES = ("onnxruntime", "rapidocr")
+
+
+def xdist_worker_should_force_exit(
+    environ: Mapping[str, str],
+    loaded_modules: Container[str] | None = None,
+) -> bool:
+    """Force-exit an xdist worker only if it loaded ORT/RapidOCR."""
+    if not environ.get("PYTEST_XDIST_WORKER"):
+        return False
+    loaded = sys.modules if loaded_modules is None else loaded_modules
+    return any(name in loaded for name in _XDIST_FORCE_EXIT_MODULES)
 
 
 @pytest.hookimpl(hookwrapper=True, trylast=True)

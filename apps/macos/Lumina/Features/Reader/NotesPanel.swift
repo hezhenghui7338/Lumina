@@ -187,7 +187,25 @@ struct NotesPanel: View {
     }
 
     private var taskKey: String {
-        "\(bookId)-\(segmentId ?? "")-\(filter.rawValue)-\(refreshToken)"
+        Self.reloadTaskKey(
+            bookId: bookId,
+            segmentId: segmentId,
+            filterCurrent: filter == .current,
+            refreshToken: refreshToken
+        )
+    }
+
+    /// `.all` ignores the current segment so opening a book (nil → restored idx)
+    /// does not cancel the in-flight notes fetch and toast `cancelled`.
+    static func reloadTaskKey(
+        bookId: String,
+        segmentId: String?,
+        filterCurrent: Bool,
+        refreshToken: Int
+    ) -> String {
+        let segmentPart = filterCurrent ? (segmentId ?? "") : "*"
+        let filterPart = filterCurrent ? "current" : "all"
+        return "\(bookId)-\(segmentPart)-\(filterPart)-\(refreshToken)"
     }
 
     private var emptyLabel: String {
@@ -306,10 +324,10 @@ struct NotesPanel: View {
             if notes.isEmpty {
                 exitSelectionMode()
             }
-        } catch is CancellationError {
-            return
         } catch {
-            self.error = error.localizedDescription
+            if let message = error.userFacingMessage {
+                self.error = message
+            }
         }
     }
 
@@ -330,10 +348,10 @@ struct NotesPanel: View {
             )
             draft = ""
             await reload()
-        } catch is CancellationError {
-            return
         } catch {
-            self.error = error.localizedDescription
+            if let message = error.userFacingMessage {
+                self.error = message
+            }
         }
     }
 
@@ -346,11 +364,11 @@ struct NotesPanel: View {
             if checkedNoteIds.isEmpty && isSelectionMode && notes.isEmpty {
                 exitSelectionMode()
             }
-        } catch is CancellationError {
-            return
         } catch {
-            self.error = error.localizedDescription
-            await reload()
+            if let message = error.userFacingMessage {
+                self.error = message
+                await reload()
+            }
         }
     }
 }

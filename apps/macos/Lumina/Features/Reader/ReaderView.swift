@@ -32,6 +32,7 @@ struct ReaderView: View {
     @EnvironmentObject private var core: CoreClient
     @Environment(\.scenePhase) private var scenePhase
 
+    @ObservedObject var libraryViewModel: LibraryViewModel
     @StateObject private var viewModel = ReaderViewModel()
     @AppStorage("lumina.reader.segmentListPinned") private var segmentListPinned = false
 
@@ -42,6 +43,7 @@ struct ReaderView: View {
         readerOverlayActive: Binding<Bool> = .constant(false),
         readerChromeVisible: Binding<Bool> = .constant(false),
         librarySidebarPinned: Binding<Bool> = .constant(false),
+        libraryViewModel: LibraryViewModel,
         onReturnToBookshelf: @escaping () -> Void = {},
         onImport: @escaping () -> Void = {}
     ) {
@@ -51,17 +53,18 @@ struct ReaderView: View {
         _readerOverlayActive = readerOverlayActive
         _readerChromeVisible = readerChromeVisible
         _librarySidebarPinned = librarySidebarPinned
+        _libraryViewModel = ObservedObject(wrappedValue: libraryViewModel)
         self.onReturnToBookshelf = onReturnToBookshelf
         self.onImport = onImport
     }
     @State private var expandedSourceSegments: Set<Int> = []
     @State private var expandedSummarySegments: Set<Int> = []
     @State private var contentMode: ReaderContentMode = .summary
-    @State private var scrollPosition: Int?
+    /// The segment pinned to the top of the viewport. Single source of truth for
+    /// reading progress: SwiftUI writes it while scrolling, and every jump is
+    /// performed by assigning to it. Nothing else may move the scroll view.
+    @State private var topSegmentIdx: Int?
     @State private var readerGlobalFrame: CGRect = .null
-    @State private var pendingScrollIdx: Int?
-    @State private var jumpFinishTask: Task<Void, Never>?
-    @State private var preserveTask: Task<Void, Never>?
     @State private var overlay: ReaderOverlay = .none
     @State private var overlayEngaged = false
     @State private var chatInput = ""
@@ -88,6 +91,7 @@ struct ReaderView: View {
     @State private var pendingEdge: ReaderEdgeTarget? = nil
     @State private var dwellTask: Task<Void, Never>? = nil
     @State private var chromeMode: ReaderChromeMode = .revealed
+    @State private var summarizeActionInFlight = false
     @FocusState private var chatFocused: Bool
     @FocusState private var readerContentFocused: Bool
 
@@ -112,23 +116,34 @@ struct ReaderView: View {
             || overlay != .none
     }
 
+    private var segmentListVisibility: ReaderSegmentListVisibility {
+        ReaderSegmentListVisibility(pinned: segmentListPinned, peeking: segmentListPeeking)
+    }
+
     private var segmentListOverlayVisible: Bool {
-        segmentListPeeking && !segmentListPinned
+        segmentListVisibility.overlayVisible
     }
 
     private var segmentListInlineVisible: Bool {
-        segmentListPinned
+        segmentListVisibility.inlineVisible
     }
 
     private var segmentListAnyVisible: Bool {
-        segmentListOverlayVisible || segmentListInlineVisible
+        segmentListVisibility.anyVisible
+    }
+
+    private var librarySummarizeOverviewActive: Bool {
+        guard let overview = libraryViewModel.summarizeOverview else { return false }
+        return SummarizeActivityChip.shouldShow(activeCount: overview.activeCount)
     }
 
     private var shouldShowContentSummaryProgress: Bool {
-        viewModel.summaryTotalCount > 0
-            && viewModel.summaryReadyCount < viewModel.summaryTotalCount
-            && !librarySidebarPinned
-            && !segmentListAnyVisible
+        ReaderSummaryProgressPolicy.shouldShowContentBanner(
+            readyCount: viewModel.summaryReadyCount,
+            totalCount: viewModel.summaryTotalCount,
+            overviewActive: librarySummarizeOverviewActive,
+            segmentListVisible: segmentListAnyVisible
+        )
     }
 
     private var readerKeyboardScrollEnabled: Bool {
@@ -144,42 +159,6 @@ struct ReaderView: View {
         let count = viewModel.segments.count
         let tier = regenerateSummaryTier.label
         return "将用「\(tier)」重新生成全书 \(count) 个段的摘要。已有摘要会被全部覆盖，会消耗大量计算和 API 资源，且无法撤销。若只想用该档位补齐未摘要段落，请改用「开始摘要」。"
-    }
-
-    private var resegmentSheet: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            Text("整书重新分段")
-                .font(.title2.weight(.semibold))
-            Text("设置每段的目标字数。实际段落会根据章节和语义边界略有调整。")
-                .foregroundStyle(.secondary)
-            Stepper(value: $resegmentTargetChars, in: ReaderViewModel.resegmentTargetRange, step: 100) {
-                Text("目标大小：\(resegmentTargetChars) 字")
-            }
-            Text("重新分段会删除已有摘要、笔记和本书对话记录，且无法撤销。原始书籍文件不会被修改。")
-                .font(.callout)
-                .foregroundStyle(.orange)
-            HStack {
-                Spacer()
-                Button("取消", role: .cancel) {
-                    showResegmentSheet = false
-                }
-                .disabled(isResegmentSubmitting)
-                Button {
-                    submitResegment()
-                } label: {
-                    if isResegmentSubmitting {
-                        ProgressView()
-                            .controlSize(.small)
-                    } else {
-                        Text("开始重新分段")
-                    }
-                }
-                .buttonStyle(.borderedProminent)
-                .disabled(isResegmentSubmitting)
-            }
-        }
-        .padding(24)
-        .frame(width: 440)
     }
 
     private var boundarySheet: some View {
@@ -228,7 +207,13 @@ struct ReaderView: View {
                 Text(regenerateConfirmMessage)
             }
             .sheet(isPresented: $showResegmentSheet) {
-                resegmentSheet
+                ResegmentBookSheet(
+                    bookTitle: viewModel.exportBookTitle,
+                    targetChars: $resegmentTargetChars,
+                    isPresented: $showResegmentSheet,
+                    isSubmitting: isResegmentSubmitting,
+                    onSubmit: submitResegment
+                )
             }
             .sheet(isPresented: $showBoundarySheet) {
                 boundarySheet
@@ -285,7 +270,7 @@ struct ReaderView: View {
     }
 
     private func prepareResegment() {
-        resegmentTargetChars = ReaderViewModel.normalizedResegmentTarget(
+        resegmentTargetChars = ResegmentTarget.normalized(
             currentTarget: viewModel.chunkTargetChars,
             totalChars: viewModel.totalCharCount,
             segmentCount: viewModel.segments.count
@@ -373,8 +358,7 @@ struct ReaderView: View {
         ToolbarItem(placement: .navigation) {
             Button {
                 Task {
-                    viewModel.captureViewportProgress(core: core)
-                    await viewModel.flushProgressSave(core: core)
+                    await viewModel.flushProgressSave()
                     onReturnToBookshelf()
                 }
             } label: {
@@ -405,6 +389,10 @@ struct ReaderView: View {
         }
 
         ToolbarItemGroup {
+            if librarySummarizeOverviewActive {
+                readerSummarizeActivityChip
+            }
+
             Picker("阅读模式", selection: $contentMode) {
                 ForEach(ReaderContentMode.allCases, id: \.self) { mode in
                     Text(mode.label).tag(mode)
@@ -423,39 +411,39 @@ struct ReaderView: View {
             }
             .disabled(viewModel.bookStatus == "processing")
 
-            Menu("开始摘要") {
-                ForEach(SummaryTier.allCases) { tier in
-                    Button(tier.startMenuLabel) {
-                        Task {
-                            do {
-                                try await viewModel.startSummarize(
-                                    core: core, summaryTier: tier
-                                )
-                            } catch {
-                                actionError = error.localizedDescription
+            Menu("摘要") {
+                Menu("开始摘要") {
+                    ForEach(SummaryTier.allCases) { tier in
+                        Button(tier.startMenuLabel) {
+                            Task {
+                                do {
+                                    try await viewModel.startSummarize(
+                                        core: core, summaryTier: tier
+                                    )
+                                } catch {
+                                    actionError = error.localizedDescription
+                                }
                             }
                         }
                     }
                 }
-            }
-            .help("仅处理尚未摘要的段落；已有摘要不会被覆盖")
-            .disabled(viewModel.bookStatus == "processing")
-            Button("停止摘要") {
-                Task {
-                    do { try await viewModel.stopSummarize(core: core) }
-                    catch { actionError = error.localizedDescription }
+                Button("停止摘要") {
+                    Task {
+                        do { try await viewModel.stopSummarize(core: core) }
+                        catch { actionError = error.localizedDescription }
+                    }
                 }
-            }
-            .disabled(viewModel.bookStatus == "processing")
-            Menu("全书重新摘要") {
-                ForEach(SummaryTier.allCases) { tier in
-                    Button(tier.regenerateMenuLabel) {
-                        regenerateSummaryTier = tier
-                        showRegenerateConfirm = true
+                Divider()
+                Menu("全书重新摘要") {
+                    ForEach(SummaryTier.allCases) { tier in
+                        Button(tier.regenerateMenuLabel) {
+                            regenerateSummaryTier = tier
+                            showRegenerateConfirm = true
+                        }
                     }
                 }
             }
-            .help("覆盖全书已有摘要，消耗较多资源，操作前会要求确认")
+            .help("开始摘要只处理未摘要段落；全书重新摘要会覆盖已有摘要，操作前会要求确认")
             .disabled(viewModel.bookStatus == "processing")
             Button("整书重新分段") {
                 prepareResegment()
@@ -550,7 +538,6 @@ struct ReaderView: View {
             readerChromeVisible = mode != .hidden
                 || overlay != .none
                 || viewModel.bookStatus == "processing"
-            updateSidebarTimer()
         }
         .onChange(of: viewModel.bookStatus) { _, status in
             if status == "processing" {
@@ -558,38 +545,27 @@ struct ReaderView: View {
                 readerChromeVisible = true
             }
         }
-        .onChange(of: segmentListPinned) { _, _ in
-            updateSidebarTimer()
-        }
-        .onChange(of: segmentListPeeking) { _, _ in
-            updateSidebarTimer()
-        }
         .onAppear {
             readerOverlayActive = overlay != .none
             readerChromeVisible = toolbarVisible
-            updateSidebarTimer()
-            ScrollViewKeyNSView.onFeedVisibleTopChange = { top in
-                viewModel.noteViewportTop(top, core: core)
-            }
         }
         .onChange(of: viewModel.selectedIdx) { _, idx in
             guard let idx else { return }
-            if viewModel.consumeViewportSelection(idx) {
-                viewModel.selectSegment(idx)
-                return
-            }
             viewModel.selectSegment(idx)
-            if viewModel.scrollPhase == .restoring {
-                return
-            }
-            if viewModel.scrollPhase == .preserving {
-                pendingScrollIdx = idx
-                return
-            }
-            beginJump(to: idx)
+            // A selection that came from the pinned segment must not scroll back.
+            guard !viewModel.consumeTopSegmentSelection(idx) else { return }
+            jump(to: idx)
         }
-        .onChange(of: scrollPosition) { _, idx in
+        .onChange(of: topSegmentIdx) { _, idx in
             guard let idx else { return }
+            if viewModel.progressPhase == .restoring {
+                // Correct a stray pin while the feed is still materializing.
+                if let target = viewModel.restoreTarget, target != idx {
+                    topSegmentIdx = target
+                }
+                return
+            }
+            viewModel.noteTopSegment(idx)
             viewModel.prefetchSummaries(around: idx, core: core, radius: 3)
             if contentMode == .original {
                 viewModel.prefetchSources(around: idx, core: core, radius: 3)
@@ -598,36 +574,35 @@ struct ReaderView: View {
         .onPreferenceChange(ReaderGlobalFrameKey.self) { frame in
             readerGlobalFrame = frame
         }
-        .onPreferenceChange(SegmentFeedFrameKey.self) { frames in
-            applyFeedFrames(frames, core: core)
-        }
         .onChange(of: contentMode) { _, mode in
             ReaderPreferences.setContentMode(mode, for: bookId)
             viewModel.setContentMode(mode)
             if mode == .original {
-                let idx = scrollPosition ?? viewModel.selectedIdx ?? viewModel.segments.first?.idx ?? 0
+                let idx = topSegmentIdx ?? viewModel.selectedIdx ?? viewModel.segments.first?.idx ?? 0
                 viewModel.prefetchSources(around: idx, core: core, radius: 5)
-            }
-            if viewModel.scrollPhase == .restoring { return }
-            if let idx = viewModel.selectedIdx {
-                beginJump(to: idx, force: true)
             }
         }
         .task(id: bookId) {
             overlay = .none
             overlayEngaged = false
-            segmentListPeeking = false
+            applySegmentListVisibility(ReaderSegmentListPolicy.endPeek(segmentListVisibility))
             chromeMode = .revealed
             readerChromeVisible = true
             expandedSourceSegments = []
             expandedSummarySegments = []
             contentMode = ReaderPreferences.contentMode(for: bookId)
             viewModel.setContentMode(contentMode)
-            scrollPosition = nil
-            await viewModel.load(bookId: bookId, core: core, initialSegmentIndex: initialSegmentIndex)
-            scrollPosition = viewModel.selectedIdx
+            topSegmentIdx = nil
+            // The resume index is delivered before the segments are published so
+            // the feed's very first layout already renders at the saved segment.
+            await viewModel.load(
+                bookId: bookId,
+                core: core,
+                initialSegmentIndex: initialSegmentIndex
+            ) { resumeIdx in
+                topSegmentIdx = resumeIdx
+            }
             readerContentFocused = true
-            tryApplyRestore()
             if contentMode == .original, let idx = viewModel.selectedIdx {
                 viewModel.prefetchSources(around: idx, core: core, radius: 5)
             }
@@ -637,15 +612,12 @@ struct ReaderView: View {
         }
         .onChange(of: scenePhase) { _, phase in
             if phase == .background {
-                viewModel.captureViewportProgress(core: core)
-                Task { await viewModel.flushProgressSave(core: core) }
+                Task { await viewModel.flushProgressSave() }
             }
         }
         .onDisappear {
-            viewModel.captureViewportProgress(core: core)
-            ScrollViewKeyNSView.onFeedVisibleTopChange = nil
             Task {
-                await viewModel.flushProgressSave(core: core)
+                await viewModel.flushProgressSave()
                 NotificationCenter.default.post(name: .luminaLibraryRefresh, object: nil)
                 viewModel.cancelAllTasks()
             }
@@ -716,7 +688,14 @@ struct ReaderView: View {
                 .font(.body)
                 .foregroundStyle(LuminaTheme.textSecondary)
             Button("重试") {
-                Task { await viewModel.reload(core: core, initialSegmentIndex: initialSegmentIndex) }
+                Task {
+                    await viewModel.reload(
+                        core: core,
+                        initialSegmentIndex: initialSegmentIndex
+                    ) { resumeIdx in
+                        topSegmentIdx = resumeIdx
+                    }
+                }
             }
             .buttonStyle(.borderedProminent)
             .tint(LuminaTheme.accent)
@@ -729,8 +708,6 @@ struct ReaderView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
                 LazyVStack(alignment: .leading, spacing: segmentFeedGap) {
-                    ReaderScrollViewMarker()
-                        .frame(width: 0, height: 0)
                     if let error = viewModel.loadError {
                         loadErrorContent(error)
                     } else if viewModel.bookStatus == "processing" {
@@ -746,13 +723,12 @@ struct ReaderView: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(LuminaTheme.summaryPadding)
                     } else {
-                        ForEach(Array(viewModel.segments.enumerated()), id: \.element.id) { index, seg in
-                            segmentBlock(for: seg, at: index)
+                        ForEach(viewModel.segments, id: \.idx) { seg in
+                            segmentBlock(for: seg)
                         }
                     }
                 }
                 .scrollTargetLayout()
-                .coordinateSpace(name: ReadingProgress.feedCoordinateSpace)
 
                 if !viewModel.segments.isEmpty {
                     Color.clear
@@ -769,14 +745,25 @@ struct ReaderView: View {
             .padding(.horizontal, LuminaTheme.summaryPadding)
             .padding(.vertical, LuminaTheme.summaryPadding)
             .frame(maxWidth: .infinity, alignment: .leading)
+            // Controls inside the feed keep their own clicks: SwiftUI gives the
+            // tap to the frontmost handler, so only reading surface lands here.
+            .contentShape(Rectangle())
+            .onTapGesture { toggleChromeOnBlankClick() }
         }
+        .scrollPosition(id: $topSegmentIdx, anchor: .top)
         .safeAreaInset(edge: .top, spacing: 0) {
             if shouldShowContentSummaryProgress {
-                SummaryProgressBanner(
-                    readyCount: viewModel.summaryReadyCount,
-                    totalCount: viewModel.summaryTotalCount,
-                    activeLabelProvider: viewModel.activeSummarizeLabel
-                )
+                VStack(alignment: .leading, spacing: 8) {
+                    if !toolbarVisible {
+                        readerSummarizeActivityChip
+                    }
+                    SummaryProgressBanner(
+                        readyCount: viewModel.summaryReadyCount,
+                        totalCount: viewModel.summaryTotalCount,
+                        activityLabel: viewModel.summarizeActivityLabel,
+                        activeLabelProvider: viewModel.activeSummarizeLabel
+                    )
+                }
                 .readingColumn()
                 .padding(.horizontal, LuminaTheme.summaryPadding)
                 .padding(.vertical, 8)
@@ -787,13 +774,7 @@ struct ReaderView: View {
             ScrollViewKeyHandler(
                 enabled: readerKeyboardScrollEnabled
             )
-            ChromeClickTracker(
-                enabled: overlay == .none
-            ) {
-                toggleChromeOnBlankClick()
-            }
         }
-            .scrollPosition(id: $scrollPosition, anchor: .top)
         .animation(.easeOut(duration: 0.2), value: contentMode)
         .background(LuminaTheme.background)
         .background {
@@ -815,6 +796,16 @@ struct ReaderView: View {
             return .handled
         }
         .onKeyPress("]") {
+            guard readerContentFocused else { return .ignored }
+            navigateSegment(delta: 1)
+            return .handled
+        }
+        .onKeyPress("【") {
+            guard readerContentFocused else { return .ignored }
+            navigateSegment(delta: -1)
+            return .handled
+        }
+        .onKeyPress("】") {
             guard readerContentFocused else { return .ignored }
             navigateSegment(delta: 1)
             return .handled
@@ -860,7 +851,6 @@ struct ReaderView: View {
             }
             viewModel.fetchSource(idx: idx, core: core)
         }
-        reanchorScrollAfterPanelToggle(at: idx)
     }
 
     private func toggleSummary(for idx: Int) {
@@ -871,7 +861,6 @@ struct ReaderView: View {
                 expandedSummarySegments.insert(idx)
             }
         }
-        reanchorScrollAfterPanelToggle(at: idx)
     }
 
     private func toggleContentMode() {
@@ -879,14 +868,15 @@ struct ReaderView: View {
     }
 
     @ViewBuilder
-    private func segmentBlock(for seg: SegmentRow, at index: Int) -> some View {
+    private func segmentBlock(for seg: SegmentRow) -> some View {
         let cachedSource = viewModel.cachedSource(for: seg.idx)
         let idx = seg.idx
+        let isLast = seg.idx == viewModel.segments.last?.idx
         SegmentReadingBlock(
             contentMode: contentMode,
             segment: seg,
             segmentTotal: viewModel.segments.count,
-            isLast: index == viewModel.segments.count - 1,
+            isLast: isLast,
             isHighlighted: highlightSegment == idx,
             isSourceExpanded: contentMode == .original || expandedSourceSegments.contains(idx),
             isSummaryExpanded: expandedSummarySegments.contains(idx),
@@ -916,159 +906,71 @@ struct ReaderView: View {
                     catch { actionError = error.localizedDescription }
                 }
             },
-            onAdjustBoundary: index == viewModel.segments.count - 1
-                ? nil
-                : { openBoundaryEditor(at: idx) },
+            canGoPrev: SegmentTurnNavigation.targetIdx(
+                current: idx, delta: -1, sortedIdxs: viewModel.segments.map(\.idx).sorted()
+            ) != nil,
+            canGoNext: SegmentTurnNavigation.targetIdx(
+                current: idx, delta: 1, sortedIdxs: viewModel.segments.map(\.idx).sorted()
+            ) != nil,
+            onPrevSegment: { turnSegment(from: idx, delta: -1) },
+            onNextSegment: { turnSegment(from: idx, delta: 1) },
+            onAdjustBoundary: isLast ? nil : { openBoundaryEditor(at: idx) },
             onSourceAppear: contentMode == .original
                 ? { viewModel.fetchSource(idx: idx, core: core) }
                 : nil
         )
         .equatable()
-        .id(idx)
-        .background {
-            GeometryReader { geo in
-                Color.clear.preference(
-                    key: SegmentFeedFrameKey.self,
-                    value: [idx: geo.frame(in: .named(ReadingProgress.feedCoordinateSpace))]
-                )
-            }
-        }
         .onAppear {
             viewModel.hydrateSummary(idx: idx, core: core)
         }
     }
 
-    private func applyFeedFrames(_ frames: [Int: CGRect], core: CoreClient) {
-        let previous = viewModel.segmentFeedFrames
-        viewModel.segmentFeedFrames = frames
-        if viewModel.scrollPhase == .restoring {
-            tryApplyRestore()
-        }
-        if viewModel.scrollPhase == .tracking, let top = ScrollViewKeyNSView.visibleTopInFeed() {
-            let delta = ReadingProgress.heightGrowthAboveVisibleTop(
-                previous: previous,
-                current: frames,
-                visibleTop: top
-            )
-            if abs(delta) >= 1 {
-                _ = ScrollViewKeyNSView.adjustOrigin(by: delta)
-            }
-            viewModel.noteViewportTop(top, core: core)
-        }
-    }
-
-    private func tryApplyRestore() {
-        guard viewModel.scrollPhase == .restoring else { return }
-        let maxY = ScrollViewKeyNSView.contentMaxY() ?? 0
-        switch viewModel.considerRestore(maxY: maxY) {
-        case .waiting:
-            break
-        case .apply(let y):
-            if ScrollViewKeyNSView.applyFeedVisibleTop(y) {
-                viewModel.markRestoreApplied()
-            }
-        case .finished:
-            viewModel.enterPhase(.tracking)
-        }
-    }
-
-    private func beginJump(to idx: Int, force: Bool = false) {
-        preserveTask?.cancel()
-        jumpFinishTask?.cancel()
-        ScrollViewKeyNSView.cancelScrollOriginRestore()
-        viewModel.cancelRestore()
-        viewModel.enterPhase(.jumping)
-        pendingScrollIdx = nil
-        syncScrollToSelectedSegment(idx, force: force)
-        let fromIdx = scrollPosition ?? viewModel.selectedIdx
+    /// The one and only way to move the reader. Assigning the pinned segment is
+    /// the scroll: SwiftUI owns the anchoring, nothing else touches the origin.
+    private func jump(to idx: Int) {
+        guard topSegmentIdx != idx else { return }
         let delta = SegmentRenderWindow.segmentIndexDelta(
-            from: fromIdx,
+            from: topSegmentIdx,
             to: idx,
             in: viewModel.segments
         )
-        let wait: UInt64 = delta <= SegmentRenderWindow.scrollAnimateThreshold
-            ? 150_000_000
-            : 50_000_000
-        jumpFinishTask = Task { @MainActor in
-            try? await Task.sleep(nanoseconds: wait)
-            guard !Task.isCancelled else { return }
-            if viewModel.scrollPhase == .jumping {
-                viewModel.enterPhase(.tracking)
-            }
-            viewModel.scheduleProgressSave(idx, core: core, confirmedHit: true)
-        }
-    }
-
-    private func syncScrollToSelectedSegment(_ idx: Int, force: Bool = false) {
-        if viewModel.scrollPhase == .preserving && !force {
-            pendingScrollIdx = idx
-            return
-        }
-        guard force || scrollPosition != idx else {
-            pendingScrollIdx = nil
-            return
-        }
-
-        ScrollViewKeyNSView.cancelScrollOriginRestore()
-        pendingScrollIdx = nil
-
-        let fromIdx = scrollPosition ?? viewModel.selectedIdx
-        let delta = SegmentRenderWindow.segmentIndexDelta(
-            from: fromIdx,
-            to: idx,
-            in: viewModel.segments
-        )
-
-        if force, scrollPosition == idx {
-            scrollPosition = nil
-        }
         if delta <= SegmentRenderWindow.scrollAnimateThreshold {
             withAnimation(.easeInOut(duration: segmentSwitchDuration)) {
-                scrollPosition = idx
+                topSegmentIdx = idx
             }
         } else {
             var transaction = Transaction()
             transaction.disablesAnimations = true
             withTransaction(transaction) {
-                scrollPosition = idx
+                topSegmentIdx = idx
             }
         }
     }
 
-    /// Re-anchor scroll after in-segment summary/source toggle so offset does not overshoot
-    /// when trailing segment height changes near the bottom of the book.
-    private func reanchorScrollAfterPanelToggle(at idx: Int) {
-        beginJump(to: idx, force: true)
-    }
-
     private func navigateSegment(delta: Int) {
         guard overlay == .none, !chatFocused else { return }
-        let current = viewModel.selectedIdx ?? scrollPosition
+        let current = viewModel.selectedIdx ?? topSegmentIdx
         guard let current else { return }
+        turnSegment(from: current, delta: delta)
+    }
+
+    private func turnSegment(from idx: Int, delta: Int) {
         let sorted = viewModel.segments.map(\.idx).sorted()
-        guard let pos = sorted.firstIndex(of: current) else { return }
-        let newPos = pos + delta
-        guard newPos >= 0, newPos < sorted.count else { return }
-        viewModel.selectedIdx = sorted[newPos]
-        readerContentFocused = true
+        guard let target = SegmentTurnNavigation.targetIdx(
+            current: idx, delta: delta, sortedIdxs: sorted
+        ) else { return }
+        navigateToSegment(target)
     }
 
     private func navigateToSegment(_ idx: Int) {
-        ScrollViewKeyNSView.cancelScrollOriginRestore()
         viewModel.selectedIdx = idx
         readerContentFocused = true
-        if viewModel.scrollPhase != .jumping {
-            beginJump(to: idx, force: true)
-        }
+        jump(to: idx)
     }
 
     private func selectSidebarSegment(_ idx: Int) {
-        ScrollViewKeyNSView.cancelScrollOriginRestore()
-        if viewModel.selectedIdx == idx {
-            beginJump(to: idx, force: true)
-        } else {
-            viewModel.selectedIdx = idx
-        }
+        viewModel.selectedIdx = idx
+        jump(to: idx)
     }
 
     // MARK: - Sidebar & drawers
@@ -1123,9 +1025,12 @@ struct ReaderView: View {
                 SummaryProgressBanner(
                     readyCount: viewModel.summaryReadyCount,
                     totalCount: viewModel.summaryTotalCount,
+                    activityLabel: viewModel.summarizeActivityLabel,
                     activeLabelProvider: viewModel.activeSummarizeLabel,
                     hideWhenComplete: false
                 )
+
+                readerSummarizeActivityChip
 
                 Button("导出摘要…") {
                     exportIncludeNotes = false
@@ -1203,12 +1108,9 @@ struct ReaderView: View {
         .help(viewModel.isSegmentSelectionMode ? "退出多选" : "多选")
         if !segmentListPinned {
             Button {
-                preserveReadingColumnLayout {
-                    withAnimation(.easeInOut(duration: 0.25)) {
-                        segmentListPinned = true
-                        chromeMode = .revealed
-                        segmentListPeeking = false
-                    }
+                withAnimation(.easeInOut(duration: 0.25)) {
+                    applySegmentListVisibility(ReaderSegmentListPolicy.pin(segmentListVisibility))
+                    chromeMode = .revealed
                 }
             } label: {
                 Image(systemName: "pin")
@@ -1221,11 +1123,8 @@ struct ReaderView: View {
             .help("钉住段列表")
         }
         Button {
-            preserveReadingColumnLayout {
-                withAnimation(.easeInOut(duration: 0.25)) {
-                    segmentListPinned = false
-                    segmentListPeeking = false
-                }
+            withAnimation(.easeInOut(duration: 0.25)) {
+                applySegmentListVisibility(ReaderSegmentListPolicy.close(segmentListVisibility))
             }
         } label: {
             Image(systemName: "chevron.left")
@@ -1236,6 +1135,36 @@ struct ReaderView: View {
         }
         .buttonStyle(.plain)
         .help("收起段列表")
+    }
+
+    @ViewBuilder
+    private var readerSummarizeActivityChip: some View {
+        if let overview = libraryViewModel.summarizeOverview,
+           SummarizeActivityChip.shouldShow(activeCount: overview.activeCount) {
+            SummarizeActivityChip(
+                running: overview.counts.running,
+                queued: overview.counts.queued,
+                indexing: overview.indexingCount,
+                stalledReason: overview.stalled_reason,
+                isBusy: summarizeActionInFlight
+            ) {
+                Task { await stopAllSummarize() }
+            }
+            .disabled(summarizeActionInFlight)
+        }
+    }
+
+    private func stopAllSummarize() async {
+        guard !summarizeActionInFlight else { return }
+        summarizeActionInFlight = true
+        defer { summarizeActionInFlight = false }
+        do {
+            try await core.stopSummarizeAll()
+            viewModel.markSummarizePaused()
+            try await libraryViewModel.refresh(using: core, preserveOrder: true)
+        } catch {
+            actionError = error.localizedDescription
+        }
     }
 
     private var notesDrawer: some View {
@@ -1302,10 +1231,6 @@ struct ReaderView: View {
         }
     }
 
-    private func updateSidebarTimer() {
-        viewModel.setSidebarVisible(segmentListAnyVisible)
-    }
-
     @ViewBuilder
     private func segmentSidebarRow(_ seg: SegmentRow) -> some View {
         let rowContent = HStack(alignment: .top, spacing: 6) {
@@ -1332,8 +1257,7 @@ struct ReaderView: View {
             SegmentSidebarRow(
                 segment: seg,
                 runningMetrics: viewModel.segmentRunningMetrics[seg.idx],
-                bulletsPreview: viewModel.sidebarPreviewByIdx[seg.idx],
-                statusClock: viewModel.sidebarClock
+                bulletsPreview: viewModel.sidebarPreviewByIdx[seg.idx]
             )
         }
         .contentShape(Rectangle())
@@ -1390,9 +1314,11 @@ struct ReaderView: View {
                 .pickerStyle(.segmented)
                 .frame(maxWidth: 220)
                 .onChange(of: viewModel.chatScope) { _, newValue in
-                    if newValue == .book, !viewModel.canChatBook {
-                        viewModel.chatScope = .segment
-                    }
+                    guard newValue == .book, !viewModel.canChatBook else { return }
+                    let shouldBuild = viewModel.needsBookIndexBuild
+                    viewModel.chatScope = .segment
+                    guard shouldBuild else { return }
+                    Task { await viewModel.buildBookIndex(core: core) }
                 }
                 Spacer()
                 Button {
@@ -1524,7 +1450,7 @@ struct ReaderView: View {
             let inEdge = point.map { isPointerInLeftEdge($0) } ?? false
             if point == nil || (!inList && !inEdge) {
                 withAnimation(.easeInOut(duration: 0.25)) {
-                    segmentListPeeking = false
+                    applySegmentListVisibility(ReaderSegmentListPolicy.endPeek(segmentListVisibility))
                 }
             }
         }
@@ -1545,11 +1471,13 @@ struct ReaderView: View {
             pendingEdge = nil
             switch target {
             case .segments:
-                if segmentListPinned {
+                if segmentListVisibility.pinned {
                     setChromeMode(.revealed)
                 } else {
                     withAnimation(.easeInOut(duration: 0.25)) {
-                        segmentListPeeking = true
+                        applySegmentListVisibility(
+                            ReaderSegmentListPolicy.beginEdgePeek(segmentListVisibility)
+                        )
                     }
                 }
             case .notes:
@@ -1574,26 +1502,6 @@ struct ReaderView: View {
         point.x <= edgeHotZone && point.y > topEdgeExclusionZone
     }
 
-    private func preserveReadingColumnLayout(_ changes: () -> Void) {
-        let savedOrigin = ScrollViewKeyNSView.currentScrollOrigin()
-        viewModel.enterPhase(.preserving)
-        changes()
-        preserveTask?.cancel()
-        preserveTask = Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 250_000_000)
-            guard !Task.isCancelled else { return }
-            guard viewModel.scrollPhase == .preserving else { return }
-            if let savedOrigin {
-                _ = ScrollViewKeyNSView.applyScrollOriginOnce(savedOrigin)
-            }
-            viewModel.enterPhase(.tracking)
-            if let pending = pendingScrollIdx {
-                pendingScrollIdx = nil
-                beginJump(to: pending, force: true)
-            }
-        }
-    }
-
     private func setChromeMode(_ mode: ReaderChromeMode, closingSegmentPeek: Bool = false) {
         let needsChrome = chromeMode != mode
         let needsPeekClose = closingSegmentPeek && segmentListPeeking
@@ -1603,7 +1511,7 @@ struct ReaderView: View {
                 chromeMode = mode
             }
             if needsPeekClose {
-                segmentListPeeking = false
+                applySegmentListVisibility(ReaderSegmentListPolicy.endPeek(segmentListVisibility))
             }
         }
     }
@@ -1611,51 +1519,51 @@ struct ReaderView: View {
     private func collapseAllChrome() {
         withAnimation(.easeInOut(duration: 0.25)) {
             chromeMode = .hidden
-            segmentListPeeking = false
+            applySegmentListVisibility(ReaderSegmentListPolicy.endPeek(segmentListVisibility))
             overlay = .none
             overlayEngaged = false
         }
     }
 
     private func toggleChromeOnBlankClick() {
-        guard overlay == .none else { return }
-        if segmentListOverlayVisible {
+        switch ReaderChromeClickPolicy.outcome(
+            overlayOpen: overlay != .none,
+            segmentPeekVisible: segmentListOverlayVisible,
+            chromeHidden: chromeMode == .hidden
+        ) {
+        case .ignore:
+            break
+        case .closeSegmentPeek:
             withAnimation(.easeInOut(duration: 0.25)) {
-                segmentListPeeking = false
+                applySegmentListVisibility(ReaderSegmentListPolicy.endPeek(segmentListVisibility))
             }
-        } else if chromeMode != .hidden {
+        case .collapse:
             collapseAllChrome()
-        } else {
+        case .reveal:
             setChromeMode(.revealed)
         }
     }
 
     private func toggleLibrarySidebar() {
-        preserveReadingColumnLayout {
-            withAnimation(.easeInOut(duration: 0.25)) {
-                librarySidebarPinned.toggle()
-            }
+        withAnimation(.easeInOut(duration: 0.25)) {
+            librarySidebarPinned.toggle()
         }
     }
 
     private func toggleSegmentList() {
         guard overlay == .none else { return }
-        if segmentListPinned {
-            preserveReadingColumnLayout {
-                withAnimation(.easeInOut(duration: 0.25)) {
-                    segmentListPinned = false
-                    segmentListPeeking = false
-                }
-            }
-        } else if segmentListPeeking {
-            withAnimation(.easeInOut(duration: 0.25)) {
-                segmentListPeeking = false
-            }
-        } else {
-            withAnimation(.easeInOut(duration: 0.25)) {
-                segmentListPeeking = true
+        let next = ReaderSegmentListPolicy.toggleByExplicitClick(segmentListVisibility)
+        withAnimation(.easeInOut(duration: 0.25)) {
+            applySegmentListVisibility(next)
+            if next.pinned {
+                chromeMode = .revealed
             }
         }
+    }
+
+    private func applySegmentListVisibility(_ next: ReaderSegmentListVisibility) {
+        segmentListPinned = next.pinned
+        segmentListPeeking = next.peeking
     }
 
     private func isPointerInOverlay(_ point: CGPoint, overlay: ReaderOverlay, size: CGSize) -> Bool {
@@ -1707,7 +1615,9 @@ struct ReaderView: View {
             try await viewModel.saveAsNote(content, core: core)
             notesRefreshToken += 1
         } catch {
-            noteError = error.localizedDescription
+            if let message = error.userFacingMessage {
+                noteError = message
+            }
         }
     }
 
@@ -1738,18 +1648,21 @@ struct SegmentSidebarRow: View {
     let segment: SegmentRow
     var runningMetrics: SegmentRunningMetrics?
     var bulletsPreview: String?
-    var statusClock: Date
 
     private var chapterTitle: String {
         if let ch = segment.chapter, !ch.isEmpty { return ch }
         return "段 \(segment.idx + 1)"
     }
 
+    private var showsLiveProgress: Bool {
+        segment.summary_status == "running" && (segment.label == nil || segment.label?.isEmpty == true)
+    }
+
     private var outlineLabel: String? {
         if let label = segment.label, !label.isEmpty { return label }
         switch segment.summary_status {
         case "running":
-            return statusCaption(at: statusClock)
+            return nil
         case "pending":
             return "等待摘要…"
         case "failed", "error":
@@ -1779,7 +1692,14 @@ struct SegmentSidebarRow: View {
             Text(chapterTitle)
                 .font(.subheadline)
                 .lineLimit(1)
-            if let outline = outlineLabel {
+            if showsLiveProgress {
+                TimelineView(.periodic(from: .now, by: 1)) { context in
+                    Text(statusCaption(at: context.date))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                }
+            } else if let outline = outlineLabel {
                 Text(outline)
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -1804,230 +1724,6 @@ private struct ReaderGlobalFrameKey: PreferenceKey {
     }
 }
 
-private struct SegmentFeedFrameKey: PreferenceKey {
-    static var defaultValue: [Int: CGRect] = [:]
-
-    static func reduce(value: inout [Int: CGRect], nextValue: () -> [Int: CGRect]) {
-        value.merge(nextValue(), uniquingKeysWith: { _, latest in latest })
-    }
-}
-
-/// Binds the main reader NSScrollView for scroll-offset preservation and keyboard scroll.
-private struct ReaderScrollViewMarker: NSViewRepresentable {
-    func makeNSView(context: Context) -> ReaderScrollViewMarkerView {
-        ReaderScrollViewMarkerView()
-    }
-
-    func updateNSView(_ nsView: ReaderScrollViewMarkerView, context: Context) {}
-}
-
-private final class ReaderScrollViewMarkerView: NSView {
-    override func viewDidMoveToWindow() {
-        super.viewDidMoveToWindow()
-        guard window != nil else { return }
-        ScrollViewKeyNSView.registerReaderScrollView(from: self)
-    }
-}
-
-/// Toggles chrome on clicks inside reading content, excluding real controls.
-/// Never consumes mouse events — mis-swallowing breaks SwiftUI Buttons.
-private struct ChromeClickTracker: NSViewRepresentable {
-    var enabled: Bool
-    var onBlankClick: () -> Void
-
-    func makeNSView(context: Context) -> ChromeClickNSView {
-        let view = ChromeClickNSView()
-        view.onBlankClick = onBlankClick
-        view.isTrackingEnabled = enabled
-        return view
-    }
-
-    func updateNSView(_ nsView: ChromeClickNSView, context: Context) {
-        nsView.onBlankClick = onBlankClick
-        nsView.isTrackingEnabled = enabled
-    }
-}
-
-private final class ChromeClickNSView: NSView {
-    var onBlankClick: (() -> Void)?
-    var isTrackingEnabled = true
-    private var monitors: [Any] = []
-    private var mouseDownPoint: NSPoint?
-    /// True when mouseDown landed on reading content (not a control).
-    private var pendingChromeToggle = false
-
-    private static let dragThreshold: CGFloat = 5
-    private static let controlAccessibilityPrefix = "lumina.reader.control"
-
-    override func layout() {
-        super.layout()
-        if let superview {
-            frame = superview.bounds
-        }
-    }
-
-    override func viewDidMoveToWindow() {
-        super.viewDidMoveToWindow()
-        removeMonitors()
-        guard window != nil else { return }
-
-        let downMonitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown) { [weak self] event in
-            guard let self, self.isTrackingEnabled, let window = self.window, event.window == window else {
-                return event
-            }
-            let point = event.locationInWindow
-            self.mouseDownPoint = point
-            self.pendingChromeToggle = Self.shouldToggleChrome(at: point, in: window)
-            return event
-        }
-
-        let upMonitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseUp) { [weak self] event in
-            guard let self, self.isTrackingEnabled, let window = self.window, event.window == window else {
-                return event
-            }
-            defer {
-                self.mouseDownPoint = nil
-                self.pendingChromeToggle = false
-            }
-            guard self.pendingChromeToggle, let downPoint = self.mouseDownPoint else {
-                return event
-            }
-
-            let windowPoint = event.locationInWindow
-            let drag = hypot(windowPoint.x - downPoint.x, windowPoint.y - downPoint.y)
-            guard drag < Self.dragThreshold else { return event }
-
-            // Re-check on mouseUp; never consume the event — mis-swallowing kills SwiftUI Buttons.
-            if Self.shouldToggleChrome(at: windowPoint, in: window) {
-                self.onBlankClick?()
-            }
-            return event
-        }
-
-        monitors = [downMonitor, upMonitor].compactMap { $0 }
-    }
-
-    deinit {
-        removeMonitors()
-    }
-
-    private func removeMonitors() {
-        for monitor in monitors {
-            NSEvent.removeMonitor(monitor)
-        }
-        monitors = []
-        mouseDownPoint = nil
-        pendingChromeToggle = false
-    }
-
-    /// Toggle on any click inside the reader document except real controls / edge icons.
-    private static func shouldToggleChrome(at windowPoint: NSPoint, in window: NSWindow) -> Bool {
-        guard ScrollViewKeyNSView.isPointInReaderDocument(windowPoint) else { return false }
-        if isControlHit(at: windowPoint, in: window) { return false }
-        return true
-    }
-
-    private static func isControlHit(at windowPoint: NSPoint, in window: NSWindow) -> Bool {
-        guard let contentView = window.contentView else { return false }
-        let hitView = contentView.hitTest(windowPoint)
-
-        // Reading text is never a chrome-exempt "control".
-        if let hitView, textSurfaceInAncestors(from: hitView) != nil {
-            return false
-        }
-
-        if isInteractiveViewHierarchy(hitView) { return true }
-
-        // SwiftUI Buttons often hit-test as PlatformGroupContainer; resolve via AX.
-        return isAccessibilityControlAtScreenPosition(windowPoint, window: window)
-    }
-
-    private static func isInteractiveViewHierarchy(_ view: NSView?) -> Bool {
-        var current = view
-        while let v = current {
-            if isTextSurfaceView(v) { return false }
-            if isDirectControl(v) { return true }
-            current = v.superview
-        }
-        return false
-    }
-
-    private static func isDirectControl(_ view: NSView) -> Bool {
-        if view is NSControl || view is NSButton || view is NSScroller { return true }
-        let axId = view.accessibilityIdentifier()
-        if axId.hasPrefix(controlAccessibilityPrefix) { return true }
-        if let role = view.accessibilityRole() {
-            switch role {
-            case .button, .checkBox, .radioButton, .popUpButton, .menuButton, .link:
-                return true
-            default:
-                break
-            }
-        }
-        let typeName = String(describing: type(of: view))
-        if typeName.contains("Button") { return true }
-        return false
-    }
-
-    /// Resolve SwiftUI Buttons via AX (view hit-test often lands on PlatformGroupContainer).
-    private static func isAccessibilityControlAtScreenPosition(
-        _ windowPoint: NSPoint,
-        window: NSWindow
-    ) -> Bool {
-        let screenPoint = window.convertPoint(toScreen: windowPoint)
-        guard let screen = window.screen ?? NSScreen.main else { return false }
-        // AX uses top-left origin; AppKit screen coords are bottom-left.
-        let axX = Float(screenPoint.x)
-        let axY = Float(screen.frame.maxY - screenPoint.y)
-
-        let appElement = AXUIElementCreateApplication(pid_t(ProcessInfo.processInfo.processIdentifier))
-        var element: AXUIElement?
-        guard AXUIElementCopyElementAtPosition(appElement, axX, axY, &element) == .success,
-              let element else {
-            return false
-        }
-        return axElementLooksLikeControl(element)
-    }
-
-    private static func axElementLooksLikeControl(_ element: AXUIElement) -> Bool {
-        var roleValue: CFTypeRef?
-        if AXUIElementCopyAttributeValue(element, kAXRoleAttribute as CFString, &roleValue) == .success,
-           let role = roleValue as? String {
-            let controlRoles: Set<String> = [
-                kAXButtonRole as String,
-                kAXCheckBoxRole as String,
-                kAXRadioButtonRole as String,
-                kAXPopUpButtonRole as String,
-                "AXLink",
-            ]
-            if controlRoles.contains(role) { return true }
-        }
-        var idValue: CFTypeRef?
-        if AXUIElementCopyAttributeValue(element, kAXIdentifierAttribute as CFString, &idValue) == .success,
-           let identifier = idValue as? String,
-           identifier.hasPrefix(controlAccessibilityPrefix) {
-            return true
-        }
-        return false
-    }
-
-    private static func textSurfaceInAncestors(from view: NSView) -> NSView? {
-        var current: NSView? = view
-        while let v = current {
-            if isTextSurfaceView(v) { return v }
-            current = v.superview
-        }
-        return nil
-    }
-
-    private static func isTextSurfaceView(_ view: NSView) -> Bool {
-        view is NSTextView
-            || view is NSTextField
-            || view is LuminaSelectableTextView
-            || view is IntrinsicSizingTextContainer
-    }
-}
-
 /// Scrolls the enclosing NSScrollView on keyboard scroll notifications.
 private struct ScrollViewKeyHandler: NSViewRepresentable {
     var enabled: Bool
@@ -2043,26 +1739,21 @@ private struct ScrollViewKeyHandler: NSViewRepresentable {
     }
 }
 
+/// Keyboard scrolling only. This view must never move the scroll origin on its
+/// own: anchoring belongs to SwiftUI's `scrollPosition`, and a second writer is
+/// what used to make reading progress drift.
 private final class ScrollViewKeyNSView: NSView {
     var isEnabled = true
     private var observer: NSObjectProtocol?
     private var keyMonitor: Any?
     private static weak var activeInstance: ScrollViewKeyNSView?
     private static weak var readerScrollView: NSScrollView?
-    private static weak var feedOriginMarker: NSView?
-    private static var boundsObserver: NSObjectProtocol?
-    private static var restoreGeneration: UInt64 = 0
-    private static var restoreWorkItems: [DispatchWorkItem] = []
-    static var onFeedVisibleTopChange: ((CGFloat) -> Void)?
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         if window != nil {
             Self.activeInstance = self
             Self.readerScrollView = Self.discoverScrollView(from: self)
-            if let scrollView = Self.readerScrollView {
-                Self.enableBoundsObserver(on: scrollView)
-            }
             installKeyMonitor()
         } else {
             if Self.activeInstance === self {
@@ -2242,106 +1933,6 @@ private final class ScrollViewKeyNSView: NSView {
         readerScrollView ?? activeInstance?.enclosingScrollView
     }
 
-    static func registerReaderScrollView(from view: NSView) {
-        feedOriginMarker = view
-        var current: NSView? = view
-        while let node = current {
-            if let scrollView = node as? NSScrollView {
-                readerScrollView = scrollView
-                enableBoundsObserver(on: scrollView)
-                return
-            }
-            current = node.superview
-        }
-    }
-
-    static func isPointInReaderDocument(_ windowPoint: NSPoint) -> Bool {
-        guard let scrollView = resolvedScrollView, scrollView.window != nil else { return true }
-        let clipView = scrollView.contentView
-        let pointInClip = clipView.convert(windowPoint, from: nil)
-        return clipView.bounds.contains(pointInClip)
-    }
-
-    static func currentScrollOrigin() -> NSPoint? {
-        resolvedScrollView?.contentView.bounds.origin
-    }
-
-    static func visibleTopInFeed() -> CGFloat? {
-        guard let scrollView = resolvedScrollView,
-              let document = scrollView.documentView,
-              let marker = feedOriginMarker,
-              marker.window != nil else { return nil }
-        let markerInDoc = marker.convert(NSPoint.zero, to: document)
-        return scrollView.contentView.bounds.origin.y - markerInDoc.y
-    }
-
-    static func contentMaxY() -> CGFloat? {
-        guard let scrollView = resolvedScrollView else { return nil }
-        let clip = scrollView.contentView
-        let docHeight = scrollView.documentView?.bounds.height ?? 0
-        return max(0, docHeight - clip.bounds.height)
-    }
-
-    /// Apply a feed-space visible top once. Returns false if the document is
-    /// still too short or the scroll view is missing.
-    @discardableResult
-    static func applyFeedVisibleTop(_ visibleTop: CGFloat) -> Bool {
-        guard let scrollView = resolvedScrollView,
-              let document = scrollView.documentView,
-              let marker = feedOriginMarker,
-              marker.window != nil else { return false }
-        let markerInDoc = marker.convert(.zero, to: document)
-        var origin = scrollView.contentView.bounds.origin
-        origin.y = visibleTop + markerInDoc.y
-        return applyScrollOriginOnce(origin)
-    }
-
-    @discardableResult
-    static func applyScrollOriginOnce(_ origin: NSPoint) -> Bool {
-        cancelScrollOriginRestore()
-        guard let scrollView = resolvedScrollView else { return false }
-        let clip = scrollView.contentView
-        let docHeight = scrollView.documentView?.bounds.height ?? 0
-        let maxY = max(0, docHeight - clip.bounds.height)
-        guard ReadingProgress.shouldApplyRestoredOrigin(targetY: origin.y, maxY: maxY) else {
-            return false
-        }
-        applyScrollOrigin(origin, to: scrollView)
-        return true
-    }
-
-    @discardableResult
-    static func adjustOrigin(by deltaY: CGFloat) -> Bool {
-        guard abs(deltaY) >= 1, let origin = currentScrollOrigin() else { return false }
-        var next = origin
-        next.y += deltaY
-        return applyScrollOriginOnce(next)
-    }
-
-    private static func enableBoundsObserver(on scrollView: NSScrollView) {
-        let clip = scrollView.contentView
-        clip.postsBoundsChangedNotifications = true
-        if let boundsObserver {
-            NotificationCenter.default.removeObserver(boundsObserver)
-        }
-        boundsObserver = NotificationCenter.default.addObserver(
-            forName: NSView.boundsDidChangeNotification,
-            object: clip,
-            queue: .main
-        ) { _ in
-            guard let top = visibleTopInFeed() else { return }
-            onFeedVisibleTopChange?(top)
-        }
-    }
-
-    static func cancelScrollOriginRestore() {
-        restoreGeneration &+= 1
-        for item in restoreWorkItems {
-            item.cancel()
-        }
-        restoreWorkItems.removeAll()
-    }
-
     private static func discoverScrollView(from view: NSView) -> NSScrollView? {
         var current: NSView? = view
         while let node = current {
@@ -2476,10 +2067,10 @@ final class ReaderViewModel: ObservableObject {
     @Published private(set) var bookSummariesComplete = false
     @Published var summaryReadyCount = 0
     @Published var summaryTotalCount = 0
+    @Published var summarizeState: String?
     @Published var segmentRunningMetrics: [Int: SegmentRunningMetrics] = [:]
     @Published var sidebarPreviewByIdx: [Int: String] = [:]
     @Published private(set) var parsedSummaryCache: [Int: ParsedSummary] = [:]
-    @Published var sidebarClock = Date()
     @Published var totalCharCount: Int?
     @Published var chunkTargetChars: Int?
     @Published private(set) var bookStatus = "unread"
@@ -2488,8 +2079,11 @@ final class ReaderViewModel: ObservableObject {
     @Published private(set) var isIngestCancelling = false
     @Published var loadError: String?
     @Published var ingestProgress: IngestProgress?
-    /// Bumps when summary content lands so the feed can keep AppKit scroll offset.
-    @Published private(set) var contentResizeTick = 0
+    /// `restoring` until the feed settles on the resumed segment; `reading`
+    /// afterwards, when the pinned segment is the progress.
+    @Published private(set) var progressPhase: ReaderProgressPhase = .reading
+    private(set) var restoreTarget: Int?
+    private var restoreSettleTask: Task<Void, Never>?
     private var bookLanguage: String?
     private var bookTargetLanguage: String?
     private var bookTitle: String?
@@ -2500,15 +2094,12 @@ final class ReaderViewModel: ObservableObject {
     private var summaryHydrateTasks: [Int: Task<Void, Never>] = [:]
     private var summaryParseTasks: [Int: Task<Void, Never>] = [:]
     private var sidebarPreviewTasks: [Int: Task<Void, Never>] = [:]
-    private var sidebarClockTask: Task<Void, Never>?
     private var chatTask: Task<Void, Never>?
     private var hydratingSummaryIndices: Set<Int> = []
     private var parsingSummaryIndices: Set<Int> = []
     private var parsedSummarySourceJSON: [Int: String] = [:]
     private var parsingSummaryJSON: [Int: String] = [:]
     private var summaryParseGeneration: [Int: Int] = [:]
-    private(set) var scrollPhase: ReaderScrollPhase = .tracking
-    private var restoreAttempt: ReaderRestoreAttempt?
     private var sourceCache: [Int: SegmentSourceBody] = [:]
     private var sourceCacheOrder: [Int] = []
     private var contentMode: ReaderContentMode = .summary
@@ -2519,19 +2110,20 @@ final class ReaderViewModel: ObservableObject {
         contentMode == .original ? originalModeCacheLimit : summaryModeCacheLimit
     }
 
-    static let resegmentMinTargetChars = 200
-    static let resegmentMaxTargetChars = 8000
-    static let resegmentTargetRange = resegmentMinTargetChars...resegmentMaxTargetChars
+    static let resegmentMinTargetChars = ResegmentTarget.minChars
+    static let resegmentMaxTargetChars = ResegmentTarget.maxChars
+    static let resegmentTargetRange = ResegmentTarget.range
 
     static func normalizedResegmentTarget(
         currentTarget: Int?,
         totalChars: Int?,
         segmentCount: Int
     ) -> Int {
-        let currentAverage = (totalChars ?? 4000) / max(segmentCount, 1)
-        let target = currentTarget ?? currentAverage
-        let rounded = ((target + 50) / 100) * 100
-        return min(resegmentMaxTargetChars, max(resegmentMinTargetChars, rounded))
+        ResegmentTarget.normalized(
+            currentTarget: currentTarget,
+            totalChars: totalChars,
+            segmentCount: segmentCount
+        )
     }
 
     func setContentMode(_ mode: ReaderContentMode) {
@@ -2572,8 +2164,13 @@ final class ReaderViewModel: ObservableObject {
 
     var bookChatPickerLabel: String {
         if canChatBook { return "全书" }
-        if bookSummariesComplete { return "全书（索引生成中）" }
-        return "全书"
+        guard bookSummariesComplete else { return "全书" }
+        return indexStatus == "building" ? "全书（索引生成中）" : "全书（点此建索引）"
+    }
+
+    /// True when picking 全书 should kick off the on-demand index build.
+    var needsBookIndexBuild: Bool {
+        bookSummariesComplete && indexStatus != "ready" && indexStatus != "building"
     }
 
     var chatPlaceholder: String {
@@ -2591,6 +2188,8 @@ final class ReaderViewModel: ObservableObject {
     func cancelAllTasks() {
         eventTask?.cancel()
         eventTask = nil
+        restoreSettleTask?.cancel()
+        restoreSettleTask = nil
         for task in detailTasks.values {
             task.cancel()
         }
@@ -2601,27 +2200,12 @@ final class ReaderViewModel: ObservableObject {
         summaryHydrateTasks.removeAll()
         clearSummaryCache()
         cancelSidebarPreviewTasks()
-        setSidebarVisible(false)
         hydratingSummaryIndices.removeAll()
         chatTask?.cancel()
         chatTask = nil
         isSending = false
         loadingSourceIndices.removeAll()
         refreshingSourceIndices.removeAll()
-    }
-
-    func setSidebarVisible(_ visible: Bool) {
-        sidebarClockTask?.cancel()
-        sidebarClockTask = nil
-        guard visible else { return }
-        sidebarClock = Date()
-        sidebarClockTask = Task { [weak self] in
-            while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: 1_000_000_000)
-                guard !Task.isCancelled, let self else { return }
-                self.sidebarClock = Date()
-            }
-        }
     }
 
     func scheduleSidebarPreview(idx: Int, summaryJSON: String?) {
@@ -2662,8 +2246,16 @@ final class ReaderViewModel: ObservableObject {
         sidebarPreviewTasks.removeAll()
     }
 
-    func load(bookId: String, core: CoreClient, initialSegmentIndex: Int? = nil) async {
-        await flushProgressSave(core: core)
+    /// `onResume` is called with the segment to open at, before the segments are
+    /// published, so the feed's first layout already renders there and no
+    /// scroll-restore retry loop is needed.
+    func load(
+        bookId: String,
+        core: CoreClient,
+        initialSegmentIndex: Int? = nil,
+        onResume: (Int?) -> Void = { _ in }
+    ) async {
+        await flushProgressSave()
         cancelAllTasks()
         clearAllSourceCache()
         segments = []
@@ -2675,6 +2267,7 @@ final class ReaderViewModel: ObservableObject {
         messages = []
         summaryReadyCount = 0
         summaryTotalCount = 0
+        summarizeState = nil
         totalCharCount = nil
         chunkTargetChars = nil
         bookLanguage = nil
@@ -2690,8 +2283,10 @@ final class ReaderViewModel: ObservableObject {
         chatScope = .segment
         loadError = nil
         ingestProgress = nil
-        contentResizeTick = 0
+        progressPhase = .restoring
+        restoreTarget = nil
         self.bookId = bookId
+        ReadingProgressStore.shared.attach(core: core)
         do {
             try Task.checkCancellation()
             async let bookTask = core.fetchBook(id: bookId)
@@ -2713,7 +2308,10 @@ final class ReaderViewModel: ObservableObject {
                     self?.handleEvent(event, core: core)
                 }
             }
-            guard book.status != "processing" else { return }
+            guard book.status != "processing" else {
+                progressPhase = .reading
+                return
+            }
 
             async let openTask = core.openBook(id: bookId)
             async let listTask = core.listSegments(bookId: bookId)
@@ -2721,156 +2319,113 @@ final class ReaderViewModel: ObservableObject {
             try Task.checkCancellation()
             let list = try await listTask
             try Task.checkCancellation()
+
+            let saved = ReadingProgressStore.shared.resumeIndex(
+                bookId: bookId,
+                serverIndex: open.current_segment_index,
+                segmentCount: list.count
+            )
+            let idx = initialSegmentIndex
+                ?? list.first(where: { $0.idx == saved })?.idx
+                ?? list.first?.idx
+            restoreTarget = idx
+            // Pin before publishing the feed: the first layout lands on `idx`.
+            onResume(idx)
+
             segments = list
             scheduleSidebarPreviews(for: list)
             warmSummaryCache(from: list)
             summaryReadyCount = book.summary_ready_count ?? list.filter { $0.summary_status == "ready" }.count
             summaryTotalCount = book.summary_total_count ?? list.count
+            summarizeState = book.summarize_state
             totalCharCount = book.total_char_count
             chunkTargetChars = book.chunk_target_chars
             bookLanguage = book.language
             bookTargetLanguage = book.target_language
-            ReadingProgressStore.shared.attach(core: core)
-            let cached = ReaderPreferences.cachedProgress(for: bookId)
-            let saved = ReadingProgress.restoreIndex(
-                serverIndex: open.current_segment_index,
-                localIndex: cached?.index,
-                localSegmentCount: cached?.segmentCount,
-                currentSegmentCount: list.count
-            )
-            let idx = initialSegmentIndex
-                ?? segments.first(where: { $0.idx == saved })?.idx
-                ?? segments.first?.idx
-            enterPhase(.restoring)
-            selectedIdx = idx
-            let offset: CGFloat = initialSegmentIndex == nil
-                ? ReadingProgress.restoreOffsetY(
-                    localOffsetY: cached?.offsetY,
-                    localSegmentCount: cached?.segmentCount,
-                    currentSegmentCount: list.count,
-                    localContentMode: cached?.contentMode,
-                    currentContentMode: contentMode.rawValue
-                )
-                : 0
             if let idx {
-                restoreAttempt = ReaderRestoreAttempt(index: idx, offsetY: offset)
+                ReadingProgressStore.shared.hydrate(
+                    bookId: bookId,
+                    index: idx,
+                    total: list.count
+                )
+                topSegmentSelection = idx
+                selectedIdx = idx
                 selectSegment(idx)
                 prefetchSummaries(around: idx, core: core, radius: 3)
+                scheduleReadingHandoff()
             } else {
-                restoreAttempt = nil
-                enterPhase(.tracking)
+                progressPhase = .reading
+                selectedIdx = nil
             }
         } catch is CancellationError {
+            progressPhase = .reading
             return
         } catch {
+            progressPhase = .reading
             loadError = ConnectionError.userMessage(for: error, fallback: "加载失败，请重试。")
         }
     }
 
-    func reload(core: CoreClient, initialSegmentIndex: Int? = nil) async {
-        await load(bookId: bookId, core: core, initialSegmentIndex: initialSegmentIndex)
-    }
-
-    var segmentFeedFrames: [Int: CGRect] = [:]
-    private var viewportDrivenIdx: Int?
-
-    func enterPhase(_ phase: ReaderScrollPhase) {
-        if phase.cancelsOriginRestore {
-            restoreAttempt = nil
-        }
-        scrollPhase = phase
-    }
-
-    func cancelRestore() {
-        restoreAttempt = nil
-    }
-
-    func considerRestore(maxY: CGFloat) -> ReaderRestoreStep {
-        guard scrollPhase == .restoring, var attempt = restoreAttempt else {
-            return .finished
-        }
-        let step = attempt.step(frames: segmentFeedFrames, maxY: maxY)
-        restoreAttempt = attempt
-        return step
-    }
-
-    func markRestoreApplied() {
-        restoreAttempt = nil
-        scrollPhase = .tracking
-    }
-
-    func scheduleProgressSave(
-        _ idx: Int,
-        offsetY: CGFloat = 0,
+    func reload(
         core: CoreClient,
-        confirmedHit: Bool = false,
-        bypassPhase: Bool = false
-    ) {
-        guard bypassPhase || scrollPhase.allowsProgressSave else { return }
-        guard !bookId.isEmpty else { return }
-        ReadingProgressStore.shared.attach(core: core)
-        ReadingProgressStore.shared.noteVisibleSegment(
+        initialSegmentIndex: Int? = nil,
+        onResume: (Int?) -> Void = { _ in }
+    ) async {
+        await load(
+            bookId: bookId,
+            core: core,
+            initialSegmentIndex: initialSegmentIndex,
+            onResume: onResume
+        )
+    }
+
+    /// Set when the pinned segment drives the selection, so the resulting
+    /// `selectedIdx` change is not mistaken for a jump request.
+    private var topSegmentSelection: Int?
+
+    /// Hand the feed over from restoring to reading once it has settled on the
+    /// resumed segment. Until then a stray pin from a still-materializing
+    /// LazyVStack gets corrected rather than recorded.
+    private func scheduleReadingHandoff() {
+        restoreSettleTask?.cancel()
+        restoreSettleTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 300_000_000)
+            guard !Task.isCancelled, progressPhase == .restoring else { return }
+            let target = restoreTarget
+            progressPhase = .reading
+            restoreTarget = nil
+            if let target { noteTopSegment(target) }
+        }
+    }
+
+    /// Record the segment pinned to the top of the viewport. This is the only
+    /// place reading progress is written.
+    func noteTopSegment(_ idx: Int) {
+        guard progressPhase.recordsProgress else { return }
+        guard !bookId.isEmpty, !segments.isEmpty else { return }
+        ReadingProgressStore.shared.record(
             bookId: bookId,
             index: idx,
-            offsetY: offsetY,
-            segmentCount: segments.count,
-            contentMode: contentMode,
-            confirmedHit: confirmedHit
+            total: segments.count
         )
-    }
-
-    func noteViewportTop(_ top: CGFloat, core: CoreClient) {
-        guard scrollPhase.allowsProgressSave else { return }
-        guard let anchor = ReadingProgress.viewportAnchor(
-            visibleTop: top,
-            frames: segmentFeedFrames
-        ) else { return }
-        scheduleProgressSave(
-            anchor.index,
-            offsetY: anchor.offsetY,
-            core: core,
-            confirmedHit: true
-        )
-        guard scrollPhase.allowsViewportDrivenSelection else { return }
-        if selectedIdx != anchor.index {
-            viewportDrivenIdx = anchor.index
-            selectedIdx = anchor.index
-            prefetchSummaries(around: anchor.index, core: core, radius: 3)
+        if selectedIdx != idx {
+            topSegmentSelection = idx
+            selectedIdx = idx
         }
     }
 
-    func captureViewportProgress(core: CoreClient) {
-        if scrollPhase == .restoring { return }
-        if let top = ScrollViewKeyNSView.visibleTopInFeed(),
-           let anchor = ReadingProgress.viewportAnchor(
-            visibleTop: top,
-            frames: segmentFeedFrames
-           ) {
-            scheduleProgressSave(
-                anchor.index,
-                offsetY: anchor.offsetY,
-                core: core,
-                confirmedHit: true,
-                bypassPhase: true
-            )
-            return
-        }
-        if scrollPhase != .tracking, let idx = selectedIdx {
-            scheduleProgressSave(idx, core: core, confirmedHit: true, bypassPhase: true)
-        }
-    }
-
-    func consumeViewportSelection(_ idx: Int) -> Bool {
-        if viewportDrivenIdx == idx {
-            viewportDrivenIdx = nil
+    /// True when this selection came from the pinned segment, so the reader
+    /// must not scroll in response to it.
+    func consumeTopSegmentSelection(_ idx: Int) -> Bool {
+        if topSegmentSelection == idx {
+            topSegmentSelection = nil
             return true
         }
         return false
     }
 
-    func flushProgressSave(core: CoreClient) async {
-        ReadingProgressStore.shared.attach(core: core)
-        await ReadingProgressStore.shared.flush()
+    func flushProgressSave() async {
+        await ReadingProgressStore.shared.flush(bookId: bookId)
     }
 
     func prefetchSummaries(around idx: Int, core: CoreClient, radius: Int = 3) {
@@ -2927,7 +2482,6 @@ final class ReaderViewModel: ObservableObject {
         if let status = detail.summary_status { updated.summary_status = status }
         segments[i] = updated
         syncCurrentSegment(from: updated)
-        noteContentResize()
         if let json = updated.summary_json, !json.isEmpty {
             ensureSummaryParsed(idx: idx, json: json)
         }
@@ -3010,11 +2564,6 @@ final class ReaderViewModel: ObservableObject {
         cache[idx] = parsed
         parsedSummaryCache = cache
         parsedSummarySourceJSON[idx] = json
-        noteContentResize()
-    }
-
-    private func noteContentResize() {
-        contentResizeTick += 1
     }
 
     private func warmSummaryCache(from list: [SegmentRow]) {
@@ -3142,13 +2691,36 @@ final class ReaderViewModel: ObservableObject {
         try await core.startSummarize(
             bookId: bookId, summaryTier: summaryTier
         )
+        summarizeState = "queued"
         for seg in segments where seg.summary_status == "failed" || seg.summary_status == "error" {
             applySegmentStatus(idx: seg.idx, status: "pending")
         }
+        NotificationCenter.default.post(name: .luminaLibraryRefresh, object: nil)
     }
 
     func stopSummarize(core: CoreClient) async throws {
         try await core.stopSummarize(bookId: bookId)
+        markSummarizePaused()
+        NotificationCenter.default.post(name: .luminaLibraryRefresh, object: nil)
+    }
+
+    func markSummarizePaused() {
+        if summarizeState == "running" || summarizeState == "queued" {
+            summarizeState = "paused"
+        }
+    }
+
+    /// Whole-book index is built on demand only; nothing queues it in the background.
+    func buildBookIndex(core: CoreClient) async {
+        guard bookSummariesComplete, indexStatus != "building" else { return }
+        indexStatus = "building"
+        do {
+            try await core.buildBookIndex(bookId: bookId)
+        } catch {
+            guard let message = error.userFacingMessage else { return }
+            indexStatus = "error"
+            chatStatus = "建全书索引失败：\(message)"
+        }
     }
 
     func retrySegment(
@@ -3162,6 +2734,8 @@ final class ReaderViewModel: ObservableObject {
             summaryTier: summaryTier
         )
         applySegmentStatus(idx: idx, status: "pending")
+        summarizeState = "queued"
+        NotificationCenter.default.post(name: .luminaLibraryRefresh, object: nil)
     }
 
     func clearChecks() {
@@ -3204,7 +2778,9 @@ final class ReaderViewModel: ObservableObject {
         for idx in indices {
             applySegmentStatus(idx: idx, status: "pending")
         }
+        summarizeState = "queued"
         exitSegmentSelectionMode()
+        NotificationCenter.default.post(name: .luminaLibraryRefresh, object: nil)
     }
 
     func regenerateAllSummaries(
@@ -3216,12 +2792,15 @@ final class ReaderViewModel: ObservableObject {
         for seg in segments {
             applySegmentStatus(idx: seg.idx, status: "pending")
         }
+        summarizeState = "queued"
+        bookSummariesComplete = false
         exitSegmentSelectionMode()
+        NotificationCenter.default.post(name: .luminaLibraryRefresh, object: nil)
     }
 
     func resegmentBook(core: CoreClient, chunkTargetChars: Int) async throws {
-        await flushProgressSave(core: core)
-        ReaderPreferences.clearCachedProgress(for: bookId)
+        // Segment indices are about to change, so the recorded position is void.
+        ReadingProgressStore.shared.forget(bookId: bookId)
         try await core.resegmentBook(
             bookId: bookId,
             chunkTargetChars: chunkTargetChars
@@ -3451,6 +3030,15 @@ final class ReaderViewModel: ObservableObject {
         return parts.joined(separator: " · ")
     }
 
+    var summarizeActivityLabel: String? {
+        ReaderSummaryProgressPolicy.activityLabel(
+            running: ReaderSummaryProgressPolicy.runningCount(in: segments),
+            queued: ReaderSummaryProgressPolicy.queuedCount(
+                in: segments, summarizeState: summarizeState
+            )
+        )
+    }
+
     private func applySegmentStatus(idx: Int, status: String, label: String? = nil, event: [String: Any]? = nil) {
         guard let i = segments.firstIndex(where: { $0.idx == idx }) else { return }
         var updated = segments[i]
@@ -3533,13 +3121,24 @@ final class ReaderViewModel: ObservableObject {
         }
         if summaryTotalCount > 0 {
             bookSummariesComplete = summaryReadyCount >= summaryTotalCount
+            if bookSummariesComplete {
+                summarizeState = "summarized"
+            }
             if !bookSummariesComplete, chatScope == .book {
                 chatScope = .segment
             }
         }
 
+        if let state = event["summarize_state"] as? String {
+            summarizeState = state
+        }
+
         let type = event["type"] as? String
         switch type {
+        case "summarize_resumed":
+            if summarizeState != "running" {
+                summarizeState = "queued"
+            }
         case "resegment_started":
             isResegmenting = true
             isResegmentCancelling = false
@@ -3602,6 +3201,9 @@ final class ReaderViewModel: ObservableObject {
             guard let idx = SegmentReadyEventParser.eventIndex(from: event),
                   let status = event["status"] as? String else { return }
             applySegmentStatus(idx: idx, status: status, event: event)
+            if status == "running" {
+                summarizeState = "running"
+            }
         case "segment_summarize_progress", "segment_summary_progress":
             guard let idx = SegmentReadyEventParser.eventIndex(from: event) else { return }
             var metrics = segmentRunningMetrics[idx] ?? SegmentRunningMetrics(

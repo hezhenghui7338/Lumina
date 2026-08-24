@@ -28,20 +28,20 @@ public sealed partial class ReaderPage : Page
     private readonly List<JsonElement> _eventBuffer = [];
     private DispatcherTimer? _flushTimer;
     private DispatcherTimer? _progressTimer;
-    private bool _restoringOffset;
-    private double _restoreOffsetY;
     private int _readyCount;
     private int _totalCount;
     private int? _pendingJump;
     private ChatMessage? _lastAssistant;
     private string _chatScope = "segment";
     private string _indexStatus = "idle";
+    private long _lastSegmentTurnTick;
 
     public ReaderPage()
     {
         InitializeComponent();
         ChatList.ItemsSource = _chat;
         KeyDown += ReaderPage_KeyDown;
+        CharacterReceived += ReaderPage_CharacterReceived;
     }
 
     private void ReaderPage_KeyDown(object sender, KeyRoutedEventArgs e)
@@ -60,6 +60,13 @@ public sealed partial class ReaderPage : Page
 
         if (e.Handled) return;
         if (ShouldIgnoreReaderScrollKey(e.OriginalSource as DependencyObject)) return;
+
+        if (e.Key is VirtualKey.OemOpenBrackets or VirtualKey.OemCloseBrackets)
+        {
+            if (TurnSegment(e.Key == VirtualKey.OemCloseBrackets ? 1 : -1))
+                e.Handled = true;
+            return;
+        }
 
         const double lineDelta = 80;
         var offset = ContentScroll.VerticalOffset;
@@ -97,6 +104,57 @@ public sealed partial class ReaderPage : Page
             current = VisualTreeHelper.GetParent(current);
         }
         return false;
+    }
+
+    private void ReaderPage_CharacterReceived(UIElement sender, CharacterReceivedRoutedEventArgs e)
+    {
+        if (ShouldIgnoreReaderScrollKey(e.OriginalSource as DependencyObject)) return;
+        var delta = e.Character switch
+        {
+            '[' or '【' => -1,
+            ']' or '】' => 1,
+            _ => 0,
+        };
+        if (delta == 0) return;
+        if (TurnSegment(delta))
+            e.Handled = true;
+    }
+
+    private void PrevSegment_Click(object sender, RoutedEventArgs e) => TurnSegment(-1);
+
+    private void NextSegment_Click(object sender, RoutedEventArgs e) => TurnSegment(1);
+
+    private bool TurnSegment(int delta)
+    {
+        if (_selected is null) return false;
+        var sorted = _segments.Select(s => s.Idx).OrderBy(i => i).ToList();
+        var target = SegmentTurnNavigation.TargetIdx(sorted, _selected.Idx, delta);
+        if (target is not int idx) return false;
+        var now = Environment.TickCount64;
+        if (now - _lastSegmentTurnTick < 80) return false;
+        var listIdx = _segments.FindIndex(s => s.Idx == idx);
+        if (listIdx < 0) return false;
+        _lastSegmentTurnTick = now;
+        SegmentList.SelectedIndex = listIdx;
+        return true;
+    }
+
+    private void UpdateSegmentTurnButtons()
+    {
+        var multi = _segments.Count > 1;
+        PrevSegmentButton.Visibility = multi ? Visibility.Visible : Visibility.Collapsed;
+        NextSegmentButton.Visibility = multi ? Visibility.Visible : Visibility.Collapsed;
+        if (!multi || _selected is null)
+        {
+            PrevSegmentButton.IsEnabled = false;
+            NextSegmentButton.IsEnabled = false;
+            return;
+        }
+        var sorted = _segments.Select(s => s.Idx).OrderBy(i => i).ToList();
+        PrevSegmentButton.IsEnabled =
+            SegmentTurnNavigation.TargetIdx(sorted, _selected.Idx, -1) is not null;
+        NextSegmentButton.IsEnabled =
+            SegmentTurnNavigation.TargetIdx(sorted, _selected.Idx, 1) is not null;
     }
 
     protected override void OnNavigatedTo(NavigationEventArgs e)
@@ -176,26 +234,12 @@ public sealed partial class ReaderPage : Page
                 local is null ? null : _segments.Count,
                 _segments.Count);
             idx = Math.Clamp(idx, 0, Math.Max(0, _segments.Count - 1));
-            _restoreOffsetY = _pendingJump is not null
-                ? 0
-                : ReadingProgressIndex.RestoreOffset(
-                    LocalPrefs.GetReadingProgressOffset(_bookId, _segments.Count),
-                    local is null ? null : _segments.Count,
-                    _segments.Count);
-            _restoringOffset = _restoreOffsetY > 1;
             if (_segments.Count > 0)
             {
                 var listIdx = _segments.FindIndex(s => s.Idx == idx);
                 SegmentList.SelectedIndex = listIdx >= 0 ? listIdx : idx;
             }
-            if (_restoringOffset)
-            {
-                DispatcherQueue.TryEnqueue(() =>
-                {
-                    ContentScroll.ChangeView(null, _restoreOffsetY, null, true);
-                    _restoringOffset = false;
-                });
-            }
+            UpdateSegmentTurnButtons();
             StartEvents();
             await ReloadNotesAsync();
         }
@@ -301,18 +345,24 @@ public sealed partial class ReaderPage : Page
         };
     }
 
+    private bool SummariesComplete => _totalCount > 0 && _readyCount >= _totalCount;
+
+    /// <summary>True when picking 全书 should kick off the on-demand index build.</summary>
+    private bool NeedsBookIndexBuild =>
+        SummariesComplete && _indexStatus != "ready" && _indexStatus != "building";
+
     private void UpdateChatScopeUi()
     {
-        var canBook = _totalCount > 0 && _readyCount >= _totalCount && _indexStatus == "ready";
+        var canBook = SummariesComplete && _indexStatus == "ready";
         if (ChatScopeBookItem is not null)
         {
-            ChatScopeBookItem.IsEnabled = canBook;
+            // Selectable while the index is missing so the user can trigger the build.
+            ChatScopeBookItem.IsEnabled = canBook || NeedsBookIndexBuild;
             ChatScopeBookItem.Content = _indexStatus switch
             {
                 "ready" => "全书",
                 "building" => "全书（索引生成中）",
-                "error" => "全书（索引失败）",
-                _ => _readyCount >= _totalCount && _totalCount > 0 ? "全书（索引生成中）" : "全书",
+                _ => SummariesComplete ? "全书（点此建索引）" : "全书",
             };
         }
         if (!canBook && _chatScope == "book")
@@ -330,7 +380,28 @@ public sealed partial class ReaderPage : Page
             _chatScope = tag;
         else
             _chatScope = "segment";
+        var shouldBuild = _chatScope == "book" && NeedsBookIndexBuild;
         UpdateChatScopeUi();
+        if (shouldBuild) _ = BuildBookIndexAsync();
+    }
+
+    private async Task BuildBookIndexAsync()
+    {
+        if (string.IsNullOrEmpty(_bookId)) return;
+        _indexStatus = "building";
+        UpdateChatScopeUi();
+        try
+        {
+            await App.Core.BuildBookIndexAsync(_bookId, _pageCts?.Token ?? default);
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch (Exception)
+        {
+            _indexStatus = "error";
+            UpdateChatScopeUi();
+        }
     }
 
     private void UpdateProgressBanner()
@@ -348,20 +419,17 @@ public sealed partial class ReaderPage : Page
     {
         if (SegmentList.SelectedItem is not SegmentRow row) return;
         _selected = row;
+        UpdateSegmentTurnButtons();
         await HydrateSelectedAsync();
         await ReloadNotesAsync();
-        LocalPrefs.SetReadingProgress(
-            _bookId,
-            row.Idx,
-            _segments.Count,
-            _restoringOffset ? _restoreOffsetY : 0);
+        SaveLocalProgress(row.Idx);
         try { _ = App.Core.SaveReadingProgressAsync(_bookId, row.Idx); }
         catch { /* non-blocking */ }
     }
 
     private void ContentScroll_ViewChanged(object sender, ScrollViewerViewChangedEventArgs e)
     {
-        if (_restoringOffset || _selected is null) return;
+        if (_selected is null) return;
         _progressTimer ??= new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(120) };
         _progressTimer.Tick -= ProgressTimer_Tick;
         _progressTimer.Tick += ProgressTimer_Tick;
@@ -378,14 +446,16 @@ public sealed partial class ReaderPage : Page
     private void PersistReadingProgress(bool patchServer)
     {
         if (_selected is null || string.IsNullOrEmpty(_bookId)) return;
-        LocalPrefs.SetReadingProgress(
-            _bookId,
-            _selected.Idx,
-            _segments.Count,
-            ContentScroll.VerticalOffset);
+        SaveLocalProgress(_selected.Idx);
         if (!patchServer) return;
         try { _ = App.Core.SaveReadingProgressAsync(_bookId, _selected.Idx); }
         catch { /* non-blocking */ }
+    }
+
+    private void SaveLocalProgress(int index)
+    {
+        var percent = ReadingProgressIndex.Percent(index, _segments.Count);
+        LocalPrefs.SetReadingProgress(_bookId, index, _segments.Count, 0, percent);
     }
 
     private async Task HydrateSelectedAsync()
@@ -499,8 +569,8 @@ public sealed partial class ReaderPage : Page
         await HydrateSelectedAsync();
     }
 
-    private SummaryTier SelectedSummaryTier() =>
-        SummaryTierBox.SelectedItem is ComboBoxItem { Tag: "advanced" }
+    private static SummaryTier TierFromSender(object sender) =>
+        (sender as FrameworkElement)?.Tag as string == "advanced"
             ? SummaryTier.Advanced
             : SummaryTier.Normal;
 
@@ -508,7 +578,7 @@ public sealed partial class ReaderPage : Page
     {
         try
         {
-            await App.Core.StartSummarizeAsync(_bookId, SelectedSummaryTier());
+            await App.Core.StartSummarizeAsync(_bookId, TierFromSender(sender));
             ProgressText.Text = "摘要已开始…";
             ProgressBanner.Visibility = Visibility.Visible;
         }
@@ -531,7 +601,7 @@ public sealed partial class ReaderPage : Page
 
     private async void Regenerate_Click(object sender, RoutedEventArgs e)
     {
-        var tier = SelectedSummaryTier();
+        var tier = TierFromSender(sender);
         var tierLabel = tier == SummaryTier.Advanced ? "高级摘要" : "正常摘要";
         var dlg = new ContentDialog
         {

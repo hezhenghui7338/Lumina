@@ -1,7 +1,9 @@
+using Lumina.Design;
 using Lumina.Features.Notes;
 using Lumina.Services;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Navigation;
 using Windows.Storage.Pickers;
 using WinRT.Interop;
@@ -74,7 +76,7 @@ public sealed partial class LibraryPage : Page
             SelectCombo(SortBox, _sort);
             _suppressFilter = false;
 
-            _allBooks = booksTask.Result.ToList();
+            _allBooks = OverlayLocalProgress(booksTask.Result);
             ApplyLocalFilters();
         }
         catch (OperationCanceledException) { }
@@ -86,6 +88,17 @@ public sealed partial class LibraryPage : Page
         {
             LoadingRing.IsActive = false;
         }
+    }
+
+    static List<BookSummary> OverlayLocalProgress(IReadOnlyList<BookSummary> books)
+    {
+        var list = books.ToList();
+        foreach (var book in list)
+        {
+            if (LocalPrefs.GetCachedProgress(book.Id) is not { } cached) continue;
+            ReadingProgressIndex.OverlayLocal(book, cached.Index, cached.SegmentCount, cached.Percent);
+        }
+        return list;
     }
 
     private void RebuildCollections(IReadOnlyList<string> categories)
@@ -444,6 +457,10 @@ public sealed partial class LibraryPage : Page
             catch (Exception ex) { StatusText.Text = ex.Message; }
         };
 
+        var resegment = new MenuFlyoutItem { Text = "整书重新分段" };
+        resegment.IsEnabled = book.CanResegment;
+        resegment.Click += async (_, _) => await ConfirmResegmentAsync(book);
+
         var export = new MenuFlyoutItem { Text = "导出 Markdown" };
         export.IsEnabled = book.HasExportableSummary;
         export.Click += async (_, _) =>
@@ -485,8 +502,60 @@ public sealed partial class LibraryPage : Page
         flyout.Items.Add(rename);
         flyout.Items.Add(category);
         flyout.Items.Add(classify);
+        flyout.Items.Add(resegment);
         flyout.Items.Add(export);
         flyout.Items.Add(delete);
         flyout.ShowAt(sender as FrameworkElement);
+    }
+
+    private async Task ConfirmResegmentAsync(BookSummary book)
+    {
+        if (!book.CanResegment) return;
+        var target = ResegmentTarget.Normalized(
+            book.ChunkTargetChars, book.TotalCharCount, book.SegmentCount ?? 0);
+        var box = new NumberBox
+        {
+            Header = "目标大小（字）",
+            Value = target,
+            Minimum = ResegmentTarget.MinChars,
+            Maximum = ResegmentTarget.MaxChars,
+            SmallChange = 100,
+            SpinButtonPlacementMode = NumberBoxSpinButtonPlacementMode.Compact,
+        };
+        var panel = new StackPanel { Spacing = 8 };
+        panel.Children.Add(new TextBlock
+        {
+            Text = "设置每段的目标字数。实际段落会根据章节和语义边界略有调整。",
+            TextWrapping = TextWrapping.Wrap,
+        });
+        panel.Children.Add(box);
+        panel.Children.Add(new TextBlock
+        {
+            Text = "重新分段会删除已有摘要、笔记和本书对话记录，且无法撤销。原始书籍文件不会被修改。",
+            TextWrapping = TextWrapping.Wrap,
+            Foreground = new SolidColorBrush(Windows.UI.Color.FromArgb(255, 196, 110, 24)),
+        });
+        var dlg = new ContentDialog
+        {
+            Title = $"整书重新分段 · {book.Title}",
+            Content = panel,
+            PrimaryButtonText = "开始重新分段",
+            CloseButtonText = "取消",
+            XamlRoot = XamlRoot,
+            DefaultButton = ContentDialogButton.Close,
+        };
+        if (await dlg.ShowAsync() != ContentDialogResult.Primary) return;
+        var chars = (int)Math.Clamp(
+            double.IsNaN(box.Value) ? target : box.Value,
+            (double)ResegmentTarget.MinChars,
+            (double)ResegmentTarget.MaxChars);
+        try
+        {
+            LocalPrefs.ClearCachedProgress(book.Id);
+            await App.Core.ResegmentBookAsync(book.Id, chars);
+            StatusText.Text = "正在重新分段…";
+            await ReloadAsync();
+        }
+        catch (Exception ex) { StatusText.Text = ex.Message; }
     }
 }

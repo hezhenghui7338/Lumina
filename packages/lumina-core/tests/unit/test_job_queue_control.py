@@ -12,7 +12,7 @@ import pytest
 from lumina_core.config import ModelResource, ModelsConfig, ProfileRoute
 from lumina_core.db.repos import BookRepo, SegmentRepo
 from lumina_core.db.schema import init_db
-from lumina_core.jobs.queue import JobQueue
+from lumina_core.jobs.queue import JobItem, JobKind, JobQueue, _job_key
 from tests.support.mock_router import MockModelRouter, load_json_fixture
 
 LLM_FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "llm"
@@ -760,6 +760,282 @@ async def test_summarize_state_queued_after_enqueue(conn):
     assert (
         q._summarize_queued_count_for_book(book_id) == 1
         or q.summarize_active_for_book(book_id) is not None
+        or q._has_active_summarize_job(book_id)
+    )
+
+
+def _seed_summarized_book(
+    conn, *, book_id: str, n_segments: int = 2, index_status: str = "idle"
+) -> str:
+    """A book whose segments are all ready — the only state that allows rollup."""
+    _seed_book(conn, book_id=book_id, n_segments=n_segments)
+    segments = SegmentRepo(conn)
+    for seg in segments.list_for_book(book_id, include_body=False):
+        segments.set_status(seg["id"], "ready")
+    BookRepo(conn).update(
+        book_id, status="summarized", index_status=index_status
+    )
+    return book_id
+
+
+@pytest.mark.asyncio
+async def test_rollup_never_starves_summarize(conn, monkeypatch):
+    """A slow book index must not consume the summarize workers.
+
+    Rollup and summarize used to share one queue and one worker pool, so a
+    library full of summarized books pinned every worker on book_index and the
+    UI sat at 「0 进行中 · n 排队」 for hours.
+    """
+    rollup_entered = asyncio.Event()
+    release_rollup = asyncio.Event()
+
+    async def _blocking_rollup(*args, **kwargs) -> str:
+        rollup_entered.set()
+        await release_rollup.wait()
+        return "ready"
+
+    monkeypatch.setattr(
+        "lumina_core.summarize.rollup.rollup_book", _blocking_rollup
+    )
+
+    models = ModelsConfig(
+        resources=[
+            ModelResource(
+                id="ollama",
+                provider="ollama",
+                base_url="http://127.0.0.1:11434",
+                model="m",
+                concurrency=2,
+            )
+        ],
+        summarize=ProfileRoute(priority=["ollama"]),
+    )
+    router = MockModelRouter(
+        responses={"summarize": SUMMARY, "translate": "译文"}, models=models
+    )
+    q = JobQueue(conn, router)
+
+    for i in range(4):
+        await q.enqueue_rollup(
+            _seed_summarized_book(conn, book_id=f"indexed-{i}", n_segments=2)
+        )
+    await asyncio.wait_for(rollup_entered.wait(), timeout=2)
+
+    pending_book = _seed_book(conn, book_id="needs-summary", n_segments=2)
+    await q.enqueue_book_prefetch(pending_book)
+
+    try:
+        for _ in range(60):
+            segs = SegmentRepo(conn).list_for_book(pending_book)
+            if any(s["summary_status"] == "ready" for s in segs):
+                break
+            await asyncio.sleep(0.05)
+        else:
+            pytest.fail(
+                "summarize was starved by book index rollup: "
+                f"{[s['summary_status'] for s in SegmentRepo(conn).list_for_book(pending_book)]}"
+            )
+        # Only one rollup may be in flight, no matter how many are queued.
+        assert q._active_rollup_count() == 1
+        assert q._rollup_queue.qsize() == 3
+    finally:
+        release_rollup.set()
+
+
+@pytest.mark.asyncio
+async def test_overview_reports_indexing_instead_of_zero_running(conn, monkeypatch):
+    """queued>0 with running==0 must always carry a reason."""
+    release_rollup = asyncio.Event()
+    rollup_entered = asyncio.Event()
+
+    async def _blocking_rollup(*args, **kwargs) -> str:
+        rollup_entered.set()
+        await release_rollup.wait()
+        return "ready"
+
+    monkeypatch.setattr(
+        "lumina_core.summarize.rollup.rollup_book", _blocking_rollup
+    )
+
+    router = MockModelRouter(responses={"summarize": SUMMARY, "translate": "译文"})
+    q = JobQueue(conn, router)
+    indexed = _seed_summarized_book(conn, book_id="indexed", n_segments=2)
+    await q.enqueue_rollup(indexed)
+    await asyncio.wait_for(rollup_entered.wait(), timeout=2)
+
+    try:
+        queued_book = _seed_book(conn, book_id="waiting", n_segments=2)
+        BookRepo(conn).update(queued_book, status="unread")
+        queued_job = JobItem(
+            priority=1,
+            book_id=queued_book,
+            segment_id="seg-wait",
+            segment_idx=0,
+            kind=JobKind.SUMMARIZE,
+        )
+        q._queued_keys.add(_job_key(queued_job))
+
+        overview = q.summarize_overview()
+        assert overview["counts"]["indexing"] == 1
+        assert overview["counts"]["running"] == 0
+        assert overview["counts"]["queued"] == 1
+        assert overview["stalled_reason"] == "indexing"
+    finally:
+        release_rollup.set()
+
+
+def test_overview_stalled_reason_is_none_when_not_stalled(conn):
+    router = MockModelRouter(responses={"summarize": SUMMARY, "translate": "译文"})
+    q = JobQueue(conn, router)
+    overview = q.summarize_overview()
+    assert overview["counts"]["indexing"] == 0
+    assert overview["indexing_queued"] == 0
+    assert overview["stalled_reason"] is None
+
+
+@pytest.mark.asyncio
+async def test_startup_does_not_flood_rollup(conn):
+    """Startup must not queue an index rebuild for every summarized book."""
+    router = MockModelRouter(responses={"summarize": SUMMARY, "translate": "译文"})
+    q = JobQueue(conn, router)
+    for i in range(5):
+        _seed_summarized_book(conn, book_id=f"done-{i}", n_segments=2)
+
+    await q.recover_on_startup()
+
+    assert q._rollup_queue.qsize() == 0
+    assert q._active_rollup_count() == 0
+    assert q.summarize_overview()["indexing_queued"] == 0
+
+
+@pytest.mark.asyncio
+async def test_startup_resets_orphan_building_index(conn):
+    """A 'building' index with no worker is a crash orphan, not live work."""
+    router = MockModelRouter(responses={"summarize": SUMMARY, "translate": "译文"})
+    q = JobQueue(conn, router)
+    ghost = _seed_summarized_book(
+        conn, book_id="ghost", n_segments=2, index_status="building"
+    )
+
+    await q.recover_on_startup()
+
+    assert BookRepo(conn).get(ghost)["index_status"] == "idle"
+    # And the reset must not have queued a rebuild either.
+    assert q._rollup_queue.qsize() == 0
+
+
+@pytest.mark.asyncio
+async def test_summarize_completion_does_not_enqueue_rollup(conn):
+    """Finishing a book must not auto-queue its index; that is opt-in only."""
+    router = MockModelRouter(responses={"summarize": SUMMARY, "translate": "译文"})
+    q = JobQueue(conn, router)
+    book_id = _seed_book(conn, book_id="finishing", n_segments=1)
+
+    await q.enqueue_book_prefetch(book_id)
+    for _ in range(60):
+        segs = SegmentRepo(conn).list_for_book(book_id)
+        if all(s["summary_status"] == "ready" for s in segs):
+            break
+        await asyncio.sleep(0.05)
+    else:
+        pytest.fail("summarize never completed")
+
+    await asyncio.sleep(0.1)
+    assert q._rollup_queue.qsize() == 0
+    assert BookRepo(conn).get(book_id)["index_status"] == "idle"
+
+
+@pytest.mark.asyncio
+async def test_enqueue_summarize_reclaims_paused_backlog(conn):
+    """A stale backlog entry must not block an un-paused book forever."""
+    router = MockModelRouter(responses={"summarize": SUMMARY, "translate": "译文"})
+    q = JobQueue(conn, router)
+    book_id = _seed_book(conn, book_id="stuck", n_segments=1)
+    seg = SegmentRepo(conn).list_for_book(book_id, include_body=False)[0]
+
+    # Park the worker so the job is still queued when the pause lands.
+    q._paused.clear()
+    await q.enqueue_summarize(book_id, seg["id"], seg["idx"])
+    await q.stop_book(book_id)
+    # unpause without _restore_suspended — the path enqueue_book_regenerate takes.
+    q.unpause_book(book_id)
+    q._paused.set()
+    assert q._paused_backlog, "expected a suspended job to reclaim"
+
+    await q._enqueue_next_book_summary(book_id)
+
+    for _ in range(60):
+        segs = SegmentRepo(conn).list_for_book(book_id)
+        if all(s["summary_status"] == "ready" for s in segs):
+            break
+        await asyncio.sleep(0.05)
+    else:
+        pytest.fail(
+            "stale paused_backlog entry blocked summarize: "
+            f"{[s['summary_status'] for s in SegmentRepo(conn).list_for_book(book_id)]}"
+        )
+
+
+@pytest.mark.asyncio
+async def test_stop_book_drains_rollup_queue_too(conn):
+    """The rollup channel must honour pause/resume like the main queue."""
+    router = MockModelRouter(responses={"summarize": SUMMARY, "translate": "译文"})
+    q = JobQueue(conn, router)
+    book_id = _seed_summarized_book(conn, book_id="pausable", n_segments=2)
+
+    q._paused.clear()  # keep the rollup worker parked so the job stays queued
+    await q.enqueue_rollup(book_id)
+    assert q._rollup_queue.qsize() == 1
+
+    await q.stop_book(book_id)
+    assert q._rollup_queue.qsize() == 0
+    assert any(
+        item.kind == JobKind.ROLLUP for item in q._paused_backlog.values()
+    )
+
+    await q._restore_suspended(book_id)
+    assert q._rollup_queue.qsize() == 1
+    q._paused.set()
+
+
+def test_dequeued_summarize_counts_as_running_not_zero_queued(conn):
+    """A worker-owned summarize job is in-progress even before llm_start.
+
+    Otherwise overview shows 「0 进行中 · 1 排队」 while the first book is
+    waiting on a model slot and the next book is still queued.
+    """
+    router = MockModelRouter(responses={"summarize": SUMMARY, "translate": "译文"})
+    q = JobQueue(conn, router)
+    running_id = _seed_book(conn, book_id="book-run", n_segments=2)
+    queued_id = _seed_book(conn, book_id="book-wait", n_segments=2)
+    BookRepo(conn).update(running_id, status="unread")
+    BookRepo(conn).update(queued_id, status="unread")
+
+    running_job = JobItem(
+        priority=1,
+        book_id=running_id,
+        segment_id="seg-run",
+        segment_idx=0,
+        kind=JobKind.SUMMARIZE,
+    )
+    queued_job = JobItem(
+        priority=2,
+        book_id=queued_id,
+        segment_id="seg-wait",
+        segment_idx=0,
+        kind=JobKind.SUMMARIZE,
+    )
+    q._active[_job_key(running_job)] = running_job
+    q._queued_keys.add(_job_key(queued_job))
+
+    assert q.summarize_state_for_book(running_id, ready=0, total=2) == "running"
+    assert q.summarize_state_for_book(queued_id, ready=0, total=2) == "queued"
+
+    overview = q.summarize_overview()
+    assert overview["counts"]["running"] == 1
+    assert overview["counts"]["queued"] == 1
+    assert not (
+        overview["counts"]["running"] == 0 and overview["counts"]["queued"] > 0
     )
 
 

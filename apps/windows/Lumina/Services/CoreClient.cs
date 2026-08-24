@@ -247,6 +247,12 @@ public sealed class CoreClient : IDisposable
         await PostAsync($"/books/{bookId}/summarize/stop", "{}", ct).ConfigureAwait(false);
     }
 
+    /// <summary>Queue the whole-book index. Nothing builds it automatically.</summary>
+    public async Task BuildBookIndexAsync(string bookId, CancellationToken ct = default)
+    {
+        await PostAsync($"/books/{bookId}/index", "{}", ct).ConfigureAwait(false);
+    }
+
     public async Task RetrySegmentAsync(
         string bookId,
         int idx,
@@ -290,6 +296,16 @@ public sealed class CoreClient : IDisposable
         var body = JsonSerializer.Serialize(
             new { summary_tier = SummaryTierValue(summaryTier) }, JsonOptions);
         await PostAsync($"/books/{bookId}/summarize/regenerate", body, ct).ConfigureAwait(false);
+    }
+
+    public async Task ResegmentBookAsync(
+        string bookId,
+        int chunkTargetChars,
+        CancellationToken ct = default)
+    {
+        var body = JsonSerializer.Serialize(
+            new { chunk_target_chars = chunkTargetChars }, JsonOptions);
+        await PostAsync($"/books/{bookId}/resegment", body, ct).ConfigureAwait(false);
     }
 
     public async Task<string> ExportMarkdownAsync(string bookId, bool includeNotes = false, CancellationToken ct = default)

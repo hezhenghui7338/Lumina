@@ -42,6 +42,59 @@ final class ReaderSegmentListGeometryTests: XCTestCase {
     }
 }
 
+final class ReaderSegmentListPolicyTests: XCTestCase {
+    func testExplicitClick_hiddenPinsWithoutPeek() {
+        let next = ReaderSegmentListPolicy.toggleByExplicitClick(.hidden)
+        XCTAssertTrue(next.pinned)
+        XCTAssertFalse(next.peeking)
+        XCTAssertTrue(next.inlineVisible)
+        XCTAssertFalse(next.overlayVisible)
+    }
+
+    func testExplicitClick_peekingUpgradesToPinned() {
+        let peeking = ReaderSegmentListVisibility(pinned: false, peeking: true)
+        let next = ReaderSegmentListPolicy.toggleByExplicitClick(peeking)
+        XCTAssertTrue(next.pinned)
+        XCTAssertFalse(next.peeking)
+        XCTAssertTrue(next.inlineVisible)
+        XCTAssertFalse(next.overlayVisible)
+    }
+
+    func testExplicitClick_pinnedCloses() {
+        let pinned = ReaderSegmentListVisibility(pinned: true, peeking: false)
+        let next = ReaderSegmentListPolicy.toggleByExplicitClick(pinned)
+        XCTAssertEqual(next, .hidden)
+        XCTAssertFalse(next.anyVisible)
+    }
+
+    func testEndPeek_afterEdgePeekRetractsWithoutPinning() {
+        let peeking = ReaderSegmentListPolicy.beginEdgePeek(.hidden)
+        XCTAssertTrue(peeking.overlayVisible)
+        XCTAssertFalse(peeking.pinned)
+        let closed = ReaderSegmentListPolicy.endPeek(peeking)
+        XCTAssertFalse(closed.peeking)
+        XCTAssertFalse(closed.pinned)
+        XCTAssertFalse(closed.anyVisible)
+    }
+
+    func testPinned_endPeekAndBeginEdgePeekDoNotUnpin() {
+        let pinned = ReaderSegmentListVisibility(pinned: true, peeking: false)
+        XCTAssertEqual(ReaderSegmentListPolicy.endPeek(pinned), pinned)
+        XCTAssertEqual(ReaderSegmentListPolicy.beginEdgePeek(pinned), pinned)
+        XCTAssertTrue(pinned.inlineVisible)
+        XCTAssertFalse(pinned.overlayVisible)
+    }
+
+    func testHeaderPinAndClose() {
+        let peeking = ReaderSegmentListVisibility(pinned: false, peeking: true)
+        let pinned = ReaderSegmentListPolicy.pin(peeking)
+        XCTAssertTrue(pinned.pinned)
+        XCTAssertFalse(pinned.peeking)
+        XCTAssertEqual(ReaderSegmentListPolicy.close(pinned), .hidden)
+        XCTAssertEqual(ReaderSegmentListPolicy.close(peeking), .hidden)
+    }
+}
+
 final class ReaderSegmentPanelHeightTests: XCTestCase {
     func testClampBelowMinimum() {
         XCTAssertEqual(ReaderSegmentPanelHeight.clamp(80), 160)
@@ -90,28 +143,6 @@ final class ReaderSegmentPanelHeightTests: XCTestCase {
 }
 
 final class ReadingProgressTests: XCTestCase {
-    func testSaveIndex_usesVisibleUntilLast() {
-        XCTAssertEqual(
-            ReadingProgress.saveIndex(visibleIndex: 7, lastIndex: 9),
-            7
-        )
-        XCTAssertEqual(
-            ReadingProgress.saveIndex(visibleIndex: 9, lastIndex: 9),
-            9
-        )
-        XCTAssertEqual(
-            ReadingProgress.saveIndex(visibleIndex: 12, lastIndex: 9),
-            9
-        )
-    }
-
-    func testSaveIndex_doesNotSnapBackToLastWhenScrollingEarlier() {
-        XCTAssertEqual(
-            ReadingProgress.saveIndex(visibleIndex: 3, lastIndex: 9),
-            3
-        )
-    }
-
     func testRestoreIndex_prefersLocalWhenSegmentCountMatches() {
         XCTAssertEqual(
             ReadingProgress.restoreIndex(
@@ -155,301 +186,259 @@ final class ReadingProgressTests: XCTestCase {
     }
 
     func testPeekingLastSegmentIsNotFinished() {
-        // Top-pinned segment 7 of 10 remains 在读; finished only when index is last.
-        let visible = ReadingProgress.saveIndex(visibleIndex: 7, lastIndex: 9)
-        XCTAssertEqual(visible, 7)
-        XCTAssertNotEqual(visible, 9)
+        // Only the segment pinned to the top counts. Seeing the last segment at
+        // the bottom of the screen must not mark the book finished.
+        XCTAssertFalse(ReadingProgress.isFinished(index: 7, count: 10))
+        XCTAssertEqual(
+            ReadingProgress.statusLabel(opened: true, index: 7, segmentCount: 10),
+            "在读 · 8/10 段"
+        )
     }
 
-    func testCachedProgressCodable() throws {
-        let cached = ReaderPreferences.CachedProgress(index: 4, segmentCount: 10, offsetY: 88)
-        let data = try JSONEncoder().encode(cached)
-        let decoded = try JSONDecoder().decode(ReaderPreferences.CachedProgress.self, from: data)
-        XCTAssertEqual(decoded.index, 4)
-        XCTAssertEqual(decoded.segmentCount, 10)
-        XCTAssertEqual(decoded.offsetY, 88)
+    func testPercent_usesSegmentIndexOnly() {
+        let percent = ReadingProgress.percent(index: 4, count: 10)
+        XCTAssertEqual(percent, 0.40, accuracy: 0.0001)
+        XCTAssertEqual(
+            ReadingProgress.statusLabel(opened: true, index: 4, segmentCount: 10),
+            "在读 · 5/10 段"
+        )
+    }
+
+    func testPercent_lastSegmentIsFinished() {
+        let percent = ReadingProgress.percent(index: 9, count: 10)
+        XCTAssertEqual(percent, 1.0, accuracy: 0.0001)
+        XCTAssertTrue(ReadingProgress.isFinished(index: 9, count: 10))
+        XCTAssertEqual(
+            ReadingProgress.statusLabel(opened: true, index: 9, segmentCount: 10),
+            "已读完"
+        )
+    }
+
+    func testPercent_singleSegmentStaysReading() {
+        XCTAssertEqual(ReadingProgress.percent(index: 0, count: 1), 0, accuracy: 0.0001)
+        XCTAssertFalse(ReadingProgress.isFinished(index: 0, count: 1))
+        XCTAssertEqual(
+            ReadingProgress.statusLabel(opened: true, index: 0, segmentCount: 1),
+            "在读 · 1/1 段"
+        )
+    }
+
+    func testStatusLabel_usesSegmentIndexNotPercent() {
+        XCTAssertEqual(
+            ReadingProgress.statusLabel(opened: false, index: 4, segmentCount: 10),
+            "未读"
+        )
+        XCTAssertEqual(
+            ReadingProgress.statusLabel(opened: true, index: 0, segmentCount: 10),
+            "在读 · 1/10 段"
+        )
+        XCTAssertEqual(
+            ReadingProgress.statusLabel(opened: true, index: 4, segmentCount: 10),
+            "在读 · 5/10 段"
+        )
+        XCTAssertEqual(
+            ReadingProgress.statusLabel(opened: true, index: 8, segmentCount: 10),
+            "在读 · 9/10 段"
+        )
+        XCTAssertEqual(
+            ReadingProgress.statusLabel(opened: true, index: 9, segmentCount: 10),
+            "已读完"
+        )
+    }
+
+    func testRestorePinsSegmentStart_notPixelOffset() {
+        // The persisted position is a segment index and nothing else, so a
+        // resume can never land mid-segment or drift with layout.
+        let cached = ReaderPreferences.CachedProgress(index: 6, segmentCount: 10)
+        let encoded = try? JSONEncoder().encode(cached)
+        let json = encoded.flatMap { String(data: $0, encoding: .utf8) } ?? ""
+        XCTAssertFalse(json.contains("offsetY"))
+        XCTAssertEqual(
+            ReadingProgress.restoreIndex(
+                serverIndex: 1,
+                localIndex: 6,
+                localSegmentCount: 10,
+                currentSegmentCount: 10
+            ),
+            6
+        )
     }
 
     func testCachedProgressDecodesLegacyPayloadWithoutOffset() throws {
-        let data = Data(#"{"index":5,"segmentCount":12}"#.utf8)
-        let decoded = try JSONDecoder().decode(ReaderPreferences.CachedProgress.self, from: data)
+        // Legacy caches carried pixel offsets and a content mode. Both are
+        // ignored now; only the segment index survives.
+        let legacy = Data(#"{"index":5,"segmentCount":12,"offsetY":88,"contentMode":"original"}"#.utf8)
+        let decoded = try JSONDecoder().decode(ReaderPreferences.CachedProgress.self, from: legacy)
         XCTAssertEqual(decoded.index, 5)
         XCTAssertEqual(decoded.segmentCount, 12)
-        XCTAssertEqual(decoded.offsetY, 0)
-    }
 
-    func testViewportAnchor_usesFeedFramesNotStaleScrollPosition() {
-        // After chrome/layout preserve, SwiftUI scrollPosition is niled; progress
-        // must still follow the segment currently at the viewport top.
-        let frames: [Int: CGRect] = [
-            2: CGRect(x: 0, y: 0, width: 400, height: 300),
-            5: CGRect(x: 0, y: 312, width: 400, height: 500),
-            6: CGRect(x: 0, y: 824, width: 400, height: 400),
-        ]
-        let anchor = ReadingProgress.viewportAnchor(visibleTop: 500, frames: frames)
-        XCTAssertEqual(anchor?.index, 5)
-        XCTAssertEqual(anchor?.offsetY ?? -1, 188, accuracy: 0.01)
-    }
-
-    func testViewportAnchor_doesNotStickToEarlierSegment() {
-        let frames: [Int: CGRect] = [
-            0: CGRect(x: 0, y: 0, width: 400, height: 400),
-            1: CGRect(x: 0, y: 412, width: 400, height: 400),
-            2: CGRect(x: 0, y: 824, width: 400, height: 400),
-        ]
-        let anchor = ReadingProgress.viewportAnchor(visibleTop: 900, frames: frames)
-        XCTAssertEqual(anchor?.index, 2)
-        XCTAssertEqual(anchor?.offsetY ?? -1, 76, accuracy: 0.01)
-    }
-
-    func testRestoreOffsetY_keepsOffsetUntilResegment() {
+        let modern = Data(#"{"index":5,"segmentCount":12}"#.utf8)
         XCTAssertEqual(
-            ReadingProgress.restoreOffsetY(
-                localOffsetY: 120,
-                localSegmentCount: 10,
-                currentSegmentCount: 10
-            ),
-            120
-        )
-        XCTAssertEqual(
-            ReadingProgress.restoreOffsetY(
-                localOffsetY: 120,
-                localSegmentCount: 12,
-                currentSegmentCount: 4
-            ),
-            0
-        )
-        XCTAssertEqual(
-            ReadingProgress.restoreOffsetY(
-                localOffsetY: nil,
-                localSegmentCount: 10,
-                currentSegmentCount: 10
-            ),
-            0
+            try JSONDecoder().decode(ReaderPreferences.CachedProgress.self, from: modern),
+            decoded
         )
     }
 
-    func testViewportAnchor_returnsNilWhenVisibleTopOutsideIncompleteFrames() {
-        // LazyVStack rematerializing from the start only reports segment 0.
-        // A mid-book visibleTop must not snap to home.
-        let frames: [Int: CGRect] = [
-            0: CGRect(x: 0, y: 0, width: 400, height: 400),
-        ]
-        XCTAssertNil(
-            ReadingProgress.viewportAnchor(visibleTop: 50_000, frames: frames)
+    func testProgressPhase_onlyReadingRecords() {
+        XCTAssertFalse(ReaderProgressPhase.restoring.recordsProgress)
+        XCTAssertTrue(ReaderProgressPhase.reading.recordsProgress)
+    }
+}
+
+@MainActor
+final class ReadingProgressStoreTests: XCTestCase {
+    private var bookIds: [String] = []
+
+    private func makeBookId() -> String {
+        let id = "test-book-\(UUID().uuidString)"
+        bookIds.append(id)
+        return id
+    }
+
+    override func tearDown() {
+        let ids = bookIds
+        bookIds = []
+        Task { @MainActor in
+            for id in ids {
+                ReadingProgressStore.shared.forget(bookId: id)
+            }
+        }
+        super.tearDown()
+    }
+
+    func testRecord_persistsSegmentIndexImmediately() {
+        let book = makeBookId()
+        let store = ReadingProgressStore.shared
+        store.record(bookId: book, index: 5, total: 20)
+
+        XCTAssertEqual(store.position(for: book)?.index, 5)
+        XCTAssertEqual(store.position(for: book)?.total, 20)
+        XCTAssertEqual(ReaderPreferences.cachedProgress(for: book)?.index, 5)
+    }
+
+    func testRecord_clampsToLastSegment() {
+        let book = makeBookId()
+        let store = ReadingProgressStore.shared
+        store.record(bookId: book, index: 99, total: 10)
+        XCTAssertEqual(store.position(for: book)?.index, 9)
+
+        store.record(bookId: book, index: -3, total: 10)
+        XCTAssertEqual(store.position(for: book)?.index, 0)
+    }
+
+    /// Switching books from the sidebar used to mix two books' positions
+    /// because the pending write was a single scalar.
+    func testRecord_keepsBooksIndependentWhenSwitching() {
+        let bookA = makeBookId()
+        let bookB = makeBookId()
+        let store = ReadingProgressStore.shared
+
+        store.record(bookId: bookA, index: 5, total: 20)
+        store.record(bookId: bookB, index: 12, total: 40)
+        store.record(bookId: bookB, index: 13, total: 40)
+
+        XCTAssertEqual(store.position(for: bookA)?.index, 5)
+        XCTAssertEqual(store.position(for: bookB)?.index, 13)
+        XCTAssertEqual(ReaderPreferences.cachedProgress(for: bookA)?.index, 5)
+        XCTAssertEqual(ReaderPreferences.cachedProgress(for: bookB)?.index, 13)
+    }
+
+    /// Reading further in a second book must not roll the first one back when
+    /// the reader returns to it.
+    func testResumeIndex_returnsEachBookToItsOwnSegment() {
+        let bookA = makeBookId()
+        let bookB = makeBookId()
+        let store = ReadingProgressStore.shared
+
+        store.record(bookId: bookA, index: 5, total: 20)
+        store.record(bookId: bookB, index: 13, total: 40)
+
+        XCTAssertEqual(
+            store.resumeIndex(bookId: bookA, serverIndex: 0, segmentCount: 20),
+            5
         )
         XCTAssertEqual(
-            ReadingProgress.viewportAnchor(visibleTop: 10, frames: frames)?.index,
-            0
+            store.resumeIndex(bookId: bookB, serverIndex: 0, segmentCount: 40),
+            13
         )
     }
 
-    func testViewportAnchor_hitsContainedMiddleSegment() {
-        let frames: [Int: CGRect] = [
-            48: CGRect(x: 0, y: 4800, width: 400, height: 400),
-            49: CGRect(x: 0, y: 5212, width: 400, height: 400),
-            50: CGRect(x: 0, y: 5624, width: 400, height: 400),
-        ]
-        let anchor = ReadingProgress.viewportAnchor(visibleTop: 5300, frames: frames)
-        XCTAssertEqual(anchor?.index, 49)
-        XCTAssertEqual(anchor?.offsetY ?? -1, 88, accuracy: 0.01)
+    func testResumeIndex_fallsBackToServerAfterResegment() {
+        let book = makeBookId()
+        let store = ReadingProgressStore.shared
+        store.record(bookId: book, index: 30, total: 40)
+
+        XCTAssertEqual(
+            store.resumeIndex(bookId: book, serverIndex: 2, segmentCount: 8),
+            2
+        )
     }
 
-    func testShouldCommitProgress_rejectsUnconfirmedJumpToZero() {
-        XCTAssertFalse(
-            ReadingProgress.shouldCommitProgress(
-                previousIndex: 20,
-                nextIndex: 0,
-                hitContained: false
+    func testForget_dropsLocalRecordSoResegmentStartsClean() {
+        let book = makeBookId()
+        let store = ReadingProgressStore.shared
+        store.record(bookId: book, index: 7, total: 20)
+        store.forget(bookId: book)
+
+        XCTAssertNil(store.position(for: book))
+        XCTAssertNil(ReaderPreferences.cachedProgress(for: book))
+    }
+
+    func testHydrate_adoptsServerPositionWithoutLosingIt() {
+        let book = makeBookId()
+        let store = ReadingProgressStore.shared
+        store.hydrate(bookId: book, index: 4, total: 12)
+
+        XCTAssertEqual(store.position(for: book)?.index, 4)
+        XCTAssertEqual(store.position(for: book)?.total, 12)
+    }
+}
+
+/// Locks the architecture that fixed progress drift: SwiftUI's `scrollPosition`
+/// is the only thing allowed to anchor the feed, and the pinned segment is the
+/// only source of progress. A second anchor writer (AppKit nudging the scroll
+/// origin) or geometry-derived progress is what made this break repeatedly.
+final class ReaderProgressArchitectureTests: XCTestCase {
+    private func readerSource() throws -> String {
+        let macosRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()  // Unit
+            .deletingLastPathComponent()  // LuminaTests
+            .deletingLastPathComponent()  // macos
+        let reader = macosRoot
+            .appendingPathComponent("Lumina/Features/Reader/ReaderView.swift")
+        return try String(contentsOf: reader, encoding: .utf8)
+    }
+
+    func testReaderHasNoViewportGeometryFallback() throws {
+        let source = try readerSource()
+        for banned in [
+            "viewportAnchor",
+            "SegmentFeedFrameKey",
+            "FeedVisibleTopKey",
+            "onFeedVisibleTopChange",
+            "visibleTopInFeed",
+            "heightGrowthAboveVisibleTop",
+        ] {
+            XCTAssertFalse(
+                source.contains(banned),
+                "\(banned) reintroduces geometry-derived reading progress"
             )
-        )
+        }
     }
 
-    func testShouldCommitProgress_allowsConfirmedScrollToStart() {
-        XCTAssertTrue(
-            ReadingProgress.shouldCommitProgress(
-                previousIndex: 20,
-                nextIndex: 0,
-                hitContained: true
+    func testReaderHasSingleScrollAnchorOwner() throws {
+        let source = try readerSource()
+        for banned in ["adjustOrigin", "applyScrollOriginOnce", "applyFeedVisibleTop"] {
+            XCTAssertFalse(
+                source.contains(banned),
+                "\(banned) makes AppKit a second scroll anchor owner"
             )
-        )
-        XCTAssertTrue(
-            ReadingProgress.shouldCommitProgress(
-                previousIndex: 0,
-                nextIndex: 0,
-                hitContained: false
-            )
-        )
-    }
-
-    func testShouldReplaceCachedIndex_rejectsUnconfirmedZeroOverMidCache() {
-        XCTAssertFalse(
-            ReadingProgress.shouldReplaceCachedIndex(
-                cachedIndex: 18,
-                cachedSegmentCount: 40,
-                nextIndex: 0,
-                nextSegmentCount: 40,
-                confirmedHit: false
-            )
-        )
-        XCTAssertTrue(
-            ReadingProgress.shouldReplaceCachedIndex(
-                cachedIndex: 18,
-                cachedSegmentCount: 40,
-                nextIndex: 0,
-                nextSegmentCount: 12,
-                confirmedHit: false
-            )
-        )
-        XCTAssertTrue(
-            ReadingProgress.shouldReplaceCachedIndex(
-                cachedIndex: 18,
-                cachedSegmentCount: 40,
-                nextIndex: 0,
-                nextSegmentCount: 40,
-                confirmedHit: true
-            )
-        )
-    }
-
-    func testShouldApplyRestoredOrigin_skipsWhenContentTooShort() {
-        XCTAssertFalse(
-            ReadingProgress.shouldApplyRestoredOrigin(targetY: 12_000, maxY: 200)
-        )
-        XCTAssertTrue(
-            ReadingProgress.shouldApplyRestoredOrigin(targetY: 12_000, maxY: 12_000)
-        )
-        XCTAssertTrue(
-            ReadingProgress.shouldApplyRestoredOrigin(targetY: 0, maxY: 0)
-        )
-    }
-
-    func testRestoreOffsetY_zerosWhenContentModeChanges() {
+        }
         XCTAssertEqual(
-            ReadingProgress.restoreOffsetY(
-                localOffsetY: 120,
-                localSegmentCount: 10,
-                currentSegmentCount: 10,
-                localContentMode: "summary",
-                currentContentMode: "original"
-            ),
-            0
+            source.components(separatedBy: ".scrollPosition(id:").count - 1,
+            1,
+            "the reader feed must have exactly one scrollPosition binding"
         )
-        XCTAssertEqual(
-            ReadingProgress.restoreOffsetY(
-                localOffsetY: 120,
-                localSegmentCount: 10,
-                currentSegmentCount: 10,
-                localContentMode: "summary",
-                currentContentMode: "summary"
-            ),
-            120
-        )
-        XCTAssertEqual(
-            ReadingProgress.restoreOffsetY(
-                localOffsetY: 120,
-                localSegmentCount: 10,
-                currentSegmentCount: 10,
-                localContentMode: nil,
-                currentContentMode: "summary"
-            ),
-            120
-        )
-    }
-
-    func testRestoredOriginY_requiresTargetFrame() {
-        let frames: [Int: CGRect] = [
-            4: CGRect(x: 0, y: 1600, width: 400, height: 400),
-        ]
-        XCTAssertNil(
-            ReadingProgress.restoredOriginY(index: 8, offsetY: 40, frames: frames)
-        )
-        XCTAssertEqual(
-            ReadingProgress.restoredOriginY(index: 4, offsetY: 40, frames: frames),
-            1640
-        )
-        XCTAssertFalse(
-            ReadingProgress.canApplyRestore(
-                index: 4,
-                offsetY: 40,
-                frames: frames,
-                maxY: 200
-            )
-        )
-        XCTAssertTrue(
-            ReadingProgress.canApplyRestore(
-                index: 4,
-                offsetY: 40,
-                frames: frames,
-                maxY: 1640
-            )
-        )
-    }
-
-    func testRestoreAttempt_waitsWithoutFrameThenAppliesOnce() {
-        var attempt = ReaderRestoreAttempt(index: 5, offsetY: 80)
-        let empty: [Int: CGRect] = [:]
-        XCTAssertEqual(attempt.step(frames: empty, maxY: 10_000), .waiting)
-
-        let frames: [Int: CGRect] = [
-            5: CGRect(x: 0, y: 2000, width: 400, height: 400),
-        ]
-        XCTAssertEqual(attempt.step(frames: frames, maxY: 10_000), .apply(2080))
-        attempt.markApplied()
-        XCTAssertEqual(attempt.step(frames: frames, maxY: 10_000), .finished)
-    }
-
-    func testRestoreAttempt_retriesOnceWhenContentTooShortThenFinishes() {
-        var attempt = ReaderRestoreAttempt(index: 5, offsetY: 80)
-        let frames: [Int: CGRect] = [
-            5: CGRect(x: 0, y: 2000, width: 400, height: 400),
-        ]
-        XCTAssertEqual(attempt.step(frames: frames, maxY: 100), .waiting)
-        XCTAssertTrue(attempt.retryUsed)
-        XCTAssertEqual(attempt.step(frames: frames, maxY: 100), .finished)
-    }
-
-    func testRestoreAttempt_skipsOriginWhenOffsetIsTiny() {
-        var attempt = ReaderRestoreAttempt(index: 2, offsetY: 0.5)
-        XCTAssertEqual(attempt.step(frames: [:], maxY: 0), .finished)
-    }
-
-    func testJumpingPhase_cancelsOriginRestore() {
-        XCTAssertTrue(ReaderScrollPhase.jumping.cancelsOriginRestore)
-        XCTAssertFalse(ReaderScrollPhase.tracking.allowsProgressSave == false)
-        XCTAssertTrue(ReaderScrollPhase.tracking.allowsProgressSave)
-        XCTAssertFalse(ReaderScrollPhase.restoring.allowsProgressSave)
-        XCTAssertFalse(ReaderScrollPhase.jumping.allowsProgressSave)
-        XCTAssertFalse(ReaderScrollPhase.preserving.allowsViewportDrivenSelection)
-    }
-
-    func testHeightGrowthAboveVisibleTop_onlyCountsSegmentsFullyAbove() {
-        let previous: [Int: CGRect] = [
-            0: CGRect(x: 0, y: 0, width: 400, height: 200),
-            1: CGRect(x: 0, y: 200, width: 400, height: 200),
-            2: CGRect(x: 0, y: 400, width: 400, height: 200),
-        ]
-        let current: [Int: CGRect] = [
-            0: CGRect(x: 0, y: 0, width: 400, height: 280),
-            1: CGRect(x: 0, y: 280, width: 400, height: 200),
-            2: CGRect(x: 0, y: 480, width: 400, height: 260),
-        ]
-        XCTAssertEqual(
-            ReadingProgress.heightGrowthAboveVisibleTop(
-                previous: previous,
-                current: current,
-                visibleTop: 390
-            ),
-            80
-        )
-    }
-
-    func testCachedProgressDecodesContentMode() throws {
-        let data = Data(#"{"index":3,"segmentCount":8,"offsetY":24,"contentMode":"original"}"#.utf8)
-        let decoded = try JSONDecoder().decode(ReaderPreferences.CachedProgress.self, from: data)
-        XCTAssertEqual(decoded.index, 3)
-        XCTAssertEqual(decoded.offsetY, 24)
-        XCTAssertEqual(decoded.contentMode, "original")
     }
 }
 
@@ -499,6 +488,38 @@ final class ReaderKeyboardScrollTests: XCTestCase {
         XCTAssertTrue(ReaderKeyboardScroll.canMove(originY: 800, deltaY: -80, maxY: 800))
         XCTAssertFalse(ReaderKeyboardScroll.canMove(originY: 800, deltaY: 80, maxY: 800))
         XCTAssertFalse(ReaderKeyboardScroll.canMove(originY: 100, deltaY: 0, maxY: 800))
+    }
+}
+
+final class SegmentTurnNavigationTests: XCTestCase {
+    func testMiddleGoesPrevAndNext() {
+        XCTAssertEqual(
+            SegmentTurnNavigation.targetIdx(current: 2, delta: -1, sortedIdxs: [0, 2, 5]),
+            0
+        )
+        XCTAssertEqual(
+            SegmentTurnNavigation.targetIdx(current: 2, delta: 1, sortedIdxs: [0, 2, 5]),
+            5
+        )
+    }
+
+    func testFirstHasNoPrev() {
+        XCTAssertNil(
+            SegmentTurnNavigation.targetIdx(current: 0, delta: -1, sortedIdxs: [0, 2, 5])
+        )
+    }
+
+    func testLastHasNoNext() {
+        XCTAssertNil(
+            SegmentTurnNavigation.targetIdx(current: 5, delta: 1, sortedIdxs: [0, 2, 5])
+        )
+    }
+
+    func testEmptyAndMissingCurrentReturnNil() {
+        XCTAssertNil(SegmentTurnNavigation.targetIdx(current: 0, delta: 1, sortedIdxs: []))
+        XCTAssertNil(
+            SegmentTurnNavigation.targetIdx(current: 9, delta: 1, sortedIdxs: [0, 2, 5])
+        )
     }
 }
 

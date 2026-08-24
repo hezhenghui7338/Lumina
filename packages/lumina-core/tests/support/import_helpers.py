@@ -13,16 +13,32 @@ BOOK_FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "books"
 
 
 def wait_for_ingest(
-    client: TestClient, book_id: str, *, timeout: float = 5.0
+    client: TestClient, book_id: str, *, timeout: float = 15.0
 ) -> dict:
-    """Poll GET /books/{id} until status != processing."""
+    """Poll GET /books/{id} until ingest leaves processing.
+
+    Success must also have a non-empty segment list: persist used to commit
+    status=unread before inserting rows, so callers could observe a ready
+    book with GET /segments == [].
+    """
     deadline = time.time() + timeout
+    last: dict = {}
     while time.time() < deadline:
         book = client.get(f"/books/{book_id}").json()
-        if book.get("status") not in ("processing",):
+        last = book
+        status = book.get("status")
+        if status == "error":
             return book
+        if status not in ("processing", None):
+            if (book.get("segment_count") or 0) > 0:
+                segments = (
+                    client.get(f"/books/{book_id}/segments").json().get("segments")
+                    or []
+                )
+                if segments:
+                    return book
         time.sleep(0.05)
-    raise AssertionError(f"ingest timed out for book {book_id}")
+    raise AssertionError(f"ingest timed out for book {book_id}: {last}")
 
 
 def import_sample_book(

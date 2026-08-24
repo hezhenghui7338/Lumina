@@ -9,6 +9,7 @@ struct BookRow: View {
     var onToggleCheck: (() -> Void)? = nil
     let onToggleFavorite: () -> Void
     let onReclassify: () -> Void
+    let onResegment: () -> Void
     let onExport: () -> Void
     let onDelete: () -> Void
     var onStartSummarize: ((SummaryTier) -> Void)? = nil
@@ -133,32 +134,16 @@ struct BookRow: View {
         .padding(.vertical, 2)
         .frame(maxWidth: .infinity, alignment: .leading)
         .contextMenu {
-            Button(book.isFavorite ? "取消收藏" : "收藏") {
-                onToggleFavorite()
-            }
-            Button("重新分类") {
-                onReclassify()
-            }
-            if book.canStartSummarize, let onStartSummarize {
-                Menu("开始摘要") {
-                    ForEach(SummaryTier.allCases) { tier in
-                        Button(tier.startMenuLabel) { onStartSummarize(tier) }
-                    }
-                }
-            }
-            if book.canStopSummarize, let onStopSummarize {
-                Button("停止摘要") {
-                    onStopSummarize()
-                }
-            }
-            Button("导出 Markdown 摘要…") {
-                onExport()
-            }
-            .disabled(book.summaryReady == 0)
-            Divider()
-            Button("删除", role: .destructive) {
-                onDelete()
-            }
+            bookLibraryContextMenu(
+                book: book,
+                onToggleFavorite: onToggleFavorite,
+                onReclassify: onReclassify,
+                onResegment: onResegment,
+                onExport: onExport,
+                onDelete: onDelete,
+                onStartSummarize: onStartSummarize,
+                onStopSummarize: onStopSummarize
+            )
         }
     }
 
@@ -178,12 +163,12 @@ struct BookRow: View {
     @ViewBuilder
     private var summarizeStateBadge: some View {
         if book.hasCompletedSummary {
-            Text("摘要完成")
+            Text("已摘要")
                 .font(.caption2)
                 .padding(.horizontal, 6)
                 .padding(.vertical, 2)
-                .background(LuminaTheme.accentMuted)
-                .foregroundStyle(LuminaTheme.accent)
+                .background(LuminaTheme.border.opacity(0.45))
+                .foregroundStyle(LuminaTheme.textSecondary)
                 .clipShape(Capsule())
         } else {
             switch book.summarize_state {
@@ -245,4 +230,36 @@ struct BookRow: View {
                 .clipShape(Capsule())
         }
     }
+}
+
+@ViewBuilder
+func bookLibraryContextMenu(
+    book: BookSummary,
+    onToggleFavorite: @escaping () -> Void,
+    onReclassify: @escaping () -> Void,
+    onResegment: @escaping () -> Void,
+    onExport: @escaping () -> Void,
+    onDelete: @escaping () -> Void,
+    onStartSummarize: ((SummaryTier) -> Void)? = nil,
+    onStopSummarize: (() -> Void)? = nil
+) -> some View {
+    Button(book.isFavorite ? "取消收藏" : "收藏", action: onToggleFavorite)
+    Button("重新分类", action: onReclassify)
+        .disabled(!LibraryBookContextMenuPolicy.isEnabled(.reclassify, for: book))
+    if book.canStartSummarize, let onStartSummarize {
+        Menu("开始摘要") {
+            ForEach(SummaryTier.allCases) { tier in
+                Button(tier.startMenuLabel) { onStartSummarize(tier) }
+            }
+        }
+    }
+    if book.canStopSummarize, let onStopSummarize {
+        Button("停止摘要", action: onStopSummarize)
+    }
+    Button("整书重新分段", action: onResegment)
+        .disabled(!LibraryBookContextMenuPolicy.isEnabled(.resegment, for: book))
+    Button("导出 Markdown 摘要…", action: onExport)
+        .disabled(!LibraryBookContextMenuPolicy.isEnabled(.exportMarkdown, for: book))
+    Divider()
+    Button("删除", role: .destructive, action: onDelete)
 }

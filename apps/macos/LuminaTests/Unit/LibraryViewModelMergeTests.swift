@@ -15,7 +15,8 @@ final class LibraryViewModelMergeTests: XCTestCase {
         currentSegmentIndex: Int? = nil,
         isFavorite: Bool? = nil,
         category: String? = nil,
-        createdAt: String? = nil
+        createdAt: String? = nil,
+        readingPercent: Double? = nil
     ) -> BookSummary {
         BookSummary(
             id: id,
@@ -29,7 +30,8 @@ final class LibraryViewModelMergeTests: XCTestCase {
             created_at: createdAt,
             summary_ready_count: summaryReady,
             summary_total_count: summaryTotal,
-            summarize_state: summarizeState
+            summarize_state: summarizeState,
+            readingPercent: readingPercent
         )
     }
 
@@ -149,7 +151,8 @@ final class LibraryViewModelMergeTests: XCTestCase {
             book(
                 id: "finished",
                 lastOpenedAt: "2024-06-01T00:00:00Z",
-                currentSegmentIndex: 9
+                currentSegmentIndex: 9,
+                readingPercent: 1.0
             ),
             book(
                 id: "short",
@@ -177,15 +180,33 @@ final class LibraryViewModelMergeTests: XCTestCase {
             )
         ]
 
-        viewModel.applyReadingProgress(bookId: "reading", segmentIndex: 4)
+        viewModel.applyLocalProgress(["reading": ReadingPosition(index: 4, total: 10)])
 
         XCTAssertEqual(viewModel.books[0].current_segment_index, 4)
         XCTAssertEqual(viewModel.books[0].readingStatusLabel, "在读 · 5/10 段")
         XCTAssertEqual(viewModel.books[0].readingProgressBucket, .reading)
 
-        viewModel.applyReadingProgress(bookId: "reading", segmentIndex: 9)
+        viewModel.applyLocalProgress(["reading": ReadingPosition(index: 9, total: 10)])
         XCTAssertEqual(viewModel.books[0].readingStatusLabel, "已读完")
         XCTAssertEqual(viewModel.books[0].readingProgressBucket, .finished)
+    }
+
+    /// The shelf must show what the reader actually recorded, for every book,
+    /// not just the one that was open last.
+    func testApplyLocalProgress_updatesEveryBookFromTheStore() {
+        let viewModel = LibraryViewModel()
+        viewModel.books = [
+            book(id: "a", lastOpenedAt: "2024-05-01T00:00:00Z", currentSegmentIndex: 0),
+            book(id: "b", lastOpenedAt: "2024-05-01T00:00:00Z", currentSegmentIndex: 0),
+        ]
+
+        viewModel.applyLocalProgress([
+            "a": ReadingPosition(index: 5, total: 10),
+            "b": ReadingPosition(index: 8, total: 10),
+        ])
+
+        XCTAssertEqual(viewModel.books[0].readingStatusLabel, "在读 · 6/10 段")
+        XCTAssertEqual(viewModel.books[1].readingStatusLabel, "在读 · 9/10 段")
     }
 
     func testApplyReadingProgress_setsOpenedAtWhenUnread() {
@@ -193,11 +214,51 @@ final class LibraryViewModelMergeTests: XCTestCase {
         viewModel.books = [book(id: "unread", lastOpenedAt: nil, currentSegmentIndex: 0)]
 
         let opened = Date(timeIntervalSince1970: 1_700_000_000)
-        viewModel.applyReadingProgress(bookId: "unread", segmentIndex: 2, openedAt: opened)
+        viewModel.applyLocalProgress(
+            ["unread": ReadingPosition(index: 2, total: 10)],
+            openedAt: opened
+        )
 
         XCTAssertNotNil(viewModel.books[0].last_opened_at)
         XCTAssertEqual(viewModel.books[0].current_segment_index, 2)
         XCTAssertEqual(viewModel.books[0].readingProgressBucket, .reading)
+    }
+
+    func testOverlayLocalProgress_prefersCacheWhenSegmentCountMatches() {
+        let books = [
+            book(id: "a", segmentCount: 10, currentSegmentIndex: 0),
+            book(id: "b", segmentCount: 10, currentSegmentIndex: 1),
+        ]
+        let overlaid = LibraryViewModel.overlayLocalProgress(books) { id in
+            id == "a" ? ReadingPosition(index: 6, total: 10) : nil
+        }
+        XCTAssertEqual(overlaid[0].current_segment_index, 6)
+        XCTAssertEqual(overlaid[0].readingPercent, 0.6)
+        XCTAssertEqual(overlaid[1].current_segment_index, 1)
+    }
+
+    func testOverlayLocalProgress_usesCachedIndexForOpenedBookLabel() {
+        let books = [
+            book(
+                id: "a",
+                segmentCount: 10,
+                lastOpenedAt: "2024-05-01T00:00:00Z",
+                currentSegmentIndex: 0
+            )
+        ]
+        let overlaid = LibraryViewModel.overlayLocalProgress(books) { _ in
+            ReadingPosition(index: 4, total: 10)
+        }
+        XCTAssertEqual(overlaid[0].readingStatusLabel, "在读 · 5/10 段")
+        XCTAssertEqual(overlaid[0].readingProgressBucket, .reading)
+    }
+
+    func testOverlayLocalProgress_ignoresCacheAfterResegment() {
+        let books = [book(id: "a", segmentCount: 4, currentSegmentIndex: 0)]
+        let overlaid = LibraryViewModel.overlayLocalProgress(books) { _ in
+            ReadingPosition(index: 9, total: 12)
+        }
+        XCTAssertEqual(overlaid[0].current_segment_index, 0)
     }
 
     func testSortBySegmentCountDescending() {

@@ -20,6 +20,9 @@ struct BookshelfView: View {
     @State private var checkedBookIds: Set<String> = []
     @State private var batchDeleteCount: Int?
     @State private var bookPendingExport: BookSummary?
+    @State private var bookPendingResegment: BookSummary?
+    @State private var resegmentTargetChars = 4000
+    @State private var isResegmentSubmitting = false
     @State private var exportIncludeNotes = false
     @State private var exportDocument = MarkdownExportDocument(text: "")
     @State private var showFileExporter = false
@@ -132,6 +135,18 @@ struct BookshelfView: View {
                 onError: { actionError = $0 }
             )
         }
+        .sheet(item: $bookPendingResegment) { book in
+            ResegmentBookSheet(
+                bookTitle: book.title,
+                targetChars: $resegmentTargetChars,
+                isPresented: Binding(
+                    get: { bookPendingResegment != nil },
+                    set: { if !$0 { bookPendingResegment = nil } }
+                ),
+                isSubmitting: isResegmentSubmitting,
+                onSubmit: { submitResegment(book) }
+            )
+        }
         .fileExporter(
             isPresented: $showFileExporter,
             document: exportDocument,
@@ -158,6 +173,8 @@ struct BookshelfView: View {
                 SummarizeActivityChip(
                     running: overview.counts.running,
                     queued: overview.counts.queued,
+                    indexing: overview.indexingCount,
+                    stalledReason: overview.stalled_reason,
                     isBusy: summarizeActionInFlight
                 ) {
                     Task { await stopAllSummarize() }
@@ -273,6 +290,7 @@ struct BookshelfView: View {
                         onOpen: { openBook(book) },
                         onToggleFavorite: { Task { await toggleFavorite(book) } },
                         onReclassify: { Task { await reclassify(book.id) } },
+                        onResegment: { presentResegment(for: book) },
                         onExport: { presentExport(for: book) },
                         onDelete: { bookPendingDelete = book },
                         onStartSummarize: { tier in
@@ -309,6 +327,7 @@ struct BookshelfView: View {
             onToggleCheck: { toggleCheck(book.id) },
             onToggleFavorite: { Task { await toggleFavorite(book) } },
             onReclassify: { Task { await reclassify(book.id) } },
+            onResegment: { presentResegment(for: book) },
             onExport: { presentExport(for: book) },
             onDelete: { bookPendingDelete = book },
             onStartSummarize: { tier in
@@ -366,6 +385,34 @@ struct BookshelfView: View {
     private func presentExport(for book: BookSummary) {
         exportIncludeNotes = false
         bookPendingExport = book
+    }
+
+    private func presentResegment(for book: BookSummary) {
+        guard book.canResegment else { return }
+        resegmentTargetChars = ResegmentTarget.normalized(
+            currentTarget: book.chunk_target_chars,
+            totalChars: book.total_char_count,
+            segmentCount: book.segment_count ?? 0
+        )
+        bookPendingResegment = book
+    }
+
+    private func submitResegment(_ book: BookSummary) {
+        guard !isResegmentSubmitting else { return }
+        isResegmentSubmitting = true
+        Task {
+            do {
+                try await viewModel.resegmentBook(
+                    book,
+                    chunkTargetChars: resegmentTargetChars,
+                    using: core
+                )
+                bookPendingResegment = nil
+            } catch {
+                actionError = ConnectionError.userMessage(for: error)
+            }
+            isResegmentSubmitting = false
+        }
     }
 
     private func presentFileExporterIfNeeded() {

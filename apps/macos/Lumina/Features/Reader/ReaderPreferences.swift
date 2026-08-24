@@ -23,29 +23,19 @@ enum ReaderPreferences {
         "lumina.reader.progress.\(bookId)"
     }
 
+    /// Persisted reading position. Segment index is the only resume target;
+    /// pixel offsets are deliberately absent.
     struct CachedProgress: Codable, Equatable {
         var index: Int
         var segmentCount: Int
-        var offsetY: Double
-        var contentMode: String?
 
-        init(index: Int, segmentCount: Int, offsetY: Double = 0, contentMode: String? = nil) {
+        init(index: Int, segmentCount: Int) {
             self.index = index
             self.segmentCount = segmentCount
-            self.offsetY = offsetY
-            self.contentMode = contentMode
         }
 
         enum CodingKeys: String, CodingKey {
-            case index, segmentCount, offsetY, contentMode
-        }
-
-        init(from decoder: Decoder) throws {
-            let container = try decoder.container(keyedBy: CodingKeys.self)
-            index = try container.decode(Int.self, forKey: .index)
-            segmentCount = try container.decode(Int.self, forKey: .segmentCount)
-            offsetY = try container.decodeIfPresent(Double.self, forKey: .offsetY) ?? 0
-            contentMode = try container.decodeIfPresent(String.self, forKey: .contentMode)
+            case index, segmentCount
         }
     }
 
@@ -67,19 +57,8 @@ enum ReaderPreferences {
         return try? JSONDecoder().decode(CachedProgress.self, from: data)
     }
 
-    static func setCachedProgress(
-        index: Int,
-        segmentCount: Int,
-        offsetY: Double = 0,
-        contentMode: String? = nil,
-        for bookId: String
-    ) {
-        let cached = CachedProgress(
-            index: index,
-            segmentCount: segmentCount,
-            offsetY: max(0, offsetY),
-            contentMode: contentMode
-        )
+    static func setCachedProgress(index: Int, segmentCount: Int, for bookId: String) {
+        let cached = CachedProgress(index: max(index, 0), segmentCount: max(segmentCount, 0))
         guard let data = try? JSONEncoder().encode(cached) else { return }
         defaults.set(data, forKey: progressKey(for: bookId))
     }
@@ -89,89 +68,99 @@ enum ReaderPreferences {
     }
 }
 
-/// Immediate local persist + library display; coalesced PATCH to sidecar.
+struct ReadingPosition: Equatable {
+    var index: Int
+    var total: Int
+
+    var percent: Double {
+        ReadingProgress.percent(index: index, count: total)
+    }
+}
+
+/// The single source of truth for reading progress.
+///
+/// The reader records the segment pinned to the top of the viewport; everything
+/// else (library rows, sidebar) reads back from here. Local storage wins over
+/// the server, which is only a backup. All state is keyed by book id so
+/// switching books can never mix two books' positions.
 @MainActor
-final class ReadingProgressStore {
+final class ReadingProgressStore: ObservableObject {
     static let shared = ReadingProgressStore()
 
+    /// Bumped on every recorded position so observers can re-read.
+    @Published private(set) var positions: [String: ReadingPosition] = [:]
+
     private weak var core: CoreClient?
-    private var pendingBookId: String?
-    private var pendingIndex: Int?
-    private var pendingOffsetY: Double = 0
-    private var lastFlushed: (bookId: String, index: Int)?
-    private var saveTask: Task<Void, Never>?
+    /// Recorded but not yet accepted by the sidecar.
+    private var pending: [String: Int] = [:]
+    /// Last index the sidecar acknowledged, to skip redundant PATCHes.
+    private var synced: [String: Int] = [:]
+    private var saveTasks: [String: Task<Void, Never>] = [:]
+
+    private static let patchDebounceNanoseconds: UInt64 = 300_000_000
 
     func attach(core: CoreClient) {
         self.core = core
     }
 
-    func noteVisibleSegment(
-        bookId: String,
-        index: Int,
-        offsetY: CGFloat = 0,
-        segmentCount: Int,
-        contentMode: ReaderContentMode? = nil,
-        confirmedHit: Bool = false
-    ) {
-        guard !bookId.isEmpty else { return }
-        let last = segmentCount > 0 ? segmentCount - 1 : nil
-        let idx = ReadingProgress.saveIndex(visibleIndex: index, lastIndex: last)
-        let cached = ReaderPreferences.cachedProgress(for: bookId)
-        guard ReadingProgress.shouldReplaceCachedIndex(
-            cachedIndex: cached?.index,
-            cachedSegmentCount: cached?.segmentCount,
-            nextIndex: idx,
-            nextSegmentCount: max(segmentCount, 0),
-            confirmedHit: confirmedHit
-        ) else { return }
-        let roundedOffset = (Double(max(0, offsetY)) * 10).rounded() / 10
-        ReaderPreferences.setCachedProgress(
-            index: idx,
-            segmentCount: max(segmentCount, 0),
-            offsetY: roundedOffset,
-            contentMode: contentMode?.rawValue,
-            for: bookId
+    /// In-memory position, falling back to disk. Never mutates published state.
+    func position(for bookId: String) -> ReadingPosition? {
+        if let position = positions[bookId] { return position }
+        guard let cached = ReaderPreferences.cachedProgress(for: bookId) else { return nil }
+        return ReadingPosition(index: cached.index, total: cached.segmentCount)
+    }
+
+    /// Resume target for a book, preferring the local record unless the book
+    /// was resegmented since it was written.
+    func resumeIndex(bookId: String, serverIndex: Int, segmentCount: Int) -> Int {
+        let local = position(for: bookId)
+        return ReadingProgress.restoreIndex(
+            serverIndex: serverIndex,
+            localIndex: local?.index,
+            localSegmentCount: local?.total,
+            currentSegmentCount: segmentCount
         )
-        let indexUnchanged = pendingBookId == bookId && pendingIndex == idx
-        let offsetUnchanged = abs(pendingOffsetY - roundedOffset) < 1
-        pendingBookId = bookId
-        pendingIndex = idx
-        pendingOffsetY = roundedOffset
-        if !indexUnchanged {
-            NotificationCenter.default.post(
-                name: .luminaReadingProgressDidChange,
-                object: nil,
-                userInfo: ["bookId": bookId, "segmentIndex": idx]
-            )
-        }
-        if indexUnchanged, offsetUnchanged,
-           lastFlushed?.bookId == bookId, lastFlushed?.index == idx {
+    }
+
+    /// Record the segment currently being read. Local write is immediate;
+    /// the sidecar PATCH is coalesced per book.
+    func record(bookId: String, index: Int, total: Int) {
+        guard !bookId.isEmpty, total > 0 else { return }
+        let idx = min(max(index, 0), total - 1)
+        let next = ReadingPosition(index: idx, total: total)
+        guard positions[bookId] != next else { return }
+
+        ReaderPreferences.setCachedProgress(index: idx, segmentCount: total, for: bookId)
+        positions[bookId] = next
+
+        guard synced[bookId] != idx else {
+            pending.removeValue(forKey: bookId)
             return
         }
-        if indexUnchanged, lastFlushed?.bookId == bookId, lastFlushed?.index == idx {
-            return
-        }
-        saveTask?.cancel()
-        saveTask = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: 150_000_000)
+        pending[bookId] = idx
+        saveTasks[bookId]?.cancel()
+        saveTasks[bookId] = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: Self.patchDebounceNanoseconds)
             guard !Task.isCancelled else { return }
-            await self?.flush()
+            await self?.flush(bookId: bookId)
         }
     }
 
-    func flush(timeoutNanoseconds: UInt64 = 2_000_000_000) async {
-        saveTask?.cancel()
-        saveTask = nil
-        guard let bookId = pendingBookId, let index = pendingIndex, let core else {
-            return
-        }
-        if lastFlushed?.bookId == bookId, lastFlushed?.index == index {
-            pendingBookId = nil
-            pendingIndex = nil
-            return
-        }
-        pendingBookId = nil
-        pendingIndex = nil
+    /// Adopt a server-provided position without scheduling a write back.
+    func hydrate(bookId: String, index: Int, total: Int) {
+        guard !bookId.isEmpty, total > 0 else { return }
+        let idx = min(max(index, 0), total - 1)
+        let next = ReadingPosition(index: idx, total: total)
+        guard positions[bookId] != next else { return }
+        positions[bookId] = next
+        synced[bookId] = idx
+    }
+
+    func flush(bookId: String, timeoutNanoseconds: UInt64 = 2_000_000_000) async {
+        saveTasks[bookId]?.cancel()
+        saveTasks.removeValue(forKey: bookId)
+        guard let index = pending[bookId], let core else { return }
+        pending.removeValue(forKey: bookId)
 
         let save = Task {
             try await core.saveReadingProgress(bookId: bookId, segmentIndex: index)
@@ -183,11 +172,28 @@ final class ReadingProgressStore {
         do {
             try await save.value
             timeout.cancel()
-            lastFlushed = (bookId, index)
+            synced[bookId] = index
         } catch {
             timeout.cancel()
-            pendingBookId = bookId
-            pendingIndex = index
+            // Keep it pending unless a newer position already replaced it.
+            if pending[bookId] == nil {
+                pending[bookId] = index
+            }
         }
+    }
+
+    func flushAll() async {
+        for bookId in pending.keys {
+            await flush(bookId: bookId)
+        }
+    }
+
+    func forget(bookId: String) {
+        saveTasks[bookId]?.cancel()
+        saveTasks.removeValue(forKey: bookId)
+        pending.removeValue(forKey: bookId)
+        synced.removeValue(forKey: bookId)
+        positions.removeValue(forKey: bookId)
+        ReaderPreferences.clearCachedProgress(for: bookId)
     }
 }

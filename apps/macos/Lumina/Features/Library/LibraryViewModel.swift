@@ -107,6 +107,7 @@ final class LibraryViewModel: ObservableObject {
         books = preserveOrder && !books.isEmpty
             ? Self.mergePreservingOrder(existing: books, fetched: fetched)
             : fetched
+        books = Self.overlayLocalProgress(books) { ReadingProgressStore.shared.position(for: $0) }
         syncIngestSubscriptions(using: core)
     }
 
@@ -175,6 +176,33 @@ final class LibraryViewModel: ObservableObject {
         let known = Set(existing.map(\.id))
         merged.append(contentsOf: fetched.filter { !known.contains($0.id) })
         return merged
+    }
+
+    /// The local record is the truth for what the user has read; the server list
+    /// only backs it up and can lag behind (the PATCH is coalesced).
+    static func overlayLocalProgress(
+        _ books: [BookSummary],
+        openedAt: Date = Date(),
+        cached: (String) -> ReadingPosition?
+    ) -> [BookSummary] {
+        books.map { book in
+            guard let local = cached(book.id) else { return book }
+            var copy = book
+            copy.current_segment_index = ReadingProgress.restoreIndex(
+                serverIndex: book.current_segment_index ?? 0,
+                localIndex: local.index,
+                localSegmentCount: local.total,
+                currentSegmentCount: book.readingTotal
+            )
+            if local.total == book.readingTotal {
+                copy.readingPercent = local.percent
+            }
+            // A local record means the book has been opened at least once.
+            if copy.last_opened_at == nil {
+                copy.last_opened_at = ISO8601DateFormatter().string(from: openedAt)
+            }
+            return copy
+        }
     }
 
     static func prioritizeSummarizeActivity(_ books: [BookSummary]) -> [BookSummary] {
@@ -294,17 +322,28 @@ final class LibraryViewModel: ObservableObject {
         try await refresh(using: core, preserveOrder: true)
     }
 
+    func resegmentBook(
+        _ book: BookSummary,
+        chunkTargetChars: Int,
+        using core: CoreClient
+    ) async throws {
+        ReaderPreferences.clearCachedProgress(for: book.id)
+        try await core.resegmentBook(
+            bookId: book.id,
+            chunkTargetChars: chunkTargetChars
+        )
+        try await refresh(using: core, preserveOrder: true)
+    }
+
     func replace(_ book: BookSummary) {
         guard let index = books.firstIndex(where: { $0.id == book.id }) else { return }
         books[index] = book
     }
 
-    func applyReadingProgress(bookId: String, segmentIndex: Int, openedAt: Date = Date()) {
-        guard let index = books.firstIndex(where: { $0.id == bookId }) else { return }
-        books[index].current_segment_index = segmentIndex
-        if books[index].last_opened_at == nil {
-            books[index].last_opened_at = ISO8601DateFormatter().string(from: openedAt)
-        }
+    /// Re-apply the store's positions to the rows. Called whenever the reader
+    /// records a new position, so the shelf never drifts from what is on screen.
+    func applyLocalProgress(_ positions: [String: ReadingPosition], openedAt: Date = Date()) {
+        books = Self.overlayLocalProgress(books, openedAt: openedAt) { positions[$0] }
     }
 
     var hasIncompleteSummaries: Bool {

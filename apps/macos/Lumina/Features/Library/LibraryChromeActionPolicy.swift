@@ -60,3 +60,43 @@ enum LibraryChromeActionPolicy {
         return duplicates
     }
 }
+
+/// Context-menu actions for a library list/grid/recents row.
+enum LibraryBookContextAction: String, CaseIterable, Hashable {
+    case favorite
+    case reclassify
+    case startSummarize
+    case stopSummarize
+    case resegment
+    case exportMarkdown
+    case delete
+}
+
+enum LibraryBookContextMenuPolicy {
+    static func actions(for book: BookSummary) -> [LibraryBookContextAction] {
+        var items: [LibraryBookContextAction] = [.favorite, .reclassify]
+        if book.canStartSummarize { items.append(.startSummarize) }
+        if book.canStopSummarize { items.append(.stopSummarize) }
+        items.append(.resegment)
+        items.append(.exportMarkdown)
+        items.append(.delete)
+        return items
+    }
+
+    static func isEnabled(_ action: LibraryBookContextAction, for book: BookSummary) -> Bool {
+        switch action {
+        case .favorite, .delete:
+            return true
+        case .reclassify:
+            return !book.isProcessing
+        case .startSummarize:
+            return book.canStartSummarize
+        case .stopSummarize:
+            return book.canStopSummarize
+        case .resegment:
+            return book.canResegment
+        case .exportMarkdown:
+            return book.summaryReady > 0
+        }
+    }
+}
