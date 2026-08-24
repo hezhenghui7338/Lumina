@@ -44,6 +44,7 @@
 - **阅读操作**：点翻段 / 复制 / 重新摘要不再误开关工具栏；翻段按钮钉在最右侧；工具栏「段列表」会钉住侧栏
 - **摘要队列**：全书索引不再抢段摘要槽位；阅读面也能看到进行中 / 排队，不再出现「0 进行中 · n 排队」
 - **书架**：右键即可整书重新分段；打开书不再弹出笔记 cancelled；周期性按钮 tooltip 已去掉
+- v0.10.1：release 固定 CPython 3.11（避免安装包超 500MB）；修复 Windows 设置页缺分号导致无法打包
 
 ### v0.9 — 语义分段、书架与阅读更稳
 
@@ -262,7 +263,7 @@ just test-release  # 发布门禁：纯 mock 并行（~20s，与 PR 等价）
 **推荐：GitHub Actions（无需本机 Xcode）**
 
 1. 打开仓库 **Actions → Release → Run workflow**
-2. 输入版本号（如 `0.10.0`）运行
+2. 输入版本号（如 `0.10.1`）运行
 3. 在 Artifacts 或 tag Release 中下载 DMG
 
 **本机构建（需与 macOS 版本匹配的 Xcode）**
@@ -272,13 +273,13 @@ macOS 15 用户：**不要**从 App Store 装最新 Xcode（可能要求 macOS 2
 ```bash
 ./scripts/build-release.sh
 # 会先跑 just test-release 等价测试，通过后才打包
-# 产出：dist/Lumina-0.10.0-macOS.dmg 与 .zip
+# 产出：dist/Lumina-0.10.1-macOS.dmg 与 .zip
 ```
 
 打 tag 推送后会自动构建并上传到 Release：
 
 ```bash
-git tag v0.10.0 && git push origin v0.10.0
+git tag v0.10.1 && git push origin v0.10.1
 ```
 
 ### 文档
