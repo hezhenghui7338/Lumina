@@ -211,3 +211,86 @@ final class SidecarReadinessTests: XCTestCase {
         )
     }
 }
+
+final class ErrorCancellationTests: XCTestCase {
+    func testURLErrorCancelled_isCancellationAndHasNoUserFacingMessage() {
+        let error = URLError(.cancelled)
+        XCTAssertTrue(error.isCancellation)
+        XCTAssertNil(error.userFacingMessage)
+        XCTAssertFalse(error.localizedDescription.isEmpty)
+    }
+
+    func testCancellationError_isCancellationAndHasNoUserFacingMessage() {
+        let error = CancellationError()
+        XCTAssertTrue(error.isCancellation)
+        XCTAssertNil(error.userFacingMessage)
+    }
+
+    func testNSErrorCancelled_isCancellation() {
+        let error = NSError(domain: NSURLErrorDomain, code: NSURLErrorCancelled)
+        XCTAssertTrue(error.isCancellation)
+        XCTAssertNil(error.userFacingMessage)
+    }
+
+    func testUnderlyingURLErrorCancelled_isCancellation() {
+        let error = NSError(
+            domain: "CoreClient",
+            code: -1,
+            userInfo: [NSUnderlyingErrorKey: URLError(.cancelled)]
+        )
+        XCTAssertTrue(error.isCancellation)
+        XCTAssertNil(error.userFacingMessage)
+    }
+
+    func testCoreClientHTTP499_isCancellation() {
+        let error = NSError(
+            domain: "CoreClient",
+            code: 499,
+            userInfo: [NSLocalizedDescriptionKey: "Task cancelled"]
+        )
+        XCTAssertTrue(error.isCancellation)
+        XCTAssertNil(error.userFacingMessage)
+    }
+
+    func testRealHTTPError_isNotCancellation() {
+        let error = NSError(
+            domain: "CoreClient",
+            code: 500,
+            userInfo: [NSLocalizedDescriptionKey: "服务器内部错误"]
+        )
+        XCTAssertFalse(error.isCancellation)
+        XCTAssertEqual(error.userFacingMessage, "服务器内部错误")
+    }
+
+    func testNotesReloadKey_allFilterIgnoresSegmentChangeOnOpen() {
+        let beforeRestore = NotesPanel.reloadTaskKey(
+            bookId: "b1",
+            segmentId: nil,
+            filterCurrent: false,
+            refreshToken: 0
+        )
+        let afterRestore = NotesPanel.reloadTaskKey(
+            bookId: "b1",
+            segmentId: "seg-9",
+            filterCurrent: false,
+            refreshToken: 0
+        )
+        XCTAssertEqual(beforeRestore, afterRestore)
+    }
+
+    func testNotesReloadKey_currentFilterChangesWithSegment() {
+        let none = NotesPanel.reloadTaskKey(
+            bookId: "b1",
+            segmentId: nil,
+            filterCurrent: true,
+            refreshToken: 0
+        )
+        let selected = NotesPanel.reloadTaskKey(
+            bookId: "b1",
+            segmentId: "seg-9",
+            filterCurrent: true,
+            refreshToken: 0
+        )
+        XCTAssertNotEqual(none, selected)
+    }
+}

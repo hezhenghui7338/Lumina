@@ -1206,6 +1206,32 @@ async def start_summarize_book(
     }
 
 
+@router.post("/books/{book_id}/index")
+async def build_book_index(book_id: str, request: Request) -> dict[str, Any]:
+    """Queue the whole-book index. Only "chat with whole book" needs it.
+
+    This is the single entry point: nothing enqueues rollup automatically, so a
+    library full of summarized books never floods the queue on startup.
+    """
+    state = _state(request)
+    book = BookRepo(state.conn).get(book_id)
+    if not book:
+        raise HTTPException(404, "Book not found")
+    _wire_job_events(state)
+    progress = BookRepo(state.conn).summary_progress(book_id)
+    ready = int(progress["summary_ready_count"] or 0)
+    total = int(progress["summary_total_count"] or 0)
+    if total <= 0 or ready < total:
+        raise HTTPException(409, f"摘要未完成（{ready}/{total}），无法建全书索引")
+    await state.job_queue.enqueue_rollup(book_id)
+    refreshed = BookRepo(state.conn).get(book_id) or book
+    return {
+        "status": "queued",
+        "book_id": book_id,
+        "index_status": refreshed.get("index_status") or "idle",
+    }
+
+
 @router.post("/books/{book_id}/summarize/stop")
 async def stop_summarize_book(book_id: str, request: Request) -> dict[str, str]:
     state = _state(request)
@@ -1311,7 +1337,7 @@ async def book_events(book_id: str, request: Request) -> StreamingResponse:
     return StreamingResponse(stream(), media_type="text/event-stream")
 
 
-BOOK_INDEX_NOT_READY = "全书索引生成中"
+BOOK_INDEX_NOT_READY = "全书索引未就绪，请先建索引（POST /books/{book_id}/index）"
 
 
 def _require_book_chat_index(book: dict[str, Any], scope: str) -> None:

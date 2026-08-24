@@ -25,6 +25,8 @@ struct BookSummary: Codable, Identifiable, Hashable {
     var processing_kind: String?
     var index_status: String?
     var ingest_error: String?
+    /// Local overlay only — not decoded from the API.
+    var readingPercent: Double? = nil
 
     enum CodingKeys: String, CodingKey {
         case id, title, status, segment_count, is_favorite, category
@@ -58,7 +60,8 @@ struct BookSummary: Codable, Identifiable, Hashable {
         summary_tier: String? = nil,
         processing_kind: String? = nil,
         index_status: String? = nil,
-        ingest_error: String? = nil
+        ingest_error: String? = nil,
+        readingPercent: Double? = nil
     ) {
         self.id = id
         self.title = title
@@ -84,6 +87,7 @@ struct BookSummary: Codable, Identifiable, Hashable {
         self.processing_kind = processing_kind
         self.index_status = index_status
         self.ingest_error = ingest_error
+        self.readingPercent = readingPercent
     }
 
     init(from decoder: Decoder) throws {
@@ -120,6 +124,7 @@ struct BookSummary: Codable, Identifiable, Hashable {
         processing_kind = try c.decodeIfPresent(String.self, forKey: .processing_kind)
         index_status = try c.decodeIfPresent(String.self, forKey: .index_status)
         ingest_error = try c.decodeIfPresent(String.self, forKey: .ingest_error)
+        readingPercent = nil
     }
 
     var canChatBook: Bool {
@@ -156,17 +161,28 @@ struct BookSummary: Codable, Identifiable, Hashable {
     }
 
     var readingStatusLabel: String {
-        guard last_opened_at != nil else { return "未读" }
-        guard readingTotal > 0 else { return "在读" }
-        if readingTotal > 1, readingCurrent >= readingTotal { return "已读完" }
-        return "在读 · \(readingCurrent)/\(readingTotal) 段"
+        ReadingProgress.statusLabel(
+            opened: last_opened_at != nil,
+            index: current_segment_index ?? 0,
+            segmentCount: readingTotal
+        )
+    }
+
+    var resolvedReadingPercent: Double {
+        if let readingPercent { return readingPercent }
+        return ReadingProgress.percent(
+            index: current_segment_index ?? 0,
+            count: readingTotal
+        )
     }
 
     var readingProgressBucket: ReadingProgressBucket {
         guard last_opened_at != nil else { return .unread }
-        guard readingTotal > 1 else { return .reading }
-        if readingCurrent >= readingTotal { return .finished }
-        return .reading
+        guard readingTotal > 0 else { return .reading }
+        return ReadingProgress.isFinished(
+            index: current_segment_index ?? 0,
+            count: readingTotal
+        ) ? .finished : .reading
     }
 
     var segmentCountLabel: String {
@@ -214,6 +230,12 @@ struct BookSummary: Codable, Identifiable, Hashable {
         }
     }
 
+    /// Ready books can be re-chunked from the library or reader. Import
+    /// failures and in-flight ingest/resegment jobs cannot.
+    var canResegment: Bool {
+        !isProcessing && status != "error" && (segment_count ?? 0) > 0
+    }
+
     var statusLabel: String {
         switch status {
         case "unread": return "未读"
@@ -238,12 +260,19 @@ struct SummarizeOverview: Codable {
         let paused: Int
         let idle: Int
         let summarized: Int
+        /// Books whose whole-book index is being built right now.
+        let indexing: Int?
     }
 
     let counts: Counts
     let user_paused_all: Bool
+    let indexing_queued: Int?
+    /// Why nothing is in progress while work is queued. Nil when not stalled.
+    let stalled_reason: String?
 
-    var activeCount: Int { counts.running + counts.queued }
+    var indexingCount: Int { counts.indexing ?? 0 }
+
+    var activeCount: Int { counts.running + counts.queued + indexingCount }
 }
 
 enum ReadingProgressBucket: String {
@@ -1228,6 +1257,11 @@ final class CoreClient: ObservableObject {
         _ = try await post(path: "/books/\(bookId)/summarize/stop", body: Data("{}".utf8))
     }
 
+    /// Queue the whole-book index. Nothing builds it automatically.
+    func buildBookIndex(bookId: String) async throws {
+        _ = try await post(path: "/books/\(bookId)/index", body: Data("{}".utf8))
+    }
+
     func retrySegment(bookId: String, idx: Int, summaryTier: SummaryTier? = nil) async throws {
         struct Body: Codable { let summary_tier: SummaryTier? }
         let body = try JSONEncoder().encode(Body(summary_tier: summaryTier))
@@ -1838,7 +1872,24 @@ private let Accept = "Accept"
 extension Error {
     var isCancellation: Bool {
         if self is CancellationError { return true }
-        if let urlError = self as? URLError, urlError.code == .cancelled { return true }
+        if Self.urlRequestCancelled(self) { return true }
+        let ns = self as NSError
+        if ns.domain == "CoreClient", ns.code == 499 { return true }
+        if let underlying = ns.userInfo[NSUnderlyingErrorKey] as? Error {
+            if underlying is CancellationError { return true }
+            if Self.urlRequestCancelled(underlying) { return true }
+        }
         return false
+    }
+
+    /// Nil when the failure is just a cancelled in-flight request (not for alerts).
+    var userFacingMessage: String? {
+        isCancellation ? nil : localizedDescription
+    }
+
+    private static func urlRequestCancelled(_ error: Error) -> Bool {
+        if let urlError = error as? URLError { return urlError.code == .cancelled }
+        let ns = error as NSError
+        return ns.domain == NSURLErrorDomain && ns.code == NSURLErrorCancelled
     }
 }

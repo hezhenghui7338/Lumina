@@ -252,6 +252,27 @@ _SEGMENT_EXPORT_COLUMNS = (
     "summary_json, label, summary_status, retry_count, "
     "summary_provider, summary_model, summary_tier, summary_duration_s, summary_llm_attempts, translation"
 )
+_SEGMENT_INSERT_SQL = """
+INSERT INTO segments (
+  id, book_id, idx, chapter, page_range, anchor_label,
+  raw_text, char_count, summary_status, retry_count
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+"""
+
+
+def _segment_insert_row(seg: dict[str, Any]) -> tuple[Any, ...]:
+    return (
+        seg["id"],
+        seg["book_id"],
+        seg["idx"],
+        seg.get("chapter"),
+        seg.get("page_range"),
+        seg.get("anchor_label"),
+        seg["raw_text"],
+        seg.get("char_count", len(seg.get("raw_text") or "")),
+        seg.get("summary_status", "pending"),
+        seg.get("retry_count", 0),
+    )
 
 
 class SegmentRepo:
@@ -417,27 +438,51 @@ class SegmentRepo:
             return
         with db_transaction(self.conn):
             self.conn.executemany(
+                _SEGMENT_INSERT_SQL,
+                [_segment_insert_row(seg) for seg in segments],
+            )
+
+    def finalize_ingest(
+        self,
+        book_id: str,
+        segments: list[dict[str, Any]],
+        *,
+        title: str,
+        author: str | None,
+        language: str | None,
+        target_language: str,
+        metadata_json: dict[str, Any],
+    ) -> None:
+        """Insert segments and mark the book unread in one commit.
+
+        Readers must never see status=unread with an empty segment list.
+        """
+        if not segments:
+            raise RuntimeError("分段结果为空")
+        now = _now()
+        with db_transaction(self.conn):
+            self.conn.executemany(
+                _SEGMENT_INSERT_SQL,
+                [_segment_insert_row(seg) for seg in segments],
+            )
+            self.conn.execute(
                 """
-                INSERT INTO segments (
-                  id, book_id, idx, chapter, page_range, anchor_label,
-                  raw_text, char_count, summary_status, retry_count
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                UPDATE books
+                SET title = ?, author = ?, language = ?, target_language = ?,
+                    segment_count = ?, status = 'unread', metadata_json = ?,
+                    updated_at = ?
+                WHERE id = ?
                 """,
-                [
-                    (
-                        seg["id"],
-                        seg["book_id"],
-                        seg["idx"],
-                        seg.get("chapter"),
-                        seg.get("page_range"),
-                        seg.get("anchor_label"),
-                        seg["raw_text"],
-                        seg.get("char_count", len(seg.get("raw_text") or "")),
-                        seg.get("summary_status", "pending"),
-                        seg.get("retry_count", 0),
-                    )
-                    for seg in segments
-                ],
+                (
+                    title,
+                    author,
+                    language,
+                    target_language,
+                    len(segments),
+                    json.dumps(metadata_json, ensure_ascii=False),
+                    now,
+                    book_id,
+                ),
             )
 
     def replace_for_book(

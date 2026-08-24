@@ -32,16 +32,23 @@
                 <AppBarButton Label="笔记" Click="ToggleNotes_Click"/>
                 <AppBarButton Label="深聊" Click="OpenChat_Click"/>
                 <AppBarButton Label="导出" Click="Export_Click"/>
-                <ComboBox x:Name="SummaryTierBox" Header="摘要档位" Width="110" SelectedIndex="0"
-                          ToolTipService.ToolTip="开始摘要只处理未摘要段落；全书重新摘要才会覆盖已有摘要">
-                    <ComboBoxItem Content="正常摘要" Tag="normal"/>
-                    <ComboBoxItem Content="高级摘要" Tag="advanced"/>
-                </ComboBox>
-                <AppBarButton Label="开始摘要" Click="Summarize_Click"
-                              ToolTipService.ToolTip="仅处理尚未摘要的段落，已有摘要不会被覆盖"/>
-                <AppBarButton Label="停止" Click="StopSummarize_Click"/>
-                <AppBarButton Label="重摘要" Click="Regenerate_Click"
-                              ToolTipService.ToolTip="覆盖全书已有摘要，消耗较多资源，操作前会要求确认"/>
+                <AppBarButton Label="摘要"
+                              ToolTipService.ToolTip="开始摘要只处理未摘要段落；全书重新摘要会覆盖已有摘要，操作前会要求确认">
+                    <AppBarButton.Flyout>
+                        <MenuFlyout>
+                            <MenuFlyoutSubItem Text="开始摘要">
+                                <MenuFlyoutItem Text="正常摘要" Tag="normal" Click="Summarize_Click"/>
+                                <MenuFlyoutItem Text="高级摘要（仅未摘要）" Tag="advanced" Click="Summarize_Click"/>
+                            </MenuFlyoutSubItem>
+                            <MenuFlyoutItem Text="停止摘要" Click="StopSummarize_Click"/>
+                            <MenuFlyoutSeparator/>
+                            <MenuFlyoutSubItem Text="全书重新摘要">
+                                <MenuFlyoutItem Text="正常摘要（覆盖全书）" Tag="normal" Click="Regenerate_Click"/>
+                                <MenuFlyoutItem Text="高级摘要（覆盖全书）" Tag="advanced" Click="Regenerate_Click"/>
+                            </MenuFlyoutSubItem>
+                        </MenuFlyout>
+                    </AppBarButton.Flyout>
+                </AppBarButton>
             </CommandBar>
         </Grid>
 
@@ -101,6 +108,10 @@
                                IsTextSelectionEnabled="True" Visibility="Collapsed"/>
                     <StackPanel Orientation="Horizontal" Spacing="8">
                         <Button Content="选区提问" Click="AskSelection_Click"/>
+                        <Button x:Name="PrevSegmentButton" Content="[" Click="PrevSegment_Click"
+                                ToolTipService.ToolTip="上一段（[ / 【）"/>
+                        <Button x:Name="NextSegmentButton" Content="]" Click="NextSegment_Click"
+                                ToolTipService.ToolTip="下一段（] / 】）"/>
                         <Button Content="重试本段" Click="RetrySegment_Click"/>
                         <Button Content="调整与下一段的边界" Click="AdjustBoundary_Click"/>
                     </StackPanel>

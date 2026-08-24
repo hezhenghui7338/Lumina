@@ -289,6 +289,7 @@ private struct LibraryTabView: View {
     @EnvironmentObject private var core: CoreClient
     @EnvironmentObject private var sidecar: SidecarManager
     @StateObject private var viewModel = LibraryViewModel()
+    @ObservedObject private var readingProgress = ReadingProgressStore.shared
     @AppStorage("lumina.library.sidebarPinned") private var librarySidebarPinned = false
     @State private var segmentListPeeking = false
     @State private var showingAllNotes = false
@@ -354,10 +355,8 @@ private struct LibraryTabView: View {
         .onReceive(NotificationCenter.default.publisher(for: .luminaLibraryRefresh)) { _ in
             Task { await refreshBooks() }
         }
-        .onReceive(NotificationCenter.default.publisher(for: .luminaReadingProgressDidChange)) { note in
-            guard let bookId = note.userInfo?["bookId"] as? String,
-                  let segmentIndex = note.userInfo?["segmentIndex"] as? Int else { return }
-            viewModel.applyReadingProgress(bookId: bookId, segmentIndex: segmentIndex)
+        .onReceive(readingProgress.$positions) { positions in
+            viewModel.applyLocalProgress(positions)
         }
         .onChange(of: selectedBookId) { oldId, newId in
             if newId != nil {
@@ -390,6 +389,7 @@ private struct LibraryTabView: View {
                 readerOverlayActive: $readerOverlayActive,
                 readerChromeVisible: $readerChromeVisible,
                 librarySidebarPinned: $librarySidebarPinned,
+                libraryViewModel: viewModel,
                 onReturnToBookshelf: returnToBookshelf,
                 onImport: onImport
             )

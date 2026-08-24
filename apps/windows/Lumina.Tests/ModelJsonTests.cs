@@ -90,6 +90,30 @@ public class ModelJsonTests
     }
 
     [Fact]
+    public void SummarizeOverview_indexing_stall_never_reads_as_zero_running()
+    {
+        var json = """{"counts":{"running":0,"queued":3,"paused":0,"idle":0,"summarized":9,"indexing":1},"indexing_queued":2,"stalled_reason":"indexing","user_paused_all":false}""";
+        var overview = JsonSerializer.Deserialize<SummarizeOverview>(json, Opts)!;
+        Assert.Equal(1, overview.Counts.Indexing);
+        Assert.Equal(2, overview.IndexingQueued);
+        Assert.Equal("indexing", overview.StalledReason);
+        Assert.Equal(4, overview.ActiveCount);
+        Assert.Equal("3 排队 · 1 建索引 · 正在建索引", overview.StatusLine);
+        Assert.DoesNotContain("0 进行中", overview.StatusLine);
+    }
+
+    [Fact]
+    public void SummarizeOverview_decodes_legacy_payload_without_indexing_fields()
+    {
+        var json = """{"counts":{"running":1,"queued":2,"paused":0,"idle":0,"summarized":3},"user_paused_all":false}""";
+        var overview = JsonSerializer.Deserialize<SummarizeOverview>(json, Opts)!;
+        Assert.Equal(0, overview.Counts.Indexing);
+        Assert.Equal(3, overview.ActiveCount);
+        Assert.Null(overview.StalledReason);
+        Assert.Equal("1 进行中 · 2 排队", overview.StatusLine);
+    }
+
+    [Fact]
     public void SummarizeStateFilters_match_books()
     {
         var running = new BookSummary { SummarizeState = "running", SummaryTotalCount = 10, SummaryReadyCount = 1 };
@@ -118,6 +142,7 @@ public class ModelJsonTests
             LastOpenedAt = "2024-06-01T00:00:00Z",
             CurrentSegmentIndex = 9,
             Status = "summarized",
+            ReadingPercent = 1.0,
         };
         var shortOpened = new BookSummary
         {
@@ -150,9 +175,9 @@ public class ModelJsonTests
     }
 
     [Fact]
-    public void ReadingProgressIndex_restore_offset_until_resegment()
+    public void ReadingProgressIndex_restore_offset_is_always_ignored()
     {
-        Assert.Equal(120, ReadingProgressIndex.RestoreOffset(120, 10, 10));
+        Assert.Equal(0, ReadingProgressIndex.RestoreOffset(120, 10, 10));
         Assert.Equal(0, ReadingProgressIndex.RestoreOffset(120, 12, 4));
         Assert.Equal(0, ReadingProgressIndex.RestoreOffset(null, 10, 10));
     }
@@ -161,8 +186,71 @@ public class ModelJsonTests
     public void ReadingProgressIndex_should_commit_rejects_unconfirmed_jump_home()
     {
         Assert.False(ReadingProgressIndex.ShouldCommit(20, 0, false));
-        Assert.True(ReadingProgressIndex.ShouldCommit(20, 0, true));
+        Assert.False(ReadingProgressIndex.ShouldCommit(20, 0, true));
+        Assert.True(ReadingProgressIndex.ShouldCommit(20, 0, true, true));
         Assert.True(ReadingProgressIndex.ShouldCommit(0, 0, false));
+    }
+
+    [Fact]
+    public void ReadingProgressIndex_confirmed_zero_must_not_overwrite_mid_cache()
+    {
+        Assert.False(ReadingProgressIndex.ShouldReplaceCachedIndex(7, 40, 0, 40, true));
+        Assert.True(ReadingProgressIndex.ShouldReplaceCachedIndex(7, 40, 0, 40, true, true));
+        Assert.True(ReadingProgressIndex.ShouldReplaceCachedIndex(7, 40, 0, 12, false));
+    }
+
+    [Fact]
+    public void ReadingProgressIndex_percent_and_status_label()
+    {
+        Assert.Equal(0.40, ReadingProgressIndex.Percent(4, 10), 4);
+        Assert.Equal(1.0, ReadingProgressIndex.Percent(9, 10), 4);
+        Assert.True(ReadingProgressIndex.IsFinished(9, 10));
+        Assert.Equal("已读完", ReadingProgressIndex.StatusLabel(true, 9, 10));
+        Assert.Equal(0.40, ReadingProgressIndex.Percent(4, 80, 0, 10), 4);
+        Assert.Equal("未读", ReadingProgressIndex.StatusLabel(false, 4, 10));
+        Assert.Equal("在读 · 1/10 段", ReadingProgressIndex.StatusLabel(true, 0, 10));
+        Assert.Equal("在读 · 5/10 段", ReadingProgressIndex.StatusLabel(true, 4, 10));
+        Assert.Equal(0, ReadingProgressIndex.Percent(0, 1), 4);
+        Assert.False(ReadingProgressIndex.IsFinished(0, 1));
+        Assert.Equal("在读 · 1/1 段", ReadingProgressIndex.StatusLabel(true, 0, 1));
+    }
+
+    [Fact]
+    public void ReadingProgressIndex_overlay_local_applies_percent_until_resegment()
+    {
+        var book = new BookSummary
+        {
+            SegmentCount = 10,
+            LastOpenedAt = "2024-05-01T00:00:00Z",
+            CurrentSegmentIndex = 1,
+        };
+        ReadingProgressIndex.OverlayLocal(book, 4, 10, 0.45);
+        Assert.Equal(4, book.CurrentSegmentIndex);
+        Assert.Equal(0.45, book.ReadingPercent);
+        Assert.Equal("在读 · 5/10 段", book.ReadingStatusLabel);
+
+        var resegmented = new BookSummary
+        {
+            SegmentCount = 4,
+            LastOpenedAt = "2024-05-01T00:00:00Z",
+            CurrentSegmentIndex = 0,
+        };
+        ReadingProgressIndex.OverlayLocal(resegmented, 9, 12, 0.9);
+        Assert.Equal(0, resegmented.CurrentSegmentIndex);
+        Assert.Null(resegmented.ReadingPercent);
+        Assert.Equal("在读 · 1/4 段", resegmented.ReadingStatusLabel);
+    }
+
+    [Fact]
+    public void SegmentTurnNavigation_middle_first_last_and_empty()
+    {
+        int[] sorted = [0, 2, 5];
+        Assert.Equal(0, SegmentTurnNavigation.TargetIdx(sorted, 2, -1));
+        Assert.Equal(5, SegmentTurnNavigation.TargetIdx(sorted, 2, 1));
+        Assert.Null(SegmentTurnNavigation.TargetIdx(sorted, 0, -1));
+        Assert.Null(SegmentTurnNavigation.TargetIdx(sorted, 5, 1));
+        Assert.Null(SegmentTurnNavigation.TargetIdx([], 0, 1));
+        Assert.Null(SegmentTurnNavigation.TargetIdx(sorted, 9, 1));
     }
 }
 

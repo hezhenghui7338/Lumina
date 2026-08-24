@@ -7,6 +7,9 @@ struct LibraryRecentsView: View {
 
     @State private var bookPendingDelete: BookSummary?
     @State private var actionError: String?
+    @State private var bookPendingResegment: BookSummary?
+    @State private var resegmentTargetChars = 4000
+    @State private var isResegmentSubmitting = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -51,6 +54,18 @@ struct LibraryRecentsView: View {
         } message: {
             Text(actionError ?? "")
         }
+        .sheet(item: $bookPendingResegment) { book in
+            ResegmentBookSheet(
+                bookTitle: book.title,
+                targetChars: $resegmentTargetChars,
+                isPresented: Binding(
+                    get: { bookPendingResegment != nil },
+                    set: { if !$0 { bookPendingResegment = nil } }
+                ),
+                isSubmitting: isResegmentSubmitting,
+                onSubmit: { submitResegment(book) }
+            )
+        }
     }
 
     @ViewBuilder
@@ -75,6 +90,7 @@ struct LibraryRecentsView: View {
                         catch { actionError = ConnectionError.userMessage(for: error) }
                     }
                 },
+                onResegment: { presentResegment(for: book) },
                 onExport: {},
                 onDelete: { bookPendingDelete = book },
                 onStartSummarize: { tier in
@@ -100,6 +116,34 @@ struct LibraryRecentsView: View {
             }
         } catch {
             actionError = ConnectionError.userMessage(for: error)
+        }
+    }
+
+    private func presentResegment(for book: BookSummary) {
+        guard book.canResegment else { return }
+        resegmentTargetChars = ResegmentTarget.normalized(
+            currentTarget: book.chunk_target_chars,
+            totalChars: book.total_char_count,
+            segmentCount: book.segment_count ?? 0
+        )
+        bookPendingResegment = book
+    }
+
+    private func submitResegment(_ book: BookSummary) {
+        guard !isResegmentSubmitting else { return }
+        isResegmentSubmitting = true
+        Task {
+            do {
+                try await viewModel.resegmentBook(
+                    book,
+                    chunkTargetChars: resegmentTargetChars,
+                    using: core
+                )
+                bookPendingResegment = nil
+            } catch {
+                actionError = ConnectionError.userMessage(for: error)
+            }
+            isResegmentSubmitting = false
         }
     }
 

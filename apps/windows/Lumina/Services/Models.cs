@@ -18,9 +18,13 @@ public sealed class BookSummary
     public string? Category { get; set; }
     public string? LastOpenedAt { get; set; }
     public int? CurrentSegmentIndex { get; set; }
+    /// <summary>Local overlay only — not decoded from the API.</summary>
+    [JsonIgnore]
+    public double? ReadingPercent { get; set; }
     public string? Author { get; set; }
     public string? CreatedAt { get; set; }
     public int? TotalCharCount { get; set; }
+    public int? ChunkTargetChars { get; set; }
     public int? SummaryReadyCount { get; set; }
     public int? SummaryTotalCount { get; set; }
     public string? ChunkerVersion { get; set; }
@@ -82,16 +86,15 @@ public sealed class BookSummary
     }
 
     [JsonIgnore]
-    public string ReadingStatusLabel
-    {
-        get
-        {
-            if (LastOpenedAt is null) return "未读";
-            if (ReadingTotal <= 0) return "在读";
-            if (ReadingTotal > 1 && ReadingCurrent >= ReadingTotal) return "已读完";
-            return $"在读 · {ReadingCurrent}/{ReadingTotal} 段";
-        }
-    }
+    public double ResolvedReadingPercent =>
+        ReadingPercent ?? ReadingProgressIndex.Percent(CurrentSegmentIndex ?? 0, ReadingTotal);
+
+    [JsonIgnore]
+    public string ReadingStatusLabel =>
+        ReadingProgressIndex.StatusLabel(
+            LastOpenedAt is not null,
+            CurrentSegmentIndex ?? 0,
+            ReadingTotal);
 
     [JsonIgnore]
     public string ReadingProgressBucket
@@ -99,8 +102,10 @@ public sealed class BookSummary
         get
         {
             if (LastOpenedAt is null) return "unread";
-            if (ReadingTotal <= 1) return "reading";
-            return ReadingCurrent >= ReadingTotal ? "finished" : "reading";
+            if (ReadingTotal <= 0) return "reading";
+            return ReadingProgressIndex.IsFinished(CurrentSegmentIndex ?? 0, ReadingTotal)
+                ? "finished"
+                : "reading";
         }
     }
 
@@ -163,6 +168,10 @@ public sealed class BookSummary
         && SummarizeState is "running" or "queued" or "paused";
 
     [JsonIgnore]
+    public bool CanResegment =>
+        Status != "processing" && Status != "error" && (SegmentCount ?? 0) > 0;
+
+    [JsonIgnore]
     public bool HasExportableSummary => SummaryReady > 0;
 
     [JsonIgnore]
@@ -179,6 +188,20 @@ public sealed class BookSummary
     };
 }
 
+public static class ResegmentTarget
+{
+    public const int MinChars = 200;
+    public const int MaxChars = 8000;
+
+    public static int Normalized(int? currentTarget, int? totalChars, int segmentCount)
+    {
+        var currentAverage = (totalChars ?? 4000) / Math.Max(segmentCount, 1);
+        var target = currentTarget ?? currentAverage;
+        var rounded = ((target + 50) / 100) * 100;
+        return Math.Min(MaxChars, Math.Max(MinChars, rounded));
+    }
+}
+
 public sealed class SummarizeActive
 {
     public int? SegmentIdx { get; set; }
@@ -190,9 +213,43 @@ public sealed class SummarizeOverview
 {
     public SummarizeOverviewCounts Counts { get; set; } = new();
     public bool UserPausedAll { get; set; }
+    public int IndexingQueued { get; set; }
+
+    /// <summary>Why nothing is in progress while work is queued; null when not stalled.</summary>
+    public string? StalledReason { get; set; }
 
     [JsonIgnore]
-    public int ActiveCount => Counts.Running + Counts.Queued;
+    public int ActiveCount => Counts.Running + Counts.Queued + Counts.Indexing;
+
+    /// <summary>Never render a bare 「0 进行中 · n 排队」 — it reads as a hang.</summary>
+    [JsonIgnore]
+    public string StatusLine
+    {
+        get
+        {
+            var parts = new List<string>();
+            if (Counts.Running > 0) parts.Add($"{Counts.Running} 进行中");
+            if (Counts.Queued > 0) parts.Add($"{Counts.Queued} 排队");
+            if (Counts.Indexing > 0) parts.Add($"{Counts.Indexing} 建索引");
+            if (Counts.Running == 0 && Counts.Queued > 0)
+            {
+                var reason = StalledLabel(StalledReason);
+                if (reason is not null) parts.Add(reason);
+            }
+            if (parts.Count == 0) parts.Add($"{Counts.Running} 进行中");
+            return string.Join(" · ", parts);
+        }
+    }
+
+    public static string? StalledLabel(string? reason) => reason switch
+    {
+        "indexing" => "正在建索引",
+        "chat_preempt" => "深聊占用模型",
+        "llm_slots_busy" => "模型并发已满",
+        "no_worker" => "worker 未启动",
+        "starting" => "即将开始",
+        _ => null,
+    };
 }
 
 public sealed class SummarizeOverviewCounts
@@ -202,6 +259,7 @@ public sealed class SummarizeOverviewCounts
     public int Paused { get; set; }
     public int Idle { get; set; }
     public int Summarized { get; set; }
+    public int Indexing { get; set; }
 }
 
 public static class LibraryCollections
@@ -892,16 +950,98 @@ public static class ReadingProgressIndex
         int? localSegmentCount,
         int currentSegmentCount)
     {
-        if (localSegmentCount == currentSegmentCount && currentSegmentCount > 0)
-            return Math.Max(0, localOffset ?? 0);
+        _ = localOffset;
+        _ = localSegmentCount;
+        _ = currentSegmentCount;
         return 0;
     }
 
-    /// Reject a jump to segment 0 unless the viewport really contains it.
-    public static bool ShouldCommit(int? previousIndex, int nextIndex, bool hitContained)
+    /// Reject a jump to segment 0 unless the user really scrolled/jumped there.
+    /// A list that only materialized segment 0 is not user intent.
+    public static bool ShouldCommit(
+        int? previousIndex,
+        int nextIndex,
+        bool hitContained,
+        bool userInitiated = false)
     {
-        if (nextIndex == 0 && previousIndex is int prev && prev > 0 && !hitContained)
-            return false;
+        if (nextIndex == 0 && previousIndex is int prev && prev > 0)
+            return hitContained && userInitiated;
         return true;
+    }
+
+    public static bool ShouldReplaceCachedIndex(
+        int? cachedIndex,
+        int? cachedSegmentCount,
+        int nextIndex,
+        int nextSegmentCount,
+        bool confirmedHit,
+        bool userInitiated = false)
+    {
+        if (cachedSegmentCount is int cachedCount && cachedCount != nextSegmentCount)
+            return true;
+        return ShouldCommit(cachedIndex, nextIndex, confirmedHit, userInitiated);
+    }
+
+    /// Position along the book, 0...1. Segment-level only: last segment is finished.
+    public static double Percent(int index, int count)
+    {
+        if (count <= 1) return 0;
+        var last = count - 1;
+        var idx = Math.Clamp(index, 0, last);
+        if (idx >= last) return 1;
+        return Math.Clamp(idx / (double)count, 0, 1);
+    }
+
+    public static double Percent(int index, double offsetY, double height, int count)
+    {
+        _ = offsetY;
+        _ = height;
+        return Percent(index, count);
+    }
+
+    public static bool IsFinished(int index, int count) =>
+        count > 1 && index >= count - 1;
+
+    public static string StatusLabel(bool opened, int index, int segmentCount)
+    {
+        if (!opened) return "未读";
+        if (segmentCount <= 0) return "在读";
+        var last = segmentCount - 1;
+        var idx = Math.Clamp(index, 0, last);
+        if (IsFinished(idx, segmentCount)) return "已读完";
+        return $"在读 · {idx + 1}/{segmentCount} 段";
+    }
+
+    public static void OverlayLocal(BookSummary book, int localIndex, int localCount, double? percent)
+    {
+        book.CurrentSegmentIndex = Restore(
+            book.CurrentSegmentIndex ?? 0,
+            localIndex,
+            localCount,
+            book.ReadingTotal);
+        if (localCount == book.ReadingTotal)
+            book.ReadingPercent = percent ?? Percent(localIndex, localCount);
+    }
+}
+
+/// Prev/next segment by sorted idx, used by [ ] buttons and keyboard.
+public static class SegmentTurnNavigation
+{
+    public static int? TargetIdx(IReadOnlyList<int> sortedIdxs, int currentIdx, int delta)
+    {
+        if (sortedIdxs.Count == 0) return null;
+        var pos = -1;
+        for (var i = 0; i < sortedIdxs.Count; i++)
+        {
+            if (sortedIdxs[i] == currentIdx)
+            {
+                pos = i;
+                break;
+            }
+        }
+        if (pos < 0) return null;
+        var next = pos + delta;
+        if (next < 0 || next >= sortedIdxs.Count) return null;
+        return sortedIdxs[next];
     }
 }

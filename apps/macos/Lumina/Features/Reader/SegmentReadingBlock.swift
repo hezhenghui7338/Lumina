@@ -1,6 +1,34 @@
 import AppKit
 import SwiftUI
 
+/// Trailing items in the per-segment header, left-to-right after the spacer.
+/// Turn buttons stay last so their click target does not shift with metadata width.
+enum SegmentHeaderTrailingItem: Hashable {
+    case progress
+    case regenerateSummary
+    case charCount
+    case segmentIndex
+    case turnButtons
+}
+
+enum SegmentHeaderLayoutPolicy {
+    static func trailingItems(
+        isSummaryInProgress: Bool,
+        showsRegenerate: Bool,
+        showsCharCount: Bool,
+        showsSegmentIndex: Bool,
+        showsTurnButtons: Bool
+    ) -> [SegmentHeaderTrailingItem] {
+        var items: [SegmentHeaderTrailingItem] = []
+        if isSummaryInProgress { items.append(.progress) }
+        if showsRegenerate { items.append(.regenerateSummary) }
+        if showsCharCount { items.append(.charCount) }
+        if showsSegmentIndex { items.append(.segmentIndex) }
+        if showsTurnButtons { items.append(.turnButtons) }
+        return items
+    }
+}
+
 private struct SegmentPanelContentHeightKey: PreferenceKey {
     static var defaultValue: CGFloat = 0
 
@@ -30,6 +58,10 @@ struct SegmentReadingBlock: View, Equatable {
     var onToggleSummary: () -> Void
     var onFollowUp: (String) -> Void
     var onRetrySummary: (SummaryTier) -> Void
+    var canGoPrev: Bool = false
+    var canGoNext: Bool = false
+    var onPrevSegment: () -> Void = {}
+    var onNextSegment: () -> Void = {}
     var onAdjustBoundary: (() -> Void)? = nil
     var onSourceAppear: (() -> Void)?
     var onSummaryAppear: (() -> Void)?
@@ -182,6 +214,7 @@ struct SegmentReadingBlock: View, Equatable {
             .help(showingSource ? "复制本段原文" : "复制本段摘要")
             .accessibilityIdentifier("lumina.reader.control.copyPanel")
         }
+        .absorbsReaderChromeClicks()
     }
 
     private var canCopyCurrentPanel: Bool {
@@ -304,6 +337,16 @@ struct SegmentReadingBlock: View, Equatable {
             .accessibilityLabel("摘要加载中")
     }
 
+    private var trailingHeaderItems: [SegmentHeaderTrailingItem] {
+        SegmentHeaderLayoutPolicy.trailingItems(
+            isSummaryInProgress: isSummaryInProgress,
+            showsRegenerate: showsRegenerateSummaryButton,
+            showsCharCount: (effectiveCharCount ?? 0) > 0,
+            showsSegmentIndex: segmentTotal > 0,
+            showsTurnButtons: showsSegmentTurnButtons
+        )
+    }
+
     @ViewBuilder
     private var segmentHeaderRow: some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
@@ -317,34 +360,40 @@ struct SegmentReadingBlock: View, Equatable {
 
             Spacer(minLength: 8)
 
-            if isSummaryInProgress {
-                HStack(spacing: 6) {
-                    ProgressView()
-                        .controlSize(.mini)
-                    progressStatusView
-                        .font(.system(size: LuminaTheme.summaryLabelSize - 1))
-                        .foregroundStyle(LuminaTheme.textSecondary)
-                        .lineLimit(1)
-                }
+            ForEach(trailingHeaderItems, id: \.self) { item in
+                trailingHeaderItemView(item)
             }
+        }
+    }
 
-            if showsRegenerateSummaryButton {
-                regenerateSummaryButton
+    @ViewBuilder
+    private func trailingHeaderItemView(_ item: SegmentHeaderTrailingItem) -> some View {
+        switch item {
+        case .progress:
+            HStack(spacing: 6) {
+                ProgressView()
+                    .controlSize(.mini)
+                progressStatusView
+                    .font(.system(size: LuminaTheme.summaryLabelSize - 1))
+                    .foregroundStyle(LuminaTheme.textSecondary)
+                    .lineLimit(1)
             }
-
+        case .regenerateSummary:
+            regenerateSummaryButton
+        case .charCount:
             if let count = effectiveCharCount, count > 0 {
                 Text("约 \(Self.formatCount(count)) 字")
                     .font(.system(size: LuminaTheme.summaryLabelSize - 1))
                     .foregroundStyle(LuminaTheme.textSecondary.opacity(0.85))
                     .textSelection(.enabled)
             }
-
-            if segmentTotal > 0 {
-                Text("段 \(segment.idx + 1)/\(segmentTotal)")
-                    .font(.system(size: LuminaTheme.summaryLabelSize - 1))
-                    .foregroundStyle(LuminaTheme.textSecondary.opacity(0.85))
-                    .textSelection(.enabled)
-            }
+        case .segmentIndex:
+            Text("段 \(segment.idx + 1)/\(segmentTotal)")
+                .font(.system(size: LuminaTheme.summaryLabelSize - 1))
+                .foregroundStyle(LuminaTheme.textSecondary.opacity(0.85))
+                .textSelection(.enabled)
+        case .turnButtons:
+            segmentTurnButtons
         }
     }
 
@@ -416,6 +465,50 @@ struct SegmentReadingBlock: View, Equatable {
             identifier: "lumina.reader.control.regenerateSummary",
             advancedIdentifier: "lumina.reader.control.regenerateAdvancedSummary"
         )
+    }
+
+    private var showsSegmentTurnButtons: Bool {
+        segmentTotal > 1
+    }
+
+    private var segmentTurnButtons: some View {
+        HStack(spacing: 4) {
+            segmentTurnButton(
+                label: "[",
+                help: "上一段（[ / 【）",
+                accessibilityName: "上一段",
+                identifier: "lumina.reader.control.prevSegment",
+                enabled: canGoPrev,
+                action: onPrevSegment
+            )
+            segmentTurnButton(
+                label: "]",
+                help: "下一段（] / 】）",
+                accessibilityName: "下一段",
+                identifier: "lumina.reader.control.nextSegment",
+                enabled: canGoNext,
+                action: onNextSegment
+            )
+        }
+        .fixedSize()
+        .absorbsReaderChromeClicks()
+    }
+
+    private func segmentTurnButton(
+        label: String,
+        help: String,
+        accessibilityName: String,
+        identifier: String,
+        enabled: Bool,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(label, action: action)
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .disabled(!enabled)
+            .help(help)
+            .accessibilityLabel(accessibilityName)
+            .accessibilityIdentifier(identifier)
     }
 
     private func summaryTierButton(
@@ -569,5 +662,7 @@ struct SegmentReadingBlock: View, Equatable {
             && lhs.isSummaryLoading == rhs.isSummaryLoading
             && lhs.summaryProgressMessage == rhs.summaryProgressMessage
             && lhs.runningMetrics == rhs.runningMetrics
+            && lhs.canGoPrev == rhs.canGoPrev
+            && lhs.canGoNext == rhs.canGoNext
     }
 }

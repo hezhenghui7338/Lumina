@@ -37,6 +37,11 @@ logger = logging.getLogger(__name__)
 # start_book must not wipe these; only regenerate/retry may overwrite ready summaries.
 _KEEP_SUMMARY_STATUSES = frozenset({"ready", "done"})
 
+# Book index rollup is a slow serial LLM grind that only "chat with whole book"
+# needs. It runs on its own single-slot channel so it can never take the workers
+# (or the LLM slots) that segment summarization needs.
+ROLLUP_WORKER_TARGET = 1
+
 
 class JobKind(str, Enum):
     SUMMARIZE = "summarize"
@@ -90,9 +95,13 @@ class JobQueue:
         self.prompts = prompts or load_prompts_config()
         self._task_registry = task_registry
         self._queue: asyncio.PriorityQueue[JobItem] = asyncio.PriorityQueue()
+        # Rollup gets its own queue so a long book index can never starve summarize.
+        self._rollup_queue: asyncio.PriorityQueue[JobItem] = asyncio.PriorityQueue()
         self._paused = asyncio.Event()
         self._paused.set()
         self._worker_count = 0
+        self._workers: list[asyncio.Task[None]] = []
+        self._rollup_workers: list[asyncio.Task[None]] = []
         self._event_callback: EventCallback | None = None
         self._books_repo = BookRepo(conn)
         self._segments_repo = SegmentRepo(conn)
@@ -160,6 +169,11 @@ class JobQueue:
             for item in self._active.values()
         )
 
+    def _active_rollup_count(self) -> int:
+        return sum(
+            1 for item in self._active.values() if item.kind == JobKind.ROLLUP
+        )
+
     def _has_scheduled_summarize_job(self, book_id: str) -> bool:
         return self._has_active_summarize_job(book_id) or self._has_queued_summarize_jobs(book_id)
 
@@ -174,10 +188,13 @@ class JobQueue:
     ) -> str:
         if total <= 0 or ready >= total:
             return "summarized"
-        if self.summarize_active_for_book(book_id) is not None:
-            return "running"
         if self.is_user_paused(book_id):
             return "paused"
+        if (
+            self.summarize_active_for_book(book_id) is not None
+            or self._has_active_summarize_job(book_id)
+        ):
+            return "running"
         if self._has_queued_summarize_jobs(book_id):
             return "queued"
         return "idle"
@@ -218,10 +235,56 @@ class JobQueue:
             state = self.summarize_state_for_book(book_id, ready=ready, total=total)
             if state in counts:
                 counts[state] += 1
+        indexing = self._active_rollup_count()
+        counts["indexing"] = indexing
         return {
             "counts": counts,
+            "indexing_queued": self._rollup_queue.qsize(),
+            "stalled_reason": self._stalled_reason(
+                running=counts["running"], queued=counts["queued"], indexing=indexing
+            ),
             "user_paused_all": self._user_paused_all,
         }
+
+    def _stalled_reason(
+        self, *, running: int, queued: int, indexing: int
+    ) -> str | None:
+        """Explain why summarize work is queued while nothing is in progress.
+
+        The UI must never render a bare 「0 进行中 · n 排队」 — that reads as a
+        hang even when the machine is busy on something else.
+        """
+        if queued <= 0 or running > 0:
+            return None
+        if not self._paused.is_set():
+            return "chat_preempt"
+        if indexing > 0:
+            return "indexing"
+        if not [task for task in self._workers if not task.done()]:
+            return "no_worker"
+        if self._llm_slots_busy():
+            return "llm_slots_busy"
+        return "starting"
+
+    def _llm_slots_busy(self) -> bool:
+        """True when every LLM slot for the summarize profile is taken."""
+        try:
+            resources = self.router.models.resources_for_profile("summarize")
+            runtime = {
+                str(row.get("resource_id")): row
+                for row in self.router.resource_runtime()
+            }
+        except Exception:  # pragma: no cover - mock routers may not expose a gate
+            return False
+        if not resources:
+            return False
+        for resource in resources:
+            row = runtime.get(resource.id)
+            if row is None:
+                continue
+            if int(row.get("available", 0)) > 0:
+                return False
+        return True
 
     def _set_active_summarize(
         self,
@@ -298,10 +361,34 @@ class JobQueue:
 
     def ensure_workers(self) -> None:
         """Start enough workers to match summarize profile concurrency."""
+        self._workers = [task for task in self._workers if not task.done()]
+        self._worker_count = len(self._workers)
         target = self._worker_target()
         while self._worker_count < target:
-            asyncio.create_task(self._worker())
+            self._workers.append(
+                asyncio.create_task(self._worker(self._queue))
+            )
             self._worker_count += 1
+        self._ensure_rollup_workers()
+
+    def _ensure_rollup_workers(self) -> None:
+        """Spawn the rollup worker only when there is actually index work."""
+        self._rollup_workers = [
+            task for task in self._rollup_workers if not task.done()
+        ]
+        if not self._has_pending_rollup_work():
+            return
+        while len(self._rollup_workers) < ROLLUP_WORKER_TARGET:
+            self._rollup_workers.append(
+                asyncio.create_task(self._worker(self._rollup_queue))
+            )
+
+    def _has_pending_rollup_work(self) -> bool:
+        if self._rollup_queue.qsize() > 0:
+            return True
+        return any(
+            item.kind == JobKind.ROLLUP for item in self._paused_backlog.values()
+        )
 
     def _worker_target(self) -> int:
         from lumina_core.config import effective_concurrency
@@ -354,11 +441,17 @@ class JobQueue:
         ]
         return {
             "queue_depth": self._queue.qsize(),
+            "rollup_queue_depth": self._rollup_queue.qsize(),
             "active_jobs": active_jobs,
+            "active_rollup_count": self._active_rollup_count(),
             "paused_backlog_depth": len(self._paused_backlog),
             "paused_backlog_jobs": paused_backlog_jobs,
             "worker_count": self._worker_count,
             "worker_target": self._worker_target(),
+            "rollup_worker_count": len(
+                [task for task in self._rollup_workers if not task.done()]
+            ),
+            "rollup_worker_target": ROLLUP_WORKER_TARGET,
             "chat_preempted": not self._paused.is_set(),
             "user_paused_all": self._user_paused_all,
             "user_paused_books": sorted(self._user_paused_books),
@@ -449,8 +542,13 @@ class JobQueue:
             or self._desired_summary_tier.get(book_id, "normal"),
         )
         key = _job_key(job)
-        if self._is_job_scheduled(key):
+        if key in self._active or key in self._queued_keys:
             return
+        if key in self._paused_backlog:
+            # A stale backlog entry on an un-paused book would silently block this
+            # book from ever being summarized again; reclaim it instead.
+            del self._paused_backlog[key]
+            self._cancelled.discard(key)
         await self._queue.put(job)
         self._queued_keys.add(key)
         self._register_job_task(job)
@@ -532,7 +630,7 @@ class JobQueue:
         key = _job_key(job)
         if self._is_job_scheduled(key):
             return
-        await self._queue.put(job)
+        await self._rollup_queue.put(job)
         self._queued_keys.add(key)
         self._register_job_task(job)
         self.ensure_workers()
@@ -568,15 +666,40 @@ class JobQueue:
                 return
 
     async def recover_on_startup(self) -> None:
-        """Reset orphan running segments; resume prefetch only if auto-start is on."""
+        """Reset orphan running segments; resume prefetch only if auto-start is on.
+
+        Startup deliberately does not enqueue any rollup. Rebuilding every book
+        index here used to flood the queue with dozens of slow serial LLM jobs
+        and starve segment summarization for hours.
+        """
         for book in self._books_repo.list_books():
-            marked = self._books_repo.maybe_mark_summarized(book["id"])
+            self._books_repo.maybe_mark_summarized(book["id"])
             await self._recover_stale_running(book["id"])
+            await self._recover_stale_index(book)
             if self.auto_start_summary:
                 await self.start_book(book["id"], summary_tier="normal")
-            elif marked or (book.get("status") == "summarized"):
-                await self.enqueue_rollup(book["id"])
         self.ensure_workers()
+
+    async def _recover_stale_index(self, book: dict[str, Any]) -> None:
+        """Reset a 'building' index with no active rollup (crash/restart orphan).
+
+        Left alone, the ghost status makes every restart re-enqueue the rollup.
+        """
+        if book.get("index_status") != "building":
+            return
+        book_id = book["id"]
+        if any(
+            item.book_id == book_id and item.kind == JobKind.ROLLUP
+            for item in self._active.values()
+        ):
+            return
+        await self._run_db(
+            lambda: self._books_repo.update(book_id, index_status="idle")
+        )
+        await self.emit(
+            book_id,
+            {"type": "book_index_progress", "index_status": "idle"},
+        )
 
     async def enqueue_book_regenerate(
         self, book_id: str, *, summary_tier: str = "normal"
@@ -684,7 +807,6 @@ class JobQueue:
         self._apply_tier_to_incomplete_segments(book_id, summary_tier)
         await self._reset_segments_for_user_resume(book_id)
         await self.enqueue_book_prefetch(book_id, summary_tier=summary_tier)
-        await self.enqueue_rollup(book_id)
         await self.emit(
             book_id,
             {
@@ -702,14 +824,21 @@ class JobQueue:
         for book in books:
             await self.start_book(book["id"], summary_tier=summary_tier)
 
-    async def _suspend_jobs(self, match: Callable[[JobItem], bool]) -> None:
+    def _queue_for(self, item: JobItem) -> asyncio.PriorityQueue[JobItem]:
+        return self._rollup_queue if item.kind == JobKind.ROLLUP else self._queue
+
+    async def _drain_queue(
+        self,
+        queue: asyncio.PriorityQueue[JobItem],
+        match: Callable[[JobItem], bool],
+    ) -> None:
         kept: list[JobItem] = []
         while True:
             try:
-                item = self._queue.get_nowait()
+                item = queue.get_nowait()
             except asyncio.QueueEmpty:
                 break
-            self._queue.task_done()
+            queue.task_done()
             key = _job_key(item)
             self._queued_keys.discard(key)
             if match(item):
@@ -719,9 +848,12 @@ class JobQueue:
             else:
                 kept.append(item)
         for item in kept:
-            key = _job_key(item)
-            await self._queue.put(item)
-            self._queued_keys.add(key)
+            await queue.put(item)
+            self._queued_keys.add(_job_key(item))
+
+    async def _suspend_jobs(self, match: Callable[[JobItem], bool]) -> None:
+        await self._drain_queue(self._queue, match)
+        await self._drain_queue(self._rollup_queue, match)
 
         for key, item in list(self._active.items()):
             if match(item):
@@ -739,7 +871,7 @@ class JobQueue:
         for key, item in to_restore:
             del self._paused_backlog[key]
             self._cancelled.discard(key)
-            await self._queue.put(item)
+            await self._queue_for(item).put(item)
             self._queued_keys.add(key)
             if self._task_registry:
                 self._task_registry.requeue_by_job_key(key)
@@ -819,10 +951,10 @@ class JobQueue:
             != item.summary_tier
         )
 
-    async def _worker(self) -> None:
+    async def _worker(self, queue: asyncio.PriorityQueue[JobItem]) -> None:
         while True:
             await self._paused.wait()
-            item = await self._queue.get()
+            item = await queue.get()
             key = _job_key(item)
             self._queued_keys.discard(key)
             try:
@@ -875,7 +1007,7 @@ class JobQueue:
                 if self._task_registry:
                     self._task_registry.fail_by_job_key(key, "worker exception")
             finally:
-                self._queue.task_done()
+                queue.task_done()
 
     def _load_summarize_inputs(
         self, book_id: str, segment_idx: int
@@ -985,6 +1117,7 @@ class JobQueue:
                 },
             )
 
+        await _mark_running()
         job_timeout = summarize_job_timeout_seconds(self.router, self.prompts)
         try:
             async def _on_progress(payload: dict[str, Any]) -> None:
@@ -1045,7 +1178,7 @@ class JobQueue:
             provider = self.router.last_provider or "unknown"
             model = self.router.last_model or ""
             resource_id = self.router.last_resource_id or provider
-            summarized = await self._run_db(
+            await self._run_db(
                 lambda: self._persist_ready_summary(
                     book_id=item.book_id,
                     segment_id=seg["id"],
@@ -1084,8 +1217,6 @@ class JobQueue:
                     duration_s=summary_duration_s,
                 )
             await self.enqueue_translate(item.book_id, seg["id"], item.segment_idx)
-            if summarized:
-                await self.enqueue_rollup(item.book_id)
             agent_log(
                 hypothesis_id="E",
                 location="queue.py:_run_summarize:success",

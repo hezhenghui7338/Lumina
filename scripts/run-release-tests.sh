@@ -12,6 +12,11 @@ cd "$CORE_PKG"
 uv sync --extra dev --extra release
 
 echo "==> Release tests (mock only, parallel)…"
+cpus="$(getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 8)"
+workers="$cpus"
+if [ "$workers" -gt 8 ]; then
+  workers=8
+fi
 uv run pytest \
   -m "not live and not live_chunk and not release_live and not perf" \
-  -n auto --dist loadscope -q
+  -n "$workers" --dist loadscope --max-worker-restart=0 -q

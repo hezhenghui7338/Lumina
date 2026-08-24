@@ -100,17 +100,15 @@ def _persist_ingest_sync(
         books_repo = BookRepo(conn)
         if not books_repo.get(book_id):
             return
-        books_repo.update(
+        SegmentRepo(conn).finalize_ingest(
             book_id,
+            segments,
             title=title_from_path(src, metadata),
             author=author_from_metadata(metadata),
             language=detected_language,
             target_language=target_language,
-            segment_count=len(segments),
-            status="unread",
             metadata_json=ingest_meta,
         )
-        SegmentRepo(conn).insert_many(segments)
         book_row = books_repo.get(book_id)
         if book_row:
             index_book(conn, book_row)

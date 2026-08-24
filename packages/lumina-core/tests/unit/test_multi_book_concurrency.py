@@ -99,19 +99,13 @@ async def test_multi_book_summarize_respects_ollama_concurrency(conn):
         await q.enqueue_book_prefetch(book_id)
 
     for _ in range(120):
-        all_ready = True
-        for book_id in ("book-a", "book-b", "book-c"):
-            segs = SegmentRepo(conn).list_for_book(book_id)
-            if not segs or not all(s["summary_status"] == "ready" for s in segs):
-                all_ready = False
-                break
+        all_ready = all(
+            (segs := SegmentRepo(conn).list_for_book(book_id))
+            and all(s["summary_status"] == "ready" for s in segs)
+            for book_id in ("book-a", "book-b", "book-c")
+        )
         if all_ready:
-            indexes_ready = all(
-                (BookRepo(conn).get(bid) or {}).get("index_status") == "ready"
-                for bid in ("book-a", "book-b", "book-c")
-            )
-            if indexes_ready:
-                break
+            break
         await asyncio.sleep(0.05)
     else:
         statuses = {
@@ -119,6 +113,24 @@ async def test_multi_book_summarize_respects_ollama_concurrency(conn):
             for bid in ("book-a", "book-b", "book-c")
         }
         pytest.fail(f"segments not ready: {statuses}")
+
+    # Book index is opt-in; nothing queues it automatically.
+    for book_id in ("book-a", "book-b", "book-c"):
+        await q.enqueue_rollup(book_id)
+
+    for _ in range(120):
+        if all(
+            (BookRepo(conn).get(bid) or {}).get("index_status") == "ready"
+            for bid in ("book-a", "book-b", "book-c")
+        ):
+            break
+        await asyncio.sleep(0.05)
+    else:
+        statuses = {
+            bid: (BookRepo(conn).get(bid) or {}).get("index_status")
+            for bid in ("book-a", "book-b", "book-c")
+        }
+        pytest.fail(f"book index not ready: {statuses}")
 
     assert peak <= 1
     runtime = router.gate.snapshot()

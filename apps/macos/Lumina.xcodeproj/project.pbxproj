@@ -67,7 +67,9 @@
 		A1000281 /* SummaryProgressBanner.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000280 /* SummaryProgressBanner.swift */; };
 		A1000283 /* SelectableTextView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000282 /* SelectableTextView.swift */; };
 		A1000285 /* ReaderSegmentListGeometry.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000284 /* ReaderSegmentListGeometry.swift */; };
+		A1000411 /* ReaderChromeClickPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000410 /* ReaderChromeClickPolicy.swift */; };
 		A1000287 /* ReaderSegmentListGeometryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000286 /* ReaderSegmentListGeometryTests.swift */; };
+		A1000413 /* ReaderChromeClickPolicyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000412 /* ReaderChromeClickPolicyTests.swift */; };
 		A1000289 /* PromptsSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000288 /* PromptsSettingsView.swift */; };
 		A1000291 /* LibrarySelectionToolbar.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000290 /* LibrarySelectionToolbar.swift */; };
 		A1000293 /* LibrarySidebarVisibilityPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000292 /* LibrarySidebarVisibilityPolicy.swift */; };
@@ -79,8 +81,10 @@
 		A1000324 /* LibraryChromeActionPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000314 /* LibraryChromeActionPolicy.swift */; };
 		A1000325 /* LibraryChromeActionPolicyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000315 /* LibraryChromeActionPolicyTests.swift */; };
 		A1000381 /* SegmentBoundaryEditor.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000380 /* SegmentBoundaryEditor.swift */; };
+		A1000395 /* ResegmentBookSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000394 /* ResegmentBookSheet.swift */; };
 		A1000391 /* SummarizeActivityChip.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000390 /* SummarizeActivityChip.swift */; };
 		A1000393 /* SummarizeActivityChipTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000392 /* SummarizeActivityChipTests.swift */; };
+		A1000398 /* SegmentHeaderLayoutPolicyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000399 /* SegmentHeaderLayoutPolicyTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -147,7 +151,9 @@
 		A1000280 /* SummaryProgressBanner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SummaryProgressBanner.swift; sourceTree = "<group>"; };
 		A1000282 /* SelectableTextView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SelectableTextView.swift; sourceTree = "<group>"; };
 		A1000284 /* ReaderSegmentListGeometry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderSegmentListGeometry.swift; sourceTree = "<group>"; };
+		A1000410 /* ReaderChromeClickPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderChromeClickPolicy.swift; sourceTree = "<group>"; };
 		A1000286 /* ReaderSegmentListGeometryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderSegmentListGeometryTests.swift; sourceTree = "<group>"; };
+		A1000412 /* ReaderChromeClickPolicyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderChromeClickPolicyTests.swift; sourceTree = "<group>"; };
 		A1000288 /* PromptsSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PromptsSettingsView.swift; sourceTree = "<group>"; };
 		A1000290 /* LibrarySelectionToolbar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibrarySelectionToolbar.swift; sourceTree = "<group>"; };
 		A1000292 /* LibrarySidebarVisibilityPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibrarySidebarVisibilityPolicy.swift; sourceTree = "<group>"; };
@@ -159,8 +165,10 @@
 		A1000314 /* LibraryChromeActionPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryChromeActionPolicy.swift; sourceTree = "<group>"; };
 		A1000315 /* LibraryChromeActionPolicyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryChromeActionPolicyTests.swift; sourceTree = "<group>"; };
 		A1000380 /* SegmentBoundaryEditor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SegmentBoundaryEditor.swift; sourceTree = "<group>"; };
+		A1000394 /* ResegmentBookSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ResegmentBookSheet.swift; sourceTree = "<group>"; };
 		A1000390 /* SummarizeActivityChip.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SummarizeActivityChip.swift; sourceTree = "<group>"; };
 		A1000392 /* SummarizeActivityChipTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SummarizeActivityChipTests.swift; sourceTree = "<group>"; };
+		A1000399 /* SegmentHeaderLayoutPolicyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SegmentHeaderLayoutPolicyTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -254,12 +262,14 @@
 				A1000380 /* SegmentBoundaryEditor.swift */,
 				A1000274 /* SegmentSidebarModels.swift */,
 				A1000284 /* ReaderSegmentListGeometry.swift */,
+				A1000410 /* ReaderChromeClickPolicy.swift */,
 				A1000278 /* SegmentSidebarView.swift */,
 				A1000273 /* SummaryMetricsFormatter.swift */,
 				A1000296 /* ChatMetricsFormatter.swift */,
 				A1000280 /* SummaryProgressBanner.swift */,
 				A1000212 /* NotesPanel.swift */,
 				A1000213 /* ExportSheet.swift */,
+				A1000394 /* ResegmentBookSheet.swift */,
 			);
 			path = Reader;
 			sourceTree = "<group>";
@@ -379,9 +389,11 @@
 				A1000251 /* SegmentReadyEventTests.swift */,
 				A1000276 /* SegmentSidebarTests.swift */,
 				A1000286 /* ReaderSegmentListGeometryTests.swift */,
+				A1000412 /* ReaderChromeClickPolicyTests.swift */,
 				A1000294 /* LibrarySidebarVisibilityPolicyTests.swift */,
 				A1000315 /* LibraryChromeActionPolicyTests.swift */,
 				A1000392 /* SummarizeActivityChipTests.swift */,
+				A1000399 /* SegmentHeaderLayoutPolicyTests.swift */,
 			);
 			path = Unit;
 			sourceTree = "<group>";
@@ -535,6 +547,7 @@
 				A1000381 /* SegmentBoundaryEditor.swift in Sources */,
 				A1000275 /* SegmentSidebarModels.swift in Sources */,
 				A1000285 /* ReaderSegmentListGeometry.swift in Sources */,
+				A1000411 /* ReaderChromeClickPolicy.swift in Sources */,
 				A1000279 /* SegmentSidebarView.swift in Sources */,
 				A1000263 /* SummaryMetricsFormatter.swift in Sources */,
 				A1000297 /* ChatMetricsFormatter.swift in Sources */,
@@ -576,6 +589,7 @@
 				A1000324 /* LibraryChromeActionPolicy.swift in Sources */,
 				A1000391 /* SummarizeActivityChip.swift in Sources */,
 				A1000113 /* ExportSheet.swift in Sources */,
+				A1000395 /* ResegmentBookSheet.swift in Sources */,
 				A1000114 /* OnboardingView.swift in Sources */,
 				A1000115 /* OllamaSetupHelper.swift in Sources */,
 			);
@@ -594,9 +608,11 @@
 				A1000156 /* SegmentReadyEventTests.swift in Sources */,
 				A1000277 /* SegmentSidebarTests.swift in Sources */,
 				A1000287 /* ReaderSegmentListGeometryTests.swift in Sources */,
+				A1000413 /* ReaderChromeClickPolicyTests.swift in Sources */,
 				A1000295 /* LibrarySidebarVisibilityPolicyTests.swift in Sources */,
 				A1000325 /* LibraryChromeActionPolicyTests.swift in Sources */,
 				A1000393 /* SummarizeActivityChipTests.swift in Sources */,
+				A1000398 /* SegmentHeaderLayoutPolicyTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -659,7 +675,7 @@
 				CODE_SIGN_IDENTITY = "-";
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 0.9.0;
+				CURRENT_PROJECT_VERSION = 0.10.0;
 				DEVELOPMENT_TEAM = "";
 				ENABLE_APP_SANDBOX = NO;
 				ENABLE_HARDENED_RUNTIME = NO;
@@ -670,7 +686,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 0.9.0;
+				MARKETING_VERSION = 0.10.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.lumina.app;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
@@ -685,7 +701,7 @@
 				CODE_SIGN_IDENTITY = "-";
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 0.9.0;
+				CURRENT_PROJECT_VERSION = 0.10.0;
 				DEVELOPMENT_TEAM = "";
 				ENABLE_APP_SANDBOX = NO;
 				ENABLE_HARDENED_RUNTIME = NO;
@@ -696,7 +712,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 0.9.0;
+				MARKETING_VERSION = 0.10.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.lumina.app;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
@@ -709,11 +725,11 @@
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 0.9.0;
+				CURRENT_PROJECT_VERSION = 0.10.0;
 				DEVELOPMENT_TEAM = "";
 				GENERATE_INFOPLIST_FILE = YES;
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
-				MARKETING_VERSION = 0.9.0;
+				MARKETING_VERSION = 0.10.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.lumina.app.tests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = NO;
@@ -727,11 +743,11 @@
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 0.9.0;
+				CURRENT_PROJECT_VERSION = 0.10.0;
 				DEVELOPMENT_TEAM = "";
 				GENERATE_INFOPLIST_FILE = YES;
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
-				MARKETING_VERSION = 0.9.0;
+				MARKETING_VERSION = 0.10.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.lumina.app.tests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = NO;

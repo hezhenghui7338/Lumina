@@ -43,4 +43,37 @@ final class LibraryChromeActionPolicyTests: XCTestCase {
         XCTAssertFalse(recents.contains(.bookshelf))
         XCTAssertEqual(reader.intersection(recents), [])
     }
+
+    func testLibraryContextMenu_alwaysOffersResegment() {
+        let ready = BookSummary(
+            id: "b1", title: "Ready", status: "reading", segment_count: 4
+        )
+        XCTAssertEqual(
+            LibraryBookContextMenuPolicy.actions(for: ready),
+            [.favorite, .reclassify, .resegment, .exportMarkdown, .delete]
+        )
+        XCTAssertTrue(LibraryBookContextMenuPolicy.isEnabled(.resegment, for: ready))
+
+        let summarizing = BookSummary(
+            id: "b2",
+            title: "Summarizing",
+            status: "reading",
+            segment_count: 4,
+            summary_ready_count: 1,
+            summary_total_count: 4,
+            summarize_state: "running"
+        )
+        XCTAssertTrue(
+            LibraryBookContextMenuPolicy.actions(for: summarizing).contains(.resegment)
+        )
+        XCTAssertTrue(LibraryBookContextMenuPolicy.isEnabled(.resegment, for: summarizing))
+
+        let processing = BookSummary(
+            id: "b3", title: "Busy", status: "processing", segment_count: 4
+        )
+        XCTAssertTrue(
+            LibraryBookContextMenuPolicy.actions(for: processing).contains(.resegment)
+        )
+        XCTAssertFalse(LibraryBookContextMenuPolicy.isEnabled(.resegment, for: processing))
+    }
 }

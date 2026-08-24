@@ -94,6 +94,7 @@ final class CoreClientDecodingTests: XCTestCase {
         book.current_segment_index = 9
         XCTAssertEqual(book.readingCurrent, 10)
         XCTAssertEqual(book.readingStatusLabel, "已读完")
+        XCTAssertEqual(book.readingProgressBucket, .finished)
 
         book.current_segment_index = 2
         XCTAssertEqual(book.readingStatusLabel, "在读 · 3/10 段")
@@ -171,6 +172,38 @@ final class CoreClientDecodingTests: XCTestCase {
         XCTAssertEqual(resp.books[0].chunk_target_chars, 2_500)
         XCTAssertEqual(resp.books[0].chunker_version, "5")
         XCTAssertEqual(resp.books[0].processing_kind, "resegment")
+    }
+
+    func testBookSummary_canResegmentRequiresReadyBook() {
+        let ready = BookSummary(
+            id: "b1", title: "Ready", status: "reading", segment_count: 7
+        )
+        XCTAssertTrue(ready.canResegment)
+        XCTAssertTrue(
+            LibraryBookContextMenuPolicy.actions(for: ready).contains(.resegment)
+        )
+        XCTAssertTrue(LibraryBookContextMenuPolicy.isEnabled(.resegment, for: ready))
+
+        let processing = BookSummary(
+            id: "b2", title: "Busy", status: "processing", segment_count: 7,
+            processing_kind: "resegment"
+        )
+        XCTAssertFalse(processing.canResegment)
+        XCTAssertTrue(
+            LibraryBookContextMenuPolicy.actions(for: processing).contains(.resegment)
+        )
+        XCTAssertFalse(LibraryBookContextMenuPolicy.isEnabled(.resegment, for: processing))
+
+        let failed = BookSummary(
+            id: "b3", title: "Fail", status: "error", segment_count: 0
+        )
+        XCTAssertFalse(failed.canResegment)
+        XCTAssertFalse(LibraryBookContextMenuPolicy.isEnabled(.resegment, for: failed))
+
+        let unsegmented = BookSummary(
+            id: "b4", title: "Empty", status: "unread", segment_count: 0
+        )
+        XCTAssertFalse(unsegmented.canResegment)
     }
 
     func testBookSummary_errorStatusIncludesIngestError() throws {

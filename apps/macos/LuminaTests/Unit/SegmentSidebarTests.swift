@@ -196,6 +196,52 @@ final class ReaderViewModelSidebarTests: XCTestCase {
         XCTAssertEqual(vm.activeSummarizeLabel(), "段 1 · 摘要生成中…")
     }
 
+    func testSummarizeActivityLabel_runningAndQueued() {
+        let vm = ReaderViewModel()
+        vm.summarizeState = "running"
+        vm.segments = [
+            SegmentRow(
+                id: "s0", idx: 0, label: nil, chapter: nil, summary_status: "ready",
+                summary_json: nil, raw_text: nil, translation: nil, anchor_label: nil,
+                summary_provider: nil, summary_model: nil, summary_tier: nil, char_count: nil,
+                retry_count: nil, summary_duration_s: nil, summary_llm_attempts: nil
+            ),
+            SegmentRow(
+                id: "s1", idx: 1, label: nil, chapter: nil, summary_status: "running",
+                summary_json: nil, raw_text: nil, translation: nil, anchor_label: nil,
+                summary_provider: nil, summary_model: nil, summary_tier: nil, char_count: nil,
+                retry_count: nil, summary_duration_s: nil, summary_llm_attempts: nil
+            ),
+            SegmentRow(
+                id: "s2", idx: 2, label: nil, chapter: nil, summary_status: "pending",
+                summary_json: nil, raw_text: nil, translation: nil, anchor_label: nil,
+                summary_provider: nil, summary_model: nil, summary_tier: nil, char_count: nil,
+                retry_count: nil, summary_duration_s: nil, summary_llm_attempts: nil
+            ),
+        ]
+        XCTAssertEqual(vm.summarizeActivityLabel, "1 进行中 · 1 排队")
+    }
+
+    func testSegmentStatusRunning_promotesQueuedState() {
+        let vm = ReaderViewModel()
+        let core = CoreClient(baseURL: URL(string: "http://127.0.0.1:8765")!)
+        vm.summarizeState = "queued"
+        vm.segments = [
+            SegmentRow(
+                id: "s1", idx: 0, label: nil, chapter: nil, summary_status: "pending",
+                summary_json: nil, raw_text: nil, translation: nil, anchor_label: nil,
+                summary_provider: nil, summary_model: nil, summary_tier: nil, char_count: nil,
+                retry_count: nil, summary_duration_s: nil, summary_llm_attempts: nil
+            )
+        ]
+        vm.handleEvent(
+            ["type": "segment_status", "idx": 0, "status": "running"],
+            core: core
+        )
+        XCTAssertEqual(vm.summarizeState, "running")
+        XCTAssertEqual(vm.summarizeActivityLabel, "1 进行中")
+    }
+
     func testSettingsChunkTargetRange_allows200() {
         for kind in ModelProviderKind.allCases {
             XCTAssertEqual(kind.chunkTargetRange.lowerBound, 200)

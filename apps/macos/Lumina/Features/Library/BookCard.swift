@@ -10,6 +10,7 @@ struct BookCard: View {
     let onOpen: () -> Void
     let onToggleFavorite: () -> Void
     let onReclassify: () -> Void
+    let onResegment: () -> Void
     let onExport: () -> Void
     let onDelete: () -> Void
     var onStartSummarize: ((SummaryTier) -> Void)? = nil
@@ -115,22 +116,16 @@ struct BookCard: View {
 
     @ViewBuilder
     private var contextMenu: some View {
-        Button(book.isFavorite ? "取消收藏" : "收藏", action: onToggleFavorite)
-        Button("重新分类", action: onReclassify)
-        if book.canStartSummarize, let onStartSummarize {
-            Menu("开始摘要") {
-                ForEach(SummaryTier.allCases) { tier in
-                    Button(tier.startMenuLabel) { onStartSummarize(tier) }
-                }
-            }
-        }
-        if book.canStopSummarize, let onStopSummarize {
-            Button("停止摘要", action: onStopSummarize)
-        }
-        Button("导出 Markdown 摘要…", action: onExport)
-            .disabled(book.summaryReady == 0)
-        Divider()
-        Button("删除", role: .destructive, action: onDelete)
+        bookLibraryContextMenu(
+            book: book,
+            onToggleFavorite: onToggleFavorite,
+            onReclassify: onReclassify,
+            onResegment: onResegment,
+            onExport: onExport,
+            onDelete: onDelete,
+            onStartSummarize: onStartSummarize,
+            onStopSummarize: onStopSummarize
+        )
     }
 
     private func handleTap() {

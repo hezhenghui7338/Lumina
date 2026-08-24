@@ -6,19 +6,71 @@ enum ReaderSegmentListGeometry {
     }
 }
 
-/// Maps the visible reading position to persisted progress.
-///
-/// Progress is the segment pinned to the top of the viewport. A trailing spacer
-/// lets the last segment reach that anchor; peeking the last segment at the
-/// bottom of the screen must not mark the book finished.
-enum ReadingProgress {
-    static func saveIndex(visibleIndex: Int, lastIndex: Int?) -> Int {
-        guard let lastIndex else { return max(visibleIndex, 0) }
-        return min(max(visibleIndex, 0), lastIndex)
+/// Toolbar / edge-icon click pins the list. Left-edge hover only peeks.
+struct ReaderSegmentListVisibility: Equatable {
+    var pinned: Bool
+    var peeking: Bool
+
+    var overlayVisible: Bool { peeking && !pinned }
+    var inlineVisible: Bool { pinned }
+    var anyVisible: Bool { overlayVisible || inlineVisible }
+
+    static let hidden = ReaderSegmentListVisibility(pinned: false, peeking: false)
+}
+
+enum ReaderSegmentListPolicy {
+    /// Window toolbar and left-edge icon: persist as an inline sidebar.
+    static func toggleByExplicitClick(
+        _ state: ReaderSegmentListVisibility
+    ) -> ReaderSegmentListVisibility {
+        if state.pinned {
+            return .hidden
+        }
+        return ReaderSegmentListVisibility(pinned: true, peeking: false)
     }
 
-    /// Prefer the locally cached index after a crash/quit if the book was not
-    /// resegmented. Ignore cache when segment count changed.
+    /// Left-edge dwell: overlay peek that retracts when the pointer leaves.
+    static func beginEdgePeek(
+        _ state: ReaderSegmentListVisibility
+    ) -> ReaderSegmentListVisibility {
+        if state.pinned { return state }
+        return ReaderSegmentListVisibility(pinned: false, peeking: true)
+    }
+
+    /// Pointer left the overlay, blank click, or chrome collapse. Does not unpin.
+    static func endPeek(
+        _ state: ReaderSegmentListVisibility
+    ) -> ReaderSegmentListVisibility {
+        var next = state
+        next.peeking = false
+        return next
+    }
+
+    /// Header pin while peeking.
+    static func pin(
+        _: ReaderSegmentListVisibility
+    ) -> ReaderSegmentListVisibility {
+        ReaderSegmentListVisibility(pinned: true, peeking: false)
+    }
+
+    /// Header chevron: dismiss peek or unpin.
+    static func close(
+        _: ReaderSegmentListVisibility
+    ) -> ReaderSegmentListVisibility {
+        .hidden
+    }
+}
+
+/// Reading progress is the segment pinned to the top of the viewport, reported
+/// by SwiftUI's `scrollPosition(id:anchor:.top)`.
+///
+/// There is deliberately no geometry here: deriving the segment from pixel
+/// offsets and LazyVStack frames, while AppKit also nudged the scroll origin,
+/// is what made progress unreliable. Anchoring has exactly one owner (SwiftUI)
+/// and progress has exactly one source (the pinned segment).
+enum ReadingProgress {
+    /// Prefer the locally recorded index unless the book was resegmented since
+    /// it was written, in which case the server index is the safer resume.
     static func restoreIndex(
         serverIndex: Int,
         localIndex: Int?,
@@ -39,185 +91,38 @@ enum ReadingProgress {
         max(viewportHeight - 64, 120)
     }
 
-    static let feedCoordinateSpace = "lumina.reader.feed"
-
-    struct ViewportAnchor: Equatable {
-        var index: Int
-        var offsetY: CGFloat
+    /// Derived 0...1 for progress bars. Labels and persistence use the segment
+    /// index, not this value.
+    static func percent(index: Int, count: Int) -> Double {
+        guard count > 1 else { return 0 }
+        let last = count - 1
+        let idx = min(max(index, 0), last)
+        if idx >= last { return 1 }
+        return min(1, max(0, Double(idx) / Double(count)))
     }
 
-    /// Map the feed Y at the viewport top to a segment. This is the runtime
-    /// source of truth for progress — not SwiftUI `scrollPosition`.
-    ///
-    /// Only a frame that actually contains `visibleTop` counts. Incomplete
-    /// LazyVStack frames must not snap to the first/last reported segment
-    /// (that writes progress back to 0 / "home").
-    static func viewportAnchor(visibleTop: CGFloat, frames: [Int: CGRect]) -> ViewportAnchor? {
-        guard !frames.isEmpty else { return nil }
-        let sorted = frames.sorted { $0.value.minY < $1.value.minY }
-        let slop: CGFloat = 1
-        if let hit = sorted.first(where: {
-            $0.value.minY - slop <= visibleTop && visibleTop < $0.value.maxY + slop
-        }) {
-            return ViewportAnchor(index: hit.key, offsetY: max(0, visibleTop - hit.value.minY))
-        }
-        return nil
+    static func isFinished(index: Int, count: Int) -> Bool {
+        count > 1 && index >= count - 1
     }
 
-    /// Reject a jump to segment 0 unless the viewport really contains it.
-    static func shouldCommitProgress(
-        previousIndex: Int?,
-        nextIndex: Int,
-        hitContained: Bool
-    ) -> Bool {
-        if nextIndex == 0, let previousIndex, previousIndex > 0, !hitContained {
-            return false
-        }
-        return true
-    }
-
-    /// Last-line cache guard: do not let an unconfirmed index 0 overwrite a
-    /// mid-book cache with the same segment count.
-    static func shouldReplaceCachedIndex(
-        cachedIndex: Int?,
-        cachedSegmentCount: Int?,
-        nextIndex: Int,
-        nextSegmentCount: Int,
-        confirmedHit: Bool
-    ) -> Bool {
-        if let cachedSegmentCount, cachedSegmentCount != nextSegmentCount {
-            return true
-        }
-        return shouldCommitProgress(
-            previousIndex: cachedIndex,
-            nextIndex: nextIndex,
-            hitContained: confirmedHit
-        )
-    }
-
-    /// Skip an origin restore attempt when the document is still too short
-    /// (LazyVStack rematerializing from the start). Clamping to 0 would stick
-    /// the reader on the first page.
-    static func shouldApplyRestoredOrigin(targetY: CGFloat, maxY: CGFloat, slop: CGFloat = 8) -> Bool {
-        targetY <= maxY + slop
-    }
-
-    static func restoreOffsetY(
-        localOffsetY: Double?,
-        localSegmentCount: Int?,
-        currentSegmentCount: Int,
-        localContentMode: String? = nil,
-        currentContentMode: String? = nil
-    ) -> CGFloat {
-        guard localSegmentCount == currentSegmentCount, currentSegmentCount > 0 else {
-            return 0
-        }
-        if let localContentMode, let currentContentMode, localContentMode != currentContentMode {
-            return 0
-        }
-        return CGFloat(max(0, localOffsetY ?? 0))
-    }
-
-    /// Feed-space Y of the restored viewport top, or nil until the target frame exists.
-    static func restoredOriginY(
-        index: Int,
-        offsetY: CGFloat,
-        frames: [Int: CGRect]
-    ) -> CGFloat? {
-        guard let frame = frames[index] else { return nil }
-        return frame.minY + max(0, offsetY)
-    }
-
-    static func canApplyRestore(
-        index: Int,
-        offsetY: CGFloat,
-        frames: [Int: CGRect],
-        maxY: CGFloat
-    ) -> Bool {
-        guard let y = restoredOriginY(index: index, offsetY: offsetY, frames: frames) else {
-            return false
-        }
-        return shouldApplyRestoredOrigin(targetY: y, maxY: maxY)
-    }
-
-    /// Height growth of segments fully above the viewport. Used to compensate
-    /// origin once when a skeleton hydrates, without nilling `scrollPosition`.
-    static func heightGrowthAboveVisibleTop(
-        previous: [Int: CGRect],
-        current: [Int: CGRect],
-        visibleTop: CGFloat
-    ) -> CGFloat {
-        var delta: CGFloat = 0
-        for (idx, oldFrame) in previous {
-            guard oldFrame.maxY <= visibleTop + 1 else { continue }
-            guard let newFrame = current[idx] else { continue }
-            delta += newFrame.height - oldFrame.height
-        }
-        return delta
+    static func statusLabel(opened: Bool, index: Int, segmentCount: Int) -> String {
+        guard opened else { return "未读" }
+        guard segmentCount > 0 else { return "在读" }
+        let last = segmentCount - 1
+        let idx = min(max(index, 0), last)
+        if isFinished(index: idx, count: segmentCount) { return "已读完" }
+        return "在读 · \(idx + 1)/\(segmentCount) 段"
     }
 }
 
-/// Exclusive intents for the reader feed. Tracking is the only phase that
-/// persists progress from the viewport; jump is the only command that writes
-/// SwiftUI `scrollPosition` after the initial restore pin.
-enum ReaderScrollPhase: Equatable {
-    case tracking
+/// The reader has two states and no more. While `restoring`, the pinned segment
+/// is whatever SwiftUI has managed to scroll to so far and must not be recorded;
+/// once `reading`, the pinned segment is the progress.
+enum ReaderProgressPhase: Equatable {
     case restoring
-    case jumping
-    case preserving
+    case reading
 
-    var allowsProgressSave: Bool { self == .tracking }
-    var allowsViewportDrivenSelection: Bool { self == .tracking }
-    var cancelsOriginRestore: Bool { self == .jumping }
-}
-
-enum ReaderRestoreStep: Equatable {
-    case waiting
-    case apply(CGFloat)
-    case finished
-}
-
-/// Event-driven restore: wait for the target frame, apply origin once, then stop.
-struct ReaderRestoreAttempt: Equatable {
-    let index: Int
-    let offsetY: CGFloat
-    private(set) var applied = false
-    private(set) var retryUsed = false
-
-    init(index: Int, offsetY: CGFloat) {
-        self.index = index
-        self.offsetY = offsetY
-    }
-
-    var needsOriginAdjust: Bool { offsetY > 1 }
-
-    mutating func step(frames: [Int: CGRect], maxY: CGFloat) -> ReaderRestoreStep {
-        if applied { return .finished }
-        if !needsOriginAdjust {
-            applied = true
-            return .finished
-        }
-        guard let y = ReadingProgress.restoredOriginY(
-            index: index,
-            offsetY: offsetY,
-            frames: frames
-        ) else {
-            return .waiting
-        }
-        if ReadingProgress.shouldApplyRestoredOrigin(targetY: y, maxY: maxY) {
-            return .apply(y)
-        }
-        if retryUsed {
-            applied = true
-            return .finished
-        }
-        retryUsed = true
-        return .waiting
-    }
-
-    mutating func markApplied() {
-        applied = true
-    }
+    var recordsProgress: Bool { self == .reading }
 }
 
 enum ReaderKeyboardScroll {
@@ -268,5 +173,15 @@ enum ReaderSegmentPanelHeight {
     /// Ignore sub-point height jitter from NSTextView layout so @State does not loop.
     static func shouldCommitMeasurement(current: CGFloat, incoming: CGFloat) -> Bool {
         incoming > 0 && abs(incoming - current) >= measurementEpsilon
+    }
+}
+
+/// Prev/next segment by sorted idx, used by [ ] buttons and keyboard.
+enum SegmentTurnNavigation {
+    static func targetIdx(current: Int, delta: Int, sortedIdxs: [Int]) -> Int? {
+        guard let pos = sortedIdxs.firstIndex(of: current) else { return nil }
+        let newPos = pos + delta
+        guard sortedIdxs.indices.contains(newPos) else { return nil }
+        return sortedIdxs[newPos]
     }
 }
