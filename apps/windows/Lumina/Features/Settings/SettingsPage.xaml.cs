@@ -380,5 +380,5 @@ public sealed partial class SettingsPage : Page
             OllamaModelBox.Text?.Trim(),
             string.IsNullOrWhiteSpace(OllamaUrlBox.Text) ? null : OllamaUrlBox.Text.Trim(),
             null),
-    }
+    };
 }
