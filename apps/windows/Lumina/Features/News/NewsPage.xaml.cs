@@ -1,5 +1,6 @@
 using System.Collections.ObjectModel;
 using System.Linq;
+using Lumina.Design;
 using Lumina.Services;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
@@ -21,11 +22,22 @@ public sealed partial class NewsPage : Page
     {
         InitializeComponent();
         ChatList.ItemsSource = _chatLines;
+        ApplyReadingFont();
+    }
+
+    private void ApplyReadingFont()
+    {
+        var size = ReadingFontScale.Size(LocalPrefs.ReaderFontScale);
+        SummaryText.FontSize = size;
+        KeyPointsText.FontSize = size - 1;
+        WatchOutsText.FontSize = size - 1;
+        BodyText.FontSize = size - 1;
     }
 
     protected override void OnNavigatedTo(NavigationEventArgs e)
     {
         base.OnNavigatedTo(e);
+        ApplyReadingFont();
         _ = LoadBriefAsync();
     }
 
@@ -83,6 +95,8 @@ public sealed partial class NewsPage : Page
         ArticleTitle.Text = card.Title;
         ArticleMeta.Text = $"{card.DisplaySource} · {card.PublishedAt}";
         SummaryText.Text = card.Detail ?? card.OneLiner ?? card.Excerpt ?? "点击「精读」生成摘要";
+        KeyPointsText.Text = "";
+        WatchOutsText.Text = "";
         BodyText.Text = "";
         if (Uri.TryCreate(card.Url, UriKind.Absolute, out var u))
             OpenUrlBtn.NavigateUri = u;
@@ -166,9 +180,7 @@ public sealed partial class NewsPage : Page
         try
         {
             var result = await App.Core.ReadNewsArticleAsync(_selected.Id);
-            SummaryText.Text = string.IsNullOrWhiteSpace(result.SummaryMarkdown)
-                ? (result.Error.Length > 0 ? result.Error : "（无摘要）")
-                : result.SummaryMarkdown;
+            RenderNewsSummary(result.SummaryMarkdown, result.Error);
             BodyText.Text = result.BodyText ?? "";
             if (result.Warnings.Count > 0)
                 ArticleMeta.Text += " · " + string.Join("；", result.Warnings);
@@ -176,11 +188,41 @@ public sealed partial class NewsPage : Page
         catch (Exception ex)
         {
             SummaryText.Text = ex.Message;
+            KeyPointsText.Text = "";
+            WatchOutsText.Text = "";
         }
         finally
         {
             ReadRing.IsActive = false;
         }
+    }
+
+    private void RenderNewsSummary(string? markdown, string error)
+    {
+        if (string.IsNullOrWhiteSpace(markdown))
+        {
+            SummaryText.Text = error.Length > 0 ? error : "（无摘要）";
+            KeyPointsText.Text = "";
+            WatchOutsText.Text = "";
+            return;
+        }
+        var parsed = SummaryJsonParser.Parse(markdown);
+        if (!string.IsNullOrWhiteSpace(parsed.ThreeSentence)
+            || parsed.KeyPoints.Count > 0
+            || parsed.WatchOuts.Count > 0)
+        {
+            SummaryText.Text = parsed.ThreeSentence ?? "";
+            KeyPointsText.Text = parsed.KeyPoints.Count == 0
+                ? ""
+                : "要点\n" + string.Join("\n", parsed.KeyPoints.Select(p => "• " + p));
+            WatchOutsText.Text = parsed.WatchOuts.Count == 0
+                ? ""
+                : "需要注意\n" + string.Join("\n", parsed.WatchOuts.Select(p => "• " + p));
+            return;
+        }
+        SummaryText.Text = parsed.RawFallback ?? markdown;
+        KeyPointsText.Text = "";
+        WatchOutsText.Text = "";
     }
 
     private async void OpenUrl_Click(object sender, RoutedEventArgs e)

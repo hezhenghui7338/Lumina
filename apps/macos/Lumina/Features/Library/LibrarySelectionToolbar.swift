@@ -15,6 +15,9 @@ struct LibrarySelectionToolbar: View {
     var onSelectAll: () -> Void
     var onDone: () -> Void
 
+    @State private var showAdvancedStartConfirm = false
+    @State private var showSummarizePopover = false
+
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             headerRow
@@ -23,6 +26,19 @@ struct LibrarySelectionToolbar: View {
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
         .background(LuminaTheme.accentMuted.opacity(0.35))
+        .confirmationDialog(
+            "高级摘要",
+            isPresented: $showAdvancedStartConfirm,
+            titleVisibility: .visible
+        ) {
+            Button("开始高级摘要") {
+                guard startableCount > 0, !summarizeActionInFlight else { return }
+                onStartSummarize(.advanced)
+            }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("将用高级模型补齐尚未摘要的段落，消耗更多计算与 API。已有摘要不会被覆盖。")
+        }
     }
 
     private var headerRow: some View {
@@ -47,27 +63,45 @@ struct LibrarySelectionToolbar: View {
     }
 
     private var summarizeMenu: some View {
-        Menu {
-            Menu("开始摘要 (\(startableCount))") {
-                ForEach(SummaryTier.allCases) { tier in
-                    Button(tier.startMenuLabel) { onStartSummarize(tier) }
-                }
-            }
-            .disabled(startableCount == 0 || summarizeActionInFlight)
-            Button("停止摘要 (\(stoppableCount))") {
-                onStopSummarize()
-            }
-            .disabled(stoppableCount == 0 || summarizeActionInFlight)
+        Button {
+            showSummarizePopover.toggle()
         } label: {
             Text("摘要")
                 .frame(maxWidth: .infinity)
         }
-        .menuStyle(.borderlessButton)
         .buttonStyle(.bordered)
         .controlSize(.small)
         .font(.caption)
         .frame(maxWidth: .infinity)
-        .help("批量开始或停止摘要")
+        .disabled(summarizeActionInFlight)
+        .help("点「开始摘要」立即正常档；点旁边箭头才展开高级（悬停不弹出）")
+        .popover(isPresented: $showSummarizePopover, arrowEdge: .bottom) {
+            VStack(alignment: .leading, spacing: 4) {
+                SummarizeChevronSplit(
+                    title: "开始摘要",
+                    isEnabled: startableCount > 0 && !summarizeActionInFlight
+                ) {
+                    showSummarizePopover = false
+                    guard startableCount > 0, !summarizeActionInFlight else { return }
+                    onStartSummarize(.normal)
+                } advancedMenu: {
+                    Button("高级摘要（仅未摘要）") {
+                        showSummarizePopover = false
+                        showAdvancedStartConfirm = true
+                    }
+                    .disabled(startableCount == 0 || summarizeActionInFlight)
+                }
+                Button("停止摘要 (\(stoppableCount))") {
+                    showSummarizePopover = false
+                    onStopSummarize()
+                }
+                .buttonStyle(.plain)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 6)
+                .disabled(stoppableCount == 0 || summarizeActionInFlight)
+            }
+            .padding(10)
+        }
     }
 
     private var deleteButton: some View {

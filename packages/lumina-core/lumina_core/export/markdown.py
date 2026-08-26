@@ -1,4 +1,4 @@
-"""Markdown export — default includes translations."""
+"""Markdown export — default full includes translations; mode=sentences is sentences only."""
 
 from __future__ import annotations
 
@@ -19,7 +19,9 @@ def content_disposition_attachment(filename: str) -> str:
     return f"attachment; filename=\"{ascii_name}\"; filename*=UTF-8''{quote(filename)}"
 
 
-def render_segment_summary_for_export(raw: str | dict) -> list[str]:
+def render_segment_summary_for_export(
+    raw: str | dict, *, sentences_only: bool = False
+) -> list[str]:
     """Lenient export rendering — mirrors macOS ParsedSummary (no full schema validate)."""
     data = parse_json_response(raw) if isinstance(raw, str) else raw
     normalized = normalize_summary_data(data)
@@ -30,6 +32,9 @@ def render_segment_summary_for_export(raw: str | dict) -> list[str]:
         for item in sentences:
             if isinstance(item, str) and item.strip():
                 lines.append(item.strip())
+
+    if sentences_only:
+        return lines
 
     bullets = normalized.get("bullets") or []
     if isinstance(bullets, list):
@@ -77,10 +82,15 @@ def export_book_markdown(
     *,
     include_notes: bool = False,
     notes: list[dict[str, Any]] | None = None,
+    mode: str = "full",
 ) -> str:
+    sentences_only = mode == "sentences"
+    if sentences_only:
+        include_notes = False
+    heading = "总结" if sentences_only else "摘要版"
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     lines = [
-        f"# 《{book.get('title', 'Untitled')}》摘要版",
+        f"# 《{book.get('title', 'Untitled')}》{heading}",
         f"> 由 Lumina 生成 · {now}",
         "",
         "## 元信息",
@@ -98,20 +108,23 @@ def export_book_markdown(
         summary = seg.get("summary_json")
         if summary:
             try:
-                rendered = render_segment_summary_for_export(summary)
+                rendered = render_segment_summary_for_export(
+                    summary, sentences_only=sentences_only
+                )
                 if rendered:
                     lines.extend(rendered)
                 else:
                     lines.append("_摘要未生成_")
             except (json.JSONDecodeError, TypeError, ValueError, ValidationError):
-                lines.append(str(summary))
+                lines.append(str(summary) if not sentences_only else "_摘要未生成_")
         else:
             lines.append("_摘要未生成_")
         lines.append("")
 
-        translation = seg.get("translation")
-        if translation:
-            lines.extend([f"#### 译文 · 段 {idx}", translation, ""])
+        if not sentences_only:
+            translation = seg.get("translation")
+            if translation:
+                lines.extend([f"#### 译文 · 段 {idx}", translation, ""])
 
     if include_notes and notes:
         lines.extend(["## 我的笔记", ""])

@@ -4,7 +4,7 @@ struct LibraryCollectionSidebar: View {
     @ObservedObject var viewModel: LibraryViewModel
 
     var body: some View {
-        List(selection: collectionBinding) {
+        List {
             ForEach(LibraryCollectionSection.allCases) { section in
                 let items = viewModel.sidebarCollections.filter { $0.section == section }
                 if !items.isEmpty {
@@ -24,29 +24,28 @@ struct LibraryCollectionSidebar: View {
         .navigationTitle("书架")
     }
 
-    private var collectionBinding: Binding<LibraryCollection?> {
-        Binding(
-            get: { viewModel.collection },
-            set: { newValue in
-                if let newValue {
-                    viewModel.setCollection(newValue)
-                }
-            }
-        )
-    }
-
     private func collectionRow(_ item: LibraryCollection) -> some View {
-        Label {
-            HStack {
-                Text(item.label)
-                Spacer()
-                Text("\(viewModel.count(for: item))")
-                    .foregroundStyle(LuminaTheme.textSecondary)
-                    .monospacedDigit()
+        let selected = viewModel.query.isSelected(item)
+        return Button {
+            viewModel.selectFacet(item)
+        } label: {
+            Label {
+                HStack {
+                    Text(item.label)
+                    Spacer(minLength: 8)
+                    Text("\(viewModel.count(for: item))")
+                        .foregroundStyle(LuminaTheme.textSecondary)
+                        .monospacedDigit()
+                }
+            } icon: {
+                Image(systemName: item.systemImage)
             }
-        } icon: {
-            Image(systemName: item.systemImage)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
         }
-        .tag(item)
+        .buttonStyle(.plain)
+        .listRowBackground(selected ? LuminaTheme.libraryRowSelectionBackground : Color.clear)
+        .accessibilityAddTraits(selected ? [.isSelected] : [])
+        .accessibilityHint(item == .favorite ? "与摘要、阅读、分类一起筛选" : "与其他筛选条件联合查询")
     }
 }

@@ -5,22 +5,21 @@ import SwiftUI
 struct SidebarSegmentItem: Identifiable, Equatable {
     let id: String
     let idx: Int
-    let chapterTitle: String
+    let chapter: String?
     let outlineLabel: String?
-    let bulletPreview: String?
+    let summaryPreview: String?
+    let bulletLabelsLine: String?
     let summaryStatus: String
+
+    var headline: String {
+        SegmentCatalogHeadlineText.joined(chapter: chapter, idx: idx, suffix: outlineLabel)
+    }
 
     static func make(
         from segment: SegmentRow,
-        bulletPreview: String?,
         runningMetrics: SegmentRunningMetrics?
     ) -> SidebarSegmentItem {
-        let chapterTitle: String
-        if let chapter = segment.chapter, !chapter.isEmpty {
-            chapterTitle = chapter
-        } else {
-            chapterTitle = "段 \(segment.idx + 1)"
-        }
+        let chapter = segment.chapter.flatMap { $0.isEmpty ? nil : $0 }
 
         let outlineLabel: String?
         if let label = segment.label, !label.isEmpty {
@@ -48,21 +47,106 @@ struct SidebarSegmentItem: Identifiable, Equatable {
             }
         }
 
-        let preview: String?
-        if segment.label != nil && !(segment.label?.isEmpty ?? true) {
-            preview = nil
-        } else {
-            preview = bulletPreview
+        let summaryPreview = SegmentCatalogPreview.line(summaryPreview: segment.summary_preview)
+        let labels = (segment.bullet_labels ?? []).compactMap { raw -> String? in
+            let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            return text.isEmpty ? nil : text
         }
 
         return SidebarSegmentItem(
             id: segment.id,
             idx: segment.idx,
-            chapterTitle: chapterTitle,
+            chapter: chapter,
             outlineLabel: outlineLabel,
-            bulletPreview: preview,
+            summaryPreview: summaryPreview,
+            bulletLabelsLine: labels.isEmpty ? nil : labels.joined(separator: " · "),
             summaryStatus: segment.summary_status
         )
+    }
+}
+
+enum SegmentCatalogHeadlineText {
+    static func joined(chapter: String?, idx: Int, suffix: String?) -> String {
+        var parts: [String] = []
+        if let chapter, !chapter.isEmpty { parts.append(chapter) }
+        parts.append("段 \(idx + 1)")
+        if let suffix, !suffix.isEmpty { parts.append(suffix) }
+        return parts.joined(separator: " · ")
+    }
+}
+
+enum SegmentCatalogTypography {
+    static let headline: Font = .body.weight(.medium)
+    static let summary: Font = .body
+    static let points: Font = .callout
+    static let rowSpacing: CGFloat = 6
+}
+
+struct SegmentCatalogHeadline: View {
+    let chapter: String?
+    let idx: Int
+    let suffix: String?
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 0) {
+            if let chapter, !chapter.isEmpty {
+                Text(chapter)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                Text(" · ")
+                    .fixedSize(horizontal: true, vertical: false)
+                    .layoutPriority(1)
+            }
+            Text("段 \(idx + 1)")
+                .fixedSize(horizontal: true, vertical: false)
+                .layoutPriority(1)
+            if let suffix, !suffix.isEmpty {
+                Text(" · ")
+                    .fixedSize(horizontal: true, vertical: false)
+                    .layoutPriority(1)
+                Text(suffix)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+            }
+        }
+        .font(SegmentCatalogTypography.headline)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+/// Catalog overlay copy. Must be a real summary sentence, not the 2–8 char
+/// inferred `label` prefix Ollama summaries fall back to.
+enum SegmentCatalogPreview {
+    static let maxChars = 160
+    static let previewLineLimit = 1
+
+    static func line(summaryPreview: String?) -> String? {
+        let preview = summaryPreview?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return preview.isEmpty ? nil : preview
+    }
+
+    static func fromSummaryJSON(_ json: String?, maxChars: Int = maxChars) -> String? {
+        guard let json, let data = json.data(using: .utf8),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return nil }
+
+        if let sentences = obj["sentences"] as? [Any] {
+            for item in sentences {
+                let text = (item as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                if !text.isEmpty { return clip(text, maxChars: maxChars) }
+            }
+        }
+
+        let bullets = SegmentReadyEventParser.parseBullets(json)
+        guard !bullets.isEmpty else { return nil }
+        return clip(bullets.joined(separator: " · "), maxChars: maxChars)
+    }
+
+    static func clip(_ text: String, maxChars: Int) -> String {
+        guard maxChars > 0 else { return "" }
+        if text.count <= maxChars { return text }
+        if maxChars == 1 { return "…" }
+        return String(text.prefix(maxChars - 1)) + "…"
     }
 }
 
@@ -124,6 +208,59 @@ enum SegmentRenderWindow {
 
 // MARK: - Row View
 
+struct SegmentCatalogRowLines: View {
+    let chapter: String?
+    let idx: Int
+    var suffix: String?
+    var summaryPreview: String?
+    var bulletLabelsLine: String?
+    var showsLiveProgress = false
+    var runningMetrics: SegmentRunningMetrics?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: SegmentCatalogTypography.rowSpacing) {
+            if showsLiveProgress, runningMetrics != nil {
+                TimelineView(.periodic(from: .now, by: 1)) { context in
+                    SegmentCatalogHeadline(
+                        chapter: chapter,
+                        idx: idx,
+                        suffix: progressLabel(at: context.date)
+                    )
+                }
+            } else {
+                SegmentCatalogHeadline(chapter: chapter, idx: idx, suffix: suffix)
+            }
+            if let summaryPreview {
+                Text(summaryPreview)
+                    .font(SegmentCatalogTypography.summary)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(SegmentCatalogPreview.previewLineLimit)
+                    .truncationMode(.tail)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            if let bulletLabelsLine {
+                Text(bulletLabelsLine)
+                    .font(SegmentCatalogTypography.points)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func progressLabel(at now: Date) -> String {
+        guard let runningMetrics else { return "摘要生成中…" }
+        return SummaryMetricsFormatter.inProgressLabel(
+            startedAt: runningMetrics.startedAt,
+            llmAttempt: runningMetrics.llmAttempt,
+            maxLlmAttempts: runningMetrics.maxLlmAttempts,
+            now: now
+        )
+    }
+}
+
 struct SegmentSidebarRowView: View, Equatable {
     let item: SidebarSegmentItem
     let isSelected: Bool
@@ -138,37 +275,20 @@ struct SegmentSidebarRowView: View, Equatable {
     }
 
     var body: some View {
-        HStack(alignment: .top, spacing: 6) {
+        HStack(alignment: .top, spacing: 8) {
             statusIcon
-            VStack(alignment: .leading, spacing: 2) {
-                Text(item.chapterTitle)
-                    .font(.subheadline)
-                    .lineLimit(1)
-                if let outline = item.outlineLabel {
-                    if showsLiveProgress, runningMetrics != nil {
-                        TimelineView(.periodic(from: .now, by: 1)) { context in
-                            Text(progressLabel(at: context.date))
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .lineLimit(2)
-                        }
-                    } else {
-                        Text(outline)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(2)
-                    }
-                }
-                if let preview = item.bulletPreview {
-                    Text(preview)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
-            }
+            SegmentCatalogRowLines(
+                chapter: item.chapter,
+                idx: item.idx,
+                suffix: item.outlineLabel,
+                summaryPreview: item.summaryPreview,
+                bulletLabelsLine: item.bulletLabelsLine,
+                showsLiveProgress: showsLiveProgress,
+                runningMetrics: runningMetrics
+            )
         }
-        .padding(.vertical, 6)
-        .padding(.horizontal, 8)
+        .padding(.vertical, 8)
+        .padding(.horizontal, 12)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
             isSelected
@@ -179,30 +299,24 @@ struct SegmentSidebarRowView: View, Equatable {
 
     @ViewBuilder
     private var statusIcon: some View {
-        if isSelected {
-            Image(systemName: "largecircle.fill.circle")
-                .foregroundStyle(LuminaTheme.accent)
-        } else {
-            switch item.summaryStatus {
-            case "ready":
-                Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
-            case "running":
-                Image(systemName: "circle.lefthalf.filled").foregroundStyle(LuminaTheme.accent)
-            case "failed", "error":
-                Image(systemName: "exclamationmark.circle").foregroundStyle(.red)
-            default:
-                Image(systemName: "circle").foregroundStyle(.secondary)
+        Group {
+            if isSelected {
+                Image(systemName: "largecircle.fill.circle")
+                    .foregroundStyle(LuminaTheme.accent)
+            } else {
+                switch item.summaryStatus {
+                case "ready":
+                    Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+                case "running":
+                    Image(systemName: "circle.lefthalf.filled").foregroundStyle(LuminaTheme.accent)
+                case "failed", "error":
+                    Image(systemName: "exclamationmark.circle").foregroundStyle(.red)
+                default:
+                    Image(systemName: "circle").foregroundStyle(.secondary)
+                }
             }
         }
-    }
-
-    private func progressLabel(at now: Date) -> String {
-        guard let runningMetrics else { return "摘要生成中…" }
-        return SummaryMetricsFormatter.inProgressLabel(
-            startedAt: runningMetrics.startedAt,
-            llmAttempt: runningMetrics.llmAttempt,
-            maxLlmAttempts: runningMetrics.maxLlmAttempts,
-            now: now
-        )
+        .font(.body)
+        .frame(width: 20, alignment: .center)
     }
 }

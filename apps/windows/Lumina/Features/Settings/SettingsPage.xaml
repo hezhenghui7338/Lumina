@@ -8,6 +8,17 @@
             <TextBlock Text="设置" FontSize="28" FontWeight="SemiBold"/>
             <TextBlock x:Name="StatusText" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
 
+            <TextBlock Text="Lumina 引擎" FontSize="18" FontWeight="SemiBold" Margin="0,8,0,0"/>
+            <TextBlock x:Name="EngineRunStatusText"
+                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+            <StackPanel Orientation="Horizontal" Spacing="8">
+                <Button x:Name="EngineStopBtn" Content="停止" Click="EngineStop_Click"/>
+                <Button x:Name="EngineRestartBtn" Content="重启" Click="EngineRestart_Click"/>
+            </StackPanel>
+            <TextBlock Text="退出应用会关闭后台引擎。摘要与导入队列会保存，下次打开后继续。"
+                       FontSize="12" TextWrapping="WrapWholeWords"
+                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+
             <TextBlock Text="外观" FontSize="18" FontWeight="SemiBold" Margin="0,8,0,0"/>
             <StackPanel Orientation="Horizontal" Spacing="8">
                 <RadioButton x:Name="ThemeLight" Content="浅色（默认）" GroupName="Theme" Checked="Theme_Checked"/>
@@ -21,6 +32,25 @@
                 <ComboBoxItem Content="ja-JP" Tag="ja-JP"/>
             </ComboBox>
             <ToggleSwitch x:Name="AutoSummaryToggle" Header="导入后自动开始摘要" OffContent="关" OnContent="开"/>
+            <ComboBox x:Name="DefaultSegmentTierBox" Header="导入默认分段" Width="240">
+                <ComboBoxItem Content="正常分段" Tag="normal" IsSelected="True"/>
+                <ComboBoxItem Content="高级分段" Tag="advanced"/>
+            </ComboBox>
+
+            <TextBlock Text="听书" FontSize="18" FontWeight="SemiBold" Margin="0,8,0,0"/>
+            <TextBlock x:Name="ListenPrivacyText"
+                       Text="下载由系统完成。请添加名称含 Neural 的神经语音，不要只下旁白 Natural。"
+                       FontSize="12" TextWrapping="WrapWholeWords"
+                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+            <ComboBox x:Name="TtsRateBox" Header="默认倍速" Width="240">
+                <ComboBoxItem Content="0.8×" Tag="0.8"/>
+                <ComboBoxItem Content="1×" Tag="1" IsSelected="True"/>
+                <ComboBoxItem Content="1.25×" Tag="1.25"/>
+                <ComboBoxItem Content="1.5×" Tag="1.5"/>
+                <ComboBoxItem Content="2×" Tag="2"/>
+            </ComboBox>
+            <ComboBox x:Name="TtsSystemVoiceBox" Header="系统音色" Width="420"/>
+            <Button Content="打开系统语音设置" Click="OpenSystemVoicePack_Click"/>
 
             <TextBlock Text="联网搜索" FontSize="18" FontWeight="SemiBold" Margin="0,8,0,0"/>
             <ToggleSwitch x:Name="WebSearchToggle" Header="启用联网搜索" OffContent="关" OnContent="开"/>
@@ -56,6 +86,14 @@
                 <TextBlock x:Name="OllamaProbeText" VerticalAlignment="Center" TextWrapping="WrapWholeWords"
                            Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
             </StackPanel>
+            <StackPanel Orientation="Horizontal" Spacing="8">
+                <NumberBox x:Name="OllamaChunkTargetBox" Header="分段目标（字）" Width="160"
+                           Minimum="200" Maximum="4000"
+                           SpinButtonPlacementMode="Hidden"
+                           ValidationMode="InvalidInputOverwritten"/>
+                <StackPanel x:Name="OllamaChunkPresets" Orientation="Horizontal" Spacing="6"
+                            VerticalAlignment="Bottom"/>
+            </StackPanel>
             <TextBox x:Name="OpenAiKeyBox" Header="OpenAI API Key（可选）"/>
             <TextBox x:Name="OpenAiModelBox" Header="OpenAI 正常模型" PlaceholderText="gpt-4o-mini"/>
             <TextBox x:Name="OpenAiAdvancedModelBox" Header="OpenAI 高级模型（留空回退正常模型）"/>
@@ -63,6 +101,14 @@
                 <Button x:Name="OpenAiProbeBtn" Content="测上下文" Click="ProbeContext_Click" Tag="openai"/>
                 <TextBlock x:Name="OpenAiProbeText" VerticalAlignment="Center" TextWrapping="WrapWholeWords"
                            Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+            </StackPanel>
+            <StackPanel Orientation="Horizontal" Spacing="8">
+                <NumberBox x:Name="OpenAiChunkTargetBox" Header="分段目标（字）" Width="160"
+                           Minimum="200" Maximum="8000"
+                           SpinButtonPlacementMode="Hidden"
+                           ValidationMode="InvalidInputOverwritten"/>
+                <StackPanel x:Name="OpenAiChunkPresets" Orientation="Horizontal" Spacing="6"
+                            VerticalAlignment="Bottom"/>
             </StackPanel>
             <TextBox x:Name="OpenRouterKeyBox" Header="OpenRouter API Key（可选）"/>
             <TextBox x:Name="OpenRouterModelBox" Header="OpenRouter 正常模型"/>
@@ -72,6 +118,14 @@
                 <TextBlock x:Name="OpenRouterProbeText" VerticalAlignment="Center" TextWrapping="WrapWholeWords"
                            Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
             </StackPanel>
+            <StackPanel Orientation="Horizontal" Spacing="8">
+                <NumberBox x:Name="OpenRouterChunkTargetBox" Header="分段目标（字）" Width="160"
+                           Minimum="200" Maximum="8000"
+                           SpinButtonPlacementMode="Hidden"
+                           ValidationMode="InvalidInputOverwritten"/>
+                <StackPanel x:Name="OpenRouterChunkPresets" Orientation="Horizontal" Spacing="6"
+                            VerticalAlignment="Bottom"/>
+            </StackPanel>
             <TextBox x:Name="CursorKeyBox" Header="Cursor API Key（可选）"/>
             <TextBox x:Name="CursorModelBox" Header="Cursor 正常模型" PlaceholderText="composer-2.5"/>
             <TextBox x:Name="CursorAdvancedModelBox" Header="Cursor 高级模型（留空回退正常模型）"/>
@@ -80,18 +134,36 @@
                 <TextBlock x:Name="CursorProbeText" VerticalAlignment="Center" TextWrapping="WrapWholeWords"
                            Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
             </StackPanel>
+            <StackPanel Orientation="Horizontal" Spacing="8">
+                <NumberBox x:Name="CursorChunkTargetBox" Header="分段目标（字）" Width="160"
+                           Minimum="200" Maximum="8000"
+                           SpinButtonPlacementMode="Hidden"
+                           ValidationMode="InvalidInputOverwritten"/>
+                <StackPanel x:Name="CursorChunkPresets" Orientation="Horizontal" Spacing="6"
+                            VerticalAlignment="Bottom"/>
+            </StackPanel>
             <TextBox x:Name="ChatPriorityBox" Header="深聊优先级（逗号分隔 resource id）"
                      PlaceholderText="openai,ollama"/>
             <TextBox x:Name="SummarizePriorityBox" Header="摘要优先级（逗号分隔 resource id）"
                      PlaceholderText="ollama,openrouter"/>
             <StackPanel Orientation="Horizontal" Spacing="8">
                 <Button Content="刷新资源状态" Click="RefreshResources_Click"/>
+                <Button Content="添加自定义资源" Click="AddCustomResource_Click"/>
                 <Button Content="打开 Ollama 下载页" Click="OpenOllama_Click"/>
             </StackPanel>
+            <TextBlock Text="自定义资源" FontWeight="SemiBold"/>
+            <TextBlock Text="添加后立即写入引擎，可测上下文或删除。内置 ollama / openai / openrouter / cursor 请用上方表单。"
+                       FontSize="12" TextWrapping="WrapWholeWords"
+                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+            <StackPanel x:Name="CustomResourcesHost" Spacing="10"/>
+            <TextBlock x:Name="CustomResourcesEmpty" Text="暂无自定义资源"
+                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
             <TextBlock x:Name="OllamaStatusText" TextWrapping="WrapWholeWords"/>
 
             <TextBlock Text="Prompt 模板" FontSize="18" FontWeight="SemiBold" Margin="0,8,0,0"/>
             <TextBox x:Name="PromptSegmentBox" Header="段摘要" AcceptsReturn="True" TextWrapping="Wrap" Height="80"/>
+            <TextBox x:Name="PromptSegmentOllamaBox" Header="段摘要 · Ollama 覆盖（可选）" AcceptsReturn="True" TextWrapping="Wrap" Height="60"/>
+            <TextBox x:Name="PromptSegmentCloudBox" Header="段摘要 · 云端覆盖（可选）" AcceptsReturn="True" TextWrapping="Wrap" Height="60"/>
             <TextBox x:Name="PromptDocumentBox" Header="文档/资讯" AcceptsReturn="True" TextWrapping="Wrap" Height="60"/>
             <TextBox x:Name="PromptChatBox" Header="书籍深聊" AcceptsReturn="True" TextWrapping="Wrap" Height="60"/>
             <TextBox x:Name="PromptNewsChatBox" Header="资讯深聊" AcceptsReturn="True" TextWrapping="Wrap" Height="60"/>

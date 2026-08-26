@@ -1,10 +1,64 @@
 import Foundation
 
+enum SidecarEngineStatus: Equatable {
+    case starting
+    case running
+    case stopped
+    case failed
+}
+
 /// Pure readiness decisions for SidecarManager (unit-testable).
 enum SidecarReadiness {
     /// Must match lumina-core `CHUNKER_VERSION`. A mismatch never marks the sidecar ready,
     /// so library / news / settings all refuse to load.
-    static let expectedChunkerVersion = "10"
+    static let expectedChunkerVersion = "14"
+
+    /// GET /health and POST /shutdown must not wait on a wedged event loop.
+    static let probeTimeoutSeconds: TimeInterval = 2
+
+    static func engineStatus(
+        isRunning: Bool,
+        isBootstrapping: Bool,
+        userStopped: Bool,
+        launchError: String?
+    ) -> SidecarEngineStatus {
+        if isBootstrapping { return .starting }
+        if isRunning { return .running }
+        if userStopped { return .stopped }
+        if launchError != nil { return .failed }
+        return .stopped
+    }
+
+    static func statusLabel(_ status: SidecarEngineStatus) -> String {
+        switch status {
+        case .starting: return "正在启动…"
+        case .running: return "运行中"
+        case .stopped: return "已停止"
+        case .failed: return "启动失败"
+        }
+    }
+
+    static func shouldAutoStart(userStopped: Bool) -> Bool {
+        !userStopped
+    }
+
+    /// Quit / Settings 停止 must kill whoever holds the port, not only this session's Process.
+    static func mustKillPortListenerOnStop(hasOwnedProcess: Bool, portOccupied: Bool) -> Bool {
+        hasOwnedProcess || portOccupied
+    }
+
+    static func shouldKillListenerBeforeLaunch(
+        healthResponded: Bool,
+        shouldReplaceOrphan: Bool,
+        portOccupied: Bool
+    ) -> Bool {
+        if healthResponded { return shouldReplaceOrphan }
+        return portOccupied
+    }
+
+    static func shouldReuseLeftover(healthResponded: Bool, shouldReplaceOrphan: Bool) -> Bool {
+        healthResponded && !shouldReplaceOrphan
+    }
 
     static func isCompatible(
         chunkerVersion: String?,

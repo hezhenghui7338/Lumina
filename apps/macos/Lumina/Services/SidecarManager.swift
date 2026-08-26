@@ -6,14 +6,23 @@ final class SidecarManager: ObservableObject {
     @Published var baseURL = URL(string: "http://127.0.0.1:17432")!
     @Published var isRunning = false
     @Published var isBootstrapping = false
+    @Published var userStopped = false
     @Published var launchError: String?
     private var process: Process?
+    private var lastKnownPID: Int32?
 
     private let host = "127.0.0.1"
     private let port = 17432
     private let maxLaunchAttempts = 5
     private let healthPollAttempts = 120
     private let healthPollDelayNs: UInt64 = 250_000_000
+
+    private lazy var probeSession: URLSession = {
+        let config = URLSessionConfiguration.ephemeral
+        config.timeoutIntervalForRequest = SidecarReadiness.probeTimeoutSeconds
+        config.timeoutIntervalForResource = SidecarReadiness.probeTimeoutSeconds
+        return URLSession(configuration: config)
+    }()
 
     private enum LaunchOutcome {
         case started
@@ -39,11 +48,29 @@ final class SidecarManager: ObservableObject {
         }
     }
 
+    var engineStatus: SidecarEngineStatus {
+        SidecarReadiness.engineStatus(
+            isRunning: isRunning,
+            isBootstrapping: isBootstrapping,
+            userStopped: userStopped,
+            launchError: launchError
+        )
+    }
+
+    var engineStatusLabel: String {
+        SidecarReadiness.statusLabel(engineStatus)
+    }
+
     deinit {
         process?.terminate()
     }
 
     func ensureRunning() async {
+        guard SidecarReadiness.shouldAutoStart(userStopped: userStopped) else {
+            isRunning = false
+            return
+        }
+
         if isBootstrapping {
             while isBootstrapping {
                 try? await Task.sleep(nanoseconds: 100_000_000)
@@ -55,18 +82,23 @@ final class SidecarManager: ObservableObject {
         launchError = nil
         defer { isBootstrapping = false }
 
-        if process != nil, await isHealthy() {
+        if let proc = process, !proc.isRunning {
+            process = nil
+        }
+
+        if process != nil, process?.isRunning == true, await isHealthy() {
             isRunning = true
             return
         }
 
-        // Reuse a leftover process only when it is this app version and this
-        // bundled binary. Chunker version matching is not enough: ingest fixes
-        // ship without bumping CHUNKER_VERSION, and in-place rebuilds keep the
-        // same marketing version.
-        if process == nil, let health = await healthStatus() {
+        let health = await healthStatus()
+        if let pid = health?.pid { lastKnownPID = pid }
+        let listenerPID = await legacyListenerPID()
+        let portOccupied = health != nil || listenerPID != nil
+        let replaceOrphan: Bool
+        if let health {
             let bundled = bundledSidecarExecutable()
-            if SidecarReadiness.shouldReplaceOrphan(
+            replaceOrphan = SidecarReadiness.shouldReplaceOrphan(
                 chunkerVersion: health.chunkerVersion,
                 coreVersion: health.coreVersion,
                 expectedCoreVersion: expectedCoreVersion,
@@ -75,13 +107,27 @@ final class SidecarManager: ObservableObject {
                 bundledExecutable: bundled?.path,
                 orphanStartedAt: health.startedAt.map { Date(timeIntervalSince1970: TimeInterval($0)) },
                 bundledModifiedAt: bundledSidecarModifiedAt()
-            ) {
-                await terminateStaleSidecar(health)
-            } else {
-                isRunning = true
-                launchError = nil
-                return
-            }
+            )
+        } else {
+            replaceOrphan = false
+        }
+
+        let healthResponded = health != nil
+        if SidecarReadiness.shouldReuseLeftover(
+            healthResponded: healthResponded,
+            shouldReplaceOrphan: replaceOrphan
+        ), process == nil {
+            isRunning = true
+            launchError = nil
+            return
+        }
+
+        if SidecarReadiness.shouldKillListenerBeforeLaunch(
+            healthResponded: healthResponded,
+            shouldReplaceOrphan: replaceOrphan,
+            portOccupied: portOccupied
+        ) {
+            await terminateListener(reportedPID: health?.pid)
         }
 
         var lastError: String?
@@ -104,6 +150,7 @@ final class SidecarManager: ObservableObject {
                     }
                 }
                 lastError = "AI 引擎启动超时，请重试或退出。"
+                await terminateListener(reportedPID: process.flatMap { Int32($0.processIdentifier) })
             }
 
             if attempt < maxLaunchAttempts {
@@ -117,6 +164,7 @@ final class SidecarManager: ObservableObject {
 
     /// Wait for ensureRunning to finish; true when healthy, false on failure.
     func waitUntilReady() async -> Bool {
+        if userStopped { return false }
         if isRunning { return true }
         if launchError != nil { return false }
 
@@ -150,10 +198,29 @@ final class SidecarManager: ObservableObject {
         return SidecarReadiness.isReady(isRunning: isRunning, launchError: launchError)
     }
 
-    func stop() {
-        process?.terminate()
+    func stop(userInitiated: Bool) async {
+        if userInitiated {
+            userStopped = true
+        }
+        await requestShutdown()
+        let ownedPID = process.flatMap { $0.isRunning ? Int32($0.processIdentifier) : nil }
+        let listenerPID = await legacyListenerPID()
+        await terminatePIDs(
+            [ownedPID, lastKnownPID, listenerPID].compactMap { $0 }
+        )
         process = nil
+        lastKnownPID = nil
         isRunning = false
+        if userInitiated {
+            launchError = nil
+        }
+    }
+
+    func restart() async {
+        userStopped = false
+        launchError = nil
+        await stop(userInitiated: false)
+        await ensureRunning()
     }
 
     private var expectedCoreVersion: String {
@@ -168,6 +235,7 @@ final class SidecarManager: ObservableObject {
 
     private func isHealthy() async -> Bool {
         guard let health = await healthStatus() else { return false }
+        if let pid = health.pid { lastKnownPID = pid }
         return SidecarReadiness.isCompatible(
             chunkerVersion: health.chunkerVersion,
             coreVersion: health.coreVersion,
@@ -178,7 +246,7 @@ final class SidecarManager: ObservableObject {
     private func healthStatus() async -> HealthStatus? {
         guard let url = URL(string: "\(baseURL.absoluteString)/health") else { return nil }
         do {
-            let (data, resp) = try await URLSession.shared.data(from: url)
+            let (data, resp) = try await probeSession.data(from: url)
             guard (resp as? HTTPURLResponse)?.statusCode == 200 else { return nil }
             let health = try JSONDecoder().decode(HealthStatus.self, from: data)
             return health.status == "ok" ? health : nil
@@ -187,20 +255,80 @@ final class SidecarManager: ObservableObject {
         }
     }
 
-    private func terminateStaleSidecar(_ health: HealthStatus) async {
-        let stalePID: Int32?
-        if let reportedPID = health.pid {
-            stalePID = reportedPID
-        } else {
-            stalePID = await legacyListenerPID()
+    private func requestShutdown() async {
+        guard let url = URL(string: "\(baseURL.absoluteString)/shutdown") else { return }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.timeoutInterval = SidecarReadiness.probeTimeoutSeconds
+        _ = try? await probeSession.data(for: request)
+    }
+
+    private func terminateListener(reportedPID: Int32?) async {
+        let listenerPID = await legacyListenerPID()
+        await terminatePIDs([reportedPID, lastKnownPID, listenerPID].compactMap { $0 })
+        process?.terminate()
+        process = nil
+    }
+
+    private func terminatePIDs(_ pids: [Int32]) async {
+        let unique = Array(Set(pids.filter { $0 > 1 }))
+        guard !unique.isEmpty else { return }
+        var tree: [Int32] = []
+        for pid in unique {
+            tree.append(contentsOf: await descendantPIDs(of: pid))
+            tree.append(pid)
         }
-        guard let stalePID, stalePID > 1 else { return }
-        Darwin.kill(stalePID, SIGTERM)
+        let all = Array(Set(tree.filter { $0 > 1 }))
+        for pid in all {
+            Darwin.kill(pid, SIGTERM)
+        }
         for _ in 0..<20 {
             try? await Task.sleep(nanoseconds: 100_000_000)
-            if await healthStatus() == nil { return }
+            if await healthStatus() == nil, await legacyListenerPID() == nil {
+                return
+            }
         }
-        Darwin.kill(stalePID, SIGKILL)
+        for pid in all {
+            Darwin.kill(pid, SIGKILL)
+        }
+        try? await Task.sleep(nanoseconds: 100_000_000)
+    }
+
+    private func descendantPIDs(of pid: Int32) async -> [Int32] {
+        var found: [Int32] = []
+        var queue: [Int32] = [pid]
+        var seen: Set<Int32> = []
+        while let current = queue.first {
+            queue.removeFirst()
+            guard seen.insert(current).inserted else { continue }
+            let children = await directChildPIDs(of: current)
+            found.append(contentsOf: children)
+            queue.append(contentsOf: children)
+        }
+        return found
+    }
+
+    private func directChildPIDs(of pid: Int32) async -> [Int32] {
+        await Task.detached(priority: .utility) {
+            let process = Process()
+            let output = Pipe()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/pgrep")
+            process.arguments = ["-P", "\(pid)"]
+            process.standardOutput = output
+            process.standardError = FileHandle.nullDevice
+            do {
+                try process.run()
+                process.waitUntilExit()
+                guard process.terminationStatus == 0 else { return [] }
+                let data = output.fileHandleForReading.readDataToEndOfFile()
+                return String(decoding: data, as: UTF8.self)
+                    .split(whereSeparator: \.isWhitespace)
+                    .compactMap { Int32($0) }
+                    .filter { $0 > 1 }
+            } catch {
+                return []
+            }
+        }.value
     }
 
     private func legacyListenerPID() async -> Int32? {
@@ -263,9 +391,19 @@ final class SidecarManager: ObservableObject {
 
         proc.standardOutput = FileHandle.nullDevice
         proc.standardError = openSidecarLogHandle() ?? FileHandle.nullDevice
+        proc.terminationHandler = { [weak self] finished in
+            Task { @MainActor in
+                guard let self, self.process === finished else { return }
+                self.process = nil
+                if self.isRunning {
+                    self.isRunning = false
+                }
+            }
+        }
         do {
             try proc.run()
             process = proc
+            lastKnownPID = Int32(proc.processIdentifier)
             return .started
         } catch {
             return .retryableError("无法启动 AI 引擎：\(error.localizedDescription)")

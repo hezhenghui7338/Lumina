@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from lumina_core.chunker.chunker import _chapter_at, _page_range_in
+from lumina_core.chunker.chunker import _chapter_at, _page_range_in, index_text_markers
 from lumina_core.chunker.semantic import (
     BoundaryStrength,
     TextStyle,
@@ -144,14 +144,15 @@ def apply_cut(
         raise BoundaryError("调整后两侧都必须保留正文")
     if new_left + new_right != concat:
         raise BoundaryError("调整后必须覆盖原有正文")
+    markers = index_text_markers(concat)
     return BoundaryMove(
         left_text=new_left,
         right_text=new_right,
         snapped_offset=snapped,
-        left_chapter=_chapter_at(concat, 0),
-        right_chapter=_chapter_at(concat, snapped),
-        left_page_range=_page_range_in(concat, 0, snapped),
-        right_page_range=_page_range_in(concat, snapped, len(concat)),
+        left_chapter=_chapter_at(concat, 0, markers=markers),
+        right_chapter=_chapter_at(concat, snapped, markers=markers),
+        left_page_range=_page_range_in(concat, 0, snapped, markers=markers),
+        right_page_range=_page_range_in(concat, snapped, len(concat), markers=markers),
         unchanged=snapped == current_offset,
     )
 

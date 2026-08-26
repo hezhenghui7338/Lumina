@@ -67,7 +67,8 @@ final class CoreClientDecodingTests: XCTestCase {
             summary_ready_count: nil,
             summary_total_count: nil
         )
-        XCTAssertEqual(processing.progressLabel, "处理中")
+        XCTAssertEqual(processing.progressLabel, "分段中")
+        XCTAssertEqual(processing.statusLabel, "分段中")
     }
 
     func testBookSummary_completedSummaryUsesReadingStatus() {
@@ -225,6 +226,26 @@ final class CoreClientDecodingTests: XCTestCase {
 
         let bare = BookSummary(id: "b2", title: "失败", status: "error", segment_count: 0)
         XCTAssertEqual(bare.statusLabel, "导入失败")
+        XCTAssertEqual(bare.summaryFacetLabel, "导入失败")
+    }
+
+    func testBookSummary_emptyUnreadIsSegmentingNotSummarized() {
+        let hole = BookSummary(
+            id: "hole",
+            title: "空档",
+            status: "unread",
+            segment_count: 0,
+            summary_ready_count: 0,
+            summary_total_count: 0,
+            summarize_state: "summarized"
+        )
+        XCTAssertTrue(hole.isSegmenting)
+        XCTAssertTrue(hole.canOpenInReader)
+        XCTAssertEqual(hole.summaryFacetLabel, "分段中")
+        XCTAssertFalse(LibraryCollection.summarized.matches(hole))
+        XCTAssertFalse(LibraryCollection.idle.matches(hole))
+        XCTAssertTrue(LibraryCollection.segmenting.matches(hole))
+        XCTAssertFalse(LibraryCollection.ingestFailed.matches(hole))
     }
 
     func testAppSettings_decodesDefaultSettings() throws {
@@ -233,6 +254,7 @@ final class CoreClientDecodingTests: XCTestCase {
         XCTAssertEqual(settings.target_language, "zh-CN")
         XCTAssertFalse(settings.debug_mode)
         XCTAssertFalse(settings.auto_start_summary)
+        XCTAssertEqual(settings.default_segment_tier, "normal")
         XCTAssertEqual(settings.ocr_cloud_base_url, "")
         XCTAssertEqual(settings.ocr_cloud_model, "")
         XCTAssertNil(settings.ocr_cloud_api_key)
@@ -371,6 +393,34 @@ final class CoreClientDecodingTests: XCTestCase {
         XCTAssertEqual(resp.books[0].summarize_active?.llm_attempt, 2)
         XCTAssertEqual(resp.books[0].summarize_active?.max_llm_attempts, 2)
         XCTAssertNotNil(resp.books[0].summarize_active?.startedAtDate)
+    }
+
+    func testSegmentRow_decodesSummaryPreview() throws {
+        let json = """
+        {
+          "id": "s1",
+          "idx": 0,
+          "summary_status": "ready",
+          "summary_preview": "邻里虽敬其向学，却无力资助书卷。"
+        }
+        """
+        let segment = try JSONDecoder().decode(SegmentRow.self, from: json.data(using: .utf8)!)
+        XCTAssertEqual(segment.summary_preview, "邻里虽敬其向学，却无力资助书卷。")
+        XCTAssertNil(segment.summary_json)
+    }
+
+    func testSegmentRow_decodesBulletLabels() throws {
+        let json = """
+        {
+          "id": "s1",
+          "idx": 0,
+          "summary_status": "ready",
+          "summary_preview": "邻里虽敬其向学，却无力资助书卷。",
+          "bullet_labels": ["邻里", "赴考"]
+        }
+        """
+        let segment = try JSONDecoder().decode(SegmentRow.self, from: json.data(using: .utf8)!)
+        XCTAssertEqual(segment.bullet_labels, ["邻里", "赴考"])
     }
 
     func testSegmentRow_decodesSummaryMetrics() throws {

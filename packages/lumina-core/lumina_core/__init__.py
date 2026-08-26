@@ -1,3 +1,3 @@
 """Lumina core sidecar."""
 
-__version__ = "0.10.2"
+__version__ = "1.0.0"

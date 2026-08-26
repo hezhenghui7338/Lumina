@@ -893,6 +893,45 @@ def test_overview_stalled_reason_is_none_when_not_stalled(conn):
     assert overview["stalled_reason"] is None
 
 
+def test_overview_skips_ingest_failed_books(conn):
+    router = MockModelRouter(responses={"summarize": SUMMARY, "translate": "译文"})
+    q = JobQueue(conn, router)
+    failed = _seed_book(conn, book_id="failed", n_segments=0)
+    BookRepo(conn).update(failed, status="error")
+    idle = _seed_book(conn, book_id="idle", n_segments=2)
+    BookRepo(conn).update(idle, status="unread")
+
+    overview = q.summarize_overview()
+    assert overview["counts"]["summarized"] == 0
+    assert overview["counts"]["idle"] == 1
+    assert overview["counts"]["segmenting"] == 0
+
+
+def test_summarize_state_zero_segments_is_segmenting_not_summarized(conn):
+    router = MockModelRouter(responses={"summarize": SUMMARY, "translate": "译文"})
+    q = JobQueue(conn, router)
+    book_id = _seed_book(conn, book_id="empty", n_segments=0)
+    BookRepo(conn).update(book_id, status="unread")
+    assert q.summarize_state_for_book(book_id, ready=0, total=0) == "segmenting"
+    overview = q.summarize_overview()
+    assert overview["counts"]["segmenting"] == 1
+    assert overview["counts"]["summarized"] == 0
+
+
+@pytest.mark.asyncio
+async def test_startup_repairs_empty_unread_to_ingest_failed(conn):
+    router = MockModelRouter(responses={"summarize": SUMMARY, "translate": "译文"})
+    q = JobQueue(conn, router)
+    hole = _seed_book(conn, book_id="hole", n_segments=0)
+    BookRepo(conn).update(hole, status="unread")
+
+    await q.recover_on_startup()
+
+    row = BookRepo(conn).get(hole)
+    assert row["status"] == "error"
+    assert json.loads(row["metadata_json"])["ingest_error"] == "导入中断"
+
+
 @pytest.mark.asyncio
 async def test_startup_does_not_flood_rollup(conn):
     """Startup must not queue an index rebuild for every summarized book."""
@@ -1263,3 +1302,118 @@ async def test_summarize_state_running_when_active(conn):
         total=int(progress["summary_total_count"]),
     )
     assert state == "running"
+
+
+def _state(q: JobQueue, book_id: str) -> str:
+    progress = BookRepo(q.conn).summary_progress(book_id)
+    return q.summarize_state_for_book(
+        book_id,
+        ready=int(progress["summary_ready_count"]),
+        total=int(progress["summary_total_count"]),
+    )
+
+
+@pytest.mark.asyncio
+async def test_active_intent_without_job_stays_queued_not_idle(conn):
+    """A started book with leftover pending segments must not look idle."""
+    router = MockModelRouter(responses={"summarize": SUMMARY, "translate": "译文"})
+    q = JobQueue(conn, router)
+    book_id = _seed_book(conn, book_id="orphaned", n_segments=3)
+    BookRepo(conn).update(book_id, status="unread")
+    q._set_intent(book_id, "active")
+
+    assert _state(q, book_id) == "queued"
+    overview = q.summarize_overview()
+    assert overview["counts"]["queued"] == 1
+    assert overview["counts"]["idle"] == 0
+
+
+@pytest.mark.asyncio
+async def test_start_one_book_after_stop_all_keeps_others_paused(conn):
+    """Global stop + resume one book must not dump the rest to idle."""
+    router = SlowMockRouter(
+        delay=30.0,
+        responses={"summarize": SUMMARY, "translate": "译文"},
+    )
+    q = JobQueue(conn, router)
+    started = [
+        _seed_book(conn, book_id=f"keep-{i}", n_segments=2) for i in range(3)
+    ]
+    for book_id in started:
+        BookRepo(conn).update(book_id, status="unread")
+        await q.start_book(book_id)
+    await q.stop_all()
+    assert all(_state(q, book_id) == "paused" for book_id in started)
+
+    await q.start_book(started[0])
+    try:
+        assert _state(q, started[0]) in ("queued", "running")
+        assert _state(q, started[1]) == "paused"
+        assert _state(q, started[2]) == "paused"
+    finally:
+        await q.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_started_incomplete_books_resume_after_queue_restart(conn):
+    """Sidecar restart must keep started books in the summarize queue."""
+    slow = SlowMockRouter(
+        delay=30.0,
+        responses={"summarize": SUMMARY, "translate": "译文"},
+    )
+    q1 = JobQueue(conn, slow, auto_start_summary=False)
+    a = _seed_book(conn, book_id="resume-a", n_segments=2)
+    b = _seed_book(conn, book_id="resume-b", n_segments=2)
+    BookRepo(conn).update(a, status="unread")
+    BookRepo(conn).update(b, status="unread")
+    await q1.start_book(a)
+    await q1.start_book(b)
+    await asyncio.sleep(0.05)
+    assert _state(q1, a) in ("queued", "running")
+    assert _state(q1, b) in ("queued", "running")
+    await q1.shutdown()
+
+    fast = MockModelRouter(responses={"summarize": SUMMARY, "translate": "译文"})
+    q2 = JobQueue(conn, fast, auto_start_summary=False)
+    await q2.recover_on_startup()
+    try:
+        assert _state(q2, a) in ("queued", "running")
+        assert _state(q2, b) in ("queued", "running")
+        for _ in range(80):
+            segs_a = SegmentRepo(conn).list_for_book(a)
+            segs_b = SegmentRepo(conn).list_for_book(b)
+            if all(s["summary_status"] == "ready" for s in segs_a) and all(
+                s["summary_status"] == "ready" for s in segs_b
+            ):
+                break
+            await asyncio.sleep(0.05)
+        else:
+            pytest.fail(
+                "restart dropped summarize queue: "
+                f"a={[s['summary_status'] for s in SegmentRepo(conn).list_for_book(a)]} "
+                f"b={[s['summary_status'] for s in SegmentRepo(conn).list_for_book(b)]}"
+            )
+    finally:
+        await q2.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_resume_orphaned_active_reenqueues_lost_job(conn):
+    router = MockModelRouter(responses={"summarize": SUMMARY, "translate": "译文"})
+    q = JobQueue(conn, router, auto_start_summary=False)
+    book_id = _seed_book(conn, book_id="lost-job", n_segments=2)
+    BookRepo(conn).update(book_id, status="unread")
+    q._set_intent(book_id, "active")
+    assert q._queue.qsize() == 0
+
+    await q.resume_orphaned_active()
+    try:
+        for _ in range(60):
+            segs = SegmentRepo(conn).list_for_book(book_id)
+            if all(s["summary_status"] == "ready" for s in segs):
+                break
+            await asyncio.sleep(0.05)
+        else:
+            pytest.fail("orphaned active book was not requeued")
+    finally:
+        await q.shutdown()

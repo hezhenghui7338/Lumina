@@ -59,12 +59,56 @@ final class SegmentSidebarTests: XCTestCase {
             id: "s1", idx: 0, label: "引子", chapter: "第一章", summary_status: "ready",
             summary_json: nil, raw_text: nil, translation: nil, anchor_label: nil,
             summary_provider: nil, summary_model: nil, summary_tier: nil, char_count: nil, retry_count: nil,
-            summary_duration_s: nil, summary_llm_attempts: nil
+            summary_duration_s: nil, summary_llm_attempts: nil,
+            summary_preview: "主角生于贫苦农家，父亲早逝，母亲靠纺织维生。",
+            bullet_labels: ["寒门出身", "赴考之志"]
         )
-        let item = SidebarSegmentItem.make(from: segment, bulletPreview: "preview", runningMetrics: nil)
+        let item = SidebarSegmentItem.make(from: segment, runningMetrics: nil)
         XCTAssertEqual(item.outlineLabel, "引子")
-        XCTAssertNil(item.bulletPreview)
-        XCTAssertEqual(item.chapterTitle, "第一章")
+        XCTAssertEqual(item.chapter, "第一章")
+        XCTAssertEqual(item.headline, "第一章 · 段 1 · 引子")
+        XCTAssertEqual(item.summaryPreview, "主角生于贫苦农家，父亲早逝，母亲靠纺织维生。")
+        XCTAssertEqual(item.bulletLabelsLine, "寒门出身 · 赴考之志")
+        let fromList = SidebarSegmentItem.make(
+            from: SegmentRow(
+                id: "s1", idx: 0, label: "引子", chapter: "第一章", summary_status: "ready",
+                summary_json: nil, raw_text: nil, translation: nil, anchor_label: nil,
+                summary_provider: nil, summary_model: nil, summary_tier: nil, char_count: nil, retry_count: nil,
+                summary_duration_s: nil, summary_llm_attempts: nil,
+                summary_preview: "主角生于贫苦农家，父亲早逝，母亲靠纺织维生。"
+            ),
+            runningMetrics: nil
+        )
+        XCTAssertEqual(
+            fromList.summaryPreview,
+            "主角生于贫苦农家，父亲早逝，母亲靠纺织维生。"
+        )
+        XCTAssertNil(fromList.bulletLabelsLine)
+    }
+
+    func testCatalogPreview_usesSentenceNotInferredLabelPrefix() {
+        let inferred = "邻里虽敬"
+        let sentence = "邻里虽敬其向学，却无力资助书卷。"
+        XCTAssertEqual(
+            SegmentCatalogPreview.line(summaryPreview: sentence),
+            sentence
+        )
+        XCTAssertNotEqual(
+            SegmentCatalogPreview.line(summaryPreview: sentence),
+            inferred
+        )
+        let json = """
+        {"sentences":["\(sentence)"],"bullets":[{"label":"邻里","body":"乡邻敬其向学。"}],"label":"\(inferred)"}
+        """
+        XCTAssertEqual(SegmentCatalogPreview.fromSummaryJSON(json), sentence)
+        XCTAssertEqual(SegmentReadyEventParser.formatListPreview(json), sentence)
+    }
+
+    func testCatalogPreview_clipsLongSentence() {
+        let long = String(repeating: "甲", count: 200)
+        let clipped = SegmentCatalogPreview.clip(long, maxChars: SegmentCatalogPreview.maxChars)
+        XCTAssertEqual(clipped.count, SegmentCatalogPreview.maxChars)
+        XCTAssertTrue(clipped.hasSuffix("…"))
     }
 
     func testSidebarSegmentItem_pendingUsesStaticCopy() {
@@ -74,8 +118,11 @@ final class SegmentSidebarTests: XCTestCase {
             summary_provider: nil, summary_model: nil, summary_tier: nil, char_count: nil, retry_count: nil,
             summary_duration_s: nil, summary_llm_attempts: nil
         )
-        let item = SidebarSegmentItem.make(from: segment, bulletPreview: nil, runningMetrics: nil)
+        let item = SidebarSegmentItem.make(from: segment, runningMetrics: nil)
         XCTAssertEqual(item.outlineLabel, "等待摘要…")
+        XCTAssertEqual(item.headline, "段 1 · 等待摘要…")
+        XCTAssertNil(item.summaryPreview)
+        XCTAssertNil(item.bulletLabelsLine)
     }
 
     func testSidebarSegmentItem_runningUsesGeneratingCopy() {
@@ -85,8 +132,61 @@ final class SegmentSidebarTests: XCTestCase {
             summary_provider: nil, summary_model: nil, summary_tier: nil, char_count: nil, retry_count: nil,
             summary_duration_s: nil, summary_llm_attempts: nil
         )
-        let item = SidebarSegmentItem.make(from: segment, bulletPreview: nil, runningMetrics: nil)
+        let item = SidebarSegmentItem.make(from: segment, runningMetrics: nil)
         XCTAssertEqual(item.outlineLabel, "摘要生成中…")
+        XCTAssertEqual(item.headline, "段 1 · 摘要生成中…")
+    }
+}
+
+final class SegmentCatalogPreviewArchitectureTests: XCTestCase {
+    private func source(_ relativePath: String) throws -> String {
+        let macosRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        return try String(
+            contentsOf: macosRoot.appendingPathComponent(relativePath),
+            encoding: .utf8
+        )
+    }
+
+    func testCatalogRowsUseSlimPreviewAndFullWidth() throws {
+        let reader = try source("Lumina/Features/Reader/ReaderView.swift")
+        let models = try source("Lumina/Features/Reader/SegmentSidebarModels.swift")
+        XCTAssertTrue(
+            reader.contains("segment.summary_preview"),
+            "the catalog must render GET /segments summary_preview for every row, not only hydrated neighbors"
+        )
+        XCTAssertTrue(
+            reader.contains("segment.bullet_labels"),
+            "the catalog must render GET /segments bullet_labels, not bullet bodies"
+        )
+        XCTAssertTrue(
+            models.contains("SegmentCatalogPreview.previewLineLimit")
+                || models.contains("lineLimit(1)"),
+            "catalog summary and point titles must be single-line"
+        )
+        XCTAssertTrue(
+            models.contains("truncationMode(.tail)"),
+            "catalog lines must ellipsize at the row width instead of clipping to a few CJK glyphs"
+        )
+        XCTAssertTrue(
+            reader.contains(".frame(maxWidth: .infinity, alignment: .leading)"),
+            "catalog rows must take the cover width so LazyVStack does not propose a few-character width"
+        )
+        XCTAssertFalse(
+            reader.contains("include_summary"),
+            "opening the catalog must not pull full summary_json for the whole book"
+        )
+        XCTAssertFalse(
+            reader.contains("scheduleSidebarPreview"),
+            "the catalog must not hydrate summary_json just to stitch bullet bodies"
+        )
+        let iconSlice = models.components(separatedBy: "private var statusIcon: some View").last ?? ""
+        XCTAssertTrue(
+            iconSlice.contains("Group {"),
+            "statusIcon if/else must be wrapped in Group before .font; trailing .font on ViewBuilder if is a type-member error"
+        )
     }
 }
 
@@ -99,7 +199,7 @@ final class ReaderViewModelSidebarTests: XCTestCase {
                 totalChars: nil,
                 segmentCount: 0
             ),
-            3_400
+            3_449
         )
         XCTAssertEqual(
             ReaderViewModel.normalizedResegmentTarget(
@@ -142,8 +242,16 @@ final class ReaderViewModelSidebarTests: XCTestCase {
                 totalChars: 10_100,
                 segmentCount: 3
             ),
-            3_400
+            3_366
         )
+    }
+
+    func testChunkTargetPresetsAndClamp() {
+        XCTAssertEqual(ResegmentTarget.presets, [500, 1000, 1500, 2000, 2500])
+        XCTAssertEqual(ResegmentTarget.clamp(50), 200)
+        XCTAssertEqual(ResegmentTarget.clamp(3_449), 3_449)
+        XCTAssertEqual(ResegmentTarget.clamp(9_000), 8_000)
+        XCTAssertEqual(ResegmentTarget.clamp(5_000, range: 200...4000), 4_000)
     }
 
     func testResegmentEventsUpdateReaderState() {

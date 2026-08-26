@@ -16,6 +16,7 @@
                 <TextBlock Text="全部笔记" FontSize="28" FontWeight="SemiBold" VerticalAlignment="Center"/>
             </StackPanel>
             <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Spacing="8">
+                <Button Content="全选" Click="SelectAll_Click"/>
                 <Button Content="删除所选" Click="DeleteSelected_Click"/>
                 <Button Content="刷新" Click="Refresh_Click"/>
             </StackPanel>

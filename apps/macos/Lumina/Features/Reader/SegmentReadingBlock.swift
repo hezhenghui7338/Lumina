@@ -54,6 +54,8 @@ struct SegmentReadingBlock: View, Equatable {
     var isSummaryLoading: Bool = false
     var summaryProgressMessage: String?
     var runningMetrics: SegmentRunningMetrics?
+    var fontScale: Double = 1.0
+    var paper: ReaderPaper = .white
     var onToggleSource: () -> Void
     var onToggleSummary: () -> Void
     var onFollowUp: (String) -> Void
@@ -65,45 +67,71 @@ struct SegmentReadingBlock: View, Equatable {
     var onAdjustBoundary: (() -> Void)? = nil
     var onSourceAppear: (() -> Void)?
     var onSummaryAppear: (() -> Void)?
+    var originalHighlightUTF16: NSRange? = nil
 
     @State private var lockedViewportHeight: CGFloat?
     @State private var measuredContentHeight: CGFloat = LuminaTheme.segmentContentMinHeight
 
+    private func scaled(_ base: CGFloat) -> CGFloat {
+        base * CGFloat(fontScale)
+    }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: LuminaTheme.summarySectionSpacing) {
-            segmentHeaderRow
+        Group {
+            VStack(alignment: .leading, spacing: LuminaTheme.summarySectionSpacing) {
+                segmentHeaderRow
 
-            contentPanel
-        }
-        .padding(LuminaTheme.summaryPadding)
-        .readingColumn()
-        .background(
-            isHighlighted
-                ? LuminaTheme.accentMuted.opacity(0.35)
-                : Color.clear
-        )
-        .animation(.easeOut(duration: 0.4), value: isHighlighted)
-        .onAppear {
-            if contentMode == .original {
-                onSourceAppear?()
-            } else {
-                onSummaryAppear?()
+                contentPanel
             }
-        }
-
-        if !isLast {
-            VStack(spacing: 8) {
-                Divider()
-                    .background(LuminaTheme.border)
-                if let onAdjustBoundary {
-                    Button("调整与下一段的边界", action: onAdjustBoundary)
-                        .buttonStyle(.plain)
-                        .font(.caption)
-                        .foregroundStyle(LuminaTheme.accent)
+            .padding(LuminaTheme.summaryPadding)
+            .readingColumn()
+            .background(
+                isHighlighted
+                    ? paper.card.opacity(0.35)
+                    : Color.clear
+            )
+            .animation(.easeOut(duration: 0.4), value: isHighlighted)
+            .onAppear {
+                if contentMode == .original {
+                    onSourceAppear?()
+                } else {
+                    onSummaryAppear?()
                 }
             }
-            .padding(.vertical, 16)
+
+            if !isLast {
+                segmentBoundarySeparator
+            }
         }
+        .environment(\.readerPaper, paper)
+    }
+
+    private var segmentBoundarySeparator: some View {
+        HStack(spacing: 8) {
+            Rectangle()
+                .fill(paper.border)
+                .frame(height: 1)
+
+            if let onAdjustBoundary {
+                Button(action: onAdjustBoundary) {
+                    Image(systemName: "rectangle.split.1x2")
+                        .font(.system(size: LuminaTheme.summaryLabelSize, weight: .semibold))
+                        .foregroundStyle(LuminaTheme.accent)
+                        .frame(minWidth: 24, minHeight: 24)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help("调整与下一段的边界")
+                .accessibilityLabel("调整与下一段的边界")
+                .accessibilityIdentifier("lumina.reader.control.adjustBoundary")
+            }
+
+            Rectangle()
+                .fill(paper.border)
+                .frame(height: 1)
+        }
+        .absorbsReaderChromeClicks()
+        .padding(.vertical, 12)
     }
 
     private var showingSource: Bool {
@@ -164,7 +192,7 @@ struct SegmentReadingBlock: View, Equatable {
             .frame(height: viewportHeight)
 
             Divider()
-                .background(LuminaTheme.border)
+                .background(paper.border)
 
             panelToggleButton
                 .padding(.horizontal, LuminaTheme.summaryPadding)
@@ -173,7 +201,7 @@ struct SegmentReadingBlock: View, Equatable {
         .readingColumn()
         .background(
             RoundedRectangle(cornerRadius: LuminaTheme.summaryCornerRadius)
-                .fill(LuminaTheme.accentMuted.opacity(0.45))
+                .fill(paper.card.opacity(0.45))
         )
         .clipShape(RoundedRectangle(cornerRadius: LuminaTheme.summaryCornerRadius))
     }
@@ -195,7 +223,7 @@ struct SegmentReadingBlock: View, Equatable {
             Button(action: togglePanelContent) {
                 Text(toggleTitle(showingSource: showingSource))
                     .font(.system(size: LuminaTheme.summaryLabelSize, weight: .semibold))
-                    .foregroundStyle(LuminaTheme.textSecondary)
+                    .foregroundStyle(paper.textSecondary)
                     .tracking(0.6)
             }
             .buttonStyle(.plain)
@@ -206,7 +234,7 @@ struct SegmentReadingBlock: View, Equatable {
             Button(action: copyCurrentPanel) {
                 Text("复制")
                     .font(.system(size: LuminaTheme.summaryLabelSize, weight: .semibold))
-                    .foregroundStyle(LuminaTheme.textSecondary)
+                    .foregroundStyle(paper.textSecondary)
                     .tracking(0.6)
             }
             .buttonStyle(.plain)
@@ -315,26 +343,27 @@ struct SegmentReadingBlock: View, Equatable {
                 showsBackground: showsBackground,
                 showsHeader: false
             )
-        } else if isSummaryLoading {
+        } else if isSummaryLoading || segment.summary_status == "running" {
             summaryLoadingSkeleton
         } else if !(segment.summary_json ?? "").isEmpty {
             Text("摘要格式异常，请重试")
-                .font(.system(size: LuminaTheme.summaryBulletSize))
-                .foregroundStyle(LuminaTheme.textSecondary)
+                .font(.system(size: scaled(LuminaTheme.summaryBulletSize)))
+                .foregroundStyle(paper.textSecondary)
         } else {
             summaryPlaceholder
         }
     }
 
-    private var summaryLoadingMinHeight: CGFloat {
-        guard let count = effectiveCharCount, count > 0 else { return 200 }
-        return min(max(CGFloat(count) / 6, 200), 600)
+    private var summaryPlaceholderMinHeight: CGFloat {
+        SegmentSummaryPlaceholderHeight.reserved(charCount: effectiveCharCount)
     }
 
     private var summaryLoadingSkeleton: some View {
         SourceTextSkeleton(lineCount: 5)
-            .frame(minHeight: summaryLoadingMinHeight, alignment: .top)
-            .accessibilityLabel("摘要加载中")
+            .frame(minHeight: summaryPlaceholderMinHeight, alignment: .top)
+            .accessibilityLabel(
+                segment.summary_status == "running" ? "摘要生成中" : "摘要加载中"
+            )
     }
 
     private var trailingHeaderItems: [SegmentHeaderTrailingItem] {
@@ -353,7 +382,7 @@ struct SegmentReadingBlock: View, Equatable {
             if let anchor = resolvedAnchorText {
                 Text(anchor)
                     .font(.system(size: LuminaTheme.summaryLabelSize, weight: .medium))
-                    .foregroundStyle(LuminaTheme.textSecondary)
+                    .foregroundStyle(paper.textSecondary)
                     .lineLimit(1)
                     .textSelection(.enabled)
             }
@@ -375,22 +404,24 @@ struct SegmentReadingBlock: View, Equatable {
                     .controlSize(.mini)
                 progressStatusView
                     .font(.system(size: LuminaTheme.summaryLabelSize - 1))
-                    .foregroundStyle(LuminaTheme.textSecondary)
+                    .foregroundStyle(paper.textSecondary)
                     .lineLimit(1)
+                    .minimumScaleFactor(0.8)
             }
+            .lineLimit(1)
         case .regenerateSummary:
             regenerateSummaryButton
         case .charCount:
             if let count = effectiveCharCount, count > 0 {
                 Text("约 \(Self.formatCount(count)) 字")
                     .font(.system(size: LuminaTheme.summaryLabelSize - 1))
-                    .foregroundStyle(LuminaTheme.textSecondary.opacity(0.85))
+                    .foregroundStyle(paper.textSecondary.opacity(0.85))
                     .textSelection(.enabled)
             }
         case .segmentIndex:
             Text("段 \(segment.idx + 1)/\(segmentTotal)")
                 .font(.system(size: LuminaTheme.summaryLabelSize - 1))
-                .foregroundStyle(LuminaTheme.textSecondary.opacity(0.85))
+                .foregroundStyle(paper.textSecondary.opacity(0.85))
                 .textSelection(.enabled)
         case .turnButtons:
             segmentTurnButtons
@@ -415,11 +446,17 @@ struct SegmentReadingBlock: View, Equatable {
     private var progressStatusView: some View {
         if isSummaryInProgress, runningMetrics != nil {
             TimelineView(.periodic(from: .now, by: 1)) { context in
-                Text(progressText(at: context.date))
+                progressLabel(progressText(at: context.date))
             }
         } else {
-            Text(progressText(at: Date()))
+            progressLabel(progressText(at: Date()))
         }
+    }
+
+    private func progressLabel(_ text: String) -> some View {
+        Text(text)
+            .lineLimit(1)
+            .minimumScaleFactor(0.8)
     }
 
     private func progressText(at now: Date) -> String {
@@ -556,36 +593,36 @@ struct SegmentReadingBlock: View, Equatable {
 
     @ViewBuilder
     private var summaryPlaceholder: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            switch segment.summary_status {
-            case "running":
-                EmptyView()
-            case "failed", "error":
-                VStack(alignment: .leading, spacing: 8) {
-                    HStack(spacing: 10) {
-                        Image(systemName: "exclamationmark.circle")
-                            .foregroundStyle(.red)
-                        Text(failureMessage)
-                            .font(.system(size: LuminaTheme.summaryBulletSize))
-                            .foregroundStyle(LuminaTheme.textSecondary)
-                            .lineLimit(3)
-                    }
-                    regenerateSummaryButton
+        switch segment.summary_status {
+        case "failed", "error":
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 10) {
+                    Image(systemName: "exclamationmark.circle")
+                        .foregroundStyle(.red)
+                    Text(failureMessage)
+                        .font(.system(size: scaled(LuminaTheme.summaryBulletSize)))
+                        .foregroundStyle(paper.textSecondary)
+                        .lineLimit(3)
                 }
-            case "pending":
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("尚无摘要")
-                        .font(.system(size: LuminaTheme.summaryBulletSize))
-                        .foregroundStyle(LuminaTheme.textSecondary)
-                    generateSummaryButton
-                }
-            default:
-                Text("尚无摘要")
-                    .font(.system(size: LuminaTheme.summaryBulletSize))
-                    .foregroundStyle(LuminaTheme.textSecondary)
+                regenerateSummaryButton
             }
+            .readingColumn()
+        case "pending":
+            VStack(alignment: .leading, spacing: 8) {
+                Text("尚无摘要")
+                    .font(.system(size: scaled(LuminaTheme.summaryBulletSize)))
+                    .foregroundStyle(paper.textSecondary)
+                generateSummaryButton
+            }
+            .frame(minHeight: summaryPlaceholderMinHeight, alignment: .top)
+            .readingColumn()
+        default:
+            Text("尚无摘要")
+                .font(.system(size: scaled(LuminaTheme.summaryBulletSize)))
+                .foregroundStyle(paper.textSecondary)
+                .frame(minHeight: summaryPlaceholderMinHeight, alignment: .top)
+                .readingColumn()
         }
-        .readingColumn()
     }
 
     @ViewBuilder
@@ -593,7 +630,7 @@ struct SegmentReadingBlock: View, Equatable {
         if showHeader, let count = effectiveCharCount, count > 0 {
             Text("原文 · 约 \(Self.formatCount(count)) 字")
                 .font(.system(size: LuminaTheme.summaryLabelSize - 1))
-                .foregroundStyle(LuminaTheme.textSecondary.opacity(0.85))
+                .foregroundStyle(paper.textSecondary.opacity(0.85))
                 .textSelection(.enabled)
         }
 
@@ -604,7 +641,10 @@ struct SegmentReadingBlock: View, Equatable {
                 }
                 LuminaSelectableText(
                     text: body.rawText,
-                    foreground: LuminaTheme.textSecondary
+                    fontSize: scaled(LuminaTheme.summaryBulletSize),
+                    lineSpacing: scaled(LuminaTheme.summaryBulletLineSpacing),
+                    foreground: paper.textSecondary,
+                    highlightUTF16: originalHighlightUTF16
                 )
             }
             if needsTranslation {
@@ -614,28 +654,30 @@ struct SegmentReadingBlock: View, Equatable {
                     sourceTextLabel("译文")
                     LuminaSelectableText(
                         text: body.translation,
-                        foreground: LuminaTheme.textSecondary.opacity(0.85)
+                        fontSize: scaled(LuminaTheme.summaryBulletSize),
+                        lineSpacing: scaled(LuminaTheme.summaryBulletLineSpacing),
+                        foreground: paper.textSecondary.opacity(0.85)
                     )
                 }
             }
             if body.rawText.isEmpty && body.translation.isEmpty && !isSourceLoading {
                 Text("暂无原文")
-                    .font(.system(size: LuminaTheme.summaryBulletSize))
-                    .foregroundStyle(LuminaTheme.textSecondary)
+                    .font(.system(size: scaled(LuminaTheme.summaryBulletSize)))
+                    .foregroundStyle(paper.textSecondary)
             }
         } else if isSourceLoading {
             SourceTextSkeleton()
         } else {
             Text("原文加载失败")
-                .font(.system(size: LuminaTheme.summaryBulletSize))
-                .foregroundStyle(LuminaTheme.textSecondary)
+                .font(.system(size: scaled(LuminaTheme.summaryBulletSize)))
+                .foregroundStyle(paper.textSecondary)
         }
     }
 
     private func sourceTextLabel(_ title: String) -> some View {
         Text(title)
             .font(.system(size: LuminaTheme.summaryLabelSize, weight: .semibold))
-            .foregroundStyle(LuminaTheme.textSecondary)
+            .foregroundStyle(paper.textSecondary)
             .tracking(0.6)
             .padding(.top, 4)
     }
@@ -662,7 +704,10 @@ struct SegmentReadingBlock: View, Equatable {
             && lhs.isSummaryLoading == rhs.isSummaryLoading
             && lhs.summaryProgressMessage == rhs.summaryProgressMessage
             && lhs.runningMetrics == rhs.runningMetrics
+            && lhs.fontScale == rhs.fontScale
+            && lhs.paper == rhs.paper
             && lhs.canGoPrev == rhs.canGoPrev
             && lhs.canGoNext == rhs.canGoNext
+            && lhs.originalHighlightUTF16 == rhs.originalHighlightUTF16
     }
 }

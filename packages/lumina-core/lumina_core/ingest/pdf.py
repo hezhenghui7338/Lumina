@@ -9,6 +9,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from lumina_core import config
+from lumina_core.chunker.markers import heading_marker
 from lumina_core.chunker.roles import classify_heading
 from lumina_core.config import Settings
 from lumina_core.ingest.ocr import (
@@ -135,19 +136,19 @@ def _page_text(page) -> str:
     return ""
 
 
-def _outline_titles_by_page(reader) -> dict[int, str]:
-    """First outline title per 1-based page number, if the PDF has bookmarks."""
-    titles: dict[int, str] = {}
+def _outline_entries_by_page(reader) -> list[tuple[int, int, str]]:
+    """Bookmark (page, level, title) tuples from pypdf outline, 1-based pages."""
+    entries: list[tuple[int, int, str]] = []
     outline = getattr(reader, "outline", None)
     if not outline:
-        return titles
+        return entries
 
-    def walk(entries) -> None:
-        if not entries:
+    def walk(items, level: int) -> None:
+        if not items:
             return
-        for entry in entries:
+        for entry in items:
             if isinstance(entry, list):
-                walk(entry)
+                walk(entry, level + 1)
                 continue
             try:
                 page = reader.get_destination_page_number(entry)
@@ -156,32 +157,41 @@ def _outline_titles_by_page(reader) -> dict[int, str]:
             title = str(getattr(entry, "title", "") or "").strip()
             if page is None or not title:
                 continue
-            titles.setdefault(int(page) + 1, title)
+            entries.append((int(page) + 1, level, title))
 
     try:
-        walk(outline)
+        walk(outline, 1)
     except Exception:
-        return titles
-    return titles
+        return []
+    return entries
 
 
-def _outline_titles_from_fitz(doc) -> dict[int, str]:
-    titles: dict[int, str] = {}
+def _outline_entries_from_fitz(doc) -> list[tuple[int, int, str]]:
+    entries: list[tuple[int, int, str]] = []
     try:
         toc = doc.get_toc() or []
     except Exception:
-        return titles
+        return entries
     for entry in toc:
         if not isinstance(entry, (list, tuple)) or len(entry) < 3:
             continue
-        title = str(entry[1] or "").strip()
         try:
+            level = max(1, int(entry[0]))
             page = int(entry[2])
         except (TypeError, ValueError):
             continue
+        title = str(entry[1] or "").strip()
         if title and page >= 1:
-            titles.setdefault(page, title)
-    return titles
+            entries.append((page, level, title))
+    return entries
+
+
+def _normalize_outline_entries(
+    outline_titles: dict[int, str] | list[tuple[int, int, str]],
+) -> list[tuple[int, int, str]]:
+    if isinstance(outline_titles, dict):
+        return [(page, 1, title) for page, title in sorted(outline_titles.items())]
+    return list(outline_titles)
 
 
 def _open_fitz(path: Path):
@@ -216,7 +226,7 @@ def load_pdf(
                 load_page=doc.load_page,
                 title=(meta.get("title") or "").strip(),
                 author=(meta.get("author") or "").strip(),
-                outline_titles=_outline_titles_from_fitz(doc),
+                outline_titles=_outline_entries_from_fitz(doc),
                 extractor="pymupdf",
                 use_ocr=use_ocr,
                 on_progress=on_progress,
@@ -237,7 +247,7 @@ def load_pdf(
         load_page=lambda index: reader.pages[index],
         title=(meta.get("/Title") or meta.get("Title") or "").strip(),
         author=(meta.get("/Author") or meta.get("Author") or "").strip(),
-        outline_titles=_outline_titles_by_page(reader),
+        outline_titles=_outline_entries_by_page(reader),
         extractor="pypdf",
         use_ocr=use_ocr,
         on_progress=on_progress,
@@ -253,7 +263,7 @@ def _extract_pdf_pages(
     load_page: Callable[[int], object],
     title: str,
     author: str,
-    outline_titles: dict[int, str],
+    outline_titles: dict[int, str] | list[tuple[int, int, str]],
     extractor: str,
     use_ocr: bool | None,
     on_progress: OcrProgressCallback | None,
@@ -268,19 +278,26 @@ def _extract_pdf_pages(
     garbled_page_nums: list[int] = []
     extracted: set[int] = set()
     structure_roles: list[dict] = []
+    outline_entries = _normalize_outline_entries(outline_titles)
     seen_outline_titles: set[str] = set()
 
     def _page_block(index: int, body: str) -> str:
-        heading = outline_titles.get(index)
         marker = f"## [p.{index}]\n{body}" if body else f"## [p.{index} 无文本]"
-        if not heading:
+        heads = [item for item in outline_entries if item[0] == index]
+        if not heads:
             return marker
-        if heading not in seen_outline_titles:
+        chunks: list[str] = []
+        for _, level, heading in heads:
+            if heading in seen_outline_titles:
+                continue
             seen_outline_titles.add(heading)
             structure_roles.append(
                 {"title": heading, "role": classify_heading(heading).value}
             )
-        return f"## [§{heading}]\n{marker}"
+            chunks.append(heading_marker(heading, level))
+        if not chunks:
+            return marker
+        return "\n".join(chunks) + "\n" + marker
 
     def extract_index(index: int) -> None:
         nonlocal pages_with_text

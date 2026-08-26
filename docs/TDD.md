@@ -23,7 +23,7 @@
 | 深聊模型 | **推荐外部 API**（OpenRouter 等）；与摘要/翻译 **分开配置** | B4/B10 GPU |
 | 联网搜索 | **证据充分性驱动**（非关键词）；源：DDG · Wikipedia · arXiv · Open Library · GitHub | B5 |
 | 开源协议 | **MIT** | — |
-| 书籍存储 | 导入时**复制**；`file_hash` 重复 → **提示是否覆盖** | B1 |
+| 书籍存储 | 导入时**复制**；`file_hash` 重复 → **提示是否覆盖**（与展示书名无关）；批量可跳过剩下所有重复书、仍导入新书 | B1 |
 | 分段时机 | **导入即开始**分段+摘要 prefetch | B11 |
 | 批量队列 | 10+ 本可同时导入；OCR/分段并发 **默认 1**，随模型配置可调 | B1 |
 | 超大文件 | **>500MB 警告并拒绝** | B1 |
@@ -33,7 +33,7 @@
 | 深聊输出 | **LLM JSON mode** 结构化 `{answer, citations, web_refs}` | B6 |
 | Token 长线程 | **分层索引 + 动态上下文组装**（见 §4.6） | B4 |
 | 段内高亮 | v1.0 **整段闪高亮** | B6/B7 |
-| 导出 | Markdown **默认含译文**；翻译对用户不可见 | B9 |
+| 导出 | Markdown **默认完整含译文**；可选 `mode=sentences` 仅各段三句话；翻译对用户不可见 | B9 |
 | Ollama 首次体验 | 参考 LocalAgent `la setup`（RAM 分档 + pull） | B10 |
 | 资讯简报 | RSS **标题 + excerpt 规则截取** | N2 |
 | 深聊线程 | 每书一个 thread | B4 |
@@ -103,10 +103,13 @@ flowchart TB
 
 ### 1.2 Sidecar 生命周期
 
-1. App 启动 → 检测 `lumina-core` 是否运行（health `GET /health`）
-2. 未运行 → 启动 bundled Python 可执行文件（PyInstaller）或 `uv run lumina-core`（开发模式）
-3. 绑定 `127.0.0.1:{port}`（默认 `17432`，冲突时递增）
-4. App 退出 → 发送 `POST /shutdown`（graceful）；超时 SIGTERM
+桌面壳**拥有** `lumina-core` 进程，用户不得被迫用活动监视器 / 任务管理器收尸。
+
+1. App 启动 → 自动启动 sidecar（设置里本会话手动停止过则除外）。
+2. 检测 `127.0.0.1:17432`：`GET /health` **短超时**（约 2s）。健康且身份匹配（`chunker_version` + `core_version` + 同一 bundled 二进制）→ 仅崩溃残留可复用；**health 超时但端口仍占用 = 卡死，必须杀掉监听 PID 再拉起**；版本/二进制过期同现有 `shouldReplaceOrphan`。
+3. 绑定 `127.0.0.1:{port}`（默认 `17432`）。
+4. App 退出 → `POST /shutdown`（短超时）→ SIGTERM **监听 PID + 本会话进程树** → 仍占端口则 SIGKILL。`stop()` 不得只 `terminate` 本会话 `Process` 句柄（复用孤儿时句柄为 nil，退出会变成空操作）。
+5. 设置页（始终可见，非调试）：状态 + **停止** + **重启**。停止后本会话 `ensureRunning` 不再自动拉起。JobQueue 仍持久化，重启后 `recover_on_startup`。
 
 ---
 
@@ -188,7 +191,7 @@ CREATE TABLE books (
   translation_mode TEXT DEFAULT 'auto', -- auto|original|bilingual
   segment_count INTEGER DEFAULT 0,
   current_segment_index INTEGER DEFAULT 0,
-  status        TEXT DEFAULT 'unread',  -- unread|reading|summarized|processing；书架「未读/在读/已读完」按 last_opened_at + 段进度推导，不用此列
+  status        TEXT DEFAULT 'unread',  -- unread|reading|summarized|processing|error；processing 时公开 summarize_state=segmenting；error 为书架摘要维「导入失败」（含取消导入），不占未摘要/分段中/摘要中/已摘要；书架「未读/在读/已读完」按 last_opened_at + 段进度推导，不用此列
   index_status  TEXT DEFAULT 'idle',    -- idle|building|ready|error · 全书分层索引
   file_hash     TEXT,                   -- 缓存失效
   created_at    TEXT,
@@ -308,7 +311,7 @@ sequenceDiagram
 |------|------|
 | 文件存储 | 复制到 `books/{id}/` |
 | 大小限制 | **>500MB → 警告并拒绝** |
-| 重复检测 | 同 `file_hash` → App 弹窗**是否覆盖** |
+| 重复检测 | 同 `file_hash` → App 弹窗**是否覆盖**；展示名可改，不参与去重。批量另可 **跳过** / **跳过剩下所有**（后续 409 不再弹窗，新书仍导入） / **取消剩余导入** |
 | 批量导入 | 10+ 本可同时提交；每本独立 job |
 | 分段时机 | **导入完成即开始**分段（不等打开书） |
 | OCR/分段并发 | 默认 **1**（内部常量，用户不可配） |
@@ -321,7 +324,7 @@ sequenceDiagram
 | PDF（扫描 / 乱码层） | **PyMuPDF + OpenAI 兼容视觉 API / RapidOCR PP-OCRv6** | 覆盖率 < 15% 或文本层判定为 CID 乱码时触发；云端配置完整时优先 |
 | EPUB | **`ebooklib` 为核心**，自建解析 Pipeline（spine → 章节 → 纯文本 + § 锚点） | 不用 epub2txt |
 | MOBI | `mobi` | 同 LA |
-| TXT/Markdown | 内置 | `.txt/.text/.md/.markdown/.mdown/.mkd/.log`，charset 检测 |
+| TXT/Markdown | 内置 | `.txt/.text/.md/.markdown/.mdown/.mkd/.log`。**字节抽样**识别编码（BOM → UTF-8 合法且非乱码 → GB18030/Big5 → charset-normalizer）。抽样用 IncrementalDecoder（`final=False`），64KiB 截在多字节中间不得判失败。UTF-8 能解开不算数：Latin-1 误解的 GBK 再存成 UTF-8 须恢复为汉字。latin-1 不得作为中文成功路径；认不出则导入失败。锁定 codec 后 **IncrementalDecoder 滑窗**解码，禁止 `read_bytes()` 全书。 |
 | HTML/XHTML | 内置 `HTMLParser` | 去除脚本/样式，保留标题锚点与元数据 |
 | RTF | `striprtf` | 纯文本 + title/author |
 | DOCX | `python-docx` | 段落、标题、表格文本、核心元数据 |
@@ -377,33 +380,37 @@ RapidOCR(params={
 
 **配置与探活 API**：`GET/PUT /settings` 管理非敏感配置与掩码 Key；`GET /settings/ocr/status` 检查本地依赖或云端 `/models` 连通性。macOS 与 Windows 设置页均提示“扫描页会上传云端”。
 
-**进度 UX**：OCR 经 SSE 推送 `{book_id, page, total, message}`，消息区分本地/云端；App 显示局部进度，不 blocking 全屏。PDF 渲染和云端同步 HTTP 均位于 ingest 的 `asyncio.to_thread` 工作线程。
+**进度 UX**：OCR 经 SSE 推送 `{book_id, page, total, message}`，消息区分本地/云端；App 显示局部进度，不 blocking 全屏。PDF 渲染和云端同步 HTTP 均位于 ingest 的 `asyncio.to_thread` 工作线程。TXT / 非 OCR 导入同样走 `ingest_progress`：`page/total` 为已处理字数（或文件字节）与总量；结构扫描不得等整步结束才发第一帧。CPU 队列占用时先发「排队等待分段…」。`--cpu-worker` 父进程看门狗：无进度 180s 或单本 1800s 杀子进程，`ingest_error` 写清阶段。
 
 ### 4.2 智能分段（Chunker）
 
-导入后先恢复 **文档地图**（front-matter / bodymatter / back-matter），再在同一角色、同一章内按语义切到 summarize budget。不把全书逐句交给 LLM。
+导入后先恢复 **文档地图**（front-matter / bodymatter / back-matter）与 **结构树**（部/章 HARD，节 STRONG），再在同一角色、同一章内按整段自然段打包到 summarize hard max。默认档以规则为主；高级档对超长或无标点块再做 LLM 切点。不把全书逐句交给 LLM。
 
 ```
 load_document
-  → 结构单元（EPUB landmarks/nav、PDF outline、§/第N章标题）
+  → 结构标记分层（# 部 / ## 章 / ###+ 节；PDF 页码仅锚点）
+  → 结构树 + 结构单元（EPUB nested TOC、PDF outline level、§/第N章）
   → 启发式角色；可选一次 summarize JSON 文档地图（超时回退）
   → 角色硬切（序/前言不得并入第一章）
-  → 章内 adaptive_merge（embedding / 规则 novelty + 目标字数）
+  → 章内按整段自然段打包到 hard max；切点阶梯：章/角色 > 自然段 > 句号 > 语义
+  → 高级档：LLM offset → 段/句吸附
   → DocumentSegment[] + chapter/page 元数据
 ```
 
-角色只存在于结构元数据，**不得**写入 `raw_text` / 读者可见锚点。`SEGMENT_MIN_CHARS = 500` 只约束同一角色内的空壳标题合并；角色变化不受该地板限制。章内二次切分必须落在段落或句末；有句末标点时禁止按字数在句中硬切。
+角色只存在于结构元数据，**不得**写入 `raw_text` / 读者可见锚点。`SEGMENT_MIN_CHARS = 500` 只约束同一角色内的空壳标题 / TOC 碎屑合并；角色变化与正文 HARD 章界不受该地板限制（短章不得吞下一章）。用户 budget 的 `min_chars < 500`（目标约 200–416）时地板让位于该 budget。章内二次切分按 **章 > 自然段 > 句号 > 语义** 的硬阶梯：未超过 `max_chars` 的自然段不得劈开；句号只用于单段超长；embedding / 规则 novelty 只在段界上提前停。完整自然段优先于 0.6T 地板；章末或下一段整段放不进 max 时允许短块。有句末标点时禁止按字数在句中硬切。重平衡无法同时满足地板与 `max_chars` 时，优先遵守 `max_chars` 与段完整性，不得把全书并成一段。
 
 **Lumina 参数（v1.0 默认）**
 
 | 参数 | Ollama | OpenRouter | 其他云端 API |
 |------|--------|------------|--------------|
-| `reading_target_chars` | 2500 | 3500 | 4000 |
-| `reading_hard_max`（target×1.2） | 3000 | 4200 | 4800 |
+| `reading_target_chars` | 2000 | 3500 | 4000 |
+| `reading_hard_max`（target×1.5） | 3000 | 5250 | 6000 |
 | prefetch workers | 1 | 4 | 4 |
 | 短书阈值 | ≤12000 字不切段 | 同 | 同 |
 
-每个 API 资源可在 `models.json` 中设置 `chunk_target_chars`（`0` = 使用该 resource 的 provider 默认值；非 0 时范围为 **200–8000**）。导入分段与段摘要输入上限均取 **summarize 优先级链首资源** 的 budget；仅对新导入书籍生效。设置页资源步进器下限为 **200**（Ollama 上限 4000，其他 8000）。整书「重新分段」允许把目标字数设为 **200–8000**（下限 200，便于短段精读）；API 与阅读器步进器共用该范围。
+导入与「重新分段」可带 `segment_tier: normal | advanced`（设置 `default_segment_tier` 控制导入默认档，缺省 `normal`）。正常档：结构树 + 整段打包到 hard max（章 > 段 > 句 > 语义）+ 现有 embed 链 + 文档地图 LLM。高级档：同上，再对超长/无标点块做 LLM 切点（offset 先吸附段、再句）。高级分段须用户确认。`join(raw_text) == 原文`，禁止 overlap / skip-window。
+
+每个 API 资源可在 `models.json` 中设置 `chunk_target_chars`（`0` = 使用该 resource 的 provider 默认值；非 0 时范围为 **200–8000**）。导入分段与段摘要输入上限均取 **summarize 优先级链首资源** 的 budget；仅对新导入书籍生效。设置页与整书重新分段支持**手输**目标字数，并提供 **500 / 1000 / 1500 / 2000 / 2500** 快捷档；下限 **200**（Ollama 设置上限 4000，其他与重新分段为 8000）。整书「重新分段」允许把目标字数设为 **200–8000**（下限 200，便于短段精读）；API 与客户端输入框共用该范围。
 
 设置页「智能测试上下文」按 **有效理解长度** 建议该值，而不是接口最大输入：把若干主题不同的短段拼到目标字数，模型必须同时答对 **第一段** 与 **最后一段** 的埋藏事实。只记得开头、丢掉末段视为该档失败（对应摘要/深聊里后面的上下文被忽略）。过关上限取 80%、封顶 3500 字写入 `chunk_target_chars`（下限 1500）。探测走 `POST /settings/resources/{id}/context-probe`，后台可取消，不自动保存。
 
@@ -415,7 +422,8 @@ load_document
 保持为正常模型以兼容旧 `models.json`，可选 `advanced_model` 用于高级摘要；为空时回退
 `model`。两档共用 `summarize.priority` fallback 链。`segments.summary_tier` 记录实际档位，
 历史数据迁移为 `normal`。「开始摘要」携带新档位时仅对未完成段生效，已 ready
-段保留原摘要与原档位。「全书重新摘要」(`POST .../summarize/regenerate`) 才会
+段保留原摘要与原档位。客户端点「开始摘要」默认提交 `normal`，点旁边箭头并确认后提交
+`advanced`；悬停文字不得展开高级。「全书重新摘要」(`POST .../summarize/regenerate`) 才会
 重置全部段（含 ready）并按所选档位重跑；客户端必须先向用户确认。SSE
 `segment_ready` 同步返回 `summary_tier`。
 
@@ -618,7 +626,7 @@ Sidecar 绑定 `127.0.0.1` only；无认证（本机进程）。
 | GET | `/health` | Sidecar 存活 |
 | POST | `/books/import` | 导入文件/文件夹；**409** + `{existing_book_id}` 若 `file_hash` 重复 |
 | POST | `/books/{id}/import/overwrite` | 用户确认覆盖后重新导入 |
-| GET | `/books` | 书库列表；`?filter=all\|unread\|reading\|finished\|idle\|summarizing\|summarized\|favorite\|<分类>`；`?sort=recent\|added\|title\|segments\|favorite` |
+| GET | `/books` | 书库列表；`?filter=all\|unread\|reading\|finished\|idle\|segmenting\|summarizing\|summarized\|error\|favorite\|<分类>`；`summarize_state` 含 `segmenting`（`status=processing`）；`filter=error` 为导入失败（`status=error`，含取消）；失败书不进入 idle/segmenting/summarizing/summarized；`?sort=recent\|added\|title\|segments\|progress\|favorite` |
 | GET | `/books/categories` | 固定 LLM 主分类枚举 |
 | PATCH | `/books/{id}` | 更新收藏 / 分类 / 标题 |
 | DELETE | `/books/{id}` | 删除书及本地副本、摘要、笔记 |
@@ -644,7 +652,9 @@ Sidecar 绑定 `127.0.0.1` only；无认证（本机进程）。
 |--------|------|------|
 | POST | `/books/{id}/chat` | 深聊（stream SSE；`scope=segment\|book`） |
 | GET | `/books/{id}/chat/sessions` | 会话列表 |
-| POST | `/books/{id}/export` | 导出 Markdown |
+| POST | `/books/{id}/export` | 导出 Markdown；body `{ include_notes?, mode?: full\|sentences }`，默认 `full` 含译文；`sentences` 仅各段三句话（忽略笔记） |
+| GET | `/books/{id}/segments/{idx}/listen-script` | 听稿；`mode=summary\|detailed\|original`（summary=简要摘要，detailed=完整摘要）。summary/detailed **只读摘要列**，禁止为听简要/完整摘要读 `raw_text`。detailed 含要点、不含 notes。朗读在客户端用系统语音，无 `POST .../speech` |
+| GET | `/books/{id}/original-search?q=` | 书内原文查找。只扫 `raw_text`（不搜摘要/译文/笔记）；`asyncio.to_thread`；响应 `{query, hits, truncated}`，hit 含 `segment_index`、`start`/`end`（Unicode）、`start_utf16`/`end_utf16`、`snippet`；**不含** `raw_text`。空查询 → `hits=[]`。默认最多 80 条 |
 
 ### 5.3 笔记与搜索
 
@@ -653,7 +663,7 @@ Sidecar 绑定 `127.0.0.1` only；无认证（本机进程）。
 | POST | `/notes` | 创建笔记（`segment_id` 必填；须属于该书） |
 | GET | `/notes?book_id=&segment_id=` | 有 `book_id` → 书内列表（可按段筛）；无 → 跨书列表 |
 | DELETE | `/notes/{id}` | 删除单条笔记（同步清理 FTS） |
-| GET | `/search?q=` | 跨书 FTS |
+| GET | `/search?q=` | 跨书 FTS（笔记 + 段摘要 + 书名；不是书内原文 Find） |
 
 列表响应每条含 `segment_index`、`segment_label`；跨书时另含 `book_title`（不含 `raw_text`）。
 
@@ -698,18 +708,22 @@ final class ReaderViewModel: ObservableObject {
 }
 ```
 
+听文本：`ListenSession`（macOS `ObservableObject` / Windows 会话对象）管连播、倍速与离开即停；系统引擎本地拼稿并调用本机语音包。设置可打开 VoiceOver Utility（macOS 15+）或 `ms-settings:speech`（Windows）引导下载系统语音包；客户端**不代下**音库。切书走 `cancelAllTasks()` / `OnNavigatedFrom` 时必须 `stop()`。 sidecar **不发起**外网 TTS。
+
 ### 6.2 布局映射 PRD §3.2
 
 ```
-HStack（实现上等价 NavigationSplitView 侧栏）
-├── Sidebar: SegmentListView（默认展开；章节组 + label + 状态图标）
-└── Detail: ZStack
-    ├── SegmentContentView（摘要 + 原文/译文）
-    ├── NotesDrawer（渐进披露 · 右侧）
-    └── ChatDrawer（渐进披露 · 底部；非常驻）
+ZStack
+├── SegmentContentView（摘要 + 原文/译文；始终全宽）
+├── NotesDrawer（渐进披露 · 右侧；上下让开顶底栏）
+├── ChatDrawer（渐进披露 · 底部；停在底栏之上）
+├── TopChromeBar（overlay；恒定 inset，显隐不得位移正文）
+├── ListenMiniBar（播放中始终可见；chrome 隐藏时也保留）
+├── SegmentCoverPage（底栏「段列表」自底上滑；停在底栏之上；再点段列表 / Esc / 选段关闭）
+└── BottomFunctionBar（overlay；段列表 / 笔记 / 深聊 / 显示）
 ```
 
-- 段列表默认常驻；边缘钉住/收起（AppStorage）；左缘在段列表不可见时显示（触发后保持显示，直至空白进入阅读态或点击收起）；选段后不收起。深聊 / 笔记仍为抽屉（与早期「常驻 Chat」草图不同，以 PRD §3.2 为准）
+- 段列表是覆盖层，不是内嵌侧栏，不得挤压阅读区。底栏打开目录（自底上滑、不盖住底栏）；再点段列表 / Esc / 选段关闭。打开笔记或深聊时关掉目录。深聊 / 笔记仍为抽屉。阅读中不提供「最近」书库列表，切书走书架。无贴边图标、无触边 250ms dwell。字号与纸色走底栏「显示」popover；纸色不得改 `preferredColorScheme`。
 - 段切换：`currentSegment` 更新；Chat 历史按 **book** 保留（PRD）
 - **Citation 跳转 + 整段闪高亮（v1.0）**：
   1. `selectSegment(idx)` 切换段列表与内容区
@@ -750,6 +764,8 @@ chat:
 summarize:
   priority: [ollama, openrouter]
 ```
+
+听文本由客户端系统语音包合成（与 `lumina_core.tts.script.build_listen_script` 对齐拼稿）。设置打开 VoiceOver Utility / `ms-settings:speech` 引导下载，客户端不代下音库。sidecar **不提供** `POST .../speech`，不缓存云端 mp3。
 
 ### 7.2 ModelRouter（Core）
 
@@ -799,7 +815,12 @@ App Onboarding → `GET /settings/ollama/status` → 必要时 `POST /settings/o
 **硬约束（PRD 章程 0 · 永不卡住）**：
 
 - `async` HTTP handler **禁止**同步 CPU / 网络 / 大文件 I/O；必须 `asyncio.to_thread` 或投递 JobQueue。
+- 大文件 ingest/resegment 的 decode / chunk / persist **须在 sidecar 子进程**执行（`--cpu-worker`）。`to_thread` + 协作式 `sleep` 不能让出 CPython `decode`、`re.finditer`、FTS 的 GIL；导入期间 `/health`、书库、资讯、设置必须可响应。
+- 章标（`BARE_CHAPTER`）只对短行 `match`；禁止对超长正文行或全书跑嵌套装饰符正则。换行扫描不得对每个 `\n` 从文件头 `rfind`。
+- cpu-worker 子进程无进度 180s / 单本 1800s 必须失败，不得停在「分段中」。
+- TXT 解码与分段 **禁止全书 `str` 常驻**：峰值 RAM = 窗口 + 当前段 + 一批 INSERT；覆盖校验用偏移首尾相接，禁止 `join(raw_text)` 全书。
 - `GET /books/{id}/segments` **默认不含** `raw_text`；原文仅 `GET .../segments/{idx}`。
+- `GET /books/{id}/original-search` **禁止**同步扫库；**禁止**在 hits 中返回 `raw_text`。
 - `segment_ready` SSE 须携带 UI 所需摘要字段；客户端 **禁止** 为此再拉全量段表。
 - 手动调界只改相邻两段 `raw_text`；SSE `segment_boundary_moved` 后客户端补丁这两行，禁止整表 reload。
 - Swift：网络收发与大 JSON 解码不得堵 MainActor；切书请求须可取消。
@@ -871,6 +892,7 @@ JobQueue：`asyncio.PriorityQueue` + worker pool；每书一个摘要链锁，�
 - [x] 笔记必须挂段；书内筛选跳段 + 书库全部笔记跨书列表
 - [x] 选区提问（剪贴板引用 + `quote` API）
 - [x] 导出可选含笔记
+- [x] 导出可选仅各段三句话
 - [x] 资讯精读视图 + 单篇深聊 SSE（`/news/articles/{id}/chat`）
 - [x] Onboarding 三步引导
 - [x] Xcode 工程同步 Wave 2/3 全部 Swift 源文件
@@ -937,7 +959,7 @@ JobQueue：`asyncio.PriorityQueue` + worker pool；每书一个摘要链锁，�
 | 决策 | 状态 | 结论 |
 |------|------|------|
 | 文件存储 | ✅ | **复制**到 App Support |
-| 重复导入 | ✅ | 同 `file_hash` → 409 + 用户确认**覆盖** |
+| 重复导入 | ✅ | 同 `file_hash` → 409 + 用户确认**覆盖**；批量可跳过剩下所有重复、仍导入新书 |
 | 批量队列 | ✅ | 10+ 本可同时提交；CPU 队列默认并发 1 |
 | EPUB 解析库 | ✅ | **`ebooklib` 为核心**自建 pipeline |
 | 超大文件 | ✅ | **>500MB 警告并拒绝** |
@@ -950,6 +972,15 @@ JobQueue：`asyncio.PriorityQueue` + worker pool；每书一个摘要链锁，�
 | 分段时机 | ✅ | **导入即开始**分段+摘要 |
 | 段生成失败 | ✅ | 重试 **3 次** → `failed`；可手动 retry |
 | 磁盘缓存上限 | ✅ | 单书 **2GB** quota；LRU 淘汰 |
+
+### B12 听文本
+
+| 决策 | 状态 | 结论 |
+|------|------|------|
+| 朗读稿 | ✅ | Python `build_listen_script` 为真源；简要=sentences；完整=总结+要点，不含 notes / follow_ups |
+| 引擎 | ✅ | 仅系统离线语音包（macOS Premium/增强，Windows Neural）；设置引导系统下载页，不代下、不接云端 TTS |
+| 摘要听读 | ✅ | 只走 summary 列 / `GET .../summary`，禁止为听简要/完整摘要拉 `raw_text` |
+| 离开即停 | ✅ | 切书 / 离开阅读器取消合成 |
 
 ### B3 自动翻译
 
@@ -991,8 +1022,9 @@ JobQueue：`asyncio.PriorityQueue` + worker pool；每书一个摘要链锁，�
 | 决策 | 状态 | 结论 |
 |------|------|------|
 | 格式 | ✅ | Markdown only |
-| 含译文 | ✅ | **默认含译文** |
-| 含笔记 | ✅ | 可选勾选 |
+| 含译文 | ✅ | **默认含译文**（`mode=full`） |
+| 含笔记 | ✅ | 完整版可选勾选 |
+| 仅总结 | ✅ | `mode=sentences`：只要各段三句话，无要点/注意/追问/译文/笔记 |
 
 ### B10 Ollama / 模型
 

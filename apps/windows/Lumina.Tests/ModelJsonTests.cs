@@ -24,6 +24,14 @@ public class ModelJsonTests
         Assert.Equal("笔记", hit.KindLabel);
         Assert.Contains("n1", hit.Id);
 
+        var originalJson = """{"query":"学而","hits":[{"segment_index":4,"start":10,"end":12,"start_utf16":10,"end_utf16":12,"snippet":"子曰：[学而]时习"}],"truncated":false}""";
+        var original = JsonSerializer.Deserialize<OriginalSearchResponse>(originalJson, Opts)!;
+        Assert.Equal("学而", original.Query);
+        Assert.Single(original.Hits);
+        Assert.Equal(4, original.Hits[0].SegmentIndex);
+        Assert.Equal(10, original.Hits[0].StartUtf16);
+        Assert.False(original.Truncated);
+
         var briefJson = """{"date":"2026-08-10","count":1,"articles":[{"id":"a1","title":"News","url":"https://x","viewpoints":[],"quotes":[],"meta":{},"reasons":[]}]}""";
         var brief = JsonSerializer.Deserialize<NewsBrief>(briefJson, Opts)!;
         Assert.Equal(1, brief.Count);
@@ -32,9 +40,12 @@ public class ModelJsonTests
         var settingsJson = """{"target_language":"zh-CN","web_search_provider":"ddgs","web_search_enabled":true,"debug_mode":true,"auto_start_summary":false,"models":{"resources":[{"id":"ollama","provider":"ollama","base_url":"http://127.0.0.1:11434","model":"qwen3.5:4b","advanced_model":"qwen3.5:9b"}],"chat":{"priority":["ollama"]},"summarize":{"priority":["ollama"]}},"prompts":{"segment":"s","document":"d","chat":"c","news_chat":"nc","translate":"t","classify":"cl"},"prompts_defaults":{"segment":"","document":"","chat":"","news_chat":"","translate":"","classify":""}}""";
         var settings = JsonSerializer.Deserialize<AppSettings>(settingsJson, Opts)!;
         Assert.True(settings.DebugMode);
+        Assert.False(settings.AutoStartSummary);
+        Assert.Equal("normal", settings.DefaultSegmentTier);
         Assert.True(settings.WebSearchEnabled);
         Assert.Equal("ollama", settings.Models.Resources[0].Id);
         Assert.Equal("qwen3.5:9b", settings.Models.Resources[0].AdvancedModel);
+        Assert.Equal("system", settings.Models.Tts.Engine);
         var refJson = """{"title":"牛顿","url":"https://zh.wikipedia.org/wiki/牛顿","source":"Wikipedia"}""";
         var webRef = JsonSerializer.Deserialize<ChatWebRef>(refJson, Opts)!;
         Assert.Equal("牛顿", webRef.Title);
@@ -77,6 +88,19 @@ public class ModelJsonTests
         var moved = JsonSerializer.Deserialize<SegmentBoundaryMoveResult>(movedJson, Opts)!;
         Assert.Equal(630, moved.LeftCharCount);
         Assert.False(moved.Unchanged);
+    }
+
+    [Fact]
+    public void Deserializes_segment_summary_preview_without_json()
+    {
+        var json = """{"id":"s1","idx":0,"summary_status":"ready","summary_preview":"邻里虽敬其向学，却无力资助书卷。","label":"邻里虽敬","chapter":"第一章","bullet_labels":["邻里","赴考"]}""";
+        var row = JsonSerializer.Deserialize<SegmentRow>(json, Opts)!;
+        Assert.Equal("邻里虽敬其向学，却无力资助书卷。", row.SummaryPreview);
+        Assert.Null(row.SummaryJson);
+        Assert.Equal("邻里虽敬", row.Label);
+        Assert.Equal(new[] { "邻里", "赴考" }, row.BulletLabels);
+        Assert.Equal("第一章 · 段 1 · 邻里虽敬", row.CatalogHeadline);
+        Assert.Equal("邻里 · 赴考", row.BulletLabelsLine);
     }
 
     [Fact]
@@ -152,6 +176,22 @@ public class ModelJsonTests
             CurrentSegmentIndex = 0,
         };
         var summarizing = new BookSummary { Title = "E", SummarizeState = "queued", SegmentCount = 8 };
+        var segmenting = new BookSummary
+        {
+            Title = "F",
+            Status = "processing",
+            SummarizeState = "segmenting",
+            SegmentCount = 0,
+        };
+        var resegmentWasDone = new BookSummary
+        {
+            Title = "G",
+            Status = "processing",
+            SummarizeState = "segmenting",
+            SegmentCount = 10,
+            SummaryReadyCount = 10,
+            SummaryTotalCount = 10,
+        };
 
         Assert.True(LibraryCollections.Matches(LibraryCollections.Unread, unread));
         Assert.True(LibraryCollections.Matches(LibraryCollections.Reading, reading));
@@ -159,10 +199,168 @@ public class ModelJsonTests
         Assert.True(LibraryCollections.Matches(LibraryCollections.Reading, shortOpened));
         Assert.False(LibraryCollections.Matches(LibraryCollections.Finished, shortOpened));
         Assert.True(LibraryCollections.Matches(LibraryCollections.Summarizing, summarizing));
+        Assert.True(LibraryCollections.Matches(LibraryCollections.Segmenting, segmenting));
+        Assert.True(LibraryCollections.Matches(LibraryCollections.Segmenting, resegmentWasDone));
+        Assert.False(LibraryCollections.Matches(LibraryCollections.Summarized, resegmentWasDone));
+        Assert.False(LibraryCollections.Matches(LibraryCollections.Idle, segmenting));
+        Assert.Equal("分段中", LibraryCollections.Label(LibraryCollections.Segmenting));
+        Assert.Equal("分段中", segmenting.StatusLabel);
+        Assert.Equal("分段中", segmenting.CardStatusLine);
+        var ingesting = new BookSummary
+        {
+            Title = "大TXT",
+            Status = "processing",
+            SegmentCount = 0,
+            IngestMessage = "正在识别序言与正文结构…",
+            IngestPage = 1,
+            IngestTotal = 4,
+        };
+        Assert.Contains("正在识别序言与正文结构", ingesting.CardStatusLine, StringComparison.Ordinal);
+        Assert.Contains("%", ingesting.CardStatusLine, StringComparison.Ordinal);
+
+        var ingestFailed = new BookSummary
+        {
+            Title = "坏书",
+            Status = "error",
+            SegmentCount = 0,
+            SummarizeState = "summarized",
+            IngestError = "unknown encoding",
+        };
+        var ingestCancelled = new BookSummary
+        {
+            Title = "取消",
+            Status = "error",
+            SegmentCount = 0,
+            SummarizeState = "idle",
+            IngestError = "已取消导入",
+        };
+        Assert.True(LibraryCollections.Matches(LibraryCollections.IngestFailed, ingestFailed));
+        Assert.True(LibraryCollections.Matches(LibraryCollections.IngestFailed, ingestCancelled));
+        Assert.False(LibraryCollections.Matches(LibraryCollections.Summarized, ingestFailed));
+        Assert.False(LibraryCollections.Matches(LibraryCollections.Idle, ingestCancelled));
+        var hole = new BookSummary
+        {
+            Title = "空档",
+            Status = "unread",
+            SegmentCount = 0,
+            SummaryReadyCount = 0,
+            SummaryTotalCount = 0,
+            SummarizeState = "summarized",
+        };
+        Assert.True(hole.IsSegmenting);
+        Assert.Equal("分段中", hole.SummaryFacetLabel);
+        Assert.Equal("分段中", hole.CardStatusLine);
+        Assert.True(LibraryCollections.Matches(LibraryCollections.Segmenting, hole));
+        Assert.False(LibraryCollections.Matches(LibraryCollections.Idle, hole));
+        Assert.False(LibraryCollections.Matches(LibraryCollections.Summarized, hole));
+        Assert.False(LibraryCollections.Matches(LibraryCollections.IngestFailed, hole));
+        Assert.Equal("导入失败", LibraryCollections.Label(LibraryCollections.IngestFailed));
+        Assert.True(LibraryFacets.Matches(ingestFailed, LibraryCollections.IngestFailed, LibraryFacets.All, LibraryFacets.All));
+        Assert.False(LibraryFacets.Matches(ingestFailed, LibraryCollections.Summarized, LibraryFacets.All, LibraryFacets.All));
+        Assert.Equal("导入失败", LibraryCollections.Label(LibraryCollections.IngestFailed));
+        Assert.Equal("导入失败", LibraryFacets.Title(LibraryCollections.IngestFailed, LibraryFacets.All, LibraryFacets.All, false));
         Assert.Equal("段落数", LibrarySorts.Label(LibrarySorts.Segments));
+        Assert.Equal("阅读进度", LibrarySorts.Label(LibrarySorts.Progress));
 
         var sorted = LibrarySorts.Sorted([unread, reading, summarizing], LibrarySorts.Segments);
         Assert.Equal(["A", "B", "E"], sorted.Select(b => b.Title).ToList());
+
+        var byProgress = LibrarySorts.Sorted(
+            [unread, reading, finished, shortOpened],
+            LibrarySorts.Progress);
+        Assert.Equal(["C", "B", "A", "D"], byProgress.Select(b => b.Title).ToList());
+    }
+
+    [Fact]
+    public void Empty_unread_book_is_segmenting_not_summarized()
+    {
+        var hole = new BookSummary
+        {
+            Title = "空档",
+            Status = "unread",
+            SegmentCount = 0,
+            SummaryReadyCount = 0,
+            SummaryTotalCount = 0,
+            SummarizeState = "summarized",
+        };
+        Assert.True(hole.IsSegmenting);
+        Assert.True(hole.CanOpenInReader);
+        Assert.Equal("分段中", hole.SummaryFacetLabel);
+        Assert.Equal("分段中", hole.CardStatusLine);
+        Assert.True(LibraryCollections.Matches(LibraryCollections.Segmenting, hole));
+        Assert.False(LibraryCollections.Matches(LibraryCollections.Idle, hole));
+        Assert.False(LibraryCollections.Matches(LibraryCollections.Summarized, hole));
+        Assert.False(LibraryCollections.Matches(LibraryCollections.IngestFailed, hole));
+        Assert.True(LibraryFacets.MatchesSummary(LibraryCollections.Segmenting, hole));
+    }
+
+    [Fact]
+    public void LibraryFacets_default_to_all_and_combine_with_and()
+    {
+        var hit = new BookSummary
+        {
+            Title = "史记",
+            SegmentCount = 10,
+            SummarizeState = "summarized",
+            Category = "历史",
+            SummaryReadyCount = 10,
+            SummaryTotalCount = 10,
+        };
+        var wrongCategory = new BookSummary
+        {
+            Title = "黑客与画家",
+            SegmentCount = 10,
+            SummarizeState = "summarized",
+            Category = "科技",
+            SummaryReadyCount = 10,
+            SummaryTotalCount = 10,
+        };
+        var idle = new BookSummary
+        {
+            Title = "未摘要",
+            SegmentCount = 10,
+            SummarizeState = "idle",
+            Category = "历史",
+        };
+        var opened = new BookSummary
+        {
+            Title = "在读史书",
+            SegmentCount = 10,
+            SummarizeState = "summarized",
+            Category = "历史",
+            LastOpenedAt = "2024-05-01T00:00:00Z",
+            CurrentSegmentIndex = 2,
+            SummaryReadyCount = 10,
+            SummaryTotalCount = 10,
+        };
+
+        Assert.True(LibraryFacets.IsDefault(LibraryFacets.All, LibraryFacets.All, LibraryFacets.All, false));
+        Assert.Equal("书架", LibraryFacets.Title(LibraryFacets.All, LibraryFacets.All, LibraryFacets.All, false));
+        Assert.True(LibraryFacets.Matches(hit, LibraryCollections.Summarized, LibraryCollections.Unread, "历史"));
+        Assert.False(LibraryFacets.Matches(wrongCategory, LibraryCollections.Summarized, LibraryCollections.Unread, "历史"));
+        Assert.False(LibraryFacets.Matches(idle, LibraryCollections.Summarized, LibraryCollections.Unread, "历史"));
+        Assert.False(LibraryFacets.Matches(opened, LibraryCollections.Summarized, LibraryCollections.Unread, "历史"));
+        Assert.Equal(
+            "已摘要 · 未读 · 历史",
+            LibraryFacets.Title(LibraryCollections.Summarized, LibraryCollections.Unread, "历史", false));
+        Assert.Equal("分段中", LibraryFacets.Title(LibraryCollections.Segmenting, LibraryFacets.All, LibraryFacets.All, false));
+        Assert.True(LibraryFacets.Matches(
+            new BookSummary { Status = "processing", SummarizeState = "segmenting" },
+            LibraryCollections.Segmenting));
+        Assert.Equal("全部", LibraryCollections.Label(LibraryFacets.All));
+    }
+
+    [Fact]
+    public void BookCoverPalette_tints_by_category()
+    {
+        Assert.Equal((184, 97, 82), BookCoverPalette.Rgb("文学"));
+        Assert.Equal((140, 107, 71), BookCoverPalette.Rgb("历史"));
+        Assert.Equal((71, 115, 158), BookCoverPalette.Rgb("科技"));
+        Assert.Equal((107, 92, 148), BookCoverPalette.Rgb("哲学"));
+        Assert.Equal((71, 133, 107), BookCoverPalette.Rgb("经济"));
+        Assert.Equal((158, 107, 71), BookCoverPalette.Rgb("传记"));
+        Assert.Equal((115, 117, 128), BookCoverPalette.Rgb(null));
+        Assert.Equal((115, 117, 128), BookCoverPalette.Rgb("其他"));
     }
 
     [Fact]
@@ -175,9 +373,9 @@ public class ModelJsonTests
     }
 
     [Fact]
-    public void ReadingProgressIndex_restore_offset_is_always_ignored()
+    public void ReadingProgressIndex_restore_offset_when_segment_count_matches()
     {
-        Assert.Equal(0, ReadingProgressIndex.RestoreOffset(120, 10, 10));
+        Assert.Equal(120, ReadingProgressIndex.RestoreOffset(120, 10, 10));
         Assert.Equal(0, ReadingProgressIndex.RestoreOffset(120, 12, 4));
         Assert.Equal(0, ReadingProgressIndex.RestoreOffset(null, 10, 10));
     }
@@ -279,6 +477,16 @@ public class CoreClientHttpTests
             {
                 return Json("""{"task_counts":{"queued":1,"running":0,"completed":0,"failed":0,"cancelled":0},"job_queue":{"queue_depth":0,"active_jobs":[],"worker_count":0,"worker_target":0,"chat_preempted":false,"user_paused_all":false,"user_paused_books":[]},"resource_runtime":[]}""");
             }
+            if (path == "/books/b1/resegment/cancel")
+            {
+                Assert.Equal(HttpMethod.Post, req.Method);
+                return Json("{}");
+            }
+            if (path == "/books/b1/ingest/cancel")
+            {
+                Assert.Equal(HttpMethod.Post, req.Method);
+                return Json("{}");
+            }
             return new HttpResponseMessage(HttpStatusCode.NotFound);
         });
 
@@ -291,6 +499,8 @@ public class CoreClientHttpTests
         Assert.Equal(2, cats.Count);
         var ops = await client.FetchOpsOverviewAsync();
         Assert.Equal(1, ops.TaskCounts.Queued);
+        await client.CancelResegmentBookAsync("b1");
+        await client.CancelIngestAsync("b1");
     }
 
     private static HttpResponseMessage Json(string body) =>

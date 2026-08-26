@@ -113,6 +113,7 @@ async def read_article(
     force_refetch: bool = False,
     use_llm: bool = True,
     prompts: PromptsConfig | None = None,
+    target_language: str = "zh-CN",
 ) -> ReadResult:
     store = NewsStore(conn)
     article = store.get(article_id)
@@ -207,6 +208,7 @@ async def read_article(
             use_llm=use_llm,
             allow_long=True,
             prompts=prompts,
+            target_language=target_language,
         )
     except Exception as exc:
         store.update_fields(article_id, summary_status="failed")

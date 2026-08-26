@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 private let articleSwitchDuration: TimeInterval = 0.05
@@ -178,45 +179,28 @@ struct NewsView: View {
                     Button("显示全部") { sourceFilter = "all" }
                 }
             } else {
-                List(selection: $selectedId) {
+                List {
                     ForEach(filteredArticles.indices, id: \.self) { index in
                         let article = filteredArticles[index]
-                        HStack(alignment: .top, spacing: 10) {
-                            Text("\(index + 1).")
-                                .font(.system(size: 12, weight: .medium).monospacedDigit())
-                                .foregroundStyle(LuminaTheme.textSecondary)
-                                .frame(width: 28, alignment: .trailing)
-                            VStack(alignment: .leading, spacing: 5) {
-                                Text(article.title)
-                                    .font(.system(size: 14.5, weight: .medium))
-                                    .foregroundStyle(LuminaTheme.textPrimary)
-                                    .lineLimit(2)
-                                    .fixedSize(horizontal: false, vertical: true)
-                                HStack(spacing: 6) {
-                                    if let source = displaySource(article) {
-                                        Text(source)
-                                            .lineLimit(1)
-                                    }
-                                    if let published = article.published_at {
-                                        Text(published.prefix(10))
-                                    }
-                                }
-                                .font(.system(size: 11))
-                                .foregroundStyle(LuminaTheme.textSecondary)
-                            }
-                        }
-                        .padding(.vertical, 4)
-                        .tag(article.id)
-                        .listRowInsets(EdgeInsets(top: 8, leading: 12, bottom: 8, trailing: 12))
-                        .background(
-                            DoubleClickHandler {
-                                selectedId = article.id
+                        let isSelected = selectedId == article.id
+                        Button {
+                            selectedId = article.id
+                            if NSApp.currentEvent?.clickCount == 2 {
                                 path.append(article.id)
                             }
-                        )
+                        } label: {
+                            articleRow(article, index: index)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .listRowInsets(EdgeInsets(top: 8, leading: 12, bottom: 8, trailing: 12))
+                        .listRowBackground(newsRowSelectionChrome(isSelected: isSelected))
+                        .accessibilityAddTraits(isSelected ? [.isSelected] : [])
                     }
                 }
                 .listStyle(.sidebar)
+                .onMoveCommand(perform: moveNewsSelection)
             }
         }
         .navigationSplitViewColumnWidth(min: 260, ideal: 300, max: 340)
@@ -225,6 +209,60 @@ struct NewsView: View {
         }
         .onChange(of: filteredArticles.map(\.id)) { _, _ in
             ensureValidSelection()
+        }
+    }
+
+    private func articleRow(_ article: NewsArticleCard, index: Int) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            Text("\(index + 1).")
+                .font(.system(size: 12, weight: .medium).monospacedDigit())
+                .foregroundStyle(LuminaTheme.textSecondary)
+                .frame(width: 28, alignment: .trailing)
+            VStack(alignment: .leading, spacing: 5) {
+                Text(article.title)
+                    .font(.system(size: 14.5, weight: .medium))
+                    .foregroundStyle(LuminaTheme.textPrimary)
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+                HStack(spacing: 6) {
+                    if let source = displaySource(article) {
+                        Text(source)
+                            .lineLimit(1)
+                    }
+                    if let published = article.published_at {
+                        Text(published.prefix(10))
+                    }
+                }
+                .font(.system(size: 11))
+                .foregroundStyle(LuminaTheme.textSecondary)
+            }
+        }
+        .padding(.vertical, 4)
+    }
+
+    @ViewBuilder
+    private func newsRowSelectionChrome(isSelected: Bool) -> some View {
+        RoundedRectangle(cornerRadius: 8, style: .continuous)
+            .fill(isSelected ? LuminaTheme.newsRowSelectionBackground : Color.clear)
+            .overlay(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .stroke(isSelected ? LuminaTheme.newsRowSelectionStroke : Color.clear, lineWidth: 1)
+            )
+            .padding(.horizontal, 4)
+            .padding(.vertical, 1)
+    }
+
+    private func moveNewsSelection(_ direction: MoveCommandDirection) {
+        let ids = filteredArticles.map(\.id)
+        guard !ids.isEmpty else { return }
+        let current = selectedId.flatMap { ids.firstIndex(of: $0) } ?? 0
+        switch direction {
+        case .up:
+            selectedId = ids[max(0, current - 1)]
+        case .down:
+            selectedId = ids[min(ids.count - 1, current + 1)]
+        default:
+            break
         }
     }
 
@@ -286,6 +324,7 @@ struct NewsView: View {
     private func loadBrief() async {
         error = nil
         guard await sidecar.waitUntilReady() else {
+            if sidecar.userStopped { return }
             self.error = sidecar.launchError ?? "无法连接到 AI 引擎，请重试。"
             return
         }

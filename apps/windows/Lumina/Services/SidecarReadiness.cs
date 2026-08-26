@@ -13,7 +13,7 @@ public sealed class SidecarHealth
 /// Decisions for replacing a leftover lumina-core process on the fixed sidecar port.
 public static class SidecarReadiness
 {
-    public const string ExpectedChunkerVersion = "10";
+    public const string ExpectedChunkerVersion = "14";
 
     public static string NormalizeVersion(string? version)
     {
@@ -66,4 +66,50 @@ public static class SidecarReadiness
             Path.GetFullPath(right),
             StringComparison.OrdinalIgnoreCase);
     }
+
+    public static SidecarEngineStatus EngineStatus(
+        bool isRunning,
+        bool isBootstrapping,
+        bool userStopped,
+        string? launchError)
+    {
+        if (isBootstrapping) return SidecarEngineStatus.Starting;
+        if (isRunning) return SidecarEngineStatus.Running;
+        if (userStopped) return SidecarEngineStatus.Stopped;
+        if (!string.IsNullOrEmpty(launchError)) return SidecarEngineStatus.Failed;
+        return SidecarEngineStatus.Stopped;
+    }
+
+    public static string StatusLabel(SidecarEngineStatus status) => status switch
+    {
+        SidecarEngineStatus.Starting => "正在启动…",
+        SidecarEngineStatus.Running => "运行中",
+        SidecarEngineStatus.Failed => "启动失败",
+        _ => "已停止",
+    };
+
+    public static bool ShouldAutoStart(bool userStopped) => !userStopped;
+
+    public static bool MustKillPortListenerOnStop(bool hasOwnedProcess, bool portOccupied) =>
+        hasOwnedProcess || portOccupied;
+
+    public static bool ShouldKillListenerBeforeLaunch(
+        bool healthResponded,
+        bool shouldReplaceOrphan,
+        bool portOccupied)
+    {
+        if (healthResponded) return shouldReplaceOrphan;
+        return portOccupied;
+    }
+
+    public static bool ShouldReuseLeftover(bool healthResponded, bool shouldReplaceOrphan) =>
+        healthResponded && !shouldReplaceOrphan;
+}
+
+public enum SidecarEngineStatus
+{
+    Starting,
+    Running,
+    Stopped,
+    Failed,
 }

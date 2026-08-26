@@ -104,6 +104,8 @@ def test_long_book_slim_list_excludes_summary_json(client):
     assert "summary_json" not in segments[0]
     assert segments[0]["summary_status"] == "ready"
     assert segments[0]["label"]
+    assert segments[0]["summary_preview"]
+    assert "本段交代了主要情节" in segments[0]["summary_preview"]
 
     # Slim list should stay well under 1 MB even with 500 ready segments.
     assert len(resp.content) < 1_000_000

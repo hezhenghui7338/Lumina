@@ -6,10 +6,6 @@ private enum ReaderOverlay: Equatable {
     case none, chat, notes
 }
 
-private enum ReaderEdgeTarget: Equatable {
-    case segments, chat, notes
-}
-
 private enum ReaderChromeMode: Equatable {
     case hidden, revealed
 }
@@ -23,36 +19,28 @@ enum ReaderChatScope: String, CaseIterable, Identifiable {
 struct ReaderView: View {
     let bookId: String
     var initialSegmentIndex: Int? = nil
-    @Binding var segmentListPeeking: Bool
     @Binding var readerOverlayActive: Bool
-    @Binding var readerChromeVisible: Bool
-    @Binding var librarySidebarPinned: Bool
     var onReturnToBookshelf: () -> Void = {}
     var onImport: () -> Void = {}
     @EnvironmentObject private var core: CoreClient
+    @EnvironmentObject private var theme: ThemeManager
     @Environment(\.scenePhase) private var scenePhase
 
     @ObservedObject var libraryViewModel: LibraryViewModel
     @StateObject private var viewModel = ReaderViewModel()
-    @AppStorage("lumina.reader.segmentListPinned") private var segmentListPinned = false
+    @StateObject private var listenSession = ListenSession()
 
     init(
         bookId: String,
         initialSegmentIndex: Int? = nil,
-        segmentListPeeking: Binding<Bool> = .constant(false),
         readerOverlayActive: Binding<Bool> = .constant(false),
-        readerChromeVisible: Binding<Bool> = .constant(false),
-        librarySidebarPinned: Binding<Bool> = .constant(false),
         libraryViewModel: LibraryViewModel,
         onReturnToBookshelf: @escaping () -> Void = {},
         onImport: @escaping () -> Void = {}
     ) {
         self.bookId = bookId
         self.initialSegmentIndex = initialSegmentIndex
-        _segmentListPeeking = segmentListPeeking
         _readerOverlayActive = readerOverlayActive
-        _readerChromeVisible = readerChromeVisible
-        _librarySidebarPinned = librarySidebarPinned
         _libraryViewModel = ObservedObject(wrappedValue: libraryViewModel)
         self.onReturnToBookshelf = onReturnToBookshelf
         self.onImport = onImport
@@ -67,10 +55,12 @@ struct ReaderView: View {
     @State private var readerGlobalFrame: CGRect = .null
     @State private var overlay: ReaderOverlay = .none
     @State private var overlayEngaged = false
+    @State private var coverPage: ReaderCoverPage = .none
     @State private var chatInput = ""
     @State private var highlightSegment: Int?
     @State private var showExport = false
     @State private var exportIncludeNotes = false
+    @State private var exportMode = MarkdownExportMode.full
     @State private var exportDocument = MarkdownExportDocument(text: "")
     @State private var showFileExporter = false
     @State private var exportDefaultFilename = "summary.md"
@@ -81,55 +71,41 @@ struct ReaderView: View {
     @State private var noteError: String?
     @State private var actionError: String?
     @State private var showRegenerateConfirm = false
+    @State private var showAdvancedStartConfirm = false
     @State private var regenerateSummaryTier: SummaryTier = .normal
     @State private var showResegmentSheet = false
     @State private var showBoundarySheet = false
     @State private var boundaryLeftIdx = 0
     @State private var resegmentTargetChars = 4000
+    @State private var resegmentTier: SegmentTier = .normal
     @State private var isResegmentSubmitting = false
-    @State private var readerSize: CGSize = .zero
-    @State private var pendingEdge: ReaderEdgeTarget? = nil
-    @State private var dwellTask: Task<Void, Never>? = nil
     @State private var chromeMode: ReaderChromeMode = .revealed
+    @State private var showAppearancePopover = false
+    @State private var showSummarizePopover = false
+    @State private var showSegmentPopover = false
     @State private var summarizeActionInFlight = false
+    @State private var originalSearchQuery = ""
+    @State private var originalSearchExpanded = false
+    @State private var originalSearchHits: [OriginalSearchHit] = []
+    @State private var originalSearchIndex = 0
+    @State private var originalSearching = false
+    @State private var originalSearchTruncated = false
+    @State private var originalSearchLastQuery = ""
+    @State private var originalSearchTask: Task<Void, Never>?
     @FocusState private var chatFocused: Bool
     @FocusState private var readerContentFocused: Bool
+    @FocusState private var originalSearchFocused: Bool
 
-    private let segmentsWidth: CGFloat = 240
     private let notesWidth: CGFloat = 220
     private let chatHeight: CGFloat = 300
-    private let edgeHotZone: CGFloat = 8
-    private let topEdgeExclusionZone: CGFloat = 28
-    private let edgeDwellNanoseconds: UInt64 = 250_000_000
     private let segmentSwitchDuration: TimeInterval = 0.05
     private let segmentFeedGap: CGFloat = 0
 
-    private var chromeVisible: Bool { chromeMode != .hidden }
-
-    private var edgeIconsVisible: Bool {
-        chromeMode == .revealed
-    }
-
-    private var toolbarVisible: Bool {
+    private var barsVisible: Bool {
         viewModel.bookStatus == "processing"
             || chromeMode == .revealed
             || overlay != .none
-    }
-
-    private var segmentListVisibility: ReaderSegmentListVisibility {
-        ReaderSegmentListVisibility(pinned: segmentListPinned, peeking: segmentListPeeking)
-    }
-
-    private var segmentListOverlayVisible: Bool {
-        segmentListVisibility.overlayVisible
-    }
-
-    private var segmentListInlineVisible: Bool {
-        segmentListVisibility.inlineVisible
-    }
-
-    private var segmentListAnyVisible: Bool {
-        segmentListVisibility.anyVisible
+            || coverPage != .none
     }
 
     private var librarySummarizeOverviewActive: Bool {
@@ -141,18 +117,22 @@ struct ReaderView: View {
         ReaderSummaryProgressPolicy.shouldShowContentBanner(
             readyCount: viewModel.summaryReadyCount,
             totalCount: viewModel.summaryTotalCount,
-            overviewActive: librarySummarizeOverviewActive,
-            segmentListVisible: segmentListAnyVisible
+            segmentListVisible: coverPage.showsSegments
         )
     }
 
     private var readerKeyboardScrollEnabled: Bool {
         overlay == .none
+            && coverPage == .none
             && !chatFocused
             && !showBoundarySheet
             && !showExport
             && !showResegmentSheet
             && !showRegenerateConfirm
+            && !showAdvancedStartConfirm
+            && !showSummarizePopover
+            && !showSegmentPopover
+            && !originalSearchFocused
     }
 
     private var regenerateConfirmMessage: String {
@@ -180,13 +160,11 @@ struct ReaderView: View {
 
     var body: some View {
         readerLayout
-            .toolbar {
-                if toolbarVisible {
-                    readerToolbar
-                }
-            }
             .toolbar(removing: .sidebarToggle)
-            .background { readerModeShortcutButton }
+            .background {
+                readerModeShortcutButton
+                originalSearchShortcutButton
+            }
             .confirmationDialog(
                 "全书重新摘要",
                 isPresented: $showRegenerateConfirm,
@@ -206,10 +184,23 @@ struct ReaderView: View {
             } message: {
                 Text(regenerateConfirmMessage)
             }
+            .confirmationDialog(
+                "高级摘要",
+                isPresented: $showAdvancedStartConfirm,
+                titleVisibility: .visible
+            ) {
+                Button("开始高级摘要") {
+                    startReaderSummarize(.advanced)
+                }
+                Button("取消", role: .cancel) {}
+            } message: {
+                Text("将用高级模型补齐尚未摘要的段落，消耗更多计算与 API。已有摘要不会被覆盖。")
+            }
             .sheet(isPresented: $showResegmentSheet) {
                 ResegmentBookSheet(
                     bookTitle: viewModel.exportBookTitle,
                     targetChars: $resegmentTargetChars,
+                    segmentTier: $resegmentTier,
                     isPresented: $showResegmentSheet,
                     isSubmitting: isResegmentSubmitting,
                     onSubmit: submitResegment
@@ -222,18 +213,21 @@ struct ReaderView: View {
                 ExportSheet(
                     isPresented: $showExport,
                     includeNotes: $exportIncludeNotes,
+                    mode: $exportMode,
                     summaryReadyCount: viewModel.summaryReadyCount,
                     summaryTotalCount: viewModel.summaryTotalCount,
                     onFetchMarkdown: {
                         try await viewModel.fetchExportMarkdown(
                             core: core,
-                            includeNotes: exportIncludeNotes
+                            includeNotes: exportIncludeNotes,
+                            mode: exportMode
                         )
                     },
                     onMarkdownReady: { markdown in
                         exportDocument = MarkdownExportDocument(text: markdown)
                         exportDefaultFilename = BookMarkdownExporter.defaultFilename(
-                            for: viewModel.exportBookTitle
+                            for: viewModel.exportBookTitle,
+                            mode: exportMode
                         )
                         exportFallbackBookTitle = viewModel.exportBookTitle
                         shouldPresentFileExporter = true
@@ -275,6 +269,7 @@ struct ReaderView: View {
             totalChars: viewModel.totalCharCount,
             segmentCount: viewModel.segments.count
         )
+        resegmentTier = .normal
         showResegmentSheet = true
     }
 
@@ -292,7 +287,8 @@ struct ReaderView: View {
             do {
                 try await viewModel.resegmentBook(
                     core: core,
-                    chunkTargetChars: resegmentTargetChars
+                    chunkTargetChars: resegmentTargetChars,
+                    segmentTier: resegmentTier
                 )
                 showResegmentSheet = false
                 closeOverlay()
@@ -318,7 +314,8 @@ struct ReaderView: View {
         case .failure:
             exportFeedback = BookMarkdownExporter.presentSavePanelFallback(
                 markdown: markdown,
-                bookTitle: bookTitle
+                bookTitle: bookTitle,
+                mode: exportMode
             )
         }
     }
@@ -344,210 +341,513 @@ struct ReaderView: View {
             .frame(width: 0, height: 0)
     }
 
-    @ToolbarContentBuilder
-    private var readerToolbar: some ToolbarContent {
-        ToolbarItem(placement: .primaryAction) {
-            Button(action: onImport) {
-                Label("导入", systemImage: "square.and.arrow.down")
-            }
-            .help("导入书籍")
-            .labelStyle(.iconOnly)
-            .foregroundStyle(LuminaTheme.accent)
-        }
+    private var originalSearchShortcutButton: some View {
+        Button("搜索原文", action: openOriginalSearch)
+            .keyboardShortcut("f", modifiers: .command)
+            .opacity(0)
+            .frame(width: 0, height: 0)
+    }
 
-        ToolbarItem(placement: .navigation) {
+    private func startReaderSummarize(_ tier: SummaryTier) {
+        Task {
+            do {
+                try await viewModel.startSummarize(core: core, summaryTier: tier)
+            } catch {
+                actionError = error.localizedDescription
+            }
+        }
+    }
+
+    /// Floating reader chrome — zero layout footprint. The window toolbar row
+    /// used to carry these controls, and adding/removing it resized the content
+    /// area, so every chrome toggle slid the reading surface. An overlay can
+    /// never move a single line of text.
+    private var readerChromeBarOverlay: some View {
+        Color.clear
+            .allowsHitTesting(false)
+            .overlay(alignment: .top) {
+                readerChromeBar
+            }
+    }
+
+    @ViewBuilder
+    private var listenChromeControl: some View {
+        if contentMode == .original {
+            Button {
+                startListening(.original)
+            } label: {
+                Label(
+                    "听原文",
+                    systemImage: listenSession.isActive && listenSession.mode == .original
+                        ? "speaker.wave.2.fill"
+                        : "speaker.wave.2"
+                )
+            }
+            .labelStyle(.iconOnly)
+            .readerChromeIconAction()
+            .help("听原文")
+            .accessibilityIdentifier("lumina.reader.listen")
+        } else {
+            Menu {
+                Button("听简要摘要") { startListening(.summary) }
+                Button("听完整摘要") { startListening(.detailed) }
+            } label: {
+                Label(
+                    "听",
+                    systemImage: listenSession.isActive && listenSession.mode.isSummaryLayer
+                        ? "speaker.wave.2.fill"
+                        : "speaker.wave.2"
+                )
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 4)
+                    .contentShape(Rectangle())
+            } primaryAction: {
+                startListening(.summary)
+            }
+            .labelStyle(.iconOnly)
+            .readerChromeIconAction()
+            .help("听简要摘要或听完整摘要")
+            .accessibilityIdentifier("lumina.reader.listen")
+        }
+    }
+
+    @ViewBuilder
+    private var originalSearchChromeControl: some View {
+        if originalSearchExpanded {
+            HStack(spacing: 4) {
+                Image(systemName: "magnifyingglass")
+                    .foregroundStyle(LuminaTheme.textSecondary)
+                TextField("搜索原文", text: $originalSearchQuery)
+                    .textFieldStyle(.plain)
+                    .font(ReaderChromeBarMetrics.labelFont)
+                    .frame(width: 148)
+                    .focused($originalSearchFocused)
+                    .onSubmit { submitOriginalSearch() }
+                    .accessibilityIdentifier("lumina.reader.originalSearch.field")
+                if originalSearching {
+                    ProgressView().controlSize(.mini)
+                } else if !originalSearchStatusText.isEmpty {
+                    Text(originalSearchStatusText)
+                        .font(.caption2)
+                        .foregroundStyle(LuminaTheme.textSecondary)
+                        .monospacedDigit()
+                }
+                Button {
+                    stepOriginalSearch(-1)
+                } label: {
+                    Image(systemName: "chevron.up")
+                }
+                .buttonStyle(.plain)
+                .disabled(originalSearchHits.isEmpty)
+                .help("上一条")
+                .accessibilityIdentifier("lumina.reader.originalSearch.prev")
+                Button {
+                    stepOriginalSearch(1)
+                } label: {
+                    Image(systemName: "chevron.down")
+                }
+                .buttonStyle(.plain)
+                .disabled(originalSearchHits.isEmpty)
+                .help("下一条")
+                .accessibilityIdentifier("lumina.reader.originalSearch.next")
+                Button {
+                    closeOriginalSearch()
+                } label: {
+                    Image(systemName: "xmark")
+                }
+                .buttonStyle(.plain)
+                .help("关闭搜索")
+            }
+            .padding(.horizontal, 6)
+            .padding(.vertical, 3)
+            .background(LuminaTheme.surface.opacity(0.7))
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .accessibilityIdentifier("lumina.reader.originalSearch")
+        } else {
+            Button {
+                openOriginalSearch()
+            } label: {
+                Label("搜索原文", systemImage: "magnifyingglass")
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 4)
+                    .contentShape(Rectangle())
+            }
+            .labelStyle(.iconOnly)
+            .readerChromeIconAction()
+            .help("搜索原文（⌘F）")
+            .accessibilityIdentifier("lumina.reader.originalSearch")
+        }
+    }
+
+    private var originalSearchStatusText: String {
+        if originalSearchLastQuery.isEmpty { return "" }
+        return OriginalSearchHighlight.statusLabel(
+            index: originalSearchIndex,
+            count: originalSearchHits.count,
+            truncated: originalSearchTruncated
+        )
+    }
+
+    private func startListening(_ mode: ListenMode) {
+        listenSession.configure(
+            bookId: bookId,
+            segmentCount: viewModel.segments.count,
+            resolve: { [viewModel, core] idx, listenMode in
+                await viewModel.listenScript(idx: idx, mode: listenMode, core: core)
+            },
+            labelFor: { [viewModel] idx in
+                if let seg = viewModel.segments.first(where: { $0.idx == idx }) {
+                    return seg.label ?? seg.anchor_label ?? "段 \(idx + 1)"
+                }
+                return "段 \(idx + 1)"
+            },
+            makeEngine: {
+                SystemNeuralEngine()
+            }
+        )
+        listenSession.onHighlightSegment = { idx in
+            highlightSegment = idx
+            navigateToSegment(idx)
+        }
+        let startIdx = topSegmentIdx ?? viewModel.selectedIdx ?? 0
+        listenSession.start(mode: mode, from: startIdx)
+    }
+
+    private var readerChromeBar: some View {
+        HStack(spacing: 8) {
             Button {
                 Task {
                     await viewModel.flushProgressSave()
                     onReturnToBookshelf()
                 }
             } label: {
-                Label("书架", systemImage: "square.grid.2x2")
+                Label("返回", systemImage: "chevron.left")
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 4)
+                    .contentShape(Rectangle())
             }
+            .labelStyle(.iconOnly)
+            .readerChromeIconAction()
             .help("返回书架")
-        }
+            .accessibilityLabel("返回书架")
 
-        ToolbarItem(placement: .navigation) {
-            Button {
-                toggleLibrarySidebar()
-            } label: {
-                Label("最近", systemImage: "sidebar.left")
-                    .symbolVariant(librarySidebarPinned ? .fill : .none)
+            Picker("阅读模式", selection: $contentMode) {
+                ForEach(ReaderContentMode.allCases, id: \.self) { mode in
+                    Text(mode.label)
+                        .font(ReaderChromeBarMetrics.labelFont)
+                        .tag(mode)
+                }
             }
-            .help(librarySidebarPinned ? "收起最近阅读" : "展开最近阅读")
-        }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .frame(width: ReaderChromeBarMetrics.modePickerWidth)
+            .help("切换摘要 / 原文阅读模式（⌘⇧O）")
 
-        ToolbarItem(placement: .navigation) {
-            Button {
-                toggleSegmentList()
-            } label: {
-                Label("段列表", systemImage: "list.bullet.rectangle")
-                    .symbolVariant(segmentListAnyVisible ? .fill : .none)
-                    .foregroundStyle(segmentListAnyVisible ? LuminaTheme.accent : .primary)
-            }
-            .help(segmentListAnyVisible ? "收起段列表" : "展开段列表")
-        }
+            listenChromeControl
 
-        ToolbarItemGroup {
+            originalSearchChromeControl
+
+            Spacer(minLength: 8)
+
             if librarySummarizeOverviewActive {
                 readerSummarizeActivityChip
             }
 
-            Picker("阅读模式", selection: $contentMode) {
-                ForEach(ReaderContentMode.allCases, id: \.self) { mode in
-                    Text(mode.label).tag(mode)
-                }
+            Button {
+                showSummarizePopover.toggle()
+            } label: {
+                Label("摘要", systemImage: "text.alignleft")
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 4)
+                    .contentShape(Rectangle())
             }
-            .pickerStyle(.segmented)
-            .frame(width: 120)
-            .help("切换摘要 / 原文阅读模式（⌘⇧O）")
-
-            Button("笔记") {
-                openOverlay(.notes, engaged: true)
-            }
-            .disabled(viewModel.bookStatus == "processing")
-            Button("提问") {
-                openOverlay(.chat, engaged: true)
-            }
-            .disabled(viewModel.bookStatus == "processing")
-
-            Menu("摘要") {
-                Menu("开始摘要") {
-                    ForEach(SummaryTier.allCases) { tier in
-                        Button(tier.startMenuLabel) {
-                            Task {
-                                do {
-                                    try await viewModel.startSummarize(
-                                        core: core, summaryTier: tier
-                                    )
-                                } catch {
-                                    actionError = error.localizedDescription
-                                }
-                            }
+            .labelStyle(.iconOnly)
+            .readerChromeIconAction()
+            .popover(isPresented: $showSummarizePopover, arrowEdge: .bottom) {
+                VStack(alignment: .leading, spacing: 4) {
+                    SummarizeChevronSplit(title: "开始摘要") {
+                        showSummarizePopover = false
+                        startReaderSummarize(.normal)
+                    } advancedMenu: {
+                        Button("高级摘要（仅未摘要）") {
+                            showSummarizePopover = false
+                            showAdvancedStartConfirm = true
                         }
                     }
-                }
-                Button("停止摘要") {
-                    Task {
-                        do { try await viewModel.stopSummarize(core: core) }
-                        catch { actionError = error.localizedDescription }
-                    }
-                }
-                Divider()
-                Menu("全书重新摘要") {
-                    ForEach(SummaryTier.allCases) { tier in
-                        Button(tier.regenerateMenuLabel) {
-                            regenerateSummaryTier = tier
+                    SummarizeChevronSplit(title: "重新摘要整书") {
+                        showSummarizePopover = false
+                        regenerateSummaryTier = .normal
+                        showRegenerateConfirm = true
+                    } advancedMenu: {
+                        Button("高级摘要（覆盖全书）") {
+                            showSummarizePopover = false
+                            regenerateSummaryTier = .advanced
                             showRegenerateConfirm = true
                         }
                     }
+                    Button("停止摘要") {
+                        showSummarizePopover = false
+                        Task {
+                            do { try await viewModel.stopSummarize(core: core) }
+                            catch { actionError = error.localizedDescription }
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 6)
                 }
+                .padding(10)
             }
-            .help("开始摘要只处理未摘要段落；全书重新摘要会覆盖已有摘要，操作前会要求确认")
+            .help("点「开始摘要」立即正常档；点旁边箭头才展开高级（悬停不弹出）；重新摘要整书都会再确认覆盖")
+            .accessibilityLabel("摘要")
             .disabled(viewModel.bookStatus == "processing")
-            Button("整书重新分段") {
-                prepareResegment()
+            Button {
+                showSegmentPopover.toggle()
+            } label: {
+                Label("分段", systemImage: "rectangle.split.3x1")
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 4)
+                    .contentShape(Rectangle())
             }
+            .labelStyle(.iconOnly)
+            .readerChromeIconAction()
+            .popover(isPresented: $showSegmentPopover, arrowEdge: .bottom) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Button("调整分段") {
+                        showSegmentPopover = false
+                        openBoundaryEditor()
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 6)
+                    .disabled(viewModel.segments.count < 2)
+                    Button("整书重新分段") {
+                        showSegmentPopover = false
+                        prepareResegment()
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 6)
+                }
+                .padding(10)
+            }
+            .help("点图标选择调整分段或整书重新分段")
+            .accessibilityLabel("分段")
             .disabled(viewModel.bookStatus == "processing")
-            Button("调整分段") {
-                openBoundaryEditor()
+            Button {
+                exportIncludeNotes = false
+                exportMode = .full
+                showExport = true
+            } label: {
+                Label("导出", systemImage: "square.and.arrow.up")
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 4)
+                    .contentShape(Rectangle())
             }
-            .disabled(viewModel.bookStatus == "processing" || viewModel.segments.count < 2)
-            Button("导出") { showExport = true }
-                .disabled(viewModel.bookStatus == "processing")
+            .labelStyle(.iconOnly)
+            .readerChromeIconAction()
+            .help("导出 Markdown")
+            .accessibilityLabel("导出")
+            .disabled(viewModel.bookStatus == "processing")
+
+            Button(action: onImport) {
+                Label("导入", systemImage: "square.and.arrow.down")
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 4)
+                    .contentShape(Rectangle())
+            }
+            .labelStyle(.iconOnly)
+            .readerChromeIconAction()
+            .foregroundStyle(LuminaTheme.accent)
+            .help("导入书籍")
         }
+        .font(ReaderChromeBarMetrics.labelFont)
+        .foregroundStyle(LuminaTheme.textPrimary)
+        .imageScale(.medium)
+        .controlSize(ReaderChromeBarMetrics.controlSize)
+        .padding(.horizontal, 12)
+        .frame(height: ReaderChromeBarMetrics.height)
+        .background(.ultraThinMaterial)
+        .overlay(alignment: .bottom) { Divider() }
+        // Disabled buttons are not hit-testable, so the bar must swallow the
+        // clicks that fall between them instead of leaking them to the feed.
+        .absorbsReaderChromeClicks()
+    }
+
+    private var readerBottomBarOverlay: some View {
+        Color.clear
+            .allowsHitTesting(false)
+            .overlay(alignment: .bottom) {
+                readerBottomBar
+            }
+    }
+
+    private var readerBottomBar: some View {
+        HStack(spacing: 0) {
+            readerBottomBarButton(
+                title: "段列表",
+                systemImage: "list.bullet.rectangle",
+                isActive: coverPage.showsSegments
+            ) {
+                toggleCoverPage(.segments)
+            }
+            readerBottomBarButton(
+                title: "深聊",
+                systemImage: "bubble.left.and.bubble.right",
+                isActive: overlay == .chat,
+                disabled: viewModel.bookStatus == "processing"
+            ) {
+                toggleOverlay(.chat)
+            }
+            readerBottomBarButton(
+                title: "笔记",
+                systemImage: "note.text",
+                isActive: overlay == .notes,
+                disabled: viewModel.bookStatus == "processing"
+            ) {
+                toggleOverlay(.notes)
+            }
+            readerBottomBarButton(
+                title: "显示",
+                systemImage: "textformat.size",
+                isActive: showAppearancePopover
+            ) {
+                showAppearancePopover = true
+            }
+            .popover(isPresented: $showAppearancePopover, arrowEdge: .top) {
+                ReaderAppearancePanel(theme: theme)
+            }
+            .help("字号与纸色")
+        }
+        .font(ReaderChromeBarMetrics.labelFont)
+        .imageScale(.medium)
+        .controlSize(ReaderChromeBarMetrics.controlSize)
+        .frame(height: ReaderChromeBarMetrics.height)
+        .background(.ultraThinMaterial)
+        .overlay(alignment: .top) { Divider() }
+        .absorbsReaderChromeClicks()
+    }
+
+    private func readerBottomBarButton(
+        title: String,
+        systemImage: String,
+        isActive: Bool,
+        disabled: Bool = false,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            Label(title, systemImage: systemImage)
+                .symbolVariant(isActive ? .fill : .none)
+                .foregroundStyle(isActive ? LuminaTheme.accent : LuminaTheme.textPrimary)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .contentShape(Rectangle())
+        }
+        .labelStyle(.iconOnly)
+        .help(title)
+        .disabled(disabled)
+        .readerChromeIconAction()
+        .frame(maxWidth: .infinity)
+        .contentShape(Rectangle())
     }
 
     private var readerLayout: some View {
-        HStack(spacing: 0) {
-            if segmentListInlineVisible {
-                segmentSidebarPanel(isOverlay: false)
-                    .transition(.move(edge: .leading).combined(with: .opacity))
+        ZStack {
+            segmentContent
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+            if overlay != .none {
+                Color.black.opacity(0.18)
+                    .ignoresSafeArea()
+                    .contentShape(Rectangle())
+                    .onTapGesture { closeOverlay() }
+                    .transition(.opacity)
             }
 
-            ZStack {
-                segmentContent
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            HStack(spacing: 0) {
+                Spacer(minLength: 0)
+                notesDrawer
+                    .padding(.top, ReaderChromeBarMetrics.height)
+                    .padding(.bottom, ReaderChromeBarMetrics.height)
+                    .offset(x: overlay == .notes ? 0 : notesWidth)
+            }
+            .allowsHitTesting(overlay == .notes)
 
-                HStack(spacing: 0) {
-                    if segmentListOverlayVisible {
-                        segmentSidebarPanel(isOverlay: true)
-                            .shadow(color: .black.opacity(0.12), radius: 12, x: 2, y: 0)
-                            .transition(.move(edge: .leading).combined(with: .opacity))
+            VStack(spacing: 0) {
+                Spacer(minLength: 0)
+                chatDrawer
+                    .offset(y: overlay == .chat ? 0 : chatHeight + 40)
+            }
+            .padding(.bottom, ReaderChromeBarMetrics.height)
+            .allowsHitTesting(overlay == .chat)
+
+            if barsVisible {
+                readerChromeBarOverlay
+                    .transition(.move(edge: .top).combined(with: .opacity))
+            }
+
+            if coverPage == .segments {
+                ReaderCoverPageShell {
+                    segmentCoverPanel
+                }
+                .padding(.bottom, ReaderChromeBarMetrics.height)
+                .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+
+            if barsVisible {
+                readerBottomBarOverlay
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+
+            if listenSession.isActive {
+                Color.clear
+                    .allowsHitTesting(false)
+                    .overlay(alignment: .bottom) {
+                        ListenMiniBar(session: listenSession) {
+                            listenSession.stop()
+                        }
+                        .padding(.bottom, barsVisible ? ReaderChromeBarMetrics.height : 0)
                     }
-                    Spacer(minLength: 0)
-                }
-                .allowsHitTesting(segmentListOverlayVisible)
-
-                if edgeIconsVisible {
-                    readerEdgeIconsOverlay
-                        .transition(.opacity.combined(with: .scale(scale: 0.92)))
-                }
-
-                if overlay != .none {
-                    Color.black.opacity(0.18)
-                        .ignoresSafeArea()
-                        .contentShape(Rectangle())
-                        .onTapGesture { closeOverlay() }
-                        .transition(.opacity)
-                }
-
-                HStack(spacing: 0) {
-                    Spacer(minLength: 0)
-                    notesDrawer
-                        .offset(x: overlay == .notes ? 0 : notesWidth)
-                }
-                .allowsHitTesting(overlay == .notes)
-
-                VStack(spacing: 0) {
-                    Spacer(minLength: 0)
-                    chatDrawer
-                        .offset(y: overlay == .chat ? 0 : chatHeight + 40)
-                }
-                .allowsHitTesting(overlay == .chat)
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .animation(.easeInOut(duration: 0.25), value: segmentListInlineVisible)
-        .animation(.easeInOut(duration: 0.25), value: segmentListOverlayVisible)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .animation(.easeInOut(duration: 0.25), value: overlay)
         .animation(.easeInOut(duration: 0.25), value: chromeMode)
-        .animation(.easeInOut(duration: 0.25), value: edgeIconsVisible)
-        .background(
-            EdgeHoverTracker(continuousTracking: segmentListOverlayVisible) { point, size in
-                if readerSize != size { readerSize = size }
-                handleEdgePointer(point)
-            }
-        )
-        .onExitCommand { closeOverlay() }
+        .animation(.easeInOut(duration: 0.25), value: coverPage)
+        .onExitCommand { handleExitCommand() }
         .onChange(of: overlay) { _, newValue in
             chatFocused = newValue == .chat && overlayEngaged
             readerOverlayActive = newValue != .none
             if newValue != .none {
-                cancelEdgeDwell()
-                setChromeMode(.revealed, closingSegmentPeek: true)
+                setChromeMode(.revealed)
             } else {
                 readerContentFocused = true
                 setChromeMode(.revealed)
             }
         }
-        .onChange(of: overlayEngaged) { _, engaged in
-            if engaged, overlay == .chat { chatFocused = true }
+        .onChange(of: coverPage) { _, newValue in
+            if newValue != .none {
+                overlay = .none
+                overlayEngaged = false
+                showAppearancePopover = false
+                showSegmentPopover = false
+            }
         }
         .onChange(of: chromeMode) { _, mode in
-            readerChromeVisible = mode != .hidden
-                || overlay != .none
-                || viewModel.bookStatus == "processing"
+            if mode == .hidden {
+                showAppearancePopover = false
+                showSegmentPopover = false
+            }
+        }
+        .onChange(of: overlayEngaged) { _, engaged in
+            if engaged, overlay == .chat { chatFocused = true }
         }
         .onChange(of: viewModel.bookStatus) { _, status in
             if status == "processing" {
                 setChromeMode(.revealed)
-                readerChromeVisible = true
             }
         }
         .onAppear {
             readerOverlayActive = overlay != .none
-            readerChromeVisible = toolbarVisible
         }
         .onChange(of: viewModel.selectedIdx) { _, idx in
             guard let idx else { return }
@@ -583,13 +883,14 @@ struct ReaderView: View {
             }
         }
         .task(id: bookId) {
+            listenSession.stop()
             overlay = .none
             overlayEngaged = false
-            applySegmentListVisibility(ReaderSegmentListPolicy.endPeek(segmentListVisibility))
+            coverPage = .none
             chromeMode = .revealed
-            readerChromeVisible = true
             expandedSourceSegments = []
             expandedSummarySegments = []
+            resetOriginalSearch(clearQuery: true)
             contentMode = ReaderPreferences.contentMode(for: bookId)
             viewModel.setContentMode(contentMode)
             topSegmentIdx = nil
@@ -609,6 +910,10 @@ struct ReaderView: View {
             if let idx = viewModel.selectedIdx {
                 viewModel.prefetchSummaries(around: idx, core: core, radius: 5)
             }
+            listenSession.updateSegmentCount(viewModel.segments.count)
+            if let settings = try? await core.fetchSettings() {
+                ListenPreferences.syncFromSettings(settings.models.tts)
+            }
         }
         .onChange(of: scenePhase) { _, phase in
             if phase == .background {
@@ -616,6 +921,9 @@ struct ReaderView: View {
             }
         }
         .onDisappear {
+            listenSession.stop()
+            LuminaSelectionActionPopover.dismiss()
+            originalSearchTask?.cancel()
             Task {
                 await viewModel.flushProgressSave()
                 NotificationCenter.default.post(name: .luminaLibraryRefresh, object: nil)
@@ -628,12 +936,13 @@ struct ReaderView: View {
 
     private var processingContent: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text(viewModel.isResegmenting ? "正在重新分段…" : "正在解析文档…")
+            Text(viewModel.ingestProgress?.label ?? (viewModel.isResegmenting ? "正在重新分段…" : "正在解析文档…"))
                 .font(.headline)
+                .foregroundStyle(theme.readerPaper.textPrimary)
             if let progress = viewModel.ingestProgress {
                 Text(progress.label)
                     .font(.caption)
-                    .foregroundStyle(LuminaTheme.textSecondary)
+                    .foregroundStyle(theme.readerPaper.textSecondary)
                 if progress.total > 0 {
                     ProgressView(
                         value: Double(progress.page),
@@ -654,10 +963,10 @@ struct ReaderView: View {
             Text(
                 viewModel.isResegmenting
                     ? "完成后会清空旧摘要、笔记和本书对话，并从第一段开始阅读。"
-                    : "扫描版 PDF 会在后台 OCR，可能需要几分钟。你可以返回书架做别的事，也可以取消导入。"
+                    : "解析在后台进行，可能需要几分钟。你可以返回书架做别的事，也可以取消导入。"
             )
                 .font(.caption)
-                .foregroundStyle(LuminaTheme.textSecondary)
+                .foregroundStyle(theme.readerPaper.textSecondary)
             if viewModel.isResegmenting {
                 Button(viewModel.isResegmentCancelling ? "正在取消…" : "取消重新分段") {
                     Task {
@@ -684,9 +993,10 @@ struct ReaderView: View {
         VStack(alignment: .leading, spacing: 12) {
             Text("无法加载")
                 .font(.headline)
+                .foregroundStyle(theme.readerPaper.textPrimary)
             Text(message)
                 .font(.body)
-                .foregroundStyle(LuminaTheme.textSecondary)
+                .foregroundStyle(theme.readerPaper.textSecondary)
             Button("重试") {
                 Task {
                     await viewModel.reload(
@@ -718,7 +1028,7 @@ struct ReaderView: View {
                                 .controlSize(.small)
                             Text("正在加载…")
                                 .font(.caption)
-                                .foregroundStyle(LuminaTheme.textSecondary)
+                                .foregroundStyle(theme.readerPaper.textSecondary)
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(LuminaTheme.summaryPadding)
@@ -749,34 +1059,59 @@ struct ReaderView: View {
             // tap to the frontmost handler, so only reading surface lands here.
             .contentShape(Rectangle())
             .onTapGesture { toggleChromeOnBlankClick() }
+            // Selectable body text swallows its own clicks, so it reports the
+            // ones that turned out not to be selections back to the surface.
+            .onReaderBodyTextPlainClick(toggleChromeOnBlankClick)
+            .readerSelectionNoteContext(client: core, onSaved: bumpNotesRefresh)
         }
         .scrollPosition(id: $topSegmentIdx, anchor: .top)
+        // Nothing here may depend on the chrome: this inset steals height from
+        // the feed, so a chrome-driven change would slide the text. The summary
+        // banner uses a constant reserved height for the same reason — captions
+        // appearing on SSE ticks must not move the reading surface.
         .safeAreaInset(edge: .top, spacing: 0) {
-            if shouldShowContentSummaryProgress {
-                VStack(alignment: .leading, spacing: 8) {
-                    if !toolbarVisible {
-                        readerSummarizeActivityChip
-                    }
+            Group {
+                if shouldShowContentSummaryProgress {
                     SummaryProgressBanner(
                         readyCount: viewModel.summaryReadyCount,
                         totalCount: viewModel.summaryTotalCount,
                         activityLabel: viewModel.summarizeActivityLabel,
                         activeLabelProvider: viewModel.activeSummarizeLabel
                     )
+                    .readingColumn()
+                    .padding(.horizontal, LuminaTheme.summaryPadding)
+                    .frame(height: SummaryProgressBannerMetrics.reservedHeight)
+                    .background(theme.readerPaper.page)
                 }
-                .readingColumn()
-                .padding(.horizontal, LuminaTheme.summaryPadding)
-                .padding(.vertical, 8)
-                .background(LuminaTheme.background)
             }
+            .animation(nil, value: shouldShowContentSummaryProgress)
+            .transaction { $0.animation = nil }
+        }
+        // Constant strips the floating chrome lives in, reserved whether the
+        // bars are shown or hidden, so toggling chrome never slides the text.
+        .safeAreaInset(edge: .top, spacing: 0) {
+            Color.clear
+                .frame(height: ReaderChromeBarMetrics.height)
+                .allowsHitTesting(false)
+                .accessibilityHidden(true)
+        }
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            Color.clear
+                .frame(height: ReaderChromeBarMetrics.height)
+                .allowsHitTesting(false)
+                .accessibilityHidden(true)
         }
         .background {
             ScrollViewKeyHandler(
-                enabled: readerKeyboardScrollEnabled
+                enabled: readerKeyboardScrollEnabled,
+                onTurnSegment: { delta in
+                    navigateSegment(delta: delta)
+                }
             )
         }
         .animation(.easeOut(duration: 0.2), value: contentMode)
-        .background(LuminaTheme.background)
+        .background(theme.readerPaper.page)
+        .environment(\.readerPaper, theme.readerPaper)
         .background {
             GeometryReader { geo in
                 Color.clear.preference(
@@ -790,26 +1125,6 @@ struct ReaderView: View {
         .focused($readerContentFocused)
         .focusEffectDisabled()
         .onAppear { readerContentFocused = true }
-        .onKeyPress("[") {
-            guard readerContentFocused else { return .ignored }
-            navigateSegment(delta: -1)
-            return .handled
-        }
-        .onKeyPress("]") {
-            guard readerContentFocused else { return .ignored }
-            navigateSegment(delta: 1)
-            return .handled
-        }
-        .onKeyPress("【") {
-            guard readerContentFocused else { return .ignored }
-            navigateSegment(delta: -1)
-            return .handled
-        }
-        .onKeyPress("】") {
-            guard readerContentFocused else { return .ignored }
-            navigateSegment(delta: 1)
-            return .handled
-        }
         .onKeyPress(.upArrow) {
             guard readerKeyboardScrollEnabled else { return .ignored }
             NotificationCenter.default.post(
@@ -841,6 +1156,7 @@ struct ReaderView: View {
     }
 
     private func toggleSource(for idx: Int) {
+        LuminaSelectionActionPopover.dismiss()
         if expandedSourceSegments.contains(idx) {
             withAnimation(.easeOut(duration: 0.2)) {
                 expandedSourceSegments.remove(idx)
@@ -854,6 +1170,7 @@ struct ReaderView: View {
     }
 
     private func toggleSummary(for idx: Int) {
+        LuminaSelectionActionPopover.dismiss()
         withAnimation(.easeOut(duration: 0.2)) {
             if expandedSummarySegments.contains(idx) {
                 expandedSummarySegments.remove(idx)
@@ -864,11 +1181,13 @@ struct ReaderView: View {
     }
 
     private func toggleContentMode() {
+        LuminaSelectionActionPopover.dismiss()
         contentMode = contentMode == .summary ? .original : .summary
     }
 
     @ViewBuilder
     private func segmentBlock(for seg: SegmentRow) -> some View {
+        let _ = viewModel.sourceCacheVersion
         let cachedSource = viewModel.cachedSource(for: seg.idx)
         let idx = seg.idx
         let isLast = seg.idx == viewModel.segments.last?.idx
@@ -888,6 +1207,8 @@ struct ReaderView: View {
             isSummaryLoading: viewModel.isSummaryLoading(for: idx),
             summaryProgressMessage: viewModel.segmentProgressMessage(for: idx),
             runningMetrics: viewModel.segmentRunningMetrics[idx],
+            fontScale: theme.readingFontScale,
+            paper: theme.readerPaper,
             onToggleSource: { toggleSource(for: idx) },
             onToggleSummary: { toggleSummary(for: idx) },
             onFollowUp: { question in
@@ -917,9 +1238,13 @@ struct ReaderView: View {
             onAdjustBoundary: isLast ? nil : { openBoundaryEditor(at: idx) },
             onSourceAppear: contentMode == .original
                 ? { viewModel.fetchSource(idx: idx, core: core) }
-                : nil
+                : nil,
+            originalHighlightUTF16: originalHighlightRange(for: idx, source: cachedSource)
         )
         .equatable()
+        .readerSelectionNoteAnchor(
+            ReaderSelectionNoteAnchor(bookId: bookId, segmentId: seg.id)
+        )
         .onAppear {
             viewModel.hydrateSummary(idx: idx, core: core)
         }
@@ -928,6 +1253,7 @@ struct ReaderView: View {
     /// The one and only way to move the reader. Assigning the pinned segment is
     /// the scroll: SwiftUI owns the anchoring, nothing else touches the origin.
     private func jump(to idx: Int) {
+        LuminaSelectionActionPopover.dismiss()
         guard topSegmentIdx != idx else { return }
         let delta = SegmentRenderWindow.segmentIndexDelta(
             from: topSegmentIdx,
@@ -971,77 +1297,34 @@ struct ReaderView: View {
     private func selectSidebarSegment(_ idx: Int) {
         viewModel.selectedIdx = idx
         jump(to: idx)
+        closeCoverPage()
     }
 
     // MARK: - Sidebar & drawers
 
-    private var readerEdgeIconsOverlay: some View {
-        // Only the icons themselves accept hits — never a full-size Spacer layer.
-        Color.clear
-            .allowsHitTesting(false)
-            .overlay(alignment: .leading) {
-                ReaderEdgeIcon(
-                    systemImage: "list.bullet.rectangle",
-                    label: "段列表",
-                    isActive: segmentListAnyVisible
-                ) {
-                    toggleSegmentList()
-                }
-                .padding(.leading, 6)
-            }
-            .overlay(alignment: .trailing) {
-                ReaderEdgeIcon(
-                    systemImage: "note.text",
-                    label: "笔记",
-                    isActive: overlay == .notes
-                ) {
-                    openOverlay(.notes, engaged: true)
-                }
-                .padding(.trailing, 6)
-            }
-            .overlay(alignment: .bottom) {
-                ReaderEdgeIcon(
-                    systemImage: "bubble.left.and.bubble.right",
-                    label: "深聊",
-                    isActive: overlay == .chat
-                ) {
-                    openOverlay(.chat, engaged: true)
-                }
-                .padding(.bottom, 8)
-            }
-    }
-
-    private func segmentSidebarPanel(isOverlay: Bool) -> some View {
+    private var segmentCoverPanel: some View {
         VStack(spacing: 0) {
             VStack(alignment: .leading, spacing: 6) {
                 HStack {
                     Text("段列表")
-                        .font(.subheadline.weight(.semibold))
+                        .font(ReaderChromeBarMetrics.labelFont)
                         .foregroundStyle(LuminaTheme.textPrimary)
+
+                    Button("导出摘要…") {
+                        exportIncludeNotes = false
+                        exportMode = .full
+                        showExport = true
+                    }
+                    .font(.caption)
+                    .buttonStyle(.plain)
+                    .foregroundStyle(LuminaTheme.accent)
+                    .disabled(viewModel.summaryReadyCount == 0)
+
                     Spacer(minLength: 0)
                     sidebarHeaderButtons
                 }
-
-                SummaryProgressBanner(
-                    readyCount: viewModel.summaryReadyCount,
-                    totalCount: viewModel.summaryTotalCount,
-                    activityLabel: viewModel.summarizeActivityLabel,
-                    activeLabelProvider: viewModel.activeSummarizeLabel,
-                    hideWhenComplete: false
-                )
-
-                readerSummarizeActivityChip
-
-                Button("导出摘要…") {
-                    exportIncludeNotes = false
-                    showExport = true
-                }
-                .font(.caption)
-                .buttonStyle(.plain)
-                .foregroundStyle(LuminaTheme.accent)
-                .disabled(viewModel.summaryReadyCount == 0)
             }
-            .padding(.horizontal, 10)
+            .padding(.horizontal, 12)
             .padding(.vertical, 8)
 
             if viewModel.isSegmentSelectionMode {
@@ -1071,7 +1354,7 @@ struct ReaderView: View {
                     .font(.caption)
                     .buttonStyle(.plain)
                 }
-                .padding(.horizontal, 10)
+                .padding(.horizontal, 12)
                 .padding(.bottom, 6)
             }
 
@@ -1079,14 +1362,8 @@ struct ReaderView: View {
 
             segmentSidebar
         }
-        .frame(width: segmentsWidth)
-        .frame(maxHeight: .infinity)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(LuminaTheme.surface)
-        .overlay(alignment: .trailing) {
-            if !isOverlay {
-                Divider()
-            }
-        }
     }
 
     @ViewBuilder
@@ -1106,35 +1383,6 @@ struct ReaderView: View {
         }
         .buttonStyle(.plain)
         .help(viewModel.isSegmentSelectionMode ? "退出多选" : "多选")
-        if !segmentListPinned {
-            Button {
-                withAnimation(.easeInOut(duration: 0.25)) {
-                    applySegmentListVisibility(ReaderSegmentListPolicy.pin(segmentListVisibility))
-                    chromeMode = .revealed
-                }
-            } label: {
-                Image(systemName: "pin")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(LuminaTheme.textSecondary)
-                    .frame(width: 24, height: 24)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .help("钉住段列表")
-        }
-        Button {
-            withAnimation(.easeInOut(duration: 0.25)) {
-                applySegmentListVisibility(ReaderSegmentListPolicy.close(segmentListVisibility))
-            }
-        } label: {
-            Image(systemName: "chevron.left")
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(LuminaTheme.textSecondary)
-                .frame(width: 24, height: 24)
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .help("收起段列表")
     }
 
     @ViewBuilder
@@ -1146,11 +1394,22 @@ struct ReaderView: View {
                 queued: overview.counts.queued,
                 indexing: overview.indexingCount,
                 stalledReason: overview.stalled_reason,
-                isBusy: summarizeActionInFlight
+                isBusy: summarizeActionInFlight,
+                onStatusTap: openLibrarySummarizingCollection
             ) {
                 Task { await stopAllSummarize() }
             }
             .disabled(summarizeActionInFlight)
+        }
+    }
+
+    private func openLibrarySummarizingCollection() {
+        libraryViewModel.selectFacet(
+            SummarizeActivityNavigationPolicy.destinationCollection
+        )
+        Task {
+            await viewModel.flushProgressSave()
+            onReturnToBookshelf()
         }
     }
 
@@ -1212,8 +1471,10 @@ struct ReaderView: View {
                     ForEach(viewModel.segments) { seg in
                         segmentSidebarRow(seg)
                             .id(seg.idx)
+                            .frame(maxWidth: .infinity, alignment: .leading)
                     }
                 }
+                .frame(maxWidth: .infinity)
             }
             .onChange(of: viewModel.selectedIdx) { _, idx in
                 guard let idx else { return }
@@ -1233,7 +1494,7 @@ struct ReaderView: View {
 
     @ViewBuilder
     private func segmentSidebarRow(_ seg: SegmentRow) -> some View {
-        let rowContent = HStack(alignment: .top, spacing: 6) {
+        let rowContent = HStack(alignment: .top, spacing: 8) {
             if viewModel.isSegmentSelectionMode {
                 Toggle(
                     isOn: Binding(
@@ -1256,13 +1517,12 @@ struct ReaderView: View {
             statusIcon(for: seg)
             SegmentSidebarRow(
                 segment: seg,
-                runningMetrics: viewModel.segmentRunningMetrics[seg.idx],
-                bulletsPreview: viewModel.sidebarPreviewByIdx[seg.idx]
+                runningMetrics: viewModel.segmentRunningMetrics[seg.idx]
             )
         }
         .contentShape(Rectangle())
-        .padding(.horizontal, 8)
-        .padding(.vertical, 4)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
             viewModel.selectedIdx == seg.idx
@@ -1281,6 +1541,7 @@ struct ReaderView: View {
                     rowContent
                 }
                 .buttonStyle(.plain)
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
         .contextMenu {
@@ -1430,113 +1691,32 @@ struct ReaderView: View {
         }
     }
 
-    // MARK: - Edge hover & overlay
+    // MARK: - Chrome & overlay
 
-    private func handleEdgePointer(_ point: CGPoint?) {
-        if overlay != .none, !overlayEngaged {
-            let stillInOverlay = point.map { isPointerInOverlay($0, overlay: overlay, size: readerSize) } ?? false
-            if !stillInOverlay {
-                closeOverlay()
-            }
-        }
-
-        if overlay != .none {
-            cancelEdgeDwell()
-            return
-        }
-
-        if segmentListOverlayVisible {
-            let inList = point.map { isPointerInSegmentList($0, size: readerSize) } ?? false
-            let inEdge = point.map { isPointerInLeftEdge($0) } ?? false
-            if point == nil || (!inList && !inEdge) {
-                withAnimation(.easeInOut(duration: 0.25)) {
-                    applySegmentListVisibility(ReaderSegmentListPolicy.endPeek(segmentListVisibility))
-                }
-            }
-        }
-
-        let target = point.flatMap { edgeTarget(at: $0, in: readerSize) }
-
-        guard let target else {
-            cancelEdgeDwell()
-            return
-        }
-
-        if pendingEdge == target { return }
-        cancelEdgeDwell()
-        pendingEdge = target
-        dwellTask = Task { @MainActor in
-            try? await Task.sleep(nanoseconds: edgeDwellNanoseconds)
-            guard !Task.isCancelled, pendingEdge == target, overlay == .none else { return }
-            pendingEdge = nil
-            switch target {
-            case .segments:
-                if segmentListVisibility.pinned {
-                    setChromeMode(.revealed)
-                } else {
-                    withAnimation(.easeInOut(duration: 0.25)) {
-                        applySegmentListVisibility(
-                            ReaderSegmentListPolicy.beginEdgePeek(segmentListVisibility)
-                        )
-                    }
-                }
-            case .notes:
-                withAnimation(.easeInOut(duration: 0.25)) {
-                    overlayEngaged = false
-                    overlay = .notes
-                }
-            case .chat:
-                withAnimation(.easeInOut(duration: 0.25)) {
-                    overlayEngaged = false
-                    overlay = .chat
-                }
-            }
-        }
-    }
-
-    private func isPointerInSegmentList(_ point: CGPoint, size: CGSize) -> Bool {
-        ReaderSegmentListGeometry.isPointerInSegmentList(point, segmentsWidth: segmentsWidth)
-    }
-
-    private func isPointerInLeftEdge(_ point: CGPoint) -> Bool {
-        point.x <= edgeHotZone && point.y > topEdgeExclusionZone
-    }
-
-    private func setChromeMode(_ mode: ReaderChromeMode, closingSegmentPeek: Bool = false) {
-        let needsChrome = chromeMode != mode
-        let needsPeekClose = closingSegmentPeek && segmentListPeeking
-        guard needsChrome || needsPeekClose else { return }
+    private func setChromeMode(_ mode: ReaderChromeMode) {
+        guard chromeMode != mode else { return }
         withAnimation(.easeInOut(duration: 0.25)) {
-            if needsChrome {
-                chromeMode = mode
-            }
-            if needsPeekClose {
-                applySegmentListVisibility(ReaderSegmentListPolicy.endPeek(segmentListVisibility))
-            }
+            chromeMode = mode
         }
     }
 
     private func collapseAllChrome() {
         withAnimation(.easeInOut(duration: 0.25)) {
             chromeMode = .hidden
-            applySegmentListVisibility(ReaderSegmentListPolicy.endPeek(segmentListVisibility))
             overlay = .none
             overlayEngaged = false
+            showAppearancePopover = false
+            showSegmentPopover = false
         }
     }
 
     private func toggleChromeOnBlankClick() {
         switch ReaderChromeClickPolicy.outcome(
             overlayOpen: overlay != .none,
-            segmentPeekVisible: segmentListOverlayVisible,
             chromeHidden: chromeMode == .hidden
         ) {
         case .ignore:
             break
-        case .closeSegmentPeek:
-            withAnimation(.easeInOut(duration: 0.25)) {
-                applySegmentListVisibility(ReaderSegmentListPolicy.endPeek(segmentListVisibility))
-            }
         case .collapse:
             collapseAllChrome()
         case .reveal:
@@ -1544,55 +1724,133 @@ struct ReaderView: View {
         }
     }
 
-    private func toggleLibrarySidebar() {
+    private func toggleCoverPage(_ target: ReaderCoverPage) {
         withAnimation(.easeInOut(duration: 0.25)) {
-            librarySidebarPinned.toggle()
-        }
-    }
-
-    private func toggleSegmentList() {
-        guard overlay == .none else { return }
-        let next = ReaderSegmentListPolicy.toggleByExplicitClick(segmentListVisibility)
-        withAnimation(.easeInOut(duration: 0.25)) {
-            applySegmentListVisibility(next)
-            if next.pinned {
+            overlay = .none
+            overlayEngaged = false
+            coverPage = ReaderCoverPagePolicy.toggle(coverPage, to: target)
+            if coverPage != .none {
                 chromeMode = .revealed
             }
         }
     }
 
-    private func applySegmentListVisibility(_ next: ReaderSegmentListVisibility) {
-        segmentListPinned = next.pinned
-        segmentListPeeking = next.peeking
-    }
-
-    private func isPointerInOverlay(_ point: CGPoint, overlay: ReaderOverlay, size: CGSize) -> Bool {
-        switch overlay {
-        case .none:
-            return false
-        case .notes:
-            return point.x >= size.width - notesWidth
-        case .chat:
-            return point.y >= size.height - chatHeight
+    private func closeCoverPage() {
+        withAnimation(.easeInOut(duration: 0.25)) {
+            coverPage = ReaderCoverPagePolicy.close()
         }
     }
 
-    private func edgeTarget(at point: CGPoint, in size: CGSize) -> ReaderEdgeTarget? {
-        guard size.width > 0, size.height > 0 else { return nil }
-        guard chromeMode == .hidden else { return nil }
-        if point.y <= topEdgeExclusionZone { return nil }
-        if point.x <= edgeHotZone {
-            return !segmentListAnyVisible ? .segments : nil
+    private func handleExitCommand() {
+        if coverPage != .none {
+            closeCoverPage()
+            return
         }
-        if point.x >= size.width - edgeHotZone { return .notes }
-        if point.y >= size.height - edgeHotZone { return .chat }
-        return nil
+        if originalSearchExpanded {
+            closeOriginalSearch()
+            return
+        }
+        closeOverlay()
     }
 
-    private func cancelEdgeDwell() {
-        dwellTask?.cancel()
-        dwellTask = nil
-        pendingEdge = nil
+    private func openOriginalSearch() {
+        setChromeMode(.revealed)
+        originalSearchExpanded = true
+        DispatchQueue.main.async {
+            originalSearchFocused = true
+        }
+    }
+
+    private func closeOriginalSearch() {
+        originalSearchTask?.cancel()
+        originalSearchTask = nil
+        originalSearchExpanded = false
+        originalSearchFocused = false
+        originalSearching = false
+        originalSearchHits = []
+        originalSearchIndex = 0
+        originalSearchLastQuery = ""
+        originalSearchTruncated = false
+        readerContentFocused = true
+    }
+
+    private func resetOriginalSearch(clearQuery: Bool) {
+        originalSearchTask?.cancel()
+        originalSearchTask = nil
+        originalSearchExpanded = false
+        originalSearchFocused = false
+        originalSearching = false
+        originalSearchHits = []
+        originalSearchIndex = 0
+        originalSearchLastQuery = ""
+        originalSearchTruncated = false
+        if clearQuery {
+            originalSearchQuery = ""
+        }
+    }
+
+    private func submitOriginalSearch() {
+        let q = OriginalSearchHighlight.normalizedQuery(originalSearchQuery)
+        guard !q.isEmpty else { return }
+        if q == originalSearchLastQuery, !originalSearchHits.isEmpty {
+            stepOriginalSearch(1)
+            return
+        }
+        runOriginalSearch(q)
+    }
+
+    private func runOriginalSearch(_ query: String) {
+        originalSearchTask?.cancel()
+        originalSearching = true
+        originalSearchLastQuery = query
+        let book = bookId
+        originalSearchTask = Task {
+            defer {
+                if !Task.isCancelled { originalSearching = false }
+            }
+            do {
+                let result = try await core.searchOriginal(bookId: book, query: query)
+                guard !Task.isCancelled else { return }
+                originalSearchHits = result.hits
+                originalSearchTruncated = result.truncated
+                originalSearchIndex = 0
+                if result.hits.isEmpty { return }
+                locateOriginalSearchHit()
+            } catch {
+                guard !Task.isCancelled else { return }
+                originalSearchHits = []
+                originalSearchTruncated = false
+                actionError = error.localizedDescription
+            }
+        }
+    }
+
+    private func stepOriginalSearch(_ delta: Int) {
+        guard let next = OriginalSearchHighlight.steppedIndex(
+            current: originalSearchIndex,
+            delta: delta,
+            count: originalSearchHits.count
+        ) else { return }
+        originalSearchIndex = next
+        locateOriginalSearchHit()
+    }
+
+    private func locateOriginalSearchHit() {
+        guard originalSearchHits.indices.contains(originalSearchIndex) else { return }
+        let hit = originalSearchHits[originalSearchIndex]
+        if contentMode != .original {
+            contentMode = .original
+        }
+        navigateToSegment(hit.segment_index)
+        viewModel.fetchSource(idx: hit.segment_index, core: core)
+    }
+
+    private func originalHighlightRange(for idx: Int, source: SegmentSourceBody?) -> NSRange? {
+        guard originalSearchHits.indices.contains(originalSearchIndex) else { return nil }
+        let hit = originalSearchHits[originalSearchIndex]
+        guard hit.segment_index == idx, let source else { return nil }
+        let utf16Length = (source.rawText as NSString).length
+        return OriginalSearchHighlight.range(for: hit, utf16Length: utf16Length)
     }
 
     private func closeOverlay() {
@@ -1603,11 +1861,24 @@ struct ReaderView: View {
     }
 
     private func openOverlay(_ kind: ReaderOverlay, engaged: Bool) {
-        // Chrome reveal + segment-peek close happen once in onChange(of: overlay).
+        // Chrome reveal happens once in onChange(of: overlay).
         withAnimation(.easeInOut(duration: 0.25)) {
+            coverPage = ReaderCoverPagePolicy.close()
             overlayEngaged = engaged
             overlay = kind
         }
+    }
+
+    private func toggleOverlay(_ kind: ReaderOverlay) {
+        if overlay == kind {
+            closeOverlay()
+        } else {
+            openOverlay(kind, engaged: true)
+        }
+    }
+
+    private func bumpNotesRefresh() {
+        notesRefreshToken += 1
     }
 
     private func saveChatAsNote(_ content: String) async {
@@ -1640,19 +1911,14 @@ struct ReaderView: View {
                 }
             }
         }
-        .frame(width: 16, alignment: .center)
+        .font(.body)
+        .frame(width: 20, alignment: .center)
     }
 }
 
 struct SegmentSidebarRow: View {
     let segment: SegmentRow
     var runningMetrics: SegmentRunningMetrics?
-    var bulletsPreview: String?
-
-    private var chapterTitle: String {
-        if let ch = segment.chapter, !ch.isEmpty { return ch }
-        return "段 \(segment.idx + 1)"
-    }
 
     private var showsLiveProgress: Bool {
         segment.summary_status == "running" && (segment.label == nil || segment.label?.isEmpty == true)
@@ -1675,43 +1941,24 @@ struct SegmentSidebarRow: View {
         }
     }
 
-    private func statusCaption(at now: Date) -> String {
-        if let runningMetrics {
-            return SummaryMetricsFormatter.inProgressLabel(
-                startedAt: runningMetrics.startedAt,
-                llmAttempt: runningMetrics.llmAttempt,
-                maxLlmAttempts: runningMetrics.maxLlmAttempts,
-                now: now
-            )
+    private var bulletLabelsLine: String? {
+        let labels = (segment.bullet_labels ?? []).compactMap { raw -> String? in
+            let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            return text.isEmpty ? nil : text
         }
-        return "摘要生成中…"
+        return labels.isEmpty ? nil : labels.joined(separator: " · ")
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(chapterTitle)
-                .font(.subheadline)
-                .lineLimit(1)
-            if showsLiveProgress {
-                TimelineView(.periodic(from: .now, by: 1)) { context in
-                    Text(statusCaption(at: context.date))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(2)
-                }
-            } else if let outline = outlineLabel {
-                Text(outline)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
-            }
-            if let preview = bulletsPreview {
-                Text(preview)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-            }
-        }
+        SegmentCatalogRowLines(
+            chapter: segment.chapter.flatMap { $0.isEmpty ? nil : $0 },
+            idx: segment.idx,
+            suffix: showsLiveProgress ? nil : outlineLabel,
+            summaryPreview: SegmentCatalogPreview.line(summaryPreview: segment.summary_preview),
+            bulletLabelsLine: bulletLabelsLine,
+            showsLiveProgress: showsLiveProgress,
+            runningMetrics: runningMetrics
+        )
     }
 }
 
@@ -1725,17 +1972,21 @@ private struct ReaderGlobalFrameKey: PreferenceKey {
 }
 
 /// Scrolls the enclosing NSScrollView on keyboard scroll notifications.
+/// Also turns segments on `[` / `]` (and IME 【】 on the same key codes).
 private struct ScrollViewKeyHandler: NSViewRepresentable {
     var enabled: Bool
+    var onTurnSegment: (Int) -> Void
 
     func makeNSView(context: Context) -> ScrollViewKeyNSView {
         let view = ScrollViewKeyNSView()
         view.isEnabled = enabled
+        view.onTurnSegment = onTurnSegment
         return view
     }
 
     func updateNSView(_ nsView: ScrollViewKeyNSView, context: Context) {
         nsView.isEnabled = enabled
+        nsView.onTurnSegment = onTurnSegment
     }
 }
 
@@ -1744,7 +1995,9 @@ private struct ScrollViewKeyHandler: NSViewRepresentable {
 /// what used to make reading progress drift.
 private final class ScrollViewKeyNSView: NSView {
     var isEnabled = true
+    var onTurnSegment: ((Int) -> Void)?
     private var observer: NSObjectProtocol?
+    private var revealObserver: NSObjectProtocol?
     private var keyMonitor: Any?
     private static weak var activeInstance: ScrollViewKeyNSView?
     private static weak var readerScrollView: NSScrollView?
@@ -1771,11 +2024,23 @@ private final class ScrollViewKeyNSView: NSView {
                 self?.handleScroll(note)
             }
         }
+        if revealObserver == nil {
+            revealObserver = NotificationCenter.default.addObserver(
+                forName: .luminaRevealTextRect,
+                object: nil,
+                queue: .main
+            ) { [weak self] note in
+                self?.handleReveal(note)
+            }
+        }
     }
 
     deinit {
         if let observer {
             NotificationCenter.default.removeObserver(observer)
+        }
+        if let revealObserver {
+            NotificationCenter.default.removeObserver(revealObserver)
         }
         removeKeyMonitor()
     }
@@ -1803,6 +2068,16 @@ private final class ScrollViewKeyNSView: NSView {
         let mods = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
         if !mods.intersection([.command, .option, .control]).isEmpty { return event }
 
+        if let delta = SegmentTurnKeyPolicy.delta(
+            keyCode: event.keyCode,
+            characters: event.characters ?? "",
+            shift: mods.contains(.shift),
+            isRepeat: event.isARepeat
+        ) {
+            onTurnSegment?(delta)
+            return nil
+        }
+
         switch event.keyCode {
         case 126: // up arrow
             performKeyboardScroll(lineDelta: -ReaderKeyboardScroll.lineDelta, page: nil)
@@ -1819,6 +2094,25 @@ private final class ScrollViewKeyNSView: NSView {
         default:
             return event
         }
+    }
+
+    private func handleReveal(_ note: Notification) {
+        guard let value = note.userInfo?["rect"] as? NSValue,
+              let scrollView = Self.resolvedScrollView
+        else { return }
+        let windowRect = value.rectValue
+        let inClip = scrollView.contentView.convert(windowRect, from: nil)
+        let visible = scrollView.contentView.bounds
+        let pad: CGFloat = 28
+        var origin = visible.origin
+        if inClip.minY < visible.minY + pad {
+            origin.y = inClip.minY - pad
+        } else if inClip.maxY > visible.maxY - pad {
+            origin.y = inClip.maxY - visible.height + pad
+        } else {
+            return
+        }
+        Self.applyScrollOrigin(origin, to: scrollView)
     }
 
     private func handleScroll(_ note: Notification) {
@@ -2069,7 +2363,6 @@ final class ReaderViewModel: ObservableObject {
     @Published var summaryTotalCount = 0
     @Published var summarizeState: String?
     @Published var segmentRunningMetrics: [Int: SegmentRunningMetrics] = [:]
-    @Published var sidebarPreviewByIdx: [Int: String] = [:]
     @Published private(set) var parsedSummaryCache: [Int: ParsedSummary] = [:]
     @Published var totalCharCount: Int?
     @Published var chunkTargetChars: Int?
@@ -2093,7 +2386,6 @@ final class ReaderViewModel: ObservableObject {
     private var detailTasks: [Int: Task<Void, Never>] = [:]
     private var summaryHydrateTasks: [Int: Task<Void, Never>] = [:]
     private var summaryParseTasks: [Int: Task<Void, Never>] = [:]
-    private var sidebarPreviewTasks: [Int: Task<Void, Never>] = [:]
     private var chatTask: Task<Void, Never>?
     private var hydratingSummaryIndices: Set<Int> = []
     private var parsingSummaryIndices: Set<Int> = []
@@ -2181,6 +2473,49 @@ final class ReaderViewModel: ObservableObject {
         parsedSummaryCache[idx]
     }
 
+    func listenScript(idx: Int, mode: ListenMode, core: CoreClient) async -> ListenScript {
+        switch mode {
+        case .summary, .detailed:
+            if let parsed = parsedSummary(for: idx), parsed.hasContent {
+                return ListenScript.build(mode: mode, summary: parsed, rawText: nil)
+            }
+            if let json = segments.first(where: { $0.idx == idx })?.summary_json,
+               !json.isEmpty,
+               let parsed = ParsedSummary(json: json),
+               parsed.hasContent
+            {
+                return ListenScript.build(mode: mode, summary: parsed, rawText: nil)
+            }
+            let status = segments.first(where: { $0.idx == idx })?.summary_status ?? ""
+            if status != "ready" && status != "done" {
+                return .notReady(mode, reason: "summary_not_ready")
+            }
+            guard let detail = try? await core.fetchSegmentSummary(bookId: bookId, idx: idx) else {
+                return .notReady(mode, reason: "summary_not_ready")
+            }
+            mergeSummaryDetail(detail, at: idx)
+            if let json = detail.summary_json, let parsed = ParsedSummary(json: json), parsed.hasContent {
+                return ListenScript.build(mode: mode, summary: parsed, rawText: nil)
+            }
+            return .notReady(mode, reason: "summary_not_ready")
+        case .original:
+            if let cached = cachedSource(for: idx), !cached.rawText.isEmpty {
+                return ListenScript.build(mode: .original, summary: nil, rawText: cached.rawText)
+            }
+            guard let fresh = try? await core.getSegment(bookId: bookId, idx: idx) else {
+                return .notReady(.original, reason: "empty_text")
+            }
+            let raw = fresh.raw_text ?? ""
+            storeSourceCache(
+                SegmentSourceBody(idx: idx, rawText: raw, translation: fresh.translation ?? "")
+            )
+            if raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                return .notReady(.original, reason: "empty_text")
+            }
+            return ListenScript.build(mode: .original, summary: nil, rawText: raw)
+        }
+    }
+
     func isSummaryLoading(for idx: Int) -> Bool {
         hydratingSummaryIndices.contains(idx) || parsingSummaryIndices.contains(idx)
     }
@@ -2199,51 +2534,12 @@ final class ReaderViewModel: ObservableObject {
         }
         summaryHydrateTasks.removeAll()
         clearSummaryCache()
-        cancelSidebarPreviewTasks()
         hydratingSummaryIndices.removeAll()
         chatTask?.cancel()
         chatTask = nil
         isSending = false
         loadingSourceIndices.removeAll()
         refreshingSourceIndices.removeAll()
-    }
-
-    func scheduleSidebarPreview(idx: Int, summaryJSON: String?) {
-        guard let summaryJSON, !summaryJSON.isEmpty else {
-            sidebarPreviewByIdx.removeValue(forKey: idx)
-            sidebarPreviewTasks[idx]?.cancel()
-            sidebarPreviewTasks.removeValue(forKey: idx)
-            return
-        }
-        sidebarPreviewTasks[idx]?.cancel()
-        sidebarPreviewTasks[idx] = Task.detached { [summaryJSON] in
-            let preview = SegmentReadyEventParser.formatBulletsPreview(summaryJSON)
-            guard !Task.isCancelled else { return }
-            await MainActor.run { [weak self] in
-                guard let self else { return }
-                self.sidebarPreviewTasks.removeValue(forKey: idx)
-                if let preview {
-                    self.sidebarPreviewByIdx[idx] = preview
-                } else {
-                    self.sidebarPreviewByIdx.removeValue(forKey: idx)
-                }
-            }
-        }
-    }
-
-    private func scheduleSidebarPreviews(for list: [SegmentRow]) {
-        for seg in list where seg.summary_status == "ready" {
-            if let json = seg.summary_json, !json.isEmpty {
-                scheduleSidebarPreview(idx: seg.idx, summaryJSON: json)
-            }
-        }
-    }
-
-    private func cancelSidebarPreviewTasks() {
-        for task in sidebarPreviewTasks.values {
-            task.cancel()
-        }
-        sidebarPreviewTasks.removeAll()
     }
 
     /// `onResume` is called with the segment to open at, before the segments are
@@ -2259,7 +2555,6 @@ final class ReaderViewModel: ObservableObject {
         cancelAllTasks()
         clearAllSourceCache()
         segments = []
-        sidebarPreviewByIdx = [:]
         selectedIdx = nil
         checkedSegmentIndices = []
         isSegmentSelectionMode = false
@@ -2333,7 +2628,6 @@ final class ReaderViewModel: ObservableObject {
             onResume(idx)
 
             segments = list
-            scheduleSidebarPreviews(for: list)
             warmSummaryCache(from: list)
             summaryReadyCount = book.summary_ready_count ?? list.filter { $0.summary_status == "ready" }.count
             summaryTotalCount = book.summary_total_count ?? list.count
@@ -2480,12 +2774,24 @@ final class ReaderViewModel: ObservableObject {
         if let value = detail.summary_duration_s { updated.summary_duration_s = value }
         if let value = detail.summary_llm_attempts { updated.summary_llm_attempts = value }
         if let status = detail.summary_status { updated.summary_status = status }
+        fillCatalogPreviewIfNeeded(&updated)
         segments[i] = updated
         syncCurrentSegment(from: updated)
         if let json = updated.summary_json, !json.isEmpty {
             ensureSummaryParsed(idx: idx, json: json)
         }
-        scheduleSidebarPreview(idx: idx, summaryJSON: updated.summary_json)
+    }
+
+    private func fillCatalogPreviewIfNeeded(_ segment: inout SegmentRow) {
+        if segment.summary_preview == nil || segment.summary_preview?.isEmpty == true {
+            segment.summary_preview = SegmentCatalogPreview.fromSummaryJSON(segment.summary_json)
+        }
+        if segment.bullet_labels == nil || segment.bullet_labels?.isEmpty == true {
+            let labels = SegmentReadyEventParser.parseBulletLabels(segment.summary_json)
+            if !labels.isEmpty {
+                segment.bullet_labels = labels
+            }
+        }
     }
 
     private func clearSummaryCache() {
@@ -2798,12 +3104,17 @@ final class ReaderViewModel: ObservableObject {
         NotificationCenter.default.post(name: .luminaLibraryRefresh, object: nil)
     }
 
-    func resegmentBook(core: CoreClient, chunkTargetChars: Int) async throws {
+    func resegmentBook(
+        core: CoreClient,
+        chunkTargetChars: Int,
+        segmentTier: SegmentTier = .normal
+    ) async throws {
         // Segment indices are about to change, so the recorded position is void.
         ReadingProgressStore.shared.forget(bookId: bookId)
         try await core.resegmentBook(
             bookId: bookId,
-            chunkTargetChars: chunkTargetChars
+            chunkTargetChars: chunkTargetChars,
+            segmentTier: segmentTier
         )
         bookStatus = "processing"
         isResegmenting = true
@@ -2981,12 +3292,17 @@ final class ReaderViewModel: ObservableObject {
         bookTitle ?? "summary"
     }
 
-    func fetchExportMarkdown(core: CoreClient, includeNotes: Bool) async throws -> String {
+    func fetchExportMarkdown(
+        core: CoreClient,
+        includeNotes: Bool,
+        mode: MarkdownExportMode = .full
+    ) async throws -> String {
         try await BookMarkdownExporter.fetchMarkdown(
             core: core,
             bookId: bookId,
             summaryReadyCount: summaryReadyCount,
-            includeNotes: includeNotes
+            includeNotes: includeNotes,
+            mode: mode
         )
     }
 
@@ -3098,13 +3414,13 @@ final class ReaderViewModel: ObservableObject {
         if let attempts = event["summary_llm_attempts"] as? Int {
             updated.summary_llm_attempts = attempts
         }
+        fillCatalogPreviewIfNeeded(&updated)
         segments[i] = updated
         syncCurrentSegment(from: updated)
         segmentRunningMetrics.removeValue(forKey: idx)
         if let json = updated.summary_json, !json.isEmpty {
             ensureSummaryParsed(idx: idx, json: json)
         }
-        scheduleSidebarPreview(idx: idx, summaryJSON: updated.summary_json)
     }
 
     private func syncCurrentSegment(from segment: SegmentRow) {

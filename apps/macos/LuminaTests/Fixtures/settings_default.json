@@ -5,6 +5,7 @@
   "tavily_api_key": null,
   "debug_mode": false,
   "auto_start_summary": false,
+  "default_segment_tier": "normal",
   "models": {
     "resources": [
       {

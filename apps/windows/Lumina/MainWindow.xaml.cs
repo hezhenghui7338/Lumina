@@ -52,6 +52,7 @@ public sealed partial class MainWindow : Window
             });
         };
 
+        NavigationHub.OpenImportRequested += () => DispatcherQueue.TryEnqueue(RequestLibraryImport);
         RootGrid.KeyDown += RootGrid_KeyDown;
 
         if (!ThemeService.OnboardingDone)
@@ -72,8 +73,7 @@ public sealed partial class MainWindow : Window
         }
         else if (e.Key == VirtualKey.O)
         {
-            // Import is owned by library page; switch there and raise hub if needed.
-            NavigateToLibrary();
+            RequestLibraryImport();
             e.Handled = true;
         }
     }
@@ -84,10 +84,18 @@ public sealed partial class MainWindow : Window
         SelectNav("library");
     }
 
-    public void NavigateToLibrary()
+    public void NavigateToLibrary(bool openImport = false)
     {
-        ContentFrame.Navigate(typeof(LibraryPage));
+        ContentFrame.Navigate(typeof(LibraryPage), openImport ? new LibraryNavArgs(true) : null);
         SelectNav("library");
+    }
+
+    private void RequestLibraryImport()
+    {
+        if (ContentFrame.Content is LibraryPage page)
+            _ = page.BeginImportAsync();
+        else
+            NavigateToLibrary(openImport: true);
     }
 
     private void OnOpenBookRequested(string bookId, string title, int? segmentIndex)
@@ -146,6 +154,8 @@ public sealed partial class MainWindow : Window
             EngineStatusText.Text = "引擎启动中…";
         else if (!string.IsNullOrEmpty(App.Sidecar.LaunchError))
             EngineStatusText.Text = App.Sidecar.LaunchError;
+        else if (App.Sidecar.UserStopped)
+            EngineStatusText.Text = "引擎已停止";
         else
             EngineStatusText.Text = "引擎未运行";
     }
@@ -153,6 +163,7 @@ public sealed partial class MainWindow : Window
     private async void RetryEngine_Click(object sender, RoutedEventArgs e)
     {
         EngineStatusText.Text = "引擎启动中…";
+        App.Sidecar.ClearUserStopped();
         await App.Sidecar.EnsureRunningAsync();
         UpdateEngineStatus();
     }

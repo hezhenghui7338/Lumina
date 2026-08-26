@@ -42,12 +42,12 @@
 		A1000137 /* news_read_result_ready.json in Resources */ = {isa = PBXBuildFile; fileRef = A1000232 /* news_read_result_ready.json */; };
 		A1000140 /* news_brief_sample.json in Resources */ = {isa = PBXBuildFile; fileRef = A1000234 /* news_brief_sample.json */; };
 		A1000142 /* FollowUpChip.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000237 /* FollowUpChip.swift */; };
+		A1000481 /* SummarizeChevronSplit.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000480 /* SummarizeChevronSplit.swift */; };
 		A1000143 /* NewsSummaryMarkdown.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000238 /* NewsSummaryMarkdown.swift */; };
 		A1000144 /* NewsSummaryMarkdownTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000239 /* NewsSummaryMarkdownTests.swift */; };
 		A1000145 /* NewsSourcesSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000240 /* NewsSourcesSettingsView.swift */; };
 		A1000146 /* news_sources_sample.json in Resources */ = {isa = PBXBuildFile; fileRef = A1000241 /* news_sources_sample.json */; };
 		A1000147 /* ReaderPreferences.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000242 /* ReaderPreferences.swift */; };
-		A1000148 /* EdgeHoverTracker.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000243 /* EdgeHoverTracker.swift */; };
 		A1000149 /* WindowToolbarVisibility.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000244 /* WindowToolbarVisibility.swift */; };
 		A1000150 /* ConnectionError.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000245 /* ConnectionError.swift */; };
 		A1000151 /* SidecarReadiness.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000246 /* SidecarReadiness.swift */; };
@@ -57,7 +57,6 @@
 		A1000155 /* SegmentReadyEventParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000249 /* SegmentReadyEventParser.swift */; };
 		A1000156 /* SegmentReadyEventTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000251 /* SegmentReadyEventTests.swift */; };
 		A1000157 /* BookMarkdownExporter.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000252 /* BookMarkdownExporter.swift */; };
-		A1000158 /* ReaderEdgeIcon.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000253 /* ReaderEdgeIcon.swift */; };
 		A1000260 /* TaskManagerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000270 /* TaskManagerView.swift */; };
 		A1000261 /* TaskRowView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000271 /* TaskRowView.swift */; };
 		A1000262 /* ResourceRuntimeSection.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000272 /* ResourceRuntimeSection.swift */; };
@@ -70,14 +69,17 @@
 		A1000411 /* ReaderChromeClickPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000410 /* ReaderChromeClickPolicy.swift */; };
 		A1000287 /* ReaderSegmentListGeometryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000286 /* ReaderSegmentListGeometryTests.swift */; };
 		A1000413 /* ReaderChromeClickPolicyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000412 /* ReaderChromeClickPolicyTests.swift */; };
+		A1000441 /* ReaderSelectionActionBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000440 /* ReaderSelectionActionBar.swift */; };
 		A1000289 /* PromptsSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000288 /* PromptsSettingsView.swift */; };
+		A1000421 /* ResourceEditorSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000420 /* ResourceEditorSheet.swift */; };
+		A1000423 /* ResourceEditorCopyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000422 /* ResourceEditorCopyTests.swift */; };
+		A1000431 /* NewsSelectionChromeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000430 /* NewsSelectionChromeTests.swift */; };
 		A1000291 /* LibrarySelectionToolbar.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000290 /* LibrarySelectionToolbar.swift */; };
 		A1000293 /* LibrarySidebarVisibilityPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000292 /* LibrarySidebarVisibilityPolicy.swift */; };
 		A1000295 /* LibrarySidebarVisibilityPolicyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000294 /* LibrarySidebarVisibilityPolicyTests.swift */; };
 		A1000320 /* BookCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000310 /* BookCard.swift */; };
 		A1000321 /* BookshelfView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000311 /* BookshelfView.swift */; };
 		A1000322 /* LibraryCollectionSidebar.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000312 /* LibraryCollectionSidebar.swift */; };
-		A1000323 /* LibraryRecentsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000313 /* LibraryRecentsView.swift */; };
 		A1000324 /* LibraryChromeActionPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000314 /* LibraryChromeActionPolicy.swift */; };
 		A1000325 /* LibraryChromeActionPolicyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000315 /* LibraryChromeActionPolicyTests.swift */; };
 		A1000381 /* SegmentBoundaryEditor.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000380 /* SegmentBoundaryEditor.swift */; };
@@ -85,6 +87,18 @@
 		A1000391 /* SummarizeActivityChip.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000390 /* SummarizeActivityChip.swift */; };
 		A1000393 /* SummarizeActivityChipTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000392 /* SummarizeActivityChipTests.swift */; };
 		A1000398 /* SegmentHeaderLayoutPolicyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000399 /* SegmentHeaderLayoutPolicyTests.swift */; };
+		A1000461 /* ListenScript.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000460 /* ListenScript.swift */; };
+		A1000443 /* ListenPreferences.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000442 /* ListenPreferences.swift */; };
+		A1000445 /* TTSEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000444 /* TTSEngine.swift */; };
+		A1000447 /* ListenSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000446 /* ListenSession.swift */; };
+		A1000449 /* ListenMiniBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000448 /* ListenMiniBar.swift */; };
+		A1000451 /* ListenScriptTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000450 /* ListenScriptTests.swift */; };
+        A1000531 /* ReaderOriginalSearch.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000530 /* ReaderOriginalSearch.swift */; };
+		A1000533 /* ReaderOriginalSearchTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000532 /* ReaderOriginalSearchTests.swift */; };
+		A1000543 /* BookCardCoverTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000542 /* BookCardCoverTests.swift */; };
+		A1000551 /* MarkdownExportModeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000550 /* MarkdownExportModeTests.swift */; };
+		A1000571 /* ImportConflictPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000570 /* ImportConflictPolicy.swift */; };
+		A1000573 /* ImportConflictPolicyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000572 /* ImportConflictPolicyTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -126,12 +140,12 @@
 		A1000232 /* news_read_result_ready.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = news_read_result_ready.json; sourceTree = "<group>"; };
 		A1000234 /* news_brief_sample.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = news_brief_sample.json; sourceTree = "<group>"; };
 		A1000237 /* FollowUpChip.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FollowUpChip.swift; sourceTree = "<group>"; };
+		A1000480 /* SummarizeChevronSplit.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SummarizeChevronSplit.swift; sourceTree = "<group>"; };
 		A1000238 /* NewsSummaryMarkdown.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NewsSummaryMarkdown.swift; sourceTree = "<group>"; };
 		A1000239 /* NewsSummaryMarkdownTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NewsSummaryMarkdownTests.swift; sourceTree = "<group>"; };
 		A1000240 /* NewsSourcesSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NewsSourcesSettingsView.swift; sourceTree = "<group>"; };
 		A1000241 /* news_sources_sample.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = news_sources_sample.json; sourceTree = "<group>"; };
 		A1000242 /* ReaderPreferences.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderPreferences.swift; sourceTree = "<group>"; };
-		A1000243 /* EdgeHoverTracker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EdgeHoverTracker.swift; sourceTree = "<group>"; };
 		A1000244 /* WindowToolbarVisibility.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WindowToolbarVisibility.swift; sourceTree = "<group>"; };
 		A1000245 /* ConnectionError.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConnectionError.swift; sourceTree = "<group>"; };
 		A1000246 /* SidecarReadiness.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SidecarReadiness.swift; sourceTree = "<group>"; };
@@ -142,7 +156,6 @@
 		A1000251 /* SegmentReadyEventTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SegmentReadyEventTests.swift; sourceTree = "<group>"; };
 		A1000276 /* SegmentSidebarTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SegmentSidebarTests.swift; sourceTree = "<group>"; };
 		A1000252 /* BookMarkdownExporter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BookMarkdownExporter.swift; sourceTree = "<group>"; };
-		A1000253 /* ReaderEdgeIcon.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderEdgeIcon.swift; sourceTree = "<group>"; };
 		A1000270 /* TaskManagerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TaskManagerView.swift; sourceTree = "<group>"; };
 		A1000271 /* TaskRowView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TaskRowView.swift; sourceTree = "<group>"; };
 		A1000272 /* ResourceRuntimeSection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ResourceRuntimeSection.swift; sourceTree = "<group>"; };
@@ -154,14 +167,17 @@
 		A1000410 /* ReaderChromeClickPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderChromeClickPolicy.swift; sourceTree = "<group>"; };
 		A1000286 /* ReaderSegmentListGeometryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderSegmentListGeometryTests.swift; sourceTree = "<group>"; };
 		A1000412 /* ReaderChromeClickPolicyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderChromeClickPolicyTests.swift; sourceTree = "<group>"; };
+		A1000440 /* ReaderSelectionActionBar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderSelectionActionBar.swift; sourceTree = "<group>"; };
 		A1000288 /* PromptsSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PromptsSettingsView.swift; sourceTree = "<group>"; };
+		A1000420 /* ResourceEditorSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ResourceEditorSheet.swift; sourceTree = "<group>"; };
+		A1000422 /* ResourceEditorCopyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ResourceEditorCopyTests.swift; sourceTree = "<group>"; };
+		A1000430 /* NewsSelectionChromeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NewsSelectionChromeTests.swift; sourceTree = "<group>"; };
 		A1000290 /* LibrarySelectionToolbar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibrarySelectionToolbar.swift; sourceTree = "<group>"; };
 		A1000292 /* LibrarySidebarVisibilityPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibrarySidebarVisibilityPolicy.swift; sourceTree = "<group>"; };
 		A1000294 /* LibrarySidebarVisibilityPolicyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibrarySidebarVisibilityPolicyTests.swift; sourceTree = "<group>"; };
 		A1000310 /* BookCard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BookCard.swift; sourceTree = "<group>"; };
 		A1000311 /* BookshelfView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BookshelfView.swift; sourceTree = "<group>"; };
 		A1000312 /* LibraryCollectionSidebar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryCollectionSidebar.swift; sourceTree = "<group>"; };
-		A1000313 /* LibraryRecentsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryRecentsView.swift; sourceTree = "<group>"; };
 		A1000314 /* LibraryChromeActionPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryChromeActionPolicy.swift; sourceTree = "<group>"; };
 		A1000315 /* LibraryChromeActionPolicyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryChromeActionPolicyTests.swift; sourceTree = "<group>"; };
 		A1000380 /* SegmentBoundaryEditor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SegmentBoundaryEditor.swift; sourceTree = "<group>"; };
@@ -169,6 +185,18 @@
 		A1000390 /* SummarizeActivityChip.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SummarizeActivityChip.swift; sourceTree = "<group>"; };
 		A1000392 /* SummarizeActivityChipTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SummarizeActivityChipTests.swift; sourceTree = "<group>"; };
 		A1000399 /* SegmentHeaderLayoutPolicyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SegmentHeaderLayoutPolicyTests.swift; sourceTree = "<group>"; };
+		A1000460 /* ListenScript.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ListenScript.swift; sourceTree = "<group>"; };
+		A1000442 /* ListenPreferences.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ListenPreferences.swift; sourceTree = "<group>"; };
+		A1000444 /* TTSEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TTSEngine.swift; sourceTree = "<group>"; };
+		A1000446 /* ListenSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ListenSession.swift; sourceTree = "<group>"; };
+		A1000448 /* ListenMiniBar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ListenMiniBar.swift; sourceTree = "<group>"; };
+		A1000450 /* ListenScriptTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ListenScriptTests.swift; sourceTree = "<group>"; };
+		A1000530 /* ReaderOriginalSearch.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderOriginalSearch.swift; sourceTree = "<group>"; };
+		A1000532 /* ReaderOriginalSearchTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderOriginalSearchTests.swift; sourceTree = "<group>"; };
+		A1000542 /* BookCardCoverTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BookCardCoverTests.swift; sourceTree = "<group>"; };
+		A1000550 /* MarkdownExportModeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownExportModeTests.swift; sourceTree = "<group>"; };
+		A1000570 /* ImportConflictPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ImportConflictPolicy.swift; sourceTree = "<group>"; };
+		A1000572 /* ImportConflictPolicyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ImportConflictPolicyTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -263,6 +291,9 @@
 				A1000274 /* SegmentSidebarModels.swift */,
 				A1000284 /* ReaderSegmentListGeometry.swift */,
 				A1000410 /* ReaderChromeClickPolicy.swift */,
+				A1000530 /* ReaderOriginalSearch.swift */,
+				A1000440 /* ReaderSelectionActionBar.swift */,
+				A1000472 /* Listen */,
 				A1000278 /* SegmentSidebarView.swift */,
 				A1000273 /* SummaryMetricsFormatter.swift */,
 				A1000296 /* ChatMetricsFormatter.swift */,
@@ -274,15 +305,25 @@
 			path = Reader;
 			sourceTree = "<group>";
 		};
+		A1000472 /* Listen */ = {
+			isa = PBXGroup;
+			children = (
+				A1000460 /* ListenScript.swift */,
+				A1000442 /* ListenPreferences.swift */,
+				A1000444 /* TTSEngine.swift */,
+				A1000446 /* ListenSession.swift */,
+				A1000448 /* ListenMiniBar.swift */,
+			);
+			path = Listen;
+			sourceTree = "<group>";
+		};
 		A1000507 /* Design */ = {
 			isa = PBXGroup;
 			children = (
 				A1000206 /* DesignSystem.swift */,
 				A1000207 /* ThemeManager.swift */,
 				A1000224 /* DoubleClickHandler.swift */,
-				A1000243 /* EdgeHoverTracker.swift */,
 				A1000244 /* WindowToolbarVisibility.swift */,
-				A1000253 /* ReaderEdgeIcon.swift */,
 			);
 			path = Design;
 			sourceTree = "<group>";
@@ -303,6 +344,7 @@
 			isa = PBXGroup;
 			children = (
 				A1000237 /* FollowUpChip.swift */,
+				A1000480 /* SummarizeChevronSplit.swift */,
 				A1000282 /* SelectableTextView.swift */,
 			);
 			path = Shared;
@@ -320,6 +362,7 @@
 			isa = PBXGroup;
 			children = (
 				A1000211 /* SettingsView.swift */,
+				A1000420 /* ResourceEditorSheet.swift */,
 				A1000288 /* PromptsSettingsView.swift */,
 			);
 			path = Settings;
@@ -356,13 +399,13 @@
 			children = (
 				A1000312 /* LibraryCollectionSidebar.swift */,
 				A1000311 /* BookshelfView.swift */,
-				A1000313 /* LibraryRecentsView.swift */,
 				A1000310 /* BookCard.swift */,
 				A1000222 /* BookRow.swift */,
 				A1000223 /* LibraryViewModel.swift */,
 				A1000290 /* LibrarySelectionToolbar.swift */,
 				A1000292 /* LibrarySidebarVisibilityPolicy.swift */,
 				A1000314 /* LibraryChromeActionPolicy.swift */,
+				A1000570 /* ImportConflictPolicy.swift */,
 				A1000390 /* SummarizeActivityChip.swift */,
 			);
 			path = Library;
@@ -390,10 +433,17 @@
 				A1000276 /* SegmentSidebarTests.swift */,
 				A1000286 /* ReaderSegmentListGeometryTests.swift */,
 				A1000412 /* ReaderChromeClickPolicyTests.swift */,
+				A1000532 /* ReaderOriginalSearchTests.swift */,
+				A1000542 /* BookCardCoverTests.swift */,
 				A1000294 /* LibrarySidebarVisibilityPolicyTests.swift */,
 				A1000315 /* LibraryChromeActionPolicyTests.swift */,
+				A1000572 /* ImportConflictPolicyTests.swift */,
 				A1000392 /* SummarizeActivityChipTests.swift */,
 				A1000399 /* SegmentHeaderLayoutPolicyTests.swift */,
+				A1000422 /* ResourceEditorCopyTests.swift */,
+				A1000430 /* NewsSelectionChromeTests.swift */,
+				A1000450 /* ListenScriptTests.swift */,
+				A1000550 /* MarkdownExportModeTests.swift */,
 			);
 			path = Unit;
 			sourceTree = "<group>";
@@ -548,6 +598,13 @@
 				A1000275 /* SegmentSidebarModels.swift in Sources */,
 				A1000285 /* ReaderSegmentListGeometry.swift in Sources */,
 				A1000411 /* ReaderChromeClickPolicy.swift in Sources */,
+				A1000531 /* ReaderOriginalSearch.swift in Sources */,
+				A1000441 /* ReaderSelectionActionBar.swift in Sources */,
+				A1000461 /* ListenScript.swift in Sources */,
+				A1000443 /* ListenPreferences.swift in Sources */,
+				A1000445 /* TTSEngine.swift in Sources */,
+				A1000447 /* ListenSession.swift in Sources */,
+				A1000449 /* ListenMiniBar.swift in Sources */,
 				A1000279 /* SegmentSidebarView.swift in Sources */,
 				A1000263 /* SummaryMetricsFormatter.swift in Sources */,
 				A1000297 /* ChatMetricsFormatter.swift in Sources */,
@@ -560,18 +617,18 @@
 				A1000106 /* DesignSystem.swift in Sources */,
 				A1000107 /* ThemeManager.swift in Sources */,
 				A1000124 /* DoubleClickHandler.swift in Sources */,
-				A1000148 /* EdgeHoverTracker.swift in Sources */,
 				A1000149 /* WindowToolbarVisibility.swift in Sources */,
-				A1000158 /* ReaderEdgeIcon.swift in Sources */,
 				A1000108 /* SearchView.swift in Sources */,
 				A1000109 /* NewsView.swift in Sources */,
 				A1000110 /* NewsArticleView.swift in Sources */,
 				A1000142 /* FollowUpChip.swift in Sources */,
+				A1000481 /* SummarizeChevronSplit.swift in Sources */,
 				A1000283 /* SelectableTextView.swift in Sources */,
 				A1000143 /* NewsSummaryMarkdown.swift in Sources */,
 				A1000154 /* NewsStructuredSummaryView.swift in Sources */,
 				A1000145 /* NewsSourcesSettingsView.swift in Sources */,
 				A1000111 /* SettingsView.swift in Sources */,
+				A1000421 /* ResourceEditorSheet.swift in Sources */,
 				A1000289 /* PromptsSettingsView.swift in Sources */,
 				A1000260 /* TaskManagerView.swift in Sources */,
 				A1000261 /* TaskRowView.swift in Sources */,
@@ -581,12 +638,12 @@
 				A1000320 /* BookCard.swift in Sources */,
 				A1000321 /* BookshelfView.swift in Sources */,
 				A1000322 /* LibraryCollectionSidebar.swift in Sources */,
-				A1000323 /* LibraryRecentsView.swift in Sources */,
 				A1000122 /* BookRow.swift in Sources */,
 				A1000123 /* LibraryViewModel.swift in Sources */,
 				A1000291 /* LibrarySelectionToolbar.swift in Sources */,
 				A1000293 /* LibrarySidebarVisibilityPolicy.swift in Sources */,
 				A1000324 /* LibraryChromeActionPolicy.swift in Sources */,
+				A1000571 /* ImportConflictPolicy.swift in Sources */,
 				A1000391 /* SummarizeActivityChip.swift in Sources */,
 				A1000113 /* ExportSheet.swift in Sources */,
 				A1000395 /* ResegmentBookSheet.swift in Sources */,
@@ -609,10 +666,17 @@
 				A1000277 /* SegmentSidebarTests.swift in Sources */,
 				A1000287 /* ReaderSegmentListGeometryTests.swift in Sources */,
 				A1000413 /* ReaderChromeClickPolicyTests.swift in Sources */,
+				A1000533 /* ReaderOriginalSearchTests.swift in Sources */,
+				A1000543 /* BookCardCoverTests.swift in Sources */,
 				A1000295 /* LibrarySidebarVisibilityPolicyTests.swift in Sources */,
 				A1000325 /* LibraryChromeActionPolicyTests.swift in Sources */,
+				A1000573 /* ImportConflictPolicyTests.swift in Sources */,
 				A1000393 /* SummarizeActivityChipTests.swift in Sources */,
 				A1000398 /* SegmentHeaderLayoutPolicyTests.swift in Sources */,
+				A1000423 /* ResourceEditorCopyTests.swift in Sources */,
+				A1000431 /* NewsSelectionChromeTests.swift in Sources */,
+				A1000451 /* ListenScriptTests.swift in Sources */,
+				A1000551 /* MarkdownExportModeTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -675,7 +739,7 @@
 				CODE_SIGN_IDENTITY = "-";
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 0.10.2;
+				CURRENT_PROJECT_VERSION = 1.0.0;
 				DEVELOPMENT_TEAM = "";
 				ENABLE_APP_SANDBOX = NO;
 				ENABLE_HARDENED_RUNTIME = NO;
@@ -686,7 +750,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 0.10.2;
+				MARKETING_VERSION = 1.0.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.lumina.app;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
@@ -701,7 +765,7 @@
 				CODE_SIGN_IDENTITY = "-";
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 0.10.2;
+				CURRENT_PROJECT_VERSION = 1.0.0;
 				DEVELOPMENT_TEAM = "";
 				ENABLE_APP_SANDBOX = NO;
 				ENABLE_HARDENED_RUNTIME = NO;
@@ -712,7 +776,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 0.10.2;
+				MARKETING_VERSION = 1.0.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.lumina.app;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
@@ -725,11 +789,11 @@
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 0.10.2;
+				CURRENT_PROJECT_VERSION = 1.0.0;
 				DEVELOPMENT_TEAM = "";
 				GENERATE_INFOPLIST_FILE = YES;
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
-				MARKETING_VERSION = 0.10.2;
+				MARKETING_VERSION = 1.0.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.lumina.app.tests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = NO;
@@ -743,11 +807,11 @@
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 0.10.2;
+				CURRENT_PROJECT_VERSION = 1.0.0;
 				DEVELOPMENT_TEAM = "";
 				GENERATE_INFOPLIST_FILE = YES;
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
-				MARKETING_VERSION = 0.10.2;
+				MARKETING_VERSION = 1.0.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.lumina.app.tests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = NO;

@@ -16,6 +16,9 @@ struct SummaryBlock: View {
     var showsBackground: Bool = true
     var showsHeader: Bool = true
 
+    @EnvironmentObject private var theme: ThemeManager
+    @Environment(\.readerPaper) private var paper
+
     var body: some View {
         if let summary = resolvedSummary, summary.hasContent {
             content(summary)
@@ -32,8 +35,8 @@ struct SummaryBlock: View {
 
     private var parseFailurePlaceholder: some View {
         Text("摘要格式异常，请重试")
-            .font(.system(size: LuminaTheme.summaryBulletSize))
-            .foregroundStyle(LuminaTheme.textSecondary)
+            .font(.system(size: theme.scaled(LuminaTheme.summaryBulletSize)))
+            .foregroundStyle(paper.textSecondary)
             .readingColumn()
     }
 
@@ -48,15 +51,16 @@ struct SummaryBlock: View {
                 VStack(alignment: .leading, spacing: 8) {
                     Text("总结")
                         .font(.system(size: LuminaTheme.summaryLabelSize, weight: .semibold))
-                        .foregroundStyle(LuminaTheme.textSecondary)
+                        .foregroundStyle(paper.textSecondary)
                         .tracking(0.6)
 
                     VStack(alignment: .leading, spacing: LuminaTheme.summaryLeadParagraphSpacing) {
                         ForEach(Array(summary.sentences.enumerated()), id: \.offset) { _, sentence in
                             LuminaSelectableText(
                                 text: sentence,
-                                fontSize: LuminaTheme.summaryLeadSize,
-                                lineSpacing: LuminaTheme.summaryLeadLineSpacing
+                                fontSize: theme.scaled(LuminaTheme.summaryLeadSize),
+                                lineSpacing: theme.scaled(LuminaTheme.summaryLeadLineSpacing),
+                                foreground: paper.textPrimary
                             )
                         }
                     }
@@ -82,11 +86,13 @@ struct SummaryBlock: View {
                         ForEach(Array(summary.notes.enumerated()), id: \.offset) { _, note in
                             HStack(alignment: .top, spacing: 8) {
                                 Text("·")
-                                    .font(.system(size: LuminaTheme.summaryBulletSize, weight: .semibold))
-                                    .foregroundStyle(LuminaTheme.textSecondary)
+                                    .font(.system(size: theme.scaled(LuminaTheme.summaryBulletSize), weight: .semibold))
+                                    .foregroundStyle(paper.textSecondary)
                                 LuminaSelectableText(
                                     text: note,
-                                    foreground: LuminaTheme.textSecondary
+                                    fontSize: theme.scaled(LuminaTheme.summaryBulletSize),
+                                    lineSpacing: theme.scaled(LuminaTheme.summaryBulletLineSpacing),
+                                    foreground: paper.textSecondary
                                 )
                             }
                         }
@@ -117,15 +123,16 @@ struct SummaryBlock: View {
             if let attribution = summaryAttribution {
                 Text(attribution)
                     .font(.caption)
-                    .foregroundStyle(LuminaTheme.textSecondary)
+                    .foregroundStyle(paper.textSecondary)
                     .padding(.top, 4)
             }
         }
-        .modifier(SummaryBlockChrome(showsBackground: showsBackground))
+        .modifier(SummaryBlockChrome(showsBackground: showsBackground, card: paper.card))
     }
 
     private struct SummaryBlockChrome: ViewModifier {
         let showsBackground: Bool
+        let card: Color
 
         func body(content: Content) -> some View {
             if showsBackground {
@@ -134,7 +141,7 @@ struct SummaryBlock: View {
                     .readingColumn()
                     .background(
                         RoundedRectangle(cornerRadius: LuminaTheme.summaryCornerRadius)
-                            .fill(LuminaTheme.accentMuted.opacity(0.45))
+                            .fill(card.opacity(0.45))
                     )
             } else {
                 content
@@ -147,11 +154,11 @@ struct SummaryBlock: View {
     private func summarySection<Content: View>(title: String, @ViewBuilder content: () -> Content) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             Divider()
-                .background(LuminaTheme.border)
+                .background(paper.border)
 
             Text(title)
                 .font(.system(size: LuminaTheme.summaryLabelSize, weight: .semibold))
-                .foregroundStyle(LuminaTheme.textSecondary)
+                .foregroundStyle(paper.textSecondary)
                 .tracking(0.6)
 
             content()
@@ -174,14 +181,14 @@ struct SummaryBlock: View {
             if let anchorText {
                 Text(anchorText)
                     .font(.system(size: LuminaTheme.summaryLabelSize, weight: .medium))
-                    .foregroundStyle(LuminaTheme.textSecondary)
+                    .foregroundStyle(paper.textSecondary)
                     .textSelection(.enabled)
             }
 
             if metaLine != nil {
                 Text(metaLine ?? "")
                     .font(.system(size: LuminaTheme.summaryLabelSize - 1))
-                    .foregroundStyle(LuminaTheme.textSecondary.opacity(0.85))
+                    .foregroundStyle(paper.textSecondary.opacity(0.85))
                     .textSelection(.enabled)
             }
         }
@@ -233,6 +240,9 @@ private struct StructuredBulletRow: View {
     let index: Int
     let bullet: ParsedBullet
 
+    @EnvironmentObject private var theme: ThemeManager
+    @Environment(\.readerPaper) private var paper
+
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
             RoundedRectangle(cornerRadius: 1)
@@ -245,14 +255,19 @@ private struct StructuredBulletRow: View {
                 if let label = bullet.label, !label.isEmpty {
                     LuminaSelectableText(
                         text: label,
-                        fontWeight: .semibold
+                        fontSize: theme.scaled(LuminaTheme.summaryBulletSize),
+                        fontWeight: .semibold,
+                        lineSpacing: theme.scaled(LuminaTheme.summaryBulletLineSpacing),
+                        foreground: paper.textPrimary
                     )
                 }
                 LuminaSelectableText(
                     text: bullet.body,
+                    fontSize: theme.scaled(LuminaTheme.summaryBulletSize),
+                    lineSpacing: theme.scaled(LuminaTheme.summaryBulletLineSpacing),
                     foreground: bullet.label == nil
-                        ? LuminaTheme.textPrimary
-                        : LuminaTheme.textSecondary
+                        ? paper.textPrimary
+                        : paper.textSecondary
                 )
             }
             .frame(maxWidth: .infinity, alignment: .leading)

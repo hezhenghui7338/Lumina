@@ -3,12 +3,17 @@
     x:Class="Lumina.Features.Reader.ReaderPage"
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-    xmlns:models="using:Lumina.Services">
+    xmlns:models="using:Lumina.Services"
+    xmlns:reader="using:Lumina.Features.Reader">
+    <Page.KeyboardAccelerators>
+        <KeyboardAccelerator Key="F" Modifiers="Control" Invoked="OriginalSearch_Accelerator"/>
+    </Page.KeyboardAccelerators>
     <Grid>
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
             <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
 
@@ -26,27 +31,108 @@
                        FontSize="18" FontWeight="SemiBold" VerticalAlignment="Center"
                        TextTrimming="CharacterEllipsis"/>
             <CommandBar Grid.Column="2" DefaultLabelPosition="Right" Background="Transparent" IsOpen="False">
-                <AppBarToggleButton x:Name="ShowRawToggle" Label="原文" Click="ShowRaw_Click"/>
-                <AppBarButton Label="A-" Click="FontDown_Click"/>
-                <AppBarButton Label="A+" Click="FontUp_Click"/>
-                <AppBarButton Label="笔记" Click="ToggleNotes_Click"/>
-                <AppBarButton Label="深聊" Click="OpenChat_Click"/>
-                <AppBarButton Label="导出" Click="Export_Click"/>
-                <AppBarButton Label="摘要"
-                              ToolTipService.ToolTip="开始摘要只处理未摘要段落；全书重新摘要会覆盖已有摘要，操作前会要求确认">
+                <AppBarToggleButton x:Name="ShowRawToggle" Label="原文" FontSize="14" FontWeight="Normal" Click="ShowRaw_Click"/>
+                <AppBarElementContainer>
+                    <StackPanel Orientation="Horizontal" Spacing="4" VerticalAlignment="Center" Margin="8,0,0,0">
+                        <AutoSuggestBox x:Name="OriginalSearchBox" Width="180" QueryIcon="Find"
+                                        PlaceholderText="搜索原文"
+                                        QuerySubmitted="OriginalSearch_QuerySubmitted"/>
+                        <TextBlock x:Name="OriginalSearchStatus" VerticalAlignment="Center" FontSize="12"
+                                   Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                        <Button x:Name="OriginalSearchPrev" Content="↑" Click="OriginalSearchPrev_Click"
+                                ToolTipService.ToolTip="上一条" IsEnabled="False"/>
+                        <Button x:Name="OriginalSearchNext" Content="↓" Click="OriginalSearchNext_Click"
+                                ToolTipService.ToolTip="下一条" IsEnabled="False"/>
+                    </StackPanel>
+                </AppBarElementContainer>
+                <AppBarElementContainer>
+                    <SplitButton x:Name="ListenSplit" Click="Listen_Click" VerticalAlignment="Center"
+                                 ToolTipService.ToolTip="听文本">
+                        <SplitButton.Content>
+                            <StackPanel Orientation="Horizontal" Spacing="6">
+                                <FontIcon Glyph="&#xE767;" FontSize="16"/>
+                                <TextBlock Text="听" FontSize="14" FontWeight="Normal"/>
+                            </StackPanel>
+                        </SplitButton.Content>
+                        <SplitButton.Flyout>
+                            <MenuFlyout>
+                                <MenuFlyoutItem x:Name="ListenSummaryItem" Text="听简要摘要" Tag="summary" Click="ListenMode_Click"/>
+                                <MenuFlyoutItem x:Name="ListenDetailedItem" Text="听完整摘要" Tag="detailed" Click="ListenMode_Click"/>
+                                <MenuFlyoutItem x:Name="ListenOriginalItem" Text="听原文" Tag="original" Click="ListenMode_Click"/>
+                            </MenuFlyout>
+                        </SplitButton.Flyout>
+                    </SplitButton>
+                </AppBarElementContainer>
+                <AppBarButton Label="A-" FontSize="14" FontWeight="Normal" Click="FontDown_Click"/>
+                <AppBarButton Label="A+" FontSize="14" FontWeight="Normal" Click="FontUp_Click"/>
+                <AppBarButton Label="显示" FontSize="14" FontWeight="Normal"
+                              ToolTipService.ToolTip="字号与纸色">
                     <AppBarButton.Flyout>
-                        <MenuFlyout>
-                            <MenuFlyoutSubItem Text="开始摘要">
-                                <MenuFlyoutItem Text="正常摘要" Tag="normal" Click="Summarize_Click"/>
-                                <MenuFlyoutItem Text="高级摘要（仅未摘要）" Tag="advanced" Click="Summarize_Click"/>
-                            </MenuFlyoutSubItem>
-                            <MenuFlyoutItem Text="停止摘要" Click="StopSummarize_Click"/>
-                            <MenuFlyoutSeparator/>
-                            <MenuFlyoutSubItem Text="全书重新摘要">
-                                <MenuFlyoutItem Text="正常摘要（覆盖全书）" Tag="normal" Click="Regenerate_Click"/>
-                                <MenuFlyoutItem Text="高级摘要（覆盖全书）" Tag="advanced" Click="Regenerate_Click"/>
-                            </MenuFlyoutSubItem>
-                        </MenuFlyout>
+                        <Flyout Placement="Bottom" Opened="DisplayFlyout_Opened">
+                            <StackPanel Spacing="8" MinWidth="200">
+                                <TextBlock Text="字号" FontWeight="SemiBold"/>
+                                <TextBlock x:Name="FontScaleLabel" FontSize="12"
+                                           Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                                <StackPanel Orientation="Horizontal" Spacing="8">
+                                    <Button Content="较小" Click="FontDown_Click"/>
+                                    <Button Content="较大" Click="FontUp_Click"/>
+                                </StackPanel>
+                                <TextBlock Text="纸色" FontWeight="SemiBold" Margin="0,8,0,0"/>
+                                <StackPanel Orientation="Horizontal" Spacing="8">
+                                    <Button x:Name="PaperWhiteBtn" Content="白" Tag="white" Click="Paper_Click"/>
+                                    <Button x:Name="PaperIvoryBtn" Content="象牙" Tag="ivory" Click="Paper_Click"/>
+                                    <Button x:Name="PaperSageBtn" Content="护眼" Tag="sage" Click="Paper_Click"/>
+                                    <Button x:Name="PaperNightBtn" Content="夜间" Tag="night" Click="Paper_Click"/>
+                                </StackPanel>
+                            </StackPanel>
+                        </Flyout>
+                    </AppBarButton.Flyout>
+                </AppBarButton>
+                <AppBarButton Label="分段" FontSize="14" FontWeight="Normal"
+                              ToolTipService.ToolTip="调整分界或整书重新分段">
+                    <AppBarButton.Flyout>
+                        <Flyout Placement="Bottom">
+                            <StackPanel Spacing="8" MinWidth="180">
+                                <Button Content="调整分段" HorizontalAlignment="Stretch"
+                                        Click="AdjustBoundary_Click"/>
+                                <Button Content="整书重新分段" HorizontalAlignment="Stretch"
+                                        Click="ResegmentBook_Click"/>
+                            </StackPanel>
+                        </Flyout>
+                    </AppBarButton.Flyout>
+                </AppBarButton>
+                <AppBarButton Label="笔记" FontSize="14" FontWeight="Normal" Click="ToggleNotes_Click"/>
+                <AppBarButton Label="深聊" FontSize="14" FontWeight="Normal" Click="OpenChat_Click"/>
+                <AppBarButton Label="导出" FontSize="14" FontWeight="Normal" Click="Export_Click"/>
+                <AppBarButton x:Name="SummarizeAppBar" Label="摘要" FontSize="14" FontWeight="Normal"
+                              ToolTipService.ToolTip="点「开始摘要」立即正常档；箭头可选高级（需确认）；重新摘要整书都会再确认覆盖">
+                    <AppBarButton.Flyout>
+                        <Flyout Placement="Bottom">
+                            <StackPanel Spacing="8" MinWidth="200">
+                                <SplitButton x:Name="StartSummarizeSplit" Content="开始摘要"
+                                             Click="StartSummarizeNormal_Click"
+                                             HorizontalAlignment="Stretch">
+                                    <SplitButton.Flyout>
+                                        <MenuFlyout>
+                                            <MenuFlyoutItem Text="高级摘要（仅未摘要）"
+                                                            Click="StartSummarizeAdvanced_Click"/>
+                                        </MenuFlyout>
+                                    </SplitButton.Flyout>
+                                </SplitButton>
+                                <SplitButton x:Name="RegenerateSummarizeSplit" Content="重新摘要整书"
+                                             Click="RegenerateNormal_Click"
+                                             HorizontalAlignment="Stretch">
+                                    <SplitButton.Flyout>
+                                        <MenuFlyout>
+                                            <MenuFlyoutItem Text="高级摘要（覆盖全书）" Tag="advanced"
+                                                            Click="Regenerate_Click"/>
+                                        </MenuFlyout>
+                                    </SplitButton.Flyout>
+                                </SplitButton>
+                                <Button Content="停止摘要" Click="StopSummarize_Click"
+                                        HorizontalAlignment="Stretch"/>
+                            </StackPanel>
+                        </Flyout>
                     </AppBarButton.Flyout>
                 </AppBarButton>
             </CommandBar>
@@ -54,7 +140,15 @@
 
         <Border x:Name="ProgressBanner" Grid.Row="1" Padding="16,8" Visibility="Collapsed"
                 Background="{ThemeResource SubtleFillColorSecondaryBrush}">
-            <TextBlock x:Name="ProgressText" TextWrapping="WrapWholeWords"/>
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <TextBlock x:Name="ProgressText" TextWrapping="WrapWholeWords" VerticalAlignment="Center"/>
+                <Button x:Name="CancelProcessingBtn" Grid.Column="1" Content="取消"
+                        Margin="12,0,0,0" Visibility="Collapsed" Click="CancelProcessing_Click"/>
+            </Grid>
         </Border>
 
         <Grid Grid.Row="2">
@@ -65,14 +159,21 @@
             </Grid.ColumnDefinitions>
 
             <ListView x:Name="SegmentList" Grid.Column="0"
+                      SelectionMode="Extended"
                       SelectionChanged="SegmentList_SelectionChanged"
                       BorderBrush="{ThemeResource DividerStrokeColorDefaultBrush}"
                       BorderThickness="0,0,1,0">
                 <ListView.ItemTemplate>
-                    <DataTemplate x:DataType="models:SegmentRow">
-                        <StackPanel Padding="8,6">
-                            <TextBlock Text="{x:Bind DisplayLabel}" TextWrapping="WrapWholeWords"/>
-                            <TextBlock Text="{x:Bind SummaryStatus}" FontSize="11"
+                    <DataTemplate x:DataType="reader:SegmentCatalogItem">
+                        <StackPanel Padding="10,8" Spacing="{x:Bind RowSpacing}">
+                            <TextBlock Text="{x:Bind Headline}" FontSize="{x:Bind TitleSize}"
+                                       Opacity="{x:Bind TitleOpacity}" FontWeight="SemiBold"
+                                       TextWrapping="NoWrap" TextTrimming="CharacterEllipsis"/>
+                            <TextBlock Text="{x:Bind Preview}" FontSize="{x:Bind PreviewSize}"
+                                       TextWrapping="NoWrap" TextTrimming="CharacterEllipsis"
+                                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                            <TextBlock Text="{x:Bind Bullets}" FontSize="{x:Bind BulletSize}"
+                                       TextWrapping="NoWrap" TextTrimming="CharacterEllipsis"
                                        Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
                         </StackPanel>
                     </DataTemplate>
@@ -81,17 +182,18 @@
 
             <ScrollViewer Grid.Column="1" Padding="24" x:Name="ContentScroll"
                           ViewChanged="ContentScroll_ViewChanged">
+                <Border x:Name="ContentHighlight" Padding="0" CornerRadius="8">
                 <StackPanel Spacing="12" MaxWidth="760">
                     <TextBlock x:Name="SegmentTitle" FontSize="20" FontWeight="SemiBold" TextWrapping="WrapWholeWords"/>
                     <ProgressRing x:Name="SegmentLoading" Width="32" Height="32" IsActive="False"
                                   HorizontalAlignment="Left"/>
                     <TextBlock x:Name="ThreeSentenceText" TextWrapping="WrapWholeWords" FontSize="15" LineHeight="26"
-                               IsTextSelectionEnabled="True"/>
+                               IsTextSelectionEnabled="True" PointerReleased="SelectableText_PointerReleased"/>
                     <TextBlock x:Name="KeyPointsText" TextWrapping="WrapWholeWords" FontSize="14" LineHeight="24"
-                               IsTextSelectionEnabled="True"/>
+                               IsTextSelectionEnabled="True" PointerReleased="SelectableText_PointerReleased"/>
                     <TextBlock x:Name="WatchOutsText" TextWrapping="WrapWholeWords" FontSize="14" LineHeight="24"
                                Foreground="{ThemeResource SystemFillColorCautionBrush}"
-                               IsTextSelectionEnabled="True"/>
+                               IsTextSelectionEnabled="True" PointerReleased="SelectableText_PointerReleased"/>
                     <ItemsControl x:Name="FollowUpChips">
                         <ItemsControl.ItemsPanel>
                             <ItemsPanelTemplate>
@@ -105,7 +207,8 @@
                         </ItemsControl.ItemTemplate>
                     </ItemsControl>
                     <TextBlock x:Name="BodyText" TextWrapping="WrapWholeWords" FontSize="15" LineHeight="26"
-                               IsTextSelectionEnabled="True" Visibility="Collapsed"/>
+                               IsTextSelectionEnabled="True" Visibility="Collapsed"
+                               PointerReleased="SelectableText_PointerReleased"/>
                     <StackPanel Orientation="Horizontal" Spacing="8">
                         <Button Content="选区提问" Click="AskSelection_Click"/>
                         <Button x:Name="PrevSegmentButton" Content="[" Click="PrevSegment_Click"
@@ -113,9 +216,17 @@
                         <Button x:Name="NextSegmentButton" Content="]" Click="NextSegment_Click"
                                 ToolTipService.ToolTip="下一段（] / 】）"/>
                         <Button Content="重试本段" Click="RetrySegment_Click"/>
-                        <Button Content="调整与下一段的边界" Click="AdjustBoundary_Click"/>
+                        <Button Content="重试选中失败段" Click="RetrySelectedSegments_Click"
+                                ToolTipService.ToolTip="对多选的失败段重新摘要"/>
+                        <Button Click="AdjustBoundary_Click"
+                                ToolTipService.ToolTip="调整与下一段的边界"
+                                AutomationProperties.Name="调整与下一段的边界"
+                                AutomationProperties.AutomationId="lumina.reader.control.adjustBoundary">
+                            <FontIcon Glyph="&#xE93C;" FontSize="16"/>
+                        </Button>
                     </StackPanel>
                 </StackPanel>
+                </Border>
             </ScrollViewer>
 
             <Border x:Name="NotesPanel" Grid.Column="2" Width="300" Visibility="Collapsed"
@@ -183,6 +294,23 @@
                             <StackPanel Padding="4,6">
                                 <TextBlock FontWeight="SemiBold" Text="{x:Bind Role}"/>
                                 <TextBlock Text="{x:Bind Content}" TextWrapping="WrapWholeWords" IsTextSelectionEnabled="True"/>
+                                <TextBlock Text="{x:Bind MetricsLine}" FontSize="12"
+                                           Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                                <ItemsControl ItemsSource="{x:Bind Citations}">
+                                    <ItemsControl.ItemsPanel>
+                                        <ItemsPanelTemplate>
+                                            <StackPanel Orientation="Horizontal"/>
+                                        </ItemsPanelTemplate>
+                                    </ItemsControl.ItemsPanel>
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate x:DataType="models:ChatCitation">
+                                            <HyperlinkButton Content="{x:Bind ButtonLabel}"
+                                                             Tag="{x:Bind TagValue}"
+                                                             Click="Citation_Click"
+                                                             FontSize="12" Padding="0,2,8,2"/>
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
                                 <ItemsControl ItemsSource="{x:Bind WebRefs}">
                                     <ItemsControl.ItemTemplate>
                                         <DataTemplate x:DataType="models:ChatWebRef">
@@ -204,6 +332,37 @@
                     <Button Grid.Column="1" Content="发送" Margin="8,0,0,0"
                             Style="{StaticResource AccentButtonStyle}" Click="SendChat_Click"/>
                 </Grid>
+            </Grid>
+        </Border>
+
+        <Border x:Name="ListenMiniBar" Grid.Row="4" Padding="12,8" Visibility="Collapsed"
+                Background="{ThemeResource SubtleFillColorSecondaryBrush}"
+                BorderBrush="{ThemeResource DividerStrokeColorDefaultBrush}" BorderThickness="0,1,0,0">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <StackPanel Orientation="Horizontal" Spacing="8">
+                    <Button x:Name="ListenBackBtn" Content="上一段" Click="ListenBack_Click"/>
+                    <Button x:Name="ListenPauseBtn" Content="暂停" Click="ListenPause_Click"/>
+                    <Button x:Name="ListenForwardBtn" Content="下一段" Click="ListenForward_Click"/>
+                    <ComboBox x:Name="ListenRateBox" Width="88" SelectionChanged="ListenRate_Changed">
+                        <ComboBoxItem Content="0.8×" Tag="0.8"/>
+                        <ComboBoxItem Content="1×" Tag="1" IsSelected="True"/>
+                        <ComboBoxItem Content="1.25×" Tag="1.25"/>
+                        <ComboBoxItem Content="1.5×" Tag="1.5"/>
+                        <ComboBoxItem Content="2×" Tag="2"/>
+                    </ComboBox>
+                </StackPanel>
+                <StackPanel Grid.Column="1" Margin="12,0" VerticalAlignment="Center">
+                    <TextBlock x:Name="ListenTitleText" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"/>
+                    <TextBlock x:Name="ListenBannerText" FontSize="12"
+                               Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                               TextTrimming="CharacterEllipsis"/>
+                </StackPanel>
+                <Button Grid.Column="2" Content="停止" Click="ListenStop_Click"/>
             </Grid>
         </Border>
     </Grid>

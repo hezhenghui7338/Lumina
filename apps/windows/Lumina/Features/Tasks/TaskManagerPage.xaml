@@ -17,11 +17,14 @@
                 <TextBlock Text="任务管理" FontSize="28" FontWeight="SemiBold" VerticalAlignment="Center"/>
             </StackPanel>
             <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Spacing="8">
-                <ComboBox x:Name="SummaryTierBox" Width="110" SelectedIndex="0">
-                    <ComboBoxItem Content="正常摘要" Tag="normal"/>
-                    <ComboBoxItem Content="高级摘要" Tag="advanced"/>
-                </ComboBox>
-                <Button Content="全部开始摘要" Click="StartAll_Click"/>
+                <Button Content="全部开始摘要" Click="StartAll_Click"
+                        ToolTipService.ToolTip="点击开始正常摘要；右键可选高级摘要">
+                    <Button.ContextFlyout>
+                        <MenuFlyout>
+                            <MenuFlyoutItem Text="高级摘要（仅未摘要）" Click="StartAllAdvanced_Click"/>
+                        </MenuFlyout>
+                    </Button.ContextFlyout>
+                </Button>
                 <Button Content="全部停止" Click="StopAll_Click"/>
                 <Button Content="刷新" Click="Refresh_Click"/>
             </StackPanel>

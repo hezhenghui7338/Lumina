@@ -46,14 +46,19 @@ public sealed partial class TaskManagerPage : Page
         {
             var overviewTask = App.Core.FetchOpsOverviewAsync(ct);
             var tasksTask = App.Core.FetchOpsTasksAsync(ct: ct);
-            await Task.WhenAll(overviewTask, tasksTask);
+            var runtimeTask = App.Core.FetchResourceRuntimeAsync(ct);
+            await Task.WhenAll(overviewTask, tasksTask, runtimeTask);
             var ov = overviewTask.Result;
             var tasks = tasksTask.Result;
             OverviewText.Text =
                 $"排队 {ov.TaskCounts.Queued} · 运行 {ov.TaskCounts.Running} · 完成 {ov.TaskCounts.Completed} · 失败 {ov.TaskCounts.Failed}" +
                 (ov.JobQueue.UserPausedAll ? " · 用户已全部暂停" : "");
-            RuntimeText.Text = string.Join(" · ",
-                ov.ResourceRuntime.Select(r => $"{r.ResourceId}: {r.InUse}/{r.Limit}"));
+            var runtime = runtimeTask.Result.Resources.Count > 0
+                ? runtimeTask.Result.Resources
+                : ov.ResourceRuntime;
+            RuntimeText.Text = runtime.Count == 0
+                ? "暂无资源占用"
+                : string.Join(" · ", runtime.Select(r => r.DisplayLine));
             TasksList.ItemsSource = tasks.Tasks.ToList();
         }
         catch (OperationCanceledException) { }
@@ -77,13 +82,16 @@ public sealed partial class TaskManagerPage : Page
         }
     }
 
-    private async void StartAll_Click(object sender, RoutedEventArgs e)
+    private async void StartAll_Click(object sender, RoutedEventArgs e) =>
+        await StartAllAsync(SummaryTier.Normal);
+
+    private async void StartAllAdvanced_Click(object sender, RoutedEventArgs e) =>
+        await StartAllAsync(SummaryTier.Advanced);
+
+    private async Task StartAllAsync(SummaryTier tier)
     {
         try
         {
-            var tier = SummaryTierBox.SelectedItem is ComboBoxItem { Tag: "advanced" }
-                ? SummaryTier.Advanced
-                : SummaryTier.Normal;
             await App.Core.StartSummarizeAllAsync(tier);
             await ReloadAsync();
         }

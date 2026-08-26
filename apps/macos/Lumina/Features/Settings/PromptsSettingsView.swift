@@ -11,7 +11,7 @@ struct PromptsSettingsView: View {
         Form {
             promptSection(
                 title: "段摘要",
-                footer: "必填占位符：{text}、{anchor}",
+                footer: "必填占位符：{text}、{anchor}；可选：{target_language}",
                 text: $prompts.segment
             ) {
                 prompts.segment = defaultPrompts.segment
@@ -20,14 +20,14 @@ struct PromptsSettingsView: View {
             DisclosureGroup("段摘要 · 高级（可选覆盖）") {
                 optionalPromptSection(
                     title: "Ollama 覆盖",
-                    footer: "留空则使用主模板。必填占位符：{text}",
+                    footer: "留空则使用主模板。必填占位符：{text}；可选：{target_language}",
                     text: optionalBinding(\.segment_ollama)
                 ) {
                     prompts.segment_ollama = defaultPrompts.segment_ollama
                 }
                 optionalPromptSection(
                     title: "Cloud 覆盖",
-                    footer: "留空则使用主模板。必填占位符：{text}",
+                    footer: "留空则使用主模板。必填占位符：{text}；可选：{target_language}",
                     text: optionalBinding(\.segment_cloud)
                 ) {
                     prompts.segment_cloud = defaultPrompts.segment_cloud
@@ -36,7 +36,7 @@ struct PromptsSettingsView: View {
 
             promptSection(
                 title: "文档 / 资讯速读",
-                footer: "必填占位符：{filename}、{annotated}",
+                footer: "必填占位符：{filename}、{annotated}；可选：{target_language}",
                 text: $prompts.document
             ) {
                 prompts.document = defaultPrompts.document

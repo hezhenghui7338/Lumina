@@ -32,6 +32,62 @@ public static class LocalPrefs
         }
     }
 
+    public static string ReaderPaperRaw
+    {
+        get => string.IsNullOrWhiteSpace(_data.ReaderPaper) ? "white" : _data.ReaderPaper;
+        set
+        {
+            _data.ReaderPaper = value ?? "white";
+            Save();
+        }
+    }
+
+    public static double ReaderFontScale
+    {
+        get => _data.ReaderFontScale <= 0 ? 1.0 : _data.ReaderFontScale;
+        set
+        {
+            _data.ReaderFontScale = value;
+            Save();
+        }
+    }
+
+    public static string LibrarySummary
+    {
+        get => string.IsNullOrWhiteSpace(_data.LibrarySummary) ? "all" : _data.LibrarySummary;
+        set { _data.LibrarySummary = value; Save(); }
+    }
+
+    public static string LibraryReading
+    {
+        get => string.IsNullOrWhiteSpace(_data.LibraryReading) ? "all" : _data.LibraryReading;
+        set { _data.LibraryReading = value; Save(); }
+    }
+
+    public static string LibraryCategory
+    {
+        get => string.IsNullOrWhiteSpace(_data.LibraryCategory) ? "all" : _data.LibraryCategory;
+        set { _data.LibraryCategory = value; Save(); }
+    }
+
+    public static bool LibraryFavoriteOnly
+    {
+        get => _data.LibraryFavoriteOnly;
+        set { _data.LibraryFavoriteOnly = value; Save(); }
+    }
+
+    public static string LibrarySort
+    {
+        get => string.IsNullOrWhiteSpace(_data.LibrarySort) ? "recent" : _data.LibrarySort;
+        set { _data.LibrarySort = value; Save(); }
+    }
+
+    public static bool LibraryGridMode
+    {
+        get => _data.LibraryGridMode;
+        set { _data.LibraryGridMode = value; Save(); }
+    }
+
     public static double ReaderFontSize
     {
         get => _data.ReaderFontSize <= 0 ? 15 : _data.ReaderFontSize;
@@ -107,6 +163,26 @@ public static class LocalPrefs
         Save();
     }
 
+    public static float ListenRate
+    {
+        get => _data.ListenRate <= 0 ? 1.0f : _data.ListenRate;
+        set
+        {
+            _data.ListenRate = value;
+            Save();
+        }
+    }
+
+    public static string ListenSystemVoiceId
+    {
+        get => _data.ListenSystemVoiceId ?? "";
+        set
+        {
+            _data.ListenSystemVoiceId = value ?? "";
+            Save();
+        }
+    }
+
     private static PrefsData Load()
     {
         try
@@ -133,8 +209,18 @@ public static class LocalPrefs
         public string Theme { get; set; } = "Light";
         public bool OnboardingDone { get; set; }
         public double ReaderFontSize { get; set; } = 15;
+        public double ReaderFontScale { get; set; } = 1.0;
+        public string ReaderPaper { get; set; } = "white";
+        public string LibrarySummary { get; set; } = "all";
+        public string LibraryReading { get; set; } = "all";
+        public string LibraryCategory { get; set; } = "all";
+        public bool LibraryFavoriteOnly { get; set; }
+        public string LibrarySort { get; set; } = "recent";
+        public bool LibraryGridMode { get; set; } = true;
         public Dictionary<string, bool> ShowRawByBook { get; set; } = new();
         public Dictionary<string, ProgressPref> ReadingProgressByBook { get; set; } = new();
+        public float ListenRate { get; set; } = 1.0f;
+        public string ListenSystemVoiceId { get; set; } = "";
     }
 
     private sealed class ProgressPref

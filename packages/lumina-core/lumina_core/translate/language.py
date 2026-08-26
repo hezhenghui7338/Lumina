@@ -8,6 +8,59 @@ import unicodedata
 _CJK_RE = re.compile(r"[\u4e00-\u9fff]")
 _KANA_RE = re.compile(r"[\u3040-\u309f\u30a0-\u30ff]")
 _LATIN_RE = re.compile(r"[A-Za-z]")
+_KANA_RUN = re.compile(r"[\u3040-\u309f\u30a0-\u30ff]{2,}")
+_CYRILLIC_RUN = re.compile(r"[\u0400-\u04ff]{2,}")
+_HANGUL_RUN = re.compile(r"[\uac00-\ud7af]{2,}")
+_CJK_RUN = re.compile(r"[\u4e00-\u9fff]{4,}")
+_LATIN_WORD_RUN = re.compile(
+    r"[A-Za-z]{2,}(?:['’][A-Za-z]+)?(?:[\s,;:\"“”‘’()-]+[A-Za-z]{2,}(?:['’][A-Za-z]+)?)+"
+)
+_SHORT_PROPER_MAX = 12
+_EN_FUNCTION_WORDS = frozenset(
+    {
+        "the",
+        "a",
+        "an",
+        "is",
+        "are",
+        "was",
+        "were",
+        "be",
+        "been",
+        "being",
+        "to",
+        "of",
+        "and",
+        "in",
+        "that",
+        "this",
+        "these",
+        "those",
+        "for",
+        "with",
+        "on",
+        "as",
+        "at",
+        "by",
+        "from",
+        "or",
+        "it",
+        "he",
+        "she",
+        "they",
+        "we",
+        "you",
+        "not",
+        "but",
+        "if",
+        "then",
+        "than",
+        "after",
+        "before",
+        "into",
+        "about",
+    }
+)
 
 
 def normalize_lang(code: str | None) -> str | None:
@@ -31,6 +84,31 @@ def normalize_lang(code: str | None) -> str | None:
     if primary in ("es",):
         return "es"
     return primary
+
+
+_DISPLAY_NAMES = {
+    "en": "English",
+    "ja": "日本語",
+    "ko": "한국어",
+    "fr": "Français",
+    "de": "Deutsch",
+    "es": "Español",
+    "ru": "Русский",
+}
+
+
+def language_display_name(code: str | None) -> str:
+    """Human-readable name for prompt injection (never a bare locale code)."""
+    family = normalize_lang(code)
+    if family == "zh":
+        raw = (code or "").strip().replace("_", "-").lower()
+        if raw.startswith(("zh-tw", "zh-hk", "zh-hant")) or "hant" in raw:
+            return "繁体中文"
+        return "简体中文"
+    if family and family in _DISPLAY_NAMES:
+        return _DISPLAY_NAMES[family]
+    stripped = (code or "").strip()
+    return stripped or "简体中文"
 
 
 def languages_match(a: str | None, b: str | None) -> bool:
@@ -68,6 +146,74 @@ def infer_language(text: str) -> str | None:
         return "zh"
     if latin > 0:
         return "en"
+    return None
+
+
+def _allow_short_source_term(span: str, source_text: str | None) -> bool:
+    if not source_text or len(span) > _SHORT_PROPER_MAX:
+        return False
+    return span in source_text
+
+
+def _english_clause_span(text: str) -> tuple[int, str] | None:
+    for match in _LATIN_WORD_RUN.finditer(text):
+        tokens = re.findall(r"[A-Za-z]{2,}", match.group())
+        if len(tokens) >= 6 or (
+            len(tokens) >= 4 and any(token.lower() in _EN_FUNCTION_WORDS for token in tokens)
+        ):
+            return match.start(), match.group().strip()[:60]
+    return None
+
+
+def unexpected_language_span(
+    text: str,
+    *,
+    target_language: str | None,
+    source_text: str | None = None,
+) -> tuple[int, str, str] | None:
+    """Return (start, snippet, problem) when summary text mixes unexpected scripts."""
+    family = normalize_lang(target_language) or "zh"
+    stripped = (text or "").strip()
+    if not stripped:
+        return None
+
+    def _flag_run(pattern: re.Pattern[str], problem: str) -> tuple[int, str, str] | None:
+        for match in pattern.finditer(text):
+            span = match.group()
+            if _allow_short_source_term(span, source_text):
+                continue
+            return match.start(), span[:40], problem
+        return None
+
+    if family != "ja":
+        hit = _flag_run(_KANA_RUN, "夹杂日语假名")
+        if hit:
+            return hit
+    hit = _flag_run(_CYRILLIC_RUN, "夹杂西里尔字母")
+    if hit:
+        return hit
+    if family != "ko":
+        hit = _flag_run(_HANGUL_RUN, "夹杂韩文")
+        if hit:
+            return hit
+    if family == "en":
+        hit = _flag_run(_CJK_RUN, "夹杂汉字整段")
+        if hit:
+            return hit
+        return None
+
+    if family in {"zh", "ja", "ko"}:
+        clause = _english_clause_span(text)
+        if clause is not None:
+            start, snippet = clause
+            if not _allow_short_source_term(snippet, source_text):
+                return start, snippet, "夹杂英语整句"
+        latin = len(_LATIN_RE.findall(text))
+        cjk = len(_CJK_RE.findall(text))
+        kana = len(_KANA_RE.findall(text))
+        letters = latin + cjk + kana
+        if latin >= 24 and letters and latin / letters > 0.45:
+            return 0, stripped[:40], "正文以英语为主"
     return None
 
 

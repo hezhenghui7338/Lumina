@@ -176,6 +176,11 @@ struct BookSummary: Codable, Identifiable, Hashable {
         )
     }
 
+    var sortReadingProgress: Double {
+        guard last_opened_at != nil else { return 0 }
+        return resolvedReadingPercent
+    }
+
     var readingProgressBucket: ReadingProgressBucket {
         guard last_opened_at != nil else { return .unread }
         guard readingTotal > 0 else { return .reading }
@@ -188,12 +193,6 @@ struct BookSummary: Codable, Identifiable, Hashable {
     var segmentCountLabel: String {
         let count = segment_count ?? 0
         return count > 0 ? "\(count) 段" : "未分段"
-    }
-
-    var coverInitial: String {
-        let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let first = trimmed.first else { return "书" }
-        return String(first)
     }
 
     var progressLabel: String {
@@ -211,6 +210,33 @@ struct BookSummary: Codable, Identifiable, Hashable {
     }
 
     var isProcessing: Bool { status == "processing" }
+
+    /// Import failed or was cancelled (`status=error`).
+    var isIngestFailed: Bool { status == "error" }
+
+    /// Import / resegment in flight, or a 0-segment book that is not failed.
+    var isSegmenting: Bool {
+        guard !isIngestFailed else { return false }
+        if isProcessing || summarize_state == "segmenting" { return true }
+        return summaryTotal <= 0
+    }
+
+    /// Another book's ingest must never block this. 分段中 opens the reader
+    /// progress page; only 导入失败 stays on the shelf.
+    var canOpenInReader: Bool { !isIngestFailed }
+
+    /// Bookshelf summary-dimension label. Never empty for a listed book.
+    var summaryFacetLabel: String {
+        if isIngestFailed { return "导入失败" }
+        if isSegmenting { return "分段中" }
+        if hasCompletedSummary { return "已摘要" }
+        switch summarize_state {
+        case "running": return "正在摘要"
+        case "queued": return "排队中"
+        case "paused": return "已暂停"
+        default: return "待摘要"
+        }
+    }
 
     var summarizeQueuedCount: Int { summarize_queued_count ?? 0 }
 
@@ -241,7 +267,7 @@ struct BookSummary: Codable, Identifiable, Hashable {
         case "unread": return "未读"
         case "reading": return "在读"
         case "summarized": return "已摘要"
-        case "processing": return "处理中"
+        case "processing": return "分段中"
         case "error":
             if let reason = ingest_error?.trimmingCharacters(in: .whitespacesAndNewlines),
                !reason.isEmpty {
@@ -260,6 +286,8 @@ struct SummarizeOverview: Codable {
         let paused: Int
         let idle: Int
         let summarized: Int
+        /// Books currently importing or being re-chunked.
+        let segmenting: Int?
         /// Books whose whole-book index is being built right now.
         let indexing: Int?
     }
@@ -311,6 +339,9 @@ enum SummarizeStateFilter: String, CaseIterable, Identifiable {
         case .idle:
             return book.summarize_state == "idle" || book.summarize_state == "paused"
         case .summarized:
+            if book.isIngestFailed || book.isSegmenting {
+                return false
+            }
             return book.summarize_state == "summarized"
                 || (book.summaryTotal > 0 && book.summaryReady >= book.summaryTotal)
         }
@@ -378,7 +409,7 @@ struct LibraryFilter: Hashable, Identifiable {
         switch raw {
         case "all", "recent": return .all
         case "summarized": return .summarized
-        case "unread", "reading", "finished", "idle", "summarizing", "favorite":
+        case "unread", "reading", "finished", "idle", "segmenting", "summarizing", "favorite", "error":
             return LibraryFilter(rawValue: raw)
         default:
             if fallbackCategories.contains(raw) {
@@ -390,38 +421,56 @@ struct LibraryFilter: Hashable, Identifiable {
 }
 
 enum LibraryCollection: Hashable, Identifiable {
-    case recent
+    case summaryAll
     case idle
+    case segmenting
     case summarizing
     case summarized
+    case ingestFailed
+    case readingAll
     case unread
     case reading
     case finished
     case favorite
+    case categoryAll
     case category(String)
 
     var id: String { rawValue }
 
     var rawValue: String {
         switch self {
-        case .recent: return "recent"
+        case .summaryAll: return "summary-all"
         case .idle: return "idle"
+        case .segmenting: return "segmenting"
         case .summarizing: return "summarizing"
         case .summarized: return "summarized"
+        case .ingestFailed: return "error"
+        case .readingAll: return "reading-all"
         case .unread: return "unread"
         case .reading: return "reading"
         case .finished: return "finished"
         case .favorite: return "favorite"
+        case .categoryAll: return "category-all"
         case .category(let name): return name
+        }
+    }
+
+    /// Token stored per facet dimension (`all` for that dimension's 全部).
+    var facetToken: String {
+        switch self {
+        case .summaryAll, .readingAll, .categoryAll: return "all"
+        default: return rawValue
         }
     }
 
     var label: String {
         switch self {
-        case .recent: return "最近"
+        case .summaryAll, .readingAll, .categoryAll: return "全部"
         case .idle: return "未摘要"
+        case .segmenting: return "分段中"
         case .summarizing: return "摘要中"
         case .summarized: return "已摘要"
+        case .ingestFailed: return "导入失败"
         case .unread: return "未读"
         case .reading: return "在读"
         case .finished: return "已读完"
@@ -432,14 +481,18 @@ enum LibraryCollection: Hashable, Identifiable {
 
     var systemImage: String {
         switch self {
-        case .recent: return "clock"
+        case .summaryAll: return "text.alignleft"
         case .idle: return "doc.text"
+        case .segmenting: return "rectangle.split.3x1"
         case .summarizing: return "arrow.triangle.2.circlepath"
         case .summarized: return "checkmark.circle"
+        case .ingestFailed: return "exclamationmark.triangle"
+        case .readingAll: return "books.vertical"
         case .unread: return "book.closed"
         case .reading: return "book"
         case .finished: return "checkmark.circle.fill"
         case .favorite: return "star.fill"
+        case .categoryAll: return "tag"
         case .category(let name):
             return LibraryFilter.category(name).systemImage
         }
@@ -447,25 +500,33 @@ enum LibraryCollection: Hashable, Identifiable {
 
     var section: LibraryCollectionSection {
         switch self {
-        case .recent: return .defaultSection
-        case .idle, .summarizing, .summarized: return .summary
-        case .unread, .reading, .finished: return .reading
+        case .summaryAll, .idle, .segmenting, .summarizing, .summarized, .ingestFailed: return .summary
+        case .readingAll, .unread, .reading, .finished: return .reading
         case .favorite: return .favorite
-        case .category: return .category
+        case .categoryAll, .category: return .category
         }
     }
 
     func matches(_ book: BookSummary) -> Bool {
         switch self {
-        case .recent:
+        case .summaryAll, .readingAll, .categoryAll:
             return true
         case .idle:
-            return book.summarize_state == "idle" || book.summarize_state == "paused"
+            return !book.isIngestFailed && !book.isSegmenting
+                && (book.summarize_state == "idle" || book.summarize_state == "paused")
+        case .segmenting:
+            return book.isSegmenting
         case .summarizing:
-            return book.summarize_state == "running" || book.summarize_state == "queued"
+            return !book.isIngestFailed && !book.isSegmenting
+                && (book.summarize_state == "running" || book.summarize_state == "queued")
         case .summarized:
+            if book.isIngestFailed || book.isSegmenting {
+                return false
+            }
             return book.summarize_state == "summarized"
                 || (book.summaryTotal > 0 && book.summaryReady >= book.summaryTotal)
+        case .ingestFailed:
+            return book.isIngestFailed
         case .unread:
             return book.readingProgressBucket == .unread
         case .reading:
@@ -479,37 +540,165 @@ enum LibraryCollection: Hashable, Identifiable {
         }
     }
 
-    static func fromPersisted(_ raw: String) -> LibraryCollection {
+    static func summaryFacet(from raw: String) -> LibraryCollection {
         switch raw {
-        case "all", "recent": return .recent
         case "idle": return .idle
+        case "segmenting": return .segmenting
         case "summarizing", "running": return .summarizing
         case "summarized": return .summarized
-        case "unread": return .unread
-        case "reading": return .reading
-        case "finished": return .finished
-        case "favorite": return .favorite
-        default:
-            if LibraryFilter.fallbackCategories.contains(raw) {
-                return .category(raw)
-            }
-            return .recent
+        case "error", "ingestFailed", "ingest-failed": return .ingestFailed
+        default: return .summaryAll
         }
     }
 
-    static func sidebarItems(categories: [String]) -> [LibraryCollection] {
-        let cats = categories.isEmpty ? LibraryFilter.fallbackCategories : categories
+    static func readingFacet(from raw: String) -> LibraryCollection {
+        switch raw {
+        case "unread": return .unread
+        case "reading": return .reading
+        case "finished": return .finished
+        default: return .readingAll
+        }
+    }
+
+    static func categoryFacet(from raw: String) -> LibraryCollection {
+        switch raw {
+        case "", "all", "category-all": return .categoryAll
+        default: return .category(raw)
+        }
+    }
+
+    static func sidebarItems(
+        categories: [String],
+        selectedCategory: LibraryCollection = .categoryAll
+    ) -> [LibraryCollection] {
+        var cats = categories.isEmpty ? LibraryFilter.fallbackCategories : categories
+        if case .category(let name) = selectedCategory, !cats.contains(name) {
+            cats.insert(name, at: 0)
+        }
         return [
-            .recent,
-            .idle, .summarizing, .summarized,
-            .unread, .reading, .finished,
+            .summaryAll, .idle, .segmenting, .summarizing, .summarized, .ingestFailed,
+            .readingAll, .unread, .reading, .finished,
             .favorite,
+            .categoryAll,
         ] + cats.map { .category($0) }
     }
 }
 
+/// Combined bookshelf filters: summary × reading × category (AND), plus optional 收藏.
+struct LibraryFacetQuery: Equatable {
+    var summary: LibraryCollection = .summaryAll
+    var reading: LibraryCollection = .readingAll
+    var category: LibraryCollection = .categoryAll
+    var favoriteOnly: Bool = false
+
+    var isDefault: Bool {
+        summary == .summaryAll
+            && reading == .readingAll
+            && category == .categoryAll
+            && !favoriteOnly
+    }
+
+    var title: String {
+        if isDefault { return "书架" }
+        var parts: [String] = []
+        if summary != .summaryAll { parts.append(summary.label) }
+        if reading != .readingAll { parts.append(reading.label) }
+        if favoriteOnly { parts.append(LibraryCollection.favorite.label) }
+        if category != .categoryAll { parts.append(category.label) }
+        return parts.joined(separator: " · ")
+    }
+
+    func matches(_ book: BookSummary) -> Bool {
+        summary.matches(book)
+            && reading.matches(book)
+            && category.matches(book)
+            && (!favoriteOnly || book.isFavorite)
+    }
+
+    func isSelected(_ item: LibraryCollection) -> Bool {
+        switch item {
+        case .favorite: return favoriteOnly
+        case .summaryAll, .idle, .segmenting, .summarizing, .summarized, .ingestFailed: return summary == item
+        case .readingAll, .unread, .reading, .finished: return reading == item
+        case .categoryAll, .category: return category == item
+        }
+    }
+
+    mutating func apply(_ item: LibraryCollection) {
+        switch item {
+        case .summaryAll, .idle, .segmenting, .summarizing, .summarized, .ingestFailed:
+            summary = item
+        case .readingAll, .unread, .reading, .finished:
+            reading = item
+        case .favorite:
+            favoriteOnly.toggle()
+        case .categoryAll, .category:
+            category = item
+        }
+    }
+
+    /// Query that would apply if `item` were selected (收藏 counts as on, not toggled).
+    func projecting(_ item: LibraryCollection) -> LibraryFacetQuery {
+        var copy = self
+        if item == .favorite {
+            copy.favoriteOnly = true
+        } else {
+            copy.apply(item)
+        }
+        return copy
+    }
+
+    static func fromLegacyCollection(_ raw: String) -> LibraryFacetQuery {
+        switch raw {
+        case "all", "recent", "summary-all", "reading-all", "category-all", "":
+            return LibraryFacetQuery()
+        case "idle":
+            return LibraryFacetQuery(summary: .idle)
+        case "segmenting":
+            return LibraryFacetQuery(summary: .segmenting)
+        case "summarizing", "running":
+            return LibraryFacetQuery(summary: .summarizing)
+        case "summarized":
+            return LibraryFacetQuery(summary: .summarized)
+        case "error", "ingestFailed", "ingest-failed":
+            return LibraryFacetQuery(summary: .ingestFailed)
+        case "unread":
+            return LibraryFacetQuery(reading: .unread)
+        case "reading":
+            return LibraryFacetQuery(reading: .reading)
+        case "finished":
+            return LibraryFacetQuery(reading: .finished)
+        case "favorite":
+            return LibraryFacetQuery(favoriteOnly: true)
+        default:
+            return LibraryFacetQuery(category: .category(raw))
+        }
+    }
+}
+
+extension LibraryFacetQuery: Codable {
+    enum CodingKeys: String, CodingKey {
+        case summary, reading, category, favorite
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        summary = .summaryFacet(from: try container.decodeIfPresent(String.self, forKey: .summary) ?? "all")
+        reading = .readingFacet(from: try container.decodeIfPresent(String.self, forKey: .reading) ?? "all")
+        category = .categoryFacet(from: try container.decodeIfPresent(String.self, forKey: .category) ?? "all")
+        favoriteOnly = try container.decodeIfPresent(Bool.self, forKey: .favorite) ?? false
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(summary.facetToken, forKey: .summary)
+        try container.encode(reading.facetToken, forKey: .reading)
+        try container.encode(category.facetToken, forKey: .category)
+        try container.encode(favoriteOnly, forKey: .favorite)
+    }
+}
+
 enum LibraryCollectionSection: String, CaseIterable, Identifiable {
-    case defaultSection
     case summary
     case reading
     case favorite
@@ -519,7 +708,6 @@ enum LibraryCollectionSection: String, CaseIterable, Identifiable {
 
     var label: String? {
         switch self {
-        case .defaultSection: return nil
         case .summary: return "摘要"
         case .reading: return "阅读"
         case .favorite: return nil
@@ -529,7 +717,7 @@ enum LibraryCollectionSection: String, CaseIterable, Identifiable {
 }
 
 enum LibrarySort: String, CaseIterable, Identifiable {
-    case recent, added, title, segments, favorite
+    case recent, added, title, segments, progress, favorite
 
     var id: String { rawValue }
 
@@ -539,6 +727,7 @@ enum LibrarySort: String, CaseIterable, Identifiable {
         case .added: return "添加时间"
         case .title: return "标题"
         case .segments: return "段落数"
+        case .progress: return "阅读进度"
         case .favorite: return "收藏优先"
         }
     }
@@ -568,6 +757,10 @@ struct SegmentRow: Codable, Identifiable, Hashable {
     var retry_count: Int?
     var summary_duration_s: Double?
     var summary_llm_attempts: Int?
+    /// Slim catalog line from GET /segments. Not the full summary_json.
+    var summary_preview: String? = nil
+    /// Structured-point titles from GET /segments. Not bullet bodies.
+    var bullet_labels: [String]? = nil
 }
 
 struct SegmentBoundaryCandidate: Codable, Hashable {
@@ -629,6 +822,14 @@ enum SummaryTier: String, Codable, CaseIterable, Identifiable {
     var regenerateMenuLabel: String {
         self == .normal ? "正常摘要（覆盖全书）" : "高级摘要（覆盖全书）"
     }
+}
+
+enum SegmentTier: String, Codable, CaseIterable, Identifiable {
+    case normal
+    case advanced
+
+    var id: String { rawValue }
+    var label: String { self == .normal ? "正常分段" : "高级分段" }
 }
 
 struct ChatCitation: Codable {
@@ -1057,6 +1258,15 @@ final class CoreClient: ObservableObject {
         config.timeoutIntervalForResource = 600
         return URLSession(configuration: config)
     }()
+    /// Ingest SSE must not share HTTP/1.1 slots with fetchBook / openBook.
+    private static let sseSession: URLSession = {
+        let config = URLSessionConfiguration.default
+        config.timeoutIntervalForRequest = 86400
+        config.timeoutIntervalForResource = 86400
+        config.httpMaximumConnectionsPerHost = 8
+        config.waitsForConnectivity = false
+        return URLSession(configuration: config)
+    }()
 
     init(baseURL: URL) {
         self.baseURL = baseURL
@@ -1285,9 +1495,18 @@ final class CoreClient: ObservableObject {
         _ = try await post(path: "/books/\(bookId)/summarize/regenerate", body: body)
     }
 
-    func resegmentBook(bookId: String, chunkTargetChars: Int) async throws {
-        struct Body: Codable { let chunk_target_chars: Int }
-        let body = try JSONEncoder().encode(Body(chunk_target_chars: chunkTargetChars))
+    func resegmentBook(
+        bookId: String,
+        chunkTargetChars: Int,
+        segmentTier: SegmentTier = .normal
+    ) async throws {
+        struct Body: Codable {
+            let chunk_target_chars: Int
+            let segment_tier: SegmentTier
+        }
+        let body = try JSONEncoder().encode(
+            Body(chunk_target_chars: chunkTargetChars, segment_tier: segmentTier)
+        )
         _ = try await post(path: "/books/\(bookId)/resegment", body: body)
     }
 
@@ -1377,9 +1596,18 @@ final class CoreClient: ObservableObject {
         return final
     }
 
-    func exportMarkdown(bookId: String, includeNotes: Bool = false) async throws -> String {
-        struct Body: Codable { let include_notes: Bool }
-        let body = try JSONEncoder().encode(Body(include_notes: includeNotes))
+    func exportMarkdown(
+        bookId: String,
+        includeNotes: Bool = false,
+        mode: String = "full"
+    ) async throws -> String {
+        struct Body: Codable {
+            let include_notes: Bool
+            let mode: String
+        }
+        let body = try JSONEncoder().encode(
+            Body(include_notes: includeNotes, mode: mode)
+        )
         let data = try await post(path: "/books/\(bookId)/export", body: body)
         guard let text = String(data: data, encoding: .utf8) else { throw URLError(.badServerResponse) }
         return text
@@ -1445,6 +1673,7 @@ final class CoreClient: ObservableObject {
         ocrCloudTimeoutSeconds: Double? = nil,
         debugMode: Bool? = nil,
         autoStartSummary: Bool? = nil,
+        defaultSegmentTier: String? = nil,
         models: ModelsSettings? = nil,
         prompts: PromptsSettings? = nil
     ) async throws -> AppSettings {
@@ -1459,6 +1688,7 @@ final class CoreClient: ObservableObject {
             let ocr_cloud_timeout_seconds: Double?
             let debug_mode: Bool?
             let auto_start_summary: Bool?
+            let default_segment_tier: String?
             let models: ModelsSettings?
             let prompts: PromptsSettings?
         }
@@ -1474,6 +1704,7 @@ final class CoreClient: ObservableObject {
                 ocr_cloud_timeout_seconds: ocrCloudTimeoutSeconds,
                 debug_mode: debugMode,
                 auto_start_summary: autoStartSummary,
+                default_segment_tier: defaultSegmentTier,
                 models: models,
                 prompts: prompts
             )
@@ -1646,6 +1877,14 @@ final class CoreClient: ObservableObject {
         return try await Self.decode(Resp.self, from: data).results
     }
 
+    func searchOriginal(bookId: String, query: String) async throws -> OriginalSearchResponse {
+        let data = try await get(
+            path: "/books/\(bookId)/original-search",
+            queryItems: [URLQueryItem(name: "q", value: query)]
+        )
+        return try await Self.decode(OriginalSearchResponse.self, from: data)
+    }
+
     func fetchNewsBrief(limit: Int = 25) async throws -> NewsBrief {
         let data = try await get(
             path: "/news/brief",
@@ -1695,7 +1934,7 @@ final class CoreClient: ObservableObject {
             var request = URLRequest(url: url(path: "/books/\(bookId)/events"))
             request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
             do {
-                let (bytes, _) = try await session.bytes(for: request)
+                let (bytes, _) = try await Self.sseSession.bytes(for: request)
                 for try await line in bytes.lines {
                     try Task.checkCancellation()
                     if line.hasPrefix("data: ") {

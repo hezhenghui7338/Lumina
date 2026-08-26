@@ -10,6 +10,7 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.request
 import tomllib
 from pathlib import Path
 
@@ -218,6 +219,112 @@ def test_e2e_priv_01_cli_binds_localhost_only(tmp_path, monkeypatch):
             proc.wait(timeout=5)
         except subprocess.TimeoutExpired:
             proc.kill()
+
+
+def test_shutdown_without_server_is_noop(client):
+    resp = client.post("/shutdown")
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "shutting_down"
+
+
+def test_shutdown_sets_uvicorn_should_exit(client):
+    class FakeServer:
+        should_exit = False
+
+    fake = FakeServer()
+    client.app.state.uvicorn_server = fake
+    resp = client.post("/shutdown")
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "shutting_down"
+    assert fake.should_exit is True
+
+
+def test_cli_attaches_uvicorn_server_for_shutdown():
+    main = (CORE_PKG / "lumina_core" / "main.py").read_text(encoding="utf-8")
+    assert "app.state.uvicorn_server = server" in main
+    routes = (CORE_PKG / "lumina_core" / "api" / "routes.py").read_text(encoding="utf-8")
+    assert "server.should_exit = True" in routes
+
+
+def test_macos_stop_kills_port_listener():
+    manager = (REPO_ROOT / "apps/macos/Lumina/Services/SidecarManager.swift").read_text(
+        encoding="utf-8"
+    )
+    assert "userStopped" in manager
+    assert "/shutdown" in manager
+    assert "SIGKILL" in manager
+    assert "func stop(userInitiated: Bool)" in manager
+    assert "legacyListenerPID" in manager
+    app = (REPO_ROOT / "apps/macos/Lumina/LuminaApp.swift").read_text(encoding="utf-8")
+    assert "await sidecar?.stop(userInitiated: false)" in app
+    settings = (REPO_ROOT / "apps/macos/Lumina/Features/Settings/SettingsView.swift").read_text(
+        encoding="utf-8"
+    )
+    assert "engineSection" in settings
+    assert "sidecar.stop(userInitiated: true)" in settings
+    assert "sidecar.restart()" in settings
+
+
+def test_windows_stop_kills_orphan_pid():
+    host = (REPO_ROOT / "apps/windows/Lumina/Services/SidecarHost.cs").read_text(
+        encoding="utf-8"
+    )
+    assert "UserStopped" in host
+    assert "ListenerPid" in host
+    assert "StopAsync(bool userInitiated" in host
+    assert "RestartAsync" in host
+    settings = (
+        REPO_ROOT / "apps/windows/Lumina/Features/Settings/SettingsPage.xaml"
+    ).read_text(encoding="utf-8")
+    assert "EngineStopBtn" in settings
+    assert "EngineRestartBtn" in settings
+
+
+def test_post_shutdown_stops_cli_process(tmp_path, monkeypatch):
+    """POST /shutdown must end a real uvicorn sidecar, not just return JSON."""
+    monkeypatch.setenv("LUMINA_DATA_DIR", str(tmp_path))
+    port = _free_port()
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "lumina_core.main", "--host", "127.0.0.1", "--port", str(port)],
+        cwd=CORE_PKG,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    try:
+        deadline = time.time() + 15
+        ready = False
+        while time.time() < deadline:
+            try:
+                with urllib.request.urlopen(
+                    f"http://127.0.0.1:{port}/health", timeout=0.5
+                ) as resp:
+                    if resp.status == 200:
+                        ready = True
+                        break
+            except OSError:
+                time.sleep(0.2)
+        if not ready:
+            pytest.fail("sidecar did not become healthy on 127.0.0.1")
+
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{port}/shutdown",
+            method="POST",
+            data=b"",
+        )
+        with urllib.request.urlopen(req, timeout=3) as resp:
+            assert resp.status == 200
+        try:
+            proc.wait(timeout=8)
+        except subprocess.TimeoutExpired:
+            pytest.fail("sidecar still running after POST /shutdown")
+        assert proc.poll() is not None
+    finally:
+        if proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                proc.kill()
 
 
 def _free_port() -> int:

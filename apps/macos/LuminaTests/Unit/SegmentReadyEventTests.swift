@@ -75,12 +75,27 @@ final class SegmentReadyEventTests: XCTestCase {
         XCTAssertEqual(parsed?.bulletPreviewLine, "寒门出身：主角生于贫苦农家，父亲早逝，母亲靠纺织维生；邻里虽敬其向学，却无力资助书卷。")
     }
 
+    func testFormatListPreview_prefersFirstSentenceOverLabelPrefix() {
+        XCTAssertEqual(
+            SegmentReadyEventParser.formatListPreview(sampleSummaryJSON),
+            "本段交代主角出身寒门。"
+        )
+        XCTAssertNotEqual(
+            SegmentReadyEventParser.formatListPreview(sampleSummaryJSON),
+            "引子：寒门赴考"
+        )
+    }
+
     func testFormatBulletsPreview_matchesParseBullets() {
         let preview = SegmentReadyEventParser.formatBulletsPreview(sampleSummaryJSON)
         XCTAssertNotNil(preview)
         XCTAssertTrue(preview?.contains("寒门出身") ?? false)
         let bullets = SegmentReadyEventParser.parseBullets(sampleSummaryJSON)
         XCTAssertEqual(preview, bullets.joined(separator: " · "))
+        XCTAssertEqual(
+            SegmentReadyEventParser.parseBulletLabels(sampleSummaryJSON),
+            ["寒门出身", "赴考之志", "邻里期望"]
+        )
     }
 
     func testParsedSummary_legacyStringBullets() {

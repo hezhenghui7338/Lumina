@@ -138,15 +138,28 @@ struct TaskManagerView: View {
                 }
 
                 Section("控制") {
-                    Menu("开始全部摘要") {
-                        ForEach(SummaryTier.allCases) { tier in
-                            Button(tier.startMenuLabel) {
-                                Task {
-                                    await viewModel.startSummarizeAll(
-                                        core: core, summaryTier: tier
-                                    )
-                                }
+                    Button("开始全部摘要") {
+                        Task {
+                            await viewModel.startSummarizeAll(
+                                core: core, summaryTier: .normal
+                            )
+                        }
+                    }
+                    .help("点击开始正常摘要；右键可选高级摘要")
+                    .contextMenu {
+                        Button(SummaryTier.advanced.startMenuLabel) {
+                            Task {
+                                await viewModel.startSummarizeAll(
+                                    core: core, summaryTier: .advanced
+                                )
                             }
+                        }
+                    }
+                    .accessibilityAction(named: "高级摘要") {
+                        Task {
+                            await viewModel.startSummarizeAll(
+                                core: core, summaryTier: .advanced
+                            )
                         }
                     }
                     Button("停止全部摘要") {

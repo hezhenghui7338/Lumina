@@ -1,4 +1,6 @@
 import SwiftUI
+import AppKit
+import AVFoundation
 
 struct SettingsView: View {
     @EnvironmentObject private var core: CoreClient
@@ -10,6 +12,7 @@ struct SettingsView: View {
     @State private var saving = false
     @State private var pendingSave = false
     @State private var autoSaveEnabled = false
+    @State private var engineBusy = false
     @State private var tavilyAPIKey = ""
     @State private var tavilyKeyConfigured = false
     @State private var ocrCloudAPIKey = ""
@@ -22,6 +25,8 @@ struct SettingsView: View {
     @State private var showingAddResource = false
     @State private var resourceStatuses: [String: ResourceStatus] = [:]
     @State private var loadingResourceStatuses = false
+    @State private var voiceListTick = 0
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
         Form {
@@ -30,6 +35,16 @@ struct SettingsView: View {
         .formStyle(.grouped)
         .navigationTitle("设置")
         .task { await load() }
+        .onChange(of: sidecar.isRunning) { _, running in
+            if running { Task { await load() } }
+        }
+        .onAppear { reloadSystemVoices() }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active { reloadSystemVoices() }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: AVSpeechSynthesizer.availableVoicesDidChangeNotification)) { _ in
+            reloadSystemVoices()
+        }
         .refreshable { await refreshResourceStatuses() }
         .onChange(of: settings?.target_language) { _, _ in
             guard autoSaveEnabled else { return }
@@ -48,6 +63,10 @@ struct SettingsView: View {
             Task { await save() }
         }
         .onChange(of: settings?.auto_start_summary) { _, _ in
+            guard autoSaveEnabled else { return }
+            Task { await save() }
+        }
+        .onChange(of: settings?.default_segment_tier) { _, _ in
             guard autoSaveEnabled else { return }
             Task { await save() }
         }
@@ -76,10 +95,17 @@ struct SettingsView: View {
 
     @ViewBuilder
     private var formContent: some View {
+        engineSection
         if let settings {
             loadedSettingsForm(settings: settings)
         } else if let error {
             ContentUnavailableView("无法加载设置", systemImage: "gearshape", description: Text(error))
+        } else if sidecar.userStopped {
+            ContentUnavailableView(
+                "引擎已停止",
+                systemImage: "power",
+                description: Text("点上方「重启」后即可加载其余设置。")
+            )
         } else {
             ProgressView("加载设置…")
         }
@@ -88,6 +114,7 @@ struct SettingsView: View {
     @ViewBuilder
     private func loadedSettingsForm(settings: AppSettings) -> some View {
         readingSection
+        listenSection
         webSearchSection(settings: settings)
         ocrSection
         apiResourcesSection(settings: settings)
@@ -109,6 +136,43 @@ struct SettingsView: View {
     }
 
     @ViewBuilder
+    private var engineSection: some View {
+        Section {
+            HStack {
+                Text("状态")
+                Spacer()
+                if sidecar.isBootstrapping || engineBusy {
+                    ProgressView()
+                        .controlSize(.small)
+                }
+                Text(engineStatusText)
+                    .foregroundStyle(.secondary)
+            }
+            HStack {
+                Button("停止") {
+                    Task { await stopEngine() }
+                }
+                .disabled(engineBusy || sidecar.engineStatus == .stopped || sidecar.engineStatus == .starting)
+                Button("重启") {
+                    Task { await restartEngine() }
+                }
+                .disabled(engineBusy || sidecar.isBootstrapping)
+            }
+        } header: {
+            Text("Lumina 引擎")
+        } footer: {
+            Text("退出应用会关闭后台引擎。摘要与导入队列会保存，下次打开后继续。")
+        }
+    }
+
+    private var engineStatusText: String {
+        if let err = sidecar.launchError, sidecar.engineStatus == .failed {
+            return err
+        }
+        return sidecar.engineStatusLabel
+    }
+
+    @ViewBuilder
     private var readingSection: some View {
         Section {
             Picker("目标语言", selection: binding(\.target_language)) {
@@ -117,11 +181,142 @@ struct SettingsView: View {
                 Text("日本語").tag("ja-JP")
             }
             Toggle("自动开始摘要", isOn: boolBinding(\.auto_start_summary))
+            Picker("导入默认分段", selection: binding(\.default_segment_tier)) {
+                Text("正常分段").tag("normal")
+                Text("高级分段").tag("advanced")
+            }
         } header: {
             Text("阅读")
         } footer: {
-            Text("开启后，导入完成、打开书籍及重启时自动排队段摘要。默认关闭，可随时在书库或阅读器手动开始。")
+            Text("开启后，导入完成、打开书籍及重启时自动排队段摘要。导入默认分段为正常；高级会额外调用模型校准超长块。")
         }
+    }
+
+    @ViewBuilder
+    private var listenSection: some View {
+        Section {
+            Picker("默认倍速", selection: ttsSpeedBinding) {
+                ForEach(ListenPreferences.rates, id: \.self) { value in
+                    Text(listenRateLabel(value)).tag(value)
+                }
+            }
+            Picker("系统音色", selection: systemVoiceBinding) {
+                Text("自动（高级/增强优先）").tag("")
+                ForEach(systemVoiceOptions, id: \.identifier) { voice in
+                    Text("\(voice.name) · \(voice.language) · \(SystemNeuralEngine.qualityLabel(for: voice))")
+                        .tag(voice.identifier)
+                }
+            }
+            Button(Self.usesVoiceOverVoiceDownloads ? "打开旁白语音设置" : "打开系统语音包") {
+                openSystemVoicePackSettings()
+            }
+        } header: {
+            Text("听书")
+        } footer: {
+            Text(listenVoiceFooter)
+        }
+    }
+
+    private static var usesVoiceOverVoiceDownloads: Bool {
+        ProcessInfo.processInfo.operatingSystemVersion.majorVersion >= 15
+    }
+
+    private var listenVoiceFooter: String {
+        let qualityNote = SystemNeuralEngine.hasDownloadedHighQualityVoice()
+            ? "已检测到高质量系统语音，完全离线，不产生朗读费用。"
+            : "未下载高质量语音包时听感接近机械音。"
+        let steps: String
+        if Self.usesVoiceOverVoiceDownloads {
+            steps = """
+            下载由系统完成，Lumina 不代下音库。macOS 15 起请用旁白实用工具（不必打开旁白朗读）：
+            1. 点上面的按钮打开「旁白实用工具」
+            2. 左侧选「语音」
+            3. 点 + 添加
+            4. 选中文或英文，下载带 Premium / 增强 的音色
+            5. 回到 Lumina，音色列表会刷新
+            """
+        } else {
+            steps = """
+            下载由系统完成，Lumina 不代下音库：
+            1. 点上面的按钮打开「朗读内容」
+            2. 系统声音 → 管理声音
+            3. 下载中文 Premium / 优化版或英文 Premium
+            4. 回到 Lumina，音色列表会刷新
+            """
+        }
+        return "\(qualityNote)\n\(steps)"
+    }
+
+    private var systemVoiceOptions: [AVSpeechSynthesisVoice] {
+        _ = voiceListTick
+        return AVSpeechSynthesisVoice.speechVoices()
+            .filter { $0.language.lowercased().hasPrefix("zh") || $0.language.lowercased().hasPrefix("en") }
+            .sorted { $0.language == $1.language ? $0.name < $1.name : $0.language < $1.language }
+    }
+
+    private func reloadSystemVoices() {
+        voiceListTick += 1
+    }
+
+    private func openSystemVoicePackSettings() {
+        if Self.usesVoiceOverVoiceDownloads, let url = Self.voiceOverUtilityURL {
+            NSWorkspace.shared.openApplication(at: url, configuration: NSWorkspace.OpenConfiguration()) { _, error in
+                if error != nil {
+                    DispatchQueue.main.async { Self.openSpokenContentSettings() }
+                }
+            }
+            return
+        }
+        Self.openSpokenContentSettings()
+    }
+
+    private static var voiceOverUtilityURL: URL? {
+        if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.apple.VoiceOverUtility") {
+            return url
+        }
+        let path = "/System/Library/CoreServices/VoiceOver Utility.app"
+        return FileManager.default.fileExists(atPath: path) ? URL(fileURLWithPath: path) : nil
+    }
+
+    private static func openSpokenContentSettings() {
+        let candidates = [
+            "x-apple.systempreferences:com.apple.Accessibility-Settings.extension?SpokenContent",
+            "x-apple.systempreferences:com.apple.preference.universalaccess?SpokenContent",
+        ]
+        for raw in candidates {
+            if let url = URL(string: raw), NSWorkspace.shared.open(url) {
+                return
+            }
+        }
+    }
+
+    private var systemVoiceBinding: Binding<String> {
+        Binding(
+            get: { ListenPreferences.systemVoiceIdentifier ?? "" },
+            set: { newValue in
+                ListenPreferences.systemVoiceIdentifier = newValue.isEmpty ? nil : newValue
+            }
+        )
+    }
+
+    private var ttsSpeedBinding: Binding<Float> {
+        Binding(
+            get: { ListenPreferences.rate },
+            set: { newValue in
+                ListenPreferences.rate = newValue
+                settings?.models.tts.engine = "system"
+                settings?.models.tts.speed = Double(newValue)
+                Task { await save() }
+            }
+        )
+    }
+
+    private func listenRateLabel(_ value: Float) -> String {
+        if abs(value - 1.0) < 0.01 { return "1×" }
+        if abs(value - value.rounded()) < 0.01 {
+            return "\(Int(value.rounded()))×"
+        }
+        return String(format: "%g×", value)
     }
 
     @ViewBuilder
@@ -539,13 +734,33 @@ struct SettingsView: View {
         }
     }
 
+    private func stopEngine() async {
+        engineBusy = true
+        defer { engineBusy = false }
+        await sidecar.stop(userInitiated: true)
+    }
+
+    private func restartEngine() async {
+        engineBusy = true
+        defer { engineBusy = false }
+        error = nil
+        await sidecar.restart()
+        if sidecar.isRunning {
+            await load()
+        }
+    }
+
     private func load() async {
         autoSaveEnabled = false
+        if sidecar.userStopped {
+            return
+        }
         guard await sidecar.waitUntilReady() else { return }
         do {
             let loaded = try await core.fetchSettings()
             settings = loaded
             promptsDefaults = loaded.prompts_defaults
+            ListenPreferences.syncFromSettings(loaded.models.tts)
             syncKeyState(from: loaded.models)
             tavilyKeyConfigured = loaded.tavily_api_key == "***"
             tavilyAPIKey = ""
@@ -628,11 +843,13 @@ struct SettingsView: View {
                 ocrCloudTimeoutSeconds: snapshot.ocr_cloud_timeout_seconds,
                 debugMode: snapshot.debug_mode,
                 autoStartSummary: snapshot.auto_start_summary,
+                defaultSegmentTier: snapshot.default_segment_tier,
                 models: snapshot.models,
                 prompts: snapshot.prompts
             )
             self.settings = updated
             promptsDefaults = updated.prompts_defaults
+            ListenPreferences.syncFromSettings(updated.models.tts)
             syncKeyState(from: updated.models)
             tavilyAPIKey = ""
             ocrCloudAPIKey = ""
@@ -662,6 +879,7 @@ struct SettingsView: View {
                 ocrCloudTimeoutSeconds: snapshot.ocr_cloud_timeout_seconds,
                 debugMode: snapshot.debug_mode,
                 autoStartSummary: snapshot.auto_start_summary,
+                defaultSegmentTier: snapshot.default_segment_tier,
                 models: snapshot.models,
                 prompts: snapshot.prompts
             )
@@ -680,317 +898,7 @@ struct SettingsView: View {
     }
 }
 
-// MARK: - Resource editor
-
-private struct ResourceEditorSheet: View {
-    @Binding var resource: ModelResourceSettings
-    @Binding var apiKey: String
-    let keyConfigured: Bool
-    let core: CoreClient
-    let onSave: () -> Void
-    @Environment(\.dismiss) private var dismiss
-    @State private var resourceStatus: ResourceStatus?
-    @State private var refreshingStatus = false
-    @State private var pullingModel = false
-    @State private var probeFeedback: String?
-    @State private var contextProbe: ContextProbeStatus?
-    @State private var probingContext = false
-
-    private var kind: ModelProviderKind {
-        ModelProviderKind.from(provider: resource.provider, baseURL: resource.base_url)
-    }
-
-    var body: some View {
-        NavigationStack {
-            Form {
-                Picker("类型", selection: providerKindBinding) {
-                    ForEach(ModelProviderKind.allCases) { item in
-                        Text(item.label).tag(item)
-                    }
-                }
-                TextField("正常\(kind.modelPlaceholder)", text: $resource.model)
-                TextField(
-                    "高级模型（留空则使用正常模型）",
-                    text: Binding(
-                        get: { resource.advanced_model ?? "" },
-                        set: { resource.advanced_model = $0 }
-                    )
-                )
-                if kind.showsBaseURL {
-                    TextField("Base URL", text: $resource.base_url)
-                }
-                if kind.needsAPIKey {
-                    SecureField(
-                        keyConfigured && apiKey.isEmpty ? "已保存（输入新 Key 可替换）" : "API Key",
-                        text: $apiKey
-                    )
-                }
-                Section {
-                    Stepper(value: concurrencyBinding, in: kind.concurrencyRange) {
-                        Text("并发：\(resource.effectiveConcurrency)")
-                    }
-                } footer: {
-                    Text(kind.concurrencyHint)
-                }
-                Section {
-                    Stepper(value: chunkTargetBinding, in: kind.chunkTargetRange, step: 100) {
-                        Text(chunkTargetLabel)
-                    }
-                } footer: {
-                    Text(kind.chunkTargetHint)
-                }
-                probeControls
-                contextProbeControls
-            }
-            .navigationTitle(resource.id)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("取消") { dismiss() }
-                }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("保存") {
-                        onSave()
-                        dismiss()
-                    }
-                }
-            }
-            .task {
-                await refreshResourceStatus()
-                await refreshContextProbe()
-            }
-        }
-        .frame(minWidth: 420, minHeight: resource.provider == "ollama" ? 680 : 520)
-    }
-
-    private var chunkTargetLabel: String {
-        if resource.usesDefaultChunkTarget {
-            return "分段目标：默认（\(kind.defaultChunkTarget) 字）"
-        }
-        return "分段目标：\(resource.effectiveChunkTarget) 字"
-    }
-
-    private var chunkTargetBinding: Binding<Int> {
-        Binding(
-            get: { resource.effectiveChunkTarget },
-            set: { newValue in
-                if newValue == kind.defaultChunkTarget {
-                    resource.chunk_target_chars = 0
-                } else {
-                    resource.chunk_target_chars = newValue
-                }
-            }
-        )
-    }
-
-    private var concurrencyBinding: Binding<Int> {
-        Binding(
-            get: { resource.effectiveConcurrency },
-            set: { newValue in
-                let upper = kind.concurrencyRange.upperBound
-                resource.concurrency = min(upper, Swift.max(1, newValue))
-            }
-        )
-    }
-
-    private var providerKindBinding: Binding<ModelProviderKind> {
-        Binding(
-            get: { kind },
-            set: { newKind in
-                resource.provider = newKind.storedProvider
-                resource.base_url = newKind.defaultBaseURL
-                if resource.model.isEmpty || ModelProviderKind.isPresetModel(resource.model) {
-                    resource.model = newKind.defaultModel
-                }
-                if resource.concurrency == nil || resource.concurrency == 0 {
-                    resource.concurrency = newKind.defaultConcurrency
-                }
-            }
-        )
-    }
-
-    @ViewBuilder
-    private var probeControls: some View {
-        Section("连通性") {
-            if refreshingStatus, resourceStatus == nil {
-                ProgressView("正在检测…")
-            } else if let status = resourceStatus {
-                LabeledContent("状态", value: status.ready ? "可用" : "未就绪")
-                if resource.provider == "ollama" {
-                    LabeledContent("服务", value: status.probe_ok ? "已连通" : "未连通")
-                    LabeledContent(
-                        "探测地址",
-                        value: status.base_url?.isEmpty == false ? (status.base_url ?? "") : "http://127.0.0.1:11434"
-                    )
-                    if let ram = status.ram_gb, !ram.isEmpty, ram != "—" {
-                        LabeledContent("内存", value: ram)
-                    }
-                } else if kind.needsAPIKey {
-                    LabeledContent("API Key", value: status.key_configured ? "已配置" : "未配置")
-                }
-                if !status.displayMessage.isEmpty {
-                    Text(status.displayMessage)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                let models = status.installed_models ?? status.available_models ?? []
-                if !models.isEmpty {
-                    Picker("可用模型", selection: Binding(
-                        get: { models.contains(resource.model) ? resource.model : "" },
-                        set: { if !$0.isEmpty { resource.model = $0 } }
-                    )) {
-                        Text("选择…").tag("")
-                        ForEach(models, id: \.self) { name in
-                            Text(name).tag(name)
-                        }
-                    }
-                }
-                if let feedback = probeFeedback, !feedback.isEmpty {
-                    Text(feedback).font(.caption).foregroundStyle(.secondary)
-                }
-                HStack {
-                    Button(refreshingStatus ? "测试中…" : "测试连通性") {
-                        Task { await testConnectivity() }
-                    }
-                    .disabled(refreshingStatus || pullingModel)
-                    if resource.provider == "ollama" {
-                        if !OllamaSetupHelper.isInstalled() {
-                            Button("安装 Ollama") { OllamaSetupHelper.openDownloadPage() }
-                        }
-                        if status.probe_ok, !status.model_ready {
-                            Button(pullingModel ? "下载中…" : "下载模型") {
-                                OllamaSetupHelper.pullRecommendedModel(model: resource.model)
-                                pullingModel = true
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    @ViewBuilder
-    private var contextProbeControls: some View {
-        Section {
-            if probingContext {
-                ProgressView(contextProbe?.displayMessage ?? "正在测试上下文长度…")
-            } else if let probe = contextProbe, probe.status != "idle" {
-                Text(probe.displayMessage)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            HStack {
-                Button(probingContext ? "测试中…" : "智能测试上下文") {
-                    Task { await startContextProbe() }
-                }
-                .disabled(probingContext || refreshingStatus)
-                if probingContext {
-                    Button("取消") {
-                        Task { await cancelContextProbe() }
-                    }
-                }
-            }
-        } header: {
-            Text("智能测试上下文")
-        } footer: {
-            Text("把多段不同主题的文字拼在一起，检查模型会不会只读前面、丢掉最后几段。按仍能理解后面内容的长度取 80%，并封顶 3500 字作为分段目标。云端会消耗少量 token；更换模型后请重测。测试只填充分段目标，需点保存才会写入。")
-        }
-    }
-
-    private func refreshResourceStatus() async {
-        refreshingStatus = true
-        defer { refreshingStatus = false }
-        if let status = try? await core.fetchResourceStatus(resourceId: resource.id) {
-            resourceStatus = status
-            if status.ready { pullingModel = false }
-        }
-    }
-
-    private func testConnectivity() async {
-        probeFeedback = nil
-        await refreshResourceStatus()
-        guard let status = resourceStatus else {
-            probeFeedback = "无法获取状态"
-            return
-        }
-        if status.ready {
-            probeFeedback = "已连通，资源可用"
-        } else if status.probe_ok, resource.provider == "ollama", !status.model_ready {
-            probeFeedback = status.displayMessage.isEmpty ? "已连通，模型未下载" : status.displayMessage
-        } else {
-            probeFeedback = status.displayMessage
-        }
-    }
-
-    private func refreshContextProbe() async {
-        guard let status = try? await core.fetchContextProbe(resourceId: resource.id) else { return }
-        contextProbe = status
-        if status.isRunning {
-            probingContext = true
-            await pollContextProbe()
-        }
-    }
-
-    private func startContextProbe() async {
-        probingContext = true
-        probeFeedback = nil
-        do {
-            let key = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
-            contextProbe = try await core.startContextProbe(
-                resourceId: resource.id,
-                model: resource.model,
-                baseURL: resource.base_url,
-                apiKey: key.isEmpty ? nil : key
-            )
-            await pollContextProbe()
-        } catch {
-            probingContext = false
-            contextProbe = nil
-            probeFeedback = error.localizedDescription
-        }
-    }
-
-    private func pollContextProbe() async {
-        while !Task.isCancelled {
-            do {
-                let status = try await core.fetchContextProbe(resourceId: resource.id)
-                contextProbe = status
-                if status.isRunning {
-                    try await Task.sleep(nanoseconds: 500_000_000)
-                    continue
-                }
-                probingContext = false
-                applyProbeRecommendation(status)
-                return
-            } catch {
-                if error.isCancellation { return }
-                probingContext = false
-                probeFeedback = error.localizedDescription
-                return
-            }
-        }
-    }
-
-    private func cancelContextProbe() async {
-        do {
-            try await core.cancelContextProbe(resourceId: resource.id)
-            await pollContextProbe()
-        } catch {
-            probingContext = false
-            probeFeedback = error.localizedDescription
-        }
-    }
-
-    private func applyProbeRecommendation(_ status: ContextProbeStatus) {
-        guard status.status == "done", let recommended = status.recommended_chars, recommended > 0 else {
-            return
-        }
-        if recommended == kind.defaultChunkTarget {
-            resource.chunk_target_chars = 0
-        } else {
-            resource.chunk_target_chars = recommended
-        }
-    }
-}
+// MARK: - Add resource
 
 private struct AddResourceSheet: View {
     let onAdd: (ModelResourceSettings) -> Void
@@ -1054,6 +962,7 @@ struct AppSettings: Codable {
     var ocr_cloud_timeout_seconds: Double
     var debug_mode: Bool
     var auto_start_summary: Bool
+    var default_segment_tier: String
     var models: ModelsSettings
     var prompts: PromptsSettings
     var prompts_defaults: PromptsSettings
@@ -1069,6 +978,7 @@ struct AppSettings: Codable {
         ocr_cloud_timeout_seconds: Double = 60,
         debug_mode: Bool = false,
         auto_start_summary: Bool = false,
+        default_segment_tier: String = "normal",
         models: ModelsSettings = .defaults,
         prompts: PromptsSettings? = nil,
         prompts_defaults: PromptsSettings? = nil
@@ -1083,6 +993,7 @@ struct AppSettings: Codable {
         self.ocr_cloud_timeout_seconds = ocr_cloud_timeout_seconds
         self.debug_mode = debug_mode
         self.auto_start_summary = auto_start_summary
+        self.default_segment_tier = default_segment_tier
         self.models = models
         let empty = PromptsSettings(
             segment: "",
@@ -1108,6 +1019,7 @@ struct AppSettings: Codable {
         ocr_cloud_timeout_seconds = try c.decodeIfPresent(Double.self, forKey: .ocr_cloud_timeout_seconds) ?? 60
         debug_mode = try c.decodeIfPresent(Bool.self, forKey: .debug_mode) ?? false
         auto_start_summary = try c.decodeIfPresent(Bool.self, forKey: .auto_start_summary) ?? false
+        default_segment_tier = try c.decodeIfPresent(String.self, forKey: .default_segment_tier) ?? "normal"
         models = try c.decodeIfPresent(ModelsSettings.self, forKey: .models) ?? .defaults
         let empty = PromptsSettings(
             segment: "",
@@ -1133,6 +1045,7 @@ struct AppSettings: Codable {
         try c.encode(ocr_cloud_timeout_seconds, forKey: .ocr_cloud_timeout_seconds)
         try c.encode(debug_mode, forKey: .debug_mode)
         try c.encode(auto_start_summary, forKey: .auto_start_summary)
+        try c.encode(default_segment_tier, forKey: .default_segment_tier)
         try c.encode(models, forKey: .models)
         try c.encode(prompts, forKey: .prompts)
     }
@@ -1141,7 +1054,7 @@ struct AppSettings: Codable {
         case target_language, web_search_provider, web_search_enabled, tavily_api_key
         case ocr_cloud_base_url, ocr_cloud_model, ocr_cloud_api_key
         case ocr_cloud_timeout_seconds
-        case debug_mode, auto_start_summary, models, prompts, prompts_defaults
+        case debug_mode, auto_start_summary, default_segment_tier, models, prompts, prompts_defaults
     }
 }
 
@@ -1150,6 +1063,7 @@ struct ModelsSettings: Codable {
     var chat: ProfileRouteSettings
     var summarize: ProfileRouteSettings
     var translate: ProfileRouteSettings?
+    var tts: TTSSettings
 
     static var defaults: ModelsSettings {
         ModelsSettings(
@@ -1160,8 +1074,45 @@ struct ModelsSettings: Codable {
                 ModelResourceSettings(id: "cursor", provider: "cursor", model: "composer-2.5", concurrency: 8),
             ],
             chat: ProfileRouteSettings(priority: ["openai", "ollama"]),
-            summarize: ProfileRouteSettings(priority: ["ollama", "openrouter"])
+            summarize: ProfileRouteSettings(priority: ["ollama", "openrouter"]),
+            tts: .default
         )
+    }
+
+    init(
+        resources: [ModelResourceSettings],
+        chat: ProfileRouteSettings,
+        summarize: ProfileRouteSettings,
+        translate: ProfileRouteSettings? = nil,
+        tts: TTSSettings = .default
+    ) {
+        self.resources = resources
+        self.chat = chat
+        self.summarize = summarize
+        self.translate = translate
+        self.tts = tts
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        resources = try c.decodeIfPresent([ModelResourceSettings].self, forKey: .resources) ?? []
+        chat = try c.decodeIfPresent(ProfileRouteSettings.self, forKey: .chat) ?? ProfileRouteSettings()
+        summarize = try c.decodeIfPresent(ProfileRouteSettings.self, forKey: .summarize) ?? ProfileRouteSettings()
+        translate = try c.decodeIfPresent(ProfileRouteSettings.self, forKey: .translate)
+        tts = try c.decodeIfPresent(TTSSettings.self, forKey: .tts) ?? .default
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(resources, forKey: .resources)
+        try c.encode(chat, forKey: .chat)
+        try c.encode(summarize, forKey: .summarize)
+        try c.encodeIfPresent(translate, forKey: .translate)
+        try c.encode(tts, forKey: .tts)
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case resources, chat, summarize, translate, tts
     }
 
     func resource(id: String) -> ModelResourceSettings? {
@@ -1302,6 +1253,27 @@ enum ModelProviderKind: String, CaseIterable, Identifiable {
         case .cursor: return "模型（如 composer-2.5）"
         case .aiping: return "模型（如 GLM-5.2）"
         case .custom: return "模型名"
+        }
+    }
+
+    /// Short field prompt for the resource editor. Never used as a Form row label.
+    var editorModelPlaceholder: String {
+        switch self {
+        case .ollama: return "如 qwen3.5:4b"
+        case .openai: return "如 gpt-4o-mini"
+        case .openrouter: return "如 anthropic/claude-sonnet-4"
+        case .cursor: return "如 composer-2.5"
+        case .aiping: return "如 GLM-5.2"
+        case .custom: return "模型名"
+        }
+    }
+
+    var editorConnectionFooter: String? {
+        switch self {
+        case .openrouter:
+            return "摘要建议固定模型 anthropic/claude-sonnet-4；openrouter/free 仅试用，structured outputs 支持不稳定。"
+        default:
+            return nil
         }
     }
 

@@ -3,6 +3,7 @@ using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Threading;
 
 namespace Lumina.Services;
 
@@ -18,6 +19,7 @@ public sealed class CoreClient : IDisposable
 
     private readonly HttpClient _http;
     private readonly HttpClient _longHttp;
+    private readonly HttpClient _sseHttp;
     private readonly Uri _baseUrl;
     private readonly bool _ownsClients;
 
@@ -26,6 +28,7 @@ public sealed class CoreClient : IDisposable
         _baseUrl = baseUrl;
         _http = new HttpClient { Timeout = TimeSpan.FromSeconds(60) };
         _longHttp = new HttpClient { Timeout = TimeSpan.FromMinutes(10) };
+        _sseHttp = new HttpClient { Timeout = Timeout.InfiniteTimeSpan };
         _ownsClients = true;
     }
 
@@ -35,6 +38,7 @@ public sealed class CoreClient : IDisposable
         _baseUrl = baseUrl;
         _http = new HttpClient(handler, disposeHandler: false) { Timeout = TimeSpan.FromSeconds(60) };
         _longHttp = new HttpClient(handler, disposeHandler: false) { Timeout = TimeSpan.FromMinutes(10) };
+        _sseHttp = new HttpClient(handler, disposeHandler: false) { Timeout = Timeout.InfiniteTimeSpan };
         _ownsClients = true;
     }
 
@@ -43,6 +47,7 @@ public sealed class CoreClient : IDisposable
         if (!_ownsClients) return;
         _http.Dispose();
         _longHttp.Dispose();
+        _sseHttp.Dispose();
     }
 
     // --- Books ---
@@ -195,6 +200,9 @@ public sealed class CoreClient : IDisposable
     private static string SummaryTierValue(SummaryTier tier) =>
         tier == SummaryTier.Advanced ? "advanced" : "normal";
 
+    private static string SegmentTierValue(SegmentTier tier) =>
+        tier == SegmentTier.Advanced ? "advanced" : "normal";
+
     public async Task StartSummarizeAllAsync(
         SummaryTier summaryTier = SummaryTier.Normal,
         CancellationToken ct = default)
@@ -301,16 +309,30 @@ public sealed class CoreClient : IDisposable
     public async Task ResegmentBookAsync(
         string bookId,
         int chunkTargetChars,
+        SegmentTier segmentTier = SegmentTier.Normal,
         CancellationToken ct = default)
     {
         var body = JsonSerializer.Serialize(
-            new { chunk_target_chars = chunkTargetChars }, JsonOptions);
+            new
+            {
+                chunk_target_chars = chunkTargetChars,
+                segment_tier = SegmentTierValue(segmentTier),
+            }, JsonOptions);
         await PostAsync($"/books/{bookId}/resegment", body, ct).ConfigureAwait(false);
     }
 
-    public async Task<string> ExportMarkdownAsync(string bookId, bool includeNotes = false, CancellationToken ct = default)
+    public async Task CancelResegmentBookAsync(string bookId, CancellationToken ct = default)
     {
-        var body = JsonSerializer.Serialize(new { include_notes = includeNotes }, JsonOptions);
+        await PostAsync($"/books/{bookId}/resegment/cancel", "{}", ct).ConfigureAwait(false);
+    }
+
+    public async Task<string> ExportMarkdownAsync(
+        string bookId,
+        bool includeNotes = false,
+        string mode = "full",
+        CancellationToken ct = default)
+    {
+        var body = JsonSerializer.Serialize(new { include_notes = includeNotes, mode }, JsonOptions);
         var data = await PostAsync($"/books/{bookId}/export", body, ct).ConfigureAwait(false);
         return Encoding.UTF8.GetString(data);
     }
@@ -406,6 +428,17 @@ public sealed class CoreClient : IDisposable
         return Deserialize<SearchResp>(data)?.Results ?? [];
     }
 
+    public async Task<OriginalSearchResponse> SearchOriginalAsync(
+        string bookId,
+        string query,
+        CancellationToken ct = default)
+    {
+        var data = await GetAsync(
+            $"/books/{bookId}/original-search?q={Uri.EscapeDataString(query)}",
+            ct).ConfigureAwait(false);
+        return Deserialize<OriginalSearchResponse>(data) ?? new OriginalSearchResponse();
+    }
+
     // --- News ---
 
     public async Task<NewsBrief> FetchNewsBriefAsync(int limit = 25, CancellationToken ct = default)
@@ -466,7 +499,9 @@ public sealed class CoreClient : IDisposable
     public async Task<AppSettings> FetchSettingsAsync(CancellationToken ct = default)
     {
         var data = await GetAsync("/settings", ct).ConfigureAwait(false);
-        return Deserialize<AppSettings>(data) ?? new AppSettings();
+        var settings = Deserialize<AppSettings>(data) ?? new AppSettings();
+        settings.Models.Tts ??= new TtsSettings();
+        return settings;
     }
 
     public async Task<AppSettings> UpdateSettingsAsync(AppSettings settings, CancellationToken ct = default)
@@ -483,6 +518,9 @@ public sealed class CoreClient : IDisposable
             ocr_cloud_timeout_seconds = settings.OcrCloudTimeoutSeconds,
             debug_mode = settings.DebugMode,
             auto_start_summary = settings.AutoStartSummary,
+            default_segment_tier = string.IsNullOrWhiteSpace(settings.DefaultSegmentTier)
+                ? "normal"
+                : settings.DefaultSegmentTier,
             models = settings.Models,
             prompts = settings.Prompts,
         }, JsonOptions);
@@ -595,7 +633,7 @@ public sealed class CoreClient : IDisposable
             {
                 using var req = new HttpRequestMessage(HttpMethod.Get, Url($"/books/{bookId}/events"));
                 req.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("text/event-stream"));
-                using var resp = await _http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, cts.Token)
+                using var resp = await _sseHttp.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, cts.Token)
                     .ConfigureAwait(false);
                 if (!resp.IsSuccessStatusCode) return;
                 await using var stream = await resp.Content.ReadAsStreamAsync(cts.Token).ConfigureAwait(false);

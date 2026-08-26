@@ -91,6 +91,7 @@ struct SegmentSidebarView: View {
                     rowContent
                 }
                 .buttonStyle(.plain)
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
         .contextMenu {

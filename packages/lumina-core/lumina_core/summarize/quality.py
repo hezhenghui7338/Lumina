@@ -9,8 +9,10 @@ import time
 from dataclasses import dataclass
 from typing import Literal
 
+from lumina_core.config import format_prompt
 from lumina_core.models.router import ProfileModelRouter, parse_json_response
 from lumina_core.summarize.schema import SegmentSummary
+from lumina_core.translate.language import language_display_name, unexpected_language_span
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +32,17 @@ _REPEATED_PHRASE = re.compile(r"(.{4,12})\1{2,}")
 _SYMBOL_RUN = re.compile(r"[{}\[\]<>|\\^~`*_#]{4,}")
 _CONTROL_CHARS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 _ASSISTANT_IDENTITY = "阅读助手"
+_NARRATOR_LABEL = "叙述者"
+_FIRST_PERSON_WO = re.compile(r"我(?!国)")
+_FIRST_PERSON_I = re.compile(r"\bI\b")
+_ALWAYS_REJECT_CODES = frozenset({"wrong_language", "first_person_as_narrator"})
+
+
+def _source_uses_first_person(raw_text: str) -> bool:
+    return (
+        _FIRST_PERSON_WO.search(raw_text) is not None
+        or _FIRST_PERSON_I.search(raw_text) is not None
+    )
 
 
 @dataclass(frozen=True)
@@ -59,7 +72,14 @@ class SummaryQualityError(ValueError):
     def __init__(self, issues: list[ClarityIssue] | tuple[ClarityIssue, ...]) -> None:
         self.issues = tuple(issues)
         details = "；".join(issue.prompt_line() for issue in self.issues[:4])
-        super().__init__(f"摘要存在 {len(self.issues)} 处乱码或表意不清：{details}")
+        super().__init__(f"摘要存在 {len(self.issues)} 处乱码、串语或表意不清：{details}")
+
+
+def quality_should_reject(issues: tuple[ClarityIssue, ...] | list[ClarityIssue]) -> bool:
+    """Language leaks fail even as a single issue; other defects still need more than one."""
+    if any(issue.code in _ALWAYS_REJECT_CODES for issue in issues):
+        return True
+    return len(issues) > 1
 
 
 def _summary_fields(summary: SegmentSummary) -> dict[str, str]:
@@ -81,12 +101,20 @@ def _snippet_at(text: str, start: int, length: int = 24) -> str:
 
 
 def scan_summary_clarity(
-    summary: SegmentSummary, *, raw_text: str | None = None
+    summary: SegmentSummary,
+    *,
+    raw_text: str | None = None,
+    target_language: str | None = "zh-CN",
 ) -> list[ClarityIssue]:
     """Return conservative local quality signals without calling a model."""
     issues: list[ClarityIssue] = []
     fields = _summary_fields(summary)
     check_identity_leak = raw_text is not None and _ASSISTANT_IDENTITY not in raw_text
+    check_narrator_rewrite = (
+        raw_text is not None
+        and _NARRATOR_LABEL not in raw_text
+        and _source_uses_first_person(raw_text)
+    )
 
     for field, text in fields.items():
         stripped = text.strip()
@@ -97,12 +125,33 @@ def scan_summary_clarity(
                     ClarityIssue(
                         field,
                         "assistant_identity_leak",
-                        "把原文叙述者写成阅读助手",
+                        "把原文第一人称「我」写成阅读助手",
                         _snippet_at(text, start),
                         "hard",
                         start,
                     )
                 )
+        if check_narrator_rewrite:
+            start = text.find(_NARRATOR_LABEL)
+            if start >= 0:
+                issues.append(
+                    ClarityIssue(
+                        field,
+                        "first_person_as_narrator",
+                        "把原文第一人称「我」改写成叙述者",
+                        _snippet_at(text, start),
+                        "hard",
+                        start,
+                    )
+                )
+        leak = unexpected_language_span(
+            text, target_language=target_language, source_text=raw_text
+        )
+        if leak is not None:
+            start, snippet, problem = leak
+            issues.append(
+                ClarityIssue(field, "wrong_language", problem, snippet, "hard", start)
+            )
         for match in re.finditer("\ufffd", text):
             issues.append(
                 ClarityIssue(
@@ -269,18 +318,27 @@ async def inspect_summary_quality(
     summary: SegmentSummary,
     review_prompt: str,
     summary_tier: Literal["normal", "advanced"] = "normal",
+    target_language: str = "zh-CN",
 ) -> QualityCheckResult:
     """Apply local gates, then use a separate model call only for suspicious output."""
-    local_issues = scan_summary_clarity(summary, raw_text=raw_text)
+    local_issues = scan_summary_clarity(
+        summary, raw_text=raw_text, target_language=target_language
+    )
     hard_issues = [issue for issue in local_issues if issue.severity == "hard"]
+    always_reject = [issue for issue in local_issues if issue.code in _ALWAYS_REJECT_CODES]
+    if always_reject:
+        rest = [issue for issue in hard_issues if issue.code not in _ALWAYS_REJECT_CODES]
+        return QualityCheckResult(tuple(always_reject + rest), False, 0.0)
     if len(hard_issues) > 1:
         return QualityCheckResult(tuple(hard_issues), False, 0.0)
     if not local_issues:
         return QualityCheckResult((), False, 0.0)
 
-    prompt = review_prompt.format(
+    prompt = format_prompt(
+        review_prompt,
         original_text=raw_text,
         summary_json=json.dumps(summary.model_dump(), ensure_ascii=False),
+        target_language=language_display_name(target_language),
     )
     started = time.monotonic()
     try:

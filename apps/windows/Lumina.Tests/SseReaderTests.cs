@@ -143,9 +143,24 @@ public class SseReaderTests
 
         var failed = new BookSummary { Status = "error", SegmentCount = 0 };
         Assert.False(failed.CanResegment);
+        Assert.False(failed.CanOpenInReader);
 
         var unsegmented = new BookSummary { Status = "unread", SegmentCount = 0 };
         Assert.False(unsegmented.CanResegment);
+        Assert.True(unsegmented.IsSegmenting);
+        Assert.True(unsegmented.CanOpenInReader);
+
+        var processingOpen = new BookSummary
+        {
+            Status = "processing",
+            SegmentCount = 0,
+            SummarizeState = "segmenting",
+        };
+        Assert.True(processingOpen.IsSegmenting);
+        Assert.True(processingOpen.CanOpenInReader);
+
+        var readyOpen = new BookSummary { Status = "reading", SegmentCount = 4 };
+        Assert.True(readyOpen.CanOpenInReader);
     }
 
     [Fact]
@@ -154,6 +169,23 @@ public class SseReaderTests
         Assert.Equal(200, ResegmentTarget.Normalized(50, null, 0));
         Assert.Equal(200, ResegmentTarget.Normalized(200, null, 0));
         Assert.Equal(8000, ResegmentTarget.Normalized(9000, null, 0));
-        Assert.Equal(3400, ResegmentTarget.Normalized(null, 10100, 3));
+        Assert.Equal(3449, ResegmentTarget.Normalized(3449, null, 0));
+        Assert.Equal(3366, ResegmentTarget.Normalized(null, 10100, 3));
+    }
+
+    [Fact]
+    public void ResegmentTarget_presets_and_provider_defaults()
+    {
+        Assert.Equal(new[] { 500, 1000, 1500, 2000, 2500 }, ResegmentTarget.Presets);
+        Assert.Equal(2500, ResegmentTarget.DefaultFor("ollama"));
+        Assert.Equal(3500, ResegmentTarget.DefaultFor("openrouter"));
+        Assert.Equal(4000, ResegmentTarget.DefaultFor("openai"));
+        Assert.Equal(4000, ResegmentTarget.MaxFor("ollama"));
+        Assert.Equal(8000, ResegmentTarget.MaxFor("openai"));
+        Assert.Equal(2500, ResegmentTarget.Effective(0, "ollama"));
+        Assert.Equal(1500, ResegmentTarget.Effective(1500, "ollama"));
+        Assert.Equal(0, ResegmentTarget.ToStored(2500, "ollama"));
+        Assert.Equal(1500, ResegmentTarget.ToStored(1500, "ollama"));
+        Assert.Equal(4000, ResegmentTarget.ToStored(9000, "ollama"));
     }
 }

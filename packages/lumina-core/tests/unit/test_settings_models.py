@@ -265,6 +265,18 @@ def test_save_settings_persists_ocr_and_web_search(tmp_path: Path):
     assert loaded.ocr_cloud_timeout_seconds == 90.0
 
 
+def test_save_settings_persists_default_segment_tier(tmp_path: Path):
+    from lumina_core.config import Settings
+    from lumina_core.settings_store import load_settings, save_settings, settings_path
+
+    settings = Settings(data_dir=tmp_path, default_segment_tier="advanced")
+    save_settings(settings)
+    raw = json.loads(settings_path(tmp_path).read_text(encoding="utf-8"))
+    assert raw["default_segment_tier"] == "advanced"
+    loaded = load_settings(tmp_path)
+    assert loaded.default_segment_tier == "advanced"
+
+
 def test_hydrate_startup_settings_reloads_ocr_and_web_search_like_cli(
     tmp_path: Path, monkeypatch
 ):

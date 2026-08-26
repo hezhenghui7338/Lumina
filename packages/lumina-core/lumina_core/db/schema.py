@@ -27,6 +27,7 @@ CREATE TABLE IF NOT EXISTS books (
   category      TEXT,
   last_opened_at TEXT,
   index_status  TEXT DEFAULT 'idle',
+  summarize_intent TEXT DEFAULT 'idle',
   created_at    TEXT NOT NULL,
   updated_at    TEXT NOT NULL
 );
@@ -158,11 +159,20 @@ _NEWS_ARTICLE_COLUMNS = (
 )
 
 
+# Columns added after the original books table. CREATE TABLE IF NOT EXISTS does
+# not alter an existing table, so every SCHEMA_SQL books column that older DBs
+# may lack must appear here — including sort keys like current_segment_index.
 _BOOK_COLUMNS = (
+    ("cover_path", "TEXT"),
+    ("language", "TEXT"),
+    ("target_language", "TEXT"),
+    ("translation_mode", "TEXT DEFAULT 'auto'"),
+    ("current_segment_index", "INTEGER DEFAULT 0"),
     ("is_favorite", "INTEGER DEFAULT 0"),
     ("category", "TEXT"),
     ("last_opened_at", "TEXT"),
     ("index_status", "TEXT DEFAULT 'idle'"),
+    ("summarize_intent", "TEXT DEFAULT 'idle'"),
 )
 
 _SEGMENT_COLUMNS = (
@@ -190,8 +200,9 @@ def _migrate_books(conn: sqlite3.Connection) -> None:
     for name, col_type in _BOOK_COLUMNS:
         if name not in existing:
             conn.execute(f"ALTER TABLE books ADD COLUMN {name} {col_type}")
-    if "status" in existing:
-        conn.execute("UPDATE books SET status = 'unread' WHERE status = 'processing'")
+    # Never flip status=processing → unread here. That left 0-segment books
+    # outside 分段中 / 未摘要 / 导入失败. Orphans are repaired in
+    # BookRepo.repair_stale_imports.
 
 
 def _migrate_segments(conn: sqlite3.Connection) -> None:

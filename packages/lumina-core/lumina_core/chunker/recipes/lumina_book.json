@@ -1,0 +1,12 @@
+{
+  "name": "lumina-book",
+  "description": "Recursive delimiter recipe for Lumina reading segments. Algorithm aligned with Chonkie RecursiveRules; not a runtime dependency.",
+  "levels": [
+    {"name": "part", "delimiters": ["# [§"], "include_delim": "next", "boundary": "hard"},
+    {"name": "chapter", "delimiters": ["## [§", "第N章", "Chapter N"], "include_delim": "next", "boundary": "hard"},
+    {"name": "section", "delimiters": ["###", "####", "#####", "######"], "include_delim": "next", "boundary": "strong"},
+    {"name": "paragraph", "delimiters": ["\n\n"], "include_delim": "prev", "boundary": "strong"},
+    {"name": "sentence", "delimiters": ["。", "！", "？", ". ", "! ", "? "], "include_delim": "prev", "boundary": "normal"},
+    {"name": "weak", "delimiters": ["；", ";", "，"], "include_delim": "prev", "boundary": "weak"}
+  ]
+}

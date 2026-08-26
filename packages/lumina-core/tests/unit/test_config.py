@@ -17,6 +17,7 @@ from lumina_core.config import (
     ModelsConfig,
     ProfileRoute,
     ModelResource,
+    TTSConfig,
     _platform_default_data_dir,
     bundle_root,
     default_chunk_target_for_provider,
@@ -39,8 +40,14 @@ def test_load_models_config_from_dev_tree():
     assert openai.provider == "openai"
     assert cfg.summarize.priority == ["ollama", "openrouter"]
     assert cfg.chat.priority == ["openai", "ollama"]
+    assert cfg.tts.engine == "system"
     assert effective_concurrency(cfg.resource_by_id("ollama")) == 1
     assert effective_concurrency(cfg.resource_by_id("cursor")) == 8
+
+
+def test_tts_engine_never_cloud():
+    assert TTSConfig(engine="cloud").engine == "system"
+    assert TTSConfig(engine="SYSTEM").engine == "system"
 
 
 def test_bundle_root_none_in_dev():
@@ -72,7 +79,7 @@ def test_resegment_target_floor_is_200():
     assert RESEGMENT_MAX_TARGET_CHARS == 8000
     budget = resolve_chunk_budget(target_chars=RESEGMENT_MIN_TARGET_CHARS)
     assert budget.target_chars == 200
-    assert budget.max_chars == 240
+    assert budget.max_chars == 300
     assert budget.min_chars == 120
 
 
@@ -139,7 +146,7 @@ def test_resolve_resource_chunk_budget_override():
     )
     budget = resolve_resource_chunk_budget(resource)
     assert budget.target_chars == 5000
-    assert budget.max_chars == 6000
+    assert budget.max_chars == 7500
     assert budget.min_chars == 3000
 
 

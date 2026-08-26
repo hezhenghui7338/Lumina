@@ -15,9 +15,9 @@ from pydantic_settings import BaseSettings
 
 # App / engine identity. Must match pyproject version and desktop marketing versions.
 # Clients replace a leftover sidecar when this disagrees, even if CHUNKER_VERSION matches.
-CORE_VERSION = "0.10.2"
+CORE_VERSION = "1.0.0"
 # Segmentation algorithm id only. Do not use this as the "engine is current" signal.
-CHUNKER_VERSION = "10"
+CHUNKER_VERSION = "14"
 DOCUMENT_MAP_TIMEOUT_SECONDS = float(
     os.getenv("LUMINA_DOCUMENT_MAP_TIMEOUT", "20")
 )
@@ -31,13 +31,13 @@ CHUNK_MAX_CHARS = READING_HARD_MAX
 CHUNK_MIN_CHARS = int(READING_TARGET_CHARS * 0.6)
 RESEGMENT_MIN_TARGET_CHARS = 200
 RESEGMENT_MAX_TARGET_CHARS = 8000
-OLLAMA_CHUNK_TARGET = 2500
+OLLAMA_CHUNK_TARGET = 2000
 OLLAMA_CHUNK_MAX = 3000
 OPENROUTER_CHUNK_TARGET = 3500
-OPENROUTER_CHUNK_MAX = 4200
+OPENROUTER_CHUNK_MAX = 5250
 OLLAMA_KEEP_ALIVE = os.getenv("LUMINA_OLLAMA_KEEP_ALIVE", "30m")
 CLOUD_CHUNK_TARGET = 4000
-CLOUD_CHUNK_MAX = 4800
+CLOUD_CHUNK_MAX = 6000
 SEGMENT_CACHE_QUOTA_BYTES = 2 * 1024 * 1024 * 1024  # 2GB
 MAX_SUMMARY_RETRIES = 3
 OLLAMA_SUMMARY_MAX_RETRIES = 2
@@ -109,7 +109,7 @@ def default_chunk_target_for_provider(provider: str) -> int:
 
 
 def _chunk_budget_from_target(target: int) -> ChunkBudget:
-    max_chars = max(target, int(target * 1.2))
+    max_chars = max(target, int(target * 1.5))
     min_chars = max(1, int(target * 0.6))
     return ChunkBudget(
         target_chars=target,
@@ -142,7 +142,7 @@ def resolve_chunk_budget(
 
     if env_target:
         target = int(env_target)
-        max_chars = int(env_max) if env_max else max(target, int(target * 1.2))
+        max_chars = int(env_max) if env_max else max(target, int(target * 1.5))
         min_chars = max(1, int(target * 0.6))
         return ChunkBudget(
             target_chars=target,
@@ -232,6 +232,30 @@ class ProfileRoute(BaseModel):
     priority: list[str] = Field(default_factory=list)
 
 
+class TTSConfig(BaseModel):
+    engine: str = "system"
+    priority: list[str] = Field(default_factory=lambda: ["openai"])
+    model: str = "gpt-4o-mini-tts"
+    voice: str = "nova"
+    speed: float = 1.0
+
+    @field_validator("engine")
+    @classmethod
+    def _normalize_engine(cls, _value: str) -> str:
+        # Legacy settings may still contain "cloud"; listen is system-only.
+        return "system"
+
+    @field_validator("speed")
+    @classmethod
+    def _clamp_speed(cls, value: float) -> float:
+        return max(0.25, min(4.0, float(value or 1.0)))
+
+    @field_validator("model", "voice")
+    @classmethod
+    def _strip_text(cls, value: str) -> str:
+        return (value or "").strip()
+
+
 # Legacy single-profile shape (migration only).
 class ProfileConfig(BaseModel):
     provider: str = "ollama"
@@ -282,11 +306,16 @@ def _default_summarize_route() -> ProfileRoute:
     return ProfileRoute(priority=["ollama", "openrouter"])
 
 
+def _default_tts() -> TTSConfig:
+    return TTSConfig()
+
+
 class ModelsConfig(BaseModel):
     resources: list[ModelResource] = Field(default_factory=default_resources)
     chat: ProfileRoute = Field(default_factory=_default_chat_route)
     summarize: ProfileRoute = Field(default_factory=_default_summarize_route)
     translate: ProfileRoute | None = None
+    tts: TTSConfig = Field(default_factory=_default_tts)
 
     def resource_by_id(self, resource_id: str) -> ModelResource | None:
         rid = resource_id.strip().lower()
@@ -296,13 +325,16 @@ class ModelsConfig(BaseModel):
         return None
 
     def resources_for_profile(self, profile: str) -> list[ModelResource]:
-        route: ProfileRoute
-        if profile == "translate":
+        if profile == "tts":
+            ids = self.tts.priority
+        elif profile == "translate":
             route = self.translate if self.translate is not None else self.summarize
+            ids = route.priority
         else:
             route = getattr(self, profile)
+            ids = route.priority
         resolved: list[ModelResource] = []
-        for resource_id in route.priority:
+        for resource_id in ids:
             resource = self.resource_by_id(resource_id)
             if resource is not None:
                 resolved.append(resource)
@@ -435,6 +467,11 @@ def normalize_models_raw(raw: dict[str, Any]) -> dict[str, Any]:
     return raw
 
 
+def format_prompt(template: str, **values: object) -> str:
+    """Fill prompt placeholders; extra keys are ignored, missing keys still error."""
+    return template.format_map({key: str(value) for key, value in values.items()})
+
+
 PROMPT_PLACEHOLDERS: dict[str, tuple[str, ...]] = {
     "segment": ("{text}", "{anchor}"),
     "segment_ollama": ("{text}",),
@@ -545,6 +582,10 @@ def _platform_default_data_dir() -> Path:
     return Path.home() / ".local" / "share" / "Lumina"
 
 
+def normalize_segment_tier(value: str | None) -> str:
+    return "advanced" if str(value or "").strip().lower() == "advanced" else "normal"
+
+
 class Settings(BaseSettings):
     host: str = "127.0.0.1"
     port: int = 17432
@@ -559,7 +600,13 @@ class Settings(BaseSettings):
     ocr_cloud_timeout_seconds: float = 60.0
     debug_mode: bool = False
     auto_start_summary: bool = False
+    default_segment_tier: str = "normal"
     prompts: PromptsConfig | None = None
+
+    @field_validator("default_segment_tier")
+    @classmethod
+    def _validate_segment_tier(cls, value: str) -> str:
+        return normalize_segment_tier(value)
 
     class Config:
         env_prefix = "LUMINA_"

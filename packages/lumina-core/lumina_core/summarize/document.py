@@ -11,11 +11,13 @@ from lumina_core.config import (
     PromptsConfig,
     SUMMARIZE_LLM_INPUT_CHARS,
     SUMMARIZE_SHORT_MAX_CHARS,
+    format_prompt,
     load_prompts_config,
     resolve_chunk_budget,
 )
 from lumina_core.models.router import ProfileModelRouter
 from lumina_core.summarize.segment import summarize_segment
+from lumina_core.translate.language import language_display_name
 
 _CITE_RE = re.compile(
     r"〔[^〕]+〕"
@@ -100,9 +102,15 @@ def format_document_prompt(
     *,
     filename: str,
     prompts: PromptsConfig | None = None,
+    target_language: str = "zh-CN",
 ) -> str:
     template = (prompts or load_prompts_config()).document
-    return template.format(filename=filename, annotated=annotated)
+    return format_prompt(
+        template,
+        filename=filename,
+        annotated=annotated,
+        target_language=language_display_name(target_language),
+    )
 
 
 def _strip_marker_noise(text: str) -> str:
@@ -232,6 +240,7 @@ async def summarize_document(
     use_llm: bool = True,
     allow_long: bool = True,
     prompts: PromptsConfig | None = None,
+    target_language: str = "zh-CN",
 ) -> DocumentSummarizeResult:
     """Produce a short-path markdown card; long docs fall back to segment summarize."""
     warnings: list[str] = []
@@ -256,6 +265,7 @@ async def summarize_document(
                         raw_text=chunk.raw_text,
                         anchor_label=label,
                         prompts=prompts,
+                        target_language=target_language,
                     )
                     summary = result.summary
                     parts.append(
@@ -286,7 +296,9 @@ async def summarize_document(
     used_llm = False
     if use_llm:
         clipped = annotated[:SUMMARIZE_LLM_INPUT_CHARS]
-        prompt = format_document_prompt(clipped, filename=title, prompts=prompts)
+        prompt = format_document_prompt(
+            clipped, filename=title, prompts=prompts, target_language=target_language
+        )
         for _ in range(MAX_SUMMARY_RETRIES):
             try:
                 raw = await router.complete(prompt, profile="summarize", json_mode=False)

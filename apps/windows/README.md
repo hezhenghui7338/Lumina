@@ -11,7 +11,7 @@ Windows 桌面壳：与 macOS 功能对等（Windows 惯用交互），业务引
 - **设置**：语言、联网、模型资源池与优先级、Prompt、调试模式 → 任务管理
 - **Onboarding**：引擎就绪 → Ollama 引导 → 进入书库
 
-交互采用顶栏 `NavigationView`、工具栏与抽屉，不复刻 macOS 贴边沉浸 chrome。
+交互采用顶栏 `NavigationView`、工具栏与抽屉，不复刻 macOS 顶底浮栏。
 
 ## 要求
 

@@ -107,10 +107,13 @@ def test_import_returns_processing_immediately(client):
     assert body["status"] == "processing"
     book_id = body["book_id"]
     listed = client.get("/books").json()["books"]
-    assert any(b["id"] == book_id for b in listed)
+    importing = next(b for b in listed if b["id"] == book_id)
+    if importing["status"] == "processing":
+        assert importing["summarize_state"] == "segmenting"
     finished = wait_for_ingest(client, book_id)
     assert finished["status"] in ("unread", "reading", "summarized")
     assert finished.get("segment_count", 0) > 0
+    assert finished.get("summarize_state") != "segmenting"
 
 
 @pytest.mark.parametrize("extension", ["md", "html", "rtf", "docx", "odt", "fb2"])
@@ -179,6 +182,21 @@ def test_import_duplicate_returns_409(client, tmp_path):
     resp = client.post("/books/import", json={"paths": [str(sample)]})
     assert resp.status_code == 409
     assert "existing_book_id" in resp.json()["detail"]
+
+
+def test_import_duplicate_after_rename_keeps_hash_and_current_title(client):
+    sample = BOOK_FIXTURES / "sample.txt"
+    book_id = client.post("/books/import", json={"paths": [str(sample)]}).json()["books"][0]["book_id"]
+    wait_for_ingest(client, book_id)
+    patched = client.patch(f"/books/{book_id}", json={"title": "自定义书名"})
+    assert patched.status_code == 200
+    assert patched.json()["title"] == "自定义书名"
+
+    resp = client.post("/books/import", json={"paths": [str(sample)]})
+    assert resp.status_code == 409
+    detail = resp.json()["detail"]
+    assert detail["existing_book_id"] == book_id
+    assert detail["title"] == "自定义书名"
 
 
 def test_import_overwrite_purges_old_data(client, tmp_path):
@@ -318,9 +336,11 @@ def test_resegment_rejects_missing_and_processing_books(client):
 
 
 def test_cancel_resegment_preserves_existing_data(client, monkeypatch):
+    import threading
     import time
 
-    from lumina_core.jobs import resegment as resegment_module
+    from lumina_core.ingest import txt_persist as txt_persist_module
+    from lumina_core.ingest.progress import DocumentLoadCancelled
 
     book_id = import_sample_book(client)
     old_segments = client.get(f"/books/{book_id}/segments").json()["segments"]
@@ -335,20 +355,29 @@ def test_cancel_resegment_preserves_existing_data(client, monkeypatch):
     )
     assert note.status_code == 200
 
-    original_load_document = resegment_module.load_document
+    blocking = threading.Event()
+    orig = txt_persist_module.persist_streamed_txt_resegment
 
-    def slow_load_document(*args, **kwargs):
-        time.sleep(0.3)
-        return original_load_document(*args, **kwargs)
+    def slow_persist(*args, **kwargs):
+        blocking.set()
+        cancel = kwargs.get("cancel_event")
+        for _ in range(80):
+            if cancel is not None and cancel.is_set():
+                raise DocumentLoadCancelled("已取消")
+            time.sleep(0.05)
+        return orig(*args, **kwargs)
 
-    monkeypatch.setattr(resegment_module, "load_document", slow_load_document)
+    monkeypatch.setattr(txt_persist_module, "persist_streamed_txt_resegment", slow_persist)
     started = client.post(
         f"/books/{book_id}/resegment",
         json={"chunk_target_chars": 1500},
     )
     assert started.status_code == 202
     assert started.json()["processing_kind"] == "resegment"
-    assert client.get(f"/books/{book_id}").json()["processing_kind"] == "resegment"
+    assert blocking.wait(timeout=2)
+    during = client.get(f"/books/{book_id}").json()
+    assert during["processing_kind"] == "resegment"
+    assert during["summarize_state"] == "segmenting"
     cancelled = client.post(f"/books/{book_id}/resegment/cancel", json={})
     assert cancelled.status_code == 202
     assert cancelled.json()["status"] == "cancelling"
@@ -365,21 +394,22 @@ def test_cancel_ingest_marks_book_error(client, monkeypatch):
     import threading
     import time
 
+    from lumina_core.ingest import txt_persist as txt_persist_module
     from lumina_core.ingest.progress import DocumentLoadCancelled
-    from lumina_core.jobs import ingest as ingest_module
 
     started = threading.Event()
+    orig = txt_persist_module.persist_streamed_txt_ingest
 
-    def slow_load_document(*args, **kwargs):
+    def slow_persist(*args, **kwargs):
         started.set()
         cancel = kwargs.get("cancel_event")
         for _ in range(80):
             if cancel is not None and cancel.is_set():
                 raise DocumentLoadCancelled("已取消")
             time.sleep(0.05)
-        return "正文", {}
+        return orig(*args, **kwargs)
 
-    monkeypatch.setattr(ingest_module, "load_document", slow_load_document)
+    monkeypatch.setattr(txt_persist_module, "persist_streamed_txt_ingest", slow_persist)
     sample = BOOK_FIXTURES / "sample.txt"
     book_id = client.post("/books/import", json={"paths": [str(sample)]}).json()["books"][0][
         "book_id"
@@ -477,6 +507,14 @@ def test_export_markdown(client, tmp_path):
     resp = client.post(f"/books/{book_id}/export", json={"include_notes": False})
     assert resp.status_code == 200
     assert "摘要版" in resp.text
+
+    brief = client.post(
+        f"/books/{book_id}/export", json={"include_notes": True, "mode": "sentences"}
+    )
+    assert brief.status_code == 200
+    assert "总结" in brief.text
+    assert "摘要版" not in brief.text
+    assert "## 我的笔记" not in brief.text
 
 
 def test_export_chinese_title_returns_200(client, tmp_path):
