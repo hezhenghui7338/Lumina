@@ -3,6 +3,7 @@ import SwiftUI
 struct ExportSheet: View {
     @Binding var isPresented: Bool
     @Binding var includeNotes: Bool
+    @Binding var mode: MarkdownExportMode
     let summaryReadyCount: Int
     let summaryTotalCount: Int
     let onFetchMarkdown: () async throws -> String
@@ -13,7 +14,7 @@ struct ExportSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("导出 Markdown 摘要版")
+            Text("导出 Markdown")
                 .font(.headline)
 
             Text("摘要 \(summaryReadyCount)/\(summaryTotalCount)")
@@ -26,12 +27,24 @@ struct ExportSheet: View {
                     .foregroundStyle(.orange)
             }
 
-            Toggle("包含我的笔记", isOn: $includeNotes)
-                .disabled(isExporting)
+            Picker("导出内容", selection: $mode) {
+                Text("完整摘要版").tag(MarkdownExportMode.full)
+                Text("仅导出总结").tag(MarkdownExportMode.sentences)
+            }
+            .pickerStyle(.radioGroup)
+            .disabled(isExporting)
 
-            Text("默认含译文段落。")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            if mode == .full {
+                Toggle("包含我的笔记", isOn: $includeNotes)
+                    .disabled(isExporting)
+                Text("默认含译文段落。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                Text("只含各段三句话，不含要点、注意、追问、译文和笔记。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
 
             if isExporting {
                 HStack(spacing: 8) {
@@ -64,6 +77,6 @@ struct ExportSheet: View {
             }
         }
         .padding(20)
-        .frame(width: 320)
+        .frame(width: 360)
     }
 }

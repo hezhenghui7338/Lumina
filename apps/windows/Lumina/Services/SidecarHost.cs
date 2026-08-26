@@ -14,17 +14,40 @@ public sealed class SidecarHost : IDisposable
 
     private readonly HttpClient _http = new() { Timeout = TimeSpan.FromSeconds(2) };
     private Process? _process;
+    private int? _lastKnownPid;
     private readonly object _gate = new();
 
     public Uri BaseUrl { get; } = new($"http://{Host}:{Port}");
     public bool IsRunning { get; private set; }
     public bool IsBootstrapping { get; private set; }
+    public bool UserStopped { get; private set; }
     public string? LaunchError { get; private set; }
+
+    public void ClearUserStopped()
+    {
+        UserStopped = false;
+        Notify();
+    }
+
+    public SidecarEngineStatus EngineStatus => SidecarReadiness.EngineStatus(
+        IsRunning, IsBootstrapping, UserStopped, LaunchError);
+
+    public string EngineStatusLabel =>
+        EngineStatus == SidecarEngineStatus.Failed && !string.IsNullOrEmpty(LaunchError)
+            ? LaunchError
+            : SidecarReadiness.StatusLabel(EngineStatus);
 
     public event Action? StateChanged;
 
     public async Task EnsureRunningAsync(CancellationToken ct = default)
     {
+        if (!SidecarReadiness.ShouldAutoStart(UserStopped))
+        {
+            IsRunning = false;
+            Notify();
+            return;
+        }
+
         lock (_gate)
         {
             if (IsBootstrapping) return;
@@ -41,7 +64,18 @@ public sealed class SidecarHost : IDisposable
                 return;
             }
 
+            if (_process is { HasExited: true })
+            {
+                _process.Dispose();
+                _process = null;
+            }
+
             var health = await FetchHealthAsync(ct).ConfigureAwait(false);
+            if (health?.Pid is int healthPid)
+                _lastKnownPid = healthPid;
+            var listenerPid = ListenerPid();
+            var portOccupied = health is not null || listenerPid is not null;
+            var replaceOrphan = false;
             if (_process is null && health is not null)
             {
                 var bundled = BundledSidecarExecutable();
@@ -51,23 +85,30 @@ public sealed class SidecarHost : IDisposable
                 DateTimeOffset? started = health.StartedAt is long unix
                     ? DateTimeOffset.FromUnixTimeSeconds(unix)
                     : null;
-                if (SidecarReadiness.ShouldReplaceOrphan(
-                        health.ChunkerVersion,
-                        health.CoreVersion,
-                        ExpectedCoreVersion(),
-                        bundled is not null,
-                        health.Executable,
-                        bundled,
-                        started,
-                        bundledModified))
-                {
-                    await TerminatePidAsync(health.Pid, ct).ConfigureAwait(false);
-                }
-                else
+                replaceOrphan = SidecarReadiness.ShouldReplaceOrphan(
+                    health.ChunkerVersion,
+                    health.CoreVersion,
+                    ExpectedCoreVersion(),
+                    bundled is not null,
+                    health.Executable,
+                    bundled,
+                    started,
+                    bundledModified);
+                if (SidecarReadiness.ShouldReuseLeftover(true, replaceOrphan))
                 {
                     IsRunning = true;
                     return;
                 }
+            }
+
+            if (SidecarReadiness.ShouldKillListenerBeforeLaunch(
+                    health is not null,
+                    replaceOrphan,
+                    portOccupied))
+            {
+                await TerminatePidsAsync(
+                    new[] { health?.Pid, _lastKnownPid, listenerPid },
+                    ct).ConfigureAwait(false);
             }
 
             string? lastError = null;
@@ -119,14 +160,42 @@ public sealed class SidecarHost : IDisposable
         }
     }
 
-    public async Task StopAsync()
+    public async Task RestartAsync(CancellationToken ct = default)
     {
+        UserStopped = false;
+        LaunchError = null;
+        await StopAsync(userInitiated: false, ct).ConfigureAwait(false);
+        await EnsureRunningAsync(ct).ConfigureAwait(false);
+    }
+
+    public async Task StopAsync(bool userInitiated = false, CancellationToken ct = default)
+    {
+        if (userInitiated)
+            UserStopped = true;
+
         try
         {
             using var req = new HttpRequestMessage(HttpMethod.Post, new Uri(BaseUrl, "/shutdown"));
-            await _http.SendAsync(req).ConfigureAwait(false);
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            timeout.CancelAfter(TimeSpan.FromSeconds(2));
+            await _http.SendAsync(req, timeout.Token).ConfigureAwait(false);
         }
-        catch { /* ignore */ }
+        catch { /* hung sidecar: fall through to kill */ }
+
+        int? ownedPid = null;
+        lock (_gate)
+        {
+            try
+            {
+                if (_process is { HasExited: false })
+                    ownedPid = _process.Id;
+            }
+            catch { /* ignore */ }
+        }
+
+        await TerminatePidsAsync(
+            new[] { ownedPid, _lastKnownPid, ListenerPid() },
+            ct).ConfigureAwait(false);
 
         lock (_gate)
         {
@@ -140,7 +209,10 @@ public sealed class SidecarHost : IDisposable
             }
             catch { /* ignore */ }
             _process = null;
+            _lastKnownPid = null;
             IsRunning = false;
+            if (userInitiated)
+                LaunchError = null;
         }
         Notify();
     }
@@ -177,6 +249,8 @@ public sealed class SidecarHost : IDisposable
             var health = JsonSerializer.Deserialize<SidecarHealth>(json, CoreClient.JsonOptions);
             if (health is null) return null;
             if (!string.Equals(health.Status, "ok", StringComparison.OrdinalIgnoreCase)) return null;
+            if (health.Pid is int pid)
+                _lastKnownPid = pid;
             return health;
         }
         catch
@@ -185,31 +259,77 @@ public sealed class SidecarHost : IDisposable
         }
     }
 
-    private static async Task TerminatePidAsync(int? pid, CancellationToken ct)
+    private static async Task TerminatePidsAsync(IEnumerable<int?> pids, CancellationToken ct)
     {
-        if (pid is not int value || value <= 1) return;
-        try
+        var unique = pids.Where(p => p is > 1).Select(p => p!.Value).Distinct().ToList();
+        foreach (var pid in unique)
         {
-            using var proc = Process.GetProcessById(value);
-            proc.Kill(entireProcessTree: true);
-        }
-        catch
-        {
-            /* already gone */
+            try
+            {
+                using var proc = Process.GetProcessById(pid);
+                proc.Kill(entireProcessTree: true);
+            }
+            catch
+            {
+                /* already gone */
+            }
         }
 
         for (var i = 0; i < 20; i++)
         {
             await Task.Delay(100, ct).ConfigureAwait(false);
-            try
+            var alive = false;
+            foreach (var pid in unique)
             {
-                Process.GetProcessById(value);
+                try
+                {
+                    Process.GetProcessById(pid);
+                    alive = true;
+                    break;
+                }
+                catch
+                {
+                    /* gone */
+                }
             }
-            catch
+            if (!alive) return;
+        }
+    }
+
+    private static int? ListenerPid()
+    {
+        try
+        {
+            var psi = new ProcessStartInfo
             {
-                return;
+                FileName = "netstat",
+                Arguments = "-ano -p TCP",
+                RedirectStandardOutput = true,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+            };
+            using var proc = Process.Start(psi);
+            if (proc is null) return null;
+            var output = proc.StandardOutput.ReadToEnd();
+            proc.WaitForExit(2000);
+            foreach (var raw in output.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries))
+            {
+                var line = raw.Trim();
+                if (!line.StartsWith("TCP", StringComparison.OrdinalIgnoreCase)) continue;
+                if (!line.Contains($":{Port}", StringComparison.Ordinal) ||
+                    !line.Contains("LISTENING", StringComparison.OrdinalIgnoreCase))
+                    continue;
+                var parts = line.Split([' ', '\t'], StringSplitOptions.RemoveEmptyEntries);
+                if (parts.Length == 0) continue;
+                if (int.TryParse(parts[^1], out var pid) && pid > 1)
+                    return pid;
             }
         }
+        catch
+        {
+            /* ignore */
+        }
+        return null;
     }
 
     private async Task<bool> IsHealthyAsync(CancellationToken ct)

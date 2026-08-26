@@ -3,16 +3,19 @@
     x:Class="Lumina.Features.Library.LibraryPage"
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-    xmlns:models="using:Lumina.Services">
-    <NavigationView
-        x:Name="CollectionNav"
-        IsSettingsVisible="False"
-        IsBackButtonVisible="Collapsed"
-        PaneDisplayMode="Left"
-        OpenPaneLength="220"
-        IsPaneToggleButtonVisible="True"
-        SelectionChanged="CollectionNav_SelectionChanged">
-        <Grid Padding="16">
+    xmlns:models="using:Lumina.Services"
+    xmlns:lib="using:Lumina.Features.Library">
+    <Grid>
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="220"/>
+            <ColumnDefinition Width="*"/>
+        </Grid.ColumnDefinitions>
+        <Border BorderBrush="{ThemeResource DividerStrokeColorDefaultBrush}" BorderThickness="0,0,1,0">
+            <ScrollViewer>
+                <StackPanel x:Name="FilterPane" Padding="16,16,12,16" Spacing="2"/>
+            </ScrollViewer>
+        </Border>
+        <Grid Grid.Column="1" Padding="16">
             <Grid.RowDefinitions>
                 <RowDefinition Height="Auto"/>
                 <RowDefinition Height="Auto"/>
@@ -22,8 +25,27 @@
             </Grid.RowDefinitions>
 
             <Grid Grid.Row="0" Margin="0,0,0,12">
-                <TextBlock x:Name="TitleText" Text="最近" FontSize="28" FontWeight="SemiBold"/>
+                <TextBlock x:Name="TitleText" Text="书架" FontSize="28" FontWeight="SemiBold"/>
                 <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Spacing="8">
+                    <StackPanel x:Name="SummarizeActivityBar" Orientation="Horizontal" Spacing="6"
+                                VerticalAlignment="Center" Visibility="Collapsed">
+                        <HyperlinkButton x:Name="SummarizeActivityStatus" Padding="4,0"
+                                         Click="SummarizeActivity_Click"
+                                         ToolTipService.ToolTip="查看摘要中的书籍"/>
+                        <Button x:Name="SummarizeActivityStop" Content="停止"
+                                Click="SummarizeActivityStop_Click"
+                                ToolTipService.ToolTip="停止全部摘要"/>
+                    </StackPanel>
+                    <SplitButton x:Name="LibraryStartSummarizeSplit" Content="开始摘要"
+                                 Click="LibrarySummarize_Click"
+                                 ToolTipService.ToolTip="未筛选时摘要全书；有筛选或搜书名时只摘要当前列表里可开始的书。点三角可选高级（需确认）">
+                        <SplitButton.Flyout>
+                            <MenuFlyout>
+                                <MenuFlyoutItem Text="高级摘要（仅未摘要）" Click="LibrarySummarizeAdvanced_Click"/>
+                            </MenuFlyout>
+                        </SplitButton.Flyout>
+                    </SplitButton>
+                    <Button Content="停止摘要" Click="LibraryStopSummarize_Click"/>
                     <Button Content="全部笔记" Click="AllNotes_Click"/>
                     <Button Content="刷新" Click="Refresh_Click"/>
                     <Button Content="导入" Style="{StaticResource AccentButtonStyle}" Click="Import_Click"/>
@@ -38,6 +60,7 @@
                     <ComboBoxItem Content="添加时间" Tag="added"/>
                     <ComboBoxItem Content="标题" Tag="title"/>
                     <ComboBoxItem Content="段落数" Tag="segments"/>
+                    <ComboBoxItem Content="阅读进度" Tag="progress"/>
                     <ComboBoxItem Content="收藏优先" Tag="favorite"/>
                 </ComboBox>
                 <ComboBox x:Name="ViewModeBox" Header="视图" Width="120" SelectionChanged="ViewMode_Changed">
@@ -50,13 +73,14 @@
                 <TextBlock x:Name="BatchCountText" VerticalAlignment="Center"/>
                 <Button Content="收藏" Click="BatchFavorite_Click"/>
                 <Button Content="取消收藏" Click="BatchUnfavorite_Click"/>
-                <ComboBox x:Name="BatchSummaryTierBox" Width="110" SelectedIndex="0"
-                          ToolTipService.ToolTip="开始摘要只处理未摘要段落，不会覆盖已有摘要">
-                    <ComboBoxItem Content="正常摘要" Tag="normal"/>
-                    <ComboBoxItem Content="高级摘要" Tag="advanced"/>
-                </ComboBox>
-                <Button Content="开始摘要" Click="BatchSummarize_Click"
-                        ToolTipService.ToolTip="仅处理尚未摘要的段落"/>
+                <SplitButton x:Name="BatchStartSummarizeSplit" Content="开始摘要" Click="BatchSummarize_Click"
+                             ToolTipService.ToolTip="点按钮立即正常摘要；点三角可选高级（需确认）">
+                    <SplitButton.Flyout>
+                        <MenuFlyout>
+                            <MenuFlyoutItem Text="高级摘要（仅未摘要）" Click="BatchSummarizeAdvanced_Click"/>
+                        </MenuFlyout>
+                    </SplitButton.Flyout>
+                </SplitButton>
                 <Button Content="停止摘要" Click="BatchStop_Click"/>
                 <Button Content="删除" Click="BatchDelete_Click"/>
                 <Button Content="取消选择" Click="ClearSelection_Click"/>
@@ -69,6 +93,9 @@
                 <ProgressRing x:Name="LoadingRing" Width="40" Height="40"
                               IsActive="False" HorizontalAlignment="Center" VerticalAlignment="Center"/>
                 <GridView x:Name="BooksGrid"
+                          AllowDrop="True"
+                          DragOver="Books_DragOver"
+                          Drop="Books_Drop"
                           IsItemClickEnabled="True"
                           ItemClick="BooksList_ItemClick"
                           SelectionMode="Multiple"
@@ -76,12 +103,27 @@
                     <GridView.ItemTemplate>
                         <DataTemplate x:DataType="models:BookSummary">
                             <StackPanel Width="148" Padding="8">
-                                <Border Height="176" CornerRadius="8"
-                                        Background="{ThemeResource AccentFillColorDefaultBrush}">
-                                    <TextBlock Text="{x:Bind CoverInitial}" FontSize="32" FontWeight="SemiBold"
-                                               HorizontalAlignment="Center" VerticalAlignment="Center"
-                                               Foreground="White"/>
-                                </Border>
+                                <Grid Height="176">
+                                    <Border CornerRadius="8"
+                                            Background="{x:Bind lib:BookCoverLayout.BrushFor(Category)}">
+                                        <Grid Padding="14,12,12,12">
+                                            <TextBlock Text="{x:Bind Title}" FontSize="15" FontWeight="SemiBold"
+                                                       FontFamily="Georgia" Foreground="White"
+                                                       TextWrapping="WrapWholeWords" MaxLines="5"
+                                                       TextTrimming="CharacterEllipsis"
+                                                       VerticalAlignment="Top"
+                                                       AutomationProperties.AccessibilityView="Raw"/>
+                                            <TextBlock Text="{x:Bind Author}" FontSize="11" Foreground="White"
+                                                       Opacity="0.82" TextWrapping="WrapWholeWords" MaxLines="2"
+                                                       TextTrimming="CharacterEllipsis"
+                                                       VerticalAlignment="Bottom"
+                                                       AutomationProperties.AccessibilityView="Raw"
+                                                       Visibility="{x:Bind lib:BookCoverLayout.AuthorVisibility(Author)}"/>
+                                        </Grid>
+                                    </Border>
+                                    <Border Width="3" HorizontalAlignment="Left"
+                                            Background="#2E000000" CornerRadius="8,0,0,8"/>
+                                </Grid>
                                 <StackPanel Orientation="Horizontal" Spacing="6" Margin="0,8,0,0">
                                     <TextBlock Text="{x:Bind Title}" FontSize="14" FontWeight="SemiBold"
                                                TextWrapping="WrapWholeWords" MaxLines="2"/>
@@ -90,6 +132,8 @@
                                 <TextBlock Text="{x:Bind CardStatusLine}" FontSize="12" Margin="0,4,0,0"
                                            Foreground="{ThemeResource TextFillColorSecondaryBrush}"
                                            TextWrapping="WrapWholeWords" MaxLines="2"/>
+                                <TextBlock FontSize="11" Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                           Text="{x:Bind SummaryFacetLabel}"/>
                                 <TextBlock FontSize="11" Foreground="{ThemeResource TextFillColorSecondaryBrush}"
                                            Text="{x:Bind SegmentCountLabel}"/>
                                 <TextBlock FontSize="11" Foreground="{ThemeResource TextFillColorSecondaryBrush}"
@@ -104,6 +148,9 @@
                 </GridView>
                 <ListView x:Name="BooksList"
                           Visibility="Collapsed"
+                          AllowDrop="True"
+                          DragOver="Books_DragOver"
+                          Drop="Books_Drop"
                           IsItemClickEnabled="True"
                           ItemClick="BooksList_ItemClick"
                           SelectionMode="Multiple"
@@ -124,6 +171,8 @@
                                                Foreground="{ThemeResource TextFillColorSecondaryBrush}" Margin="0,4,0,0"/>
                                     <StackPanel Orientation="Horizontal" Spacing="8">
                                         <TextBlock FontSize="11" Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                                   Text="{x:Bind SummaryFacetLabel}"/>
+                                        <TextBlock FontSize="11" Foreground="{ThemeResource TextFillColorSecondaryBrush}"
                                                    Text="{x:Bind SegmentCountLabel}"/>
                                         <TextBlock FontSize="11" Foreground="{ThemeResource TextFillColorSecondaryBrush}"
                                                    Text="{x:Bind Category}"/>
@@ -139,5 +188,5 @@
                 </ListView>
             </Grid>
         </Grid>
-    </NavigationView>
+    </Grid>
 </Page>

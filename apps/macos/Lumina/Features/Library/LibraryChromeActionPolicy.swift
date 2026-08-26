@@ -1,12 +1,12 @@
 import Foundation
 
-/// Window-toolbar actions that can be contributed by library / reader surfaces.
-/// Sibling `NavigationStack`s on macOS merge into one window toolbar, so the
-/// same action must not appear on more than one visible surface.
+/// Chrome actions that can be contributed by library / reader surfaces. The
+/// bookshelf contributes to the window toolbar; the reader carries its own
+/// floating chrome (top book bar + bottom function bar). The same action must
+/// not appear on more than one visible surface. Reading has no recents list.
 enum LibraryChromeAction: String, CaseIterable, Hashable {
     case importBook
     case bookshelf
-    case recents
     case segmentList
     case search
     case allNotes
@@ -14,7 +14,6 @@ enum LibraryChromeAction: String, CaseIterable, Hashable {
 
 enum LibraryChromeSurface: String, CaseIterable {
     case bookshelf
-    case recentsSidebar
     case reader
 }
 
@@ -23,26 +22,17 @@ enum LibraryChromeActionPolicy {
         switch surface {
         case .bookshelf:
             return [.importBook, .search, .allNotes]
-        case .recentsSidebar:
-            // List-only while reading. Any toolbar here duplicates Reader chrome.
-            return []
         case .reader:
-            return [.importBook, .bookshelf, .recents, .segmentList]
+            // Rendered by the reader's floating chrome, not the window toolbar.
+            return [.importBook, .bookshelf, .segmentList]
         }
     }
 
-    static func windowToolbarSurfaces(
-        hasSelectedBook: Bool,
-        recentsPinned: Bool
-    ) -> [LibraryChromeSurface] {
+    static func windowToolbarSurfaces(hasSelectedBook: Bool) -> [LibraryChromeSurface] {
         if !hasSelectedBook {
             return [.bookshelf]
         }
-        var surfaces: [LibraryChromeSurface] = [.reader]
-        if recentsPinned {
-            surfaces.append(.recentsSidebar)
-        }
-        return surfaces
+        return [.reader]
     }
 
     static func duplicateActions(
@@ -61,9 +51,10 @@ enum LibraryChromeActionPolicy {
     }
 }
 
-/// Context-menu actions for a library list/grid/recents row.
+/// Context-menu actions for a library list/grid row.
 enum LibraryBookContextAction: String, CaseIterable, Hashable {
     case favorite
+    case rename
     case reclassify
     case startSummarize
     case stopSummarize
@@ -74,7 +65,7 @@ enum LibraryBookContextAction: String, CaseIterable, Hashable {
 
 enum LibraryBookContextMenuPolicy {
     static func actions(for book: BookSummary) -> [LibraryBookContextAction] {
-        var items: [LibraryBookContextAction] = [.favorite, .reclassify]
+        var items: [LibraryBookContextAction] = [.favorite, .rename, .reclassify]
         if book.canStartSummarize { items.append(.startSummarize) }
         if book.canStopSummarize { items.append(.stopSummarize) }
         items.append(.resegment)
@@ -85,7 +76,7 @@ enum LibraryBookContextMenuPolicy {
 
     static func isEnabled(_ action: LibraryBookContextAction, for book: BookSummary) -> Bool {
         switch action {
-        case .favorite, .delete:
+        case .favorite, .rename, .delete:
             return true
         case .reclassify:
             return !book.isProcessing

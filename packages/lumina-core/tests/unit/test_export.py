@@ -2,8 +2,11 @@
 
 import json
 
+import pytest
+from pydantic import ValidationError
 from starlette.responses import PlainTextResponse
 
+from lumina_core.api.routes import ExportRequest
 from lumina_core.export.markdown import (
     content_disposition_attachment,
     export_book_markdown,
@@ -117,3 +120,85 @@ def test_export_with_notes_optional():
     assert "## 我的笔记" in md_with
     assert "我的第一条笔记" in md_with
     assert "段内批注" in md_with
+
+
+def _rich_segment() -> dict:
+    return {
+        "idx": 0,
+        "anchor_label": "〔段 1〕",
+        "summary_json": json.dumps(
+            {
+                "sentences": ["一句摘要。", "第二句。", "第三句。"],
+                "bullets": [
+                    {"label": "要点", "body": "充实说明内容，包含足够细节以通过校验。"},
+                    {"label": "要点二", "body": "第二条充实说明内容，包含足够细节以通过校验。"},
+                    {"label": "要点三", "body": "第三条充实说明内容，包含足够细节以通过校验。"},
+                ],
+                "notes": ["需注意局限性。"],
+                "follow_ups": ["可追问的问题？"],
+                "label": "标签",
+                "anchor": "段 1",
+            }
+        ),
+        "translation": "Translated paragraph.",
+    }
+
+
+def test_export_sentences_only():
+    book = {"title": "Test Book", "author": "Author", "format": "txt", "segment_count": 1}
+    notes = [{"content": "不该出现的笔记"}]
+    md = export_book_markdown(
+        book,
+        [_rich_segment()],
+        include_notes=True,
+        notes=notes,
+        mode="sentences",
+    )
+    assert "《Test Book》总结" in md
+    assert "摘要版" not in md
+    assert "一句摘要。" in md
+    assert "第二句。" in md
+    assert "第三句。" in md
+    assert "充实说明内容" not in md
+    assert "需要注意" not in md
+    assert "需注意局限性" not in md
+    assert "你可以接着问" not in md
+    assert "可追问的问题" not in md
+    assert "Translated paragraph." not in md
+    assert "译文" not in md
+    assert "## 我的笔记" not in md
+    assert "不该出现的笔记" not in md
+
+
+def test_export_sentences_only_empty_sentences_placeholder():
+    book = {"title": "Empty", "author": None, "format": "txt", "segment_count": 1}
+    segments = [
+        {
+            "idx": 0,
+            "anchor_label": "〔段 1〕",
+            "summary_json": json.dumps(
+                {
+                    "sentences": [],
+                    "bullets": [{"label": "要点", "body": "只有要点没有三句话。"}],
+                    "notes": [],
+                    "follow_ups": [],
+                }
+            ),
+            "translation": "不应导出。",
+        }
+    ]
+    rendered = render_segment_summary_for_export(
+        json.loads(segments[0]["summary_json"]), sentences_only=True
+    )
+    assert rendered == []
+    md = export_book_markdown(book, segments, mode="sentences")
+    assert "_摘要未生成_" in md
+    assert "只有要点没有三句话" not in md
+    assert "不应导出" not in md
+
+
+def test_export_request_mode_default_is_full():
+    assert ExportRequest().mode == "full"
+    assert ExportRequest(mode="sentences").mode == "sentences"
+    with pytest.raises(ValidationError):
+        ExportRequest(mode="pdf")

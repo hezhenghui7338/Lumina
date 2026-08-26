@@ -116,6 +116,10 @@ class JobQueue:
         self._active_summarize: dict[tuple[str, int], dict[str, Any]] = {}
         self._book_summarize_locks: dict[str, asyncio.Lock] = {}
         self._desired_summary_tier: dict[str, str] = {}
+        # idle | active | paused — persisted so sidecar restart cannot dump the queue.
+        self._intent_cache: dict[str, str] = {}
+        self._shutting_down = False
+        self._resume_lock = asyncio.Lock()
 
     def summarize_active_for_book(self, book_id: str) -> dict[str, Any] | None:
         for (bid, idx), state in self._active_summarize.items():
@@ -183,19 +187,41 @@ class JobQueue:
             key.startswith(prefix) for key in self._queued_keys
         )
 
+    def _intent_for(self, book_id: str) -> str:
+        cached = self._intent_cache.get(book_id)
+        if cached is not None:
+            return cached
+        book = self._books_repo.get(book_id)
+        intent = (book or {}).get("summarize_intent") or "idle"
+        self._intent_cache[book_id] = intent
+        return intent
+
+    def _set_intent(self, book_id: str, intent: str) -> None:
+        if self._intent_cache.get(book_id) == intent:
+            return
+        self._intent_cache[book_id] = intent
+        self._books_repo.update(book_id, summarize_intent=intent)
+
     def summarize_state_for_book(
         self, book_id: str, *, ready: int, total: int
     ) -> str:
-        if total <= 0 or ready >= total:
+        if total <= 0:
+            # No segments yet: still 分段中, never 已摘要. Empty unread rows
+            # are repaired to 导入失败; live imports stay processing.
+            return "segmenting"
+        if ready >= total:
             return "summarized"
-        if self.is_user_paused(book_id):
+        if self.is_user_paused(book_id) or self._intent_for(book_id) == "paused":
             return "paused"
         if (
             self.summarize_active_for_book(book_id) is not None
             or self._has_active_summarize_job(book_id)
         ):
             return "running"
-        if self._has_queued_summarize_jobs(book_id):
+        if (
+            self._has_queued_summarize_jobs(book_id)
+            or self._intent_for(book_id) == "active"
+        ):
             return "queued"
         return "idle"
 
@@ -203,6 +229,7 @@ class JobQueue:
         out: dict[str, dict[str, Any]] = {}
         for book in self._books_repo.list_books():
             book_id = book["id"]
+            self._intent_cache[book_id] = book.get("summarize_intent") or "idle"
             progress = self._books_repo.summary_progress(book_id)
             ready = int(progress["summary_ready_count"])
             total = int(progress["summary_total_count"])
@@ -224,9 +251,13 @@ class JobQueue:
             "paused": 0,
             "idle": 0,
             "summarized": 0,
+            "segmenting": 0,
         }
         for book in self._books_repo.list_books():
             if book.get("status") == "processing":
+                counts["segmenting"] += 1
+                continue
+            if book.get("status") == "error":
                 continue
             book_id = book["id"]
             progress = self._books_repo.summary_progress(book_id)
@@ -491,10 +522,19 @@ class JobQueue:
         return self._user_paused_all
 
     def unpause_book(self, book_id: str) -> None:
-        """Clear per-book pause; if global pause is on, clear it so this book can run."""
+        """Clear pause for one book without releasing the rest of a global stop."""
         self._user_paused_books.discard(book_id)
+        if self._intent_for(book_id) == "paused":
+            # Caller may immediately set active (start_book). Otherwise the book
+            # is merely unpaused, not queued — don't leave a sticky 已暂停 badge.
+            self._set_intent(book_id, "idle")
         if self._user_paused_all:
             self._user_paused_all = False
+            for book in self._books_repo.list_books():
+                other_id = book["id"]
+                if other_id == book_id:
+                    continue
+                self._user_paused_books.add(other_id)
 
     def _is_job_scheduled(self, job_key: str) -> bool:
         return (
@@ -522,6 +562,7 @@ class JobQueue:
             return
         if self._has_scheduled_summarize_job(book_id):
             return
+        self._set_intent(book_id, "active")
         for candidate in self._segments_repo.list_for_book(
             book_id, include_body=False
         ):
@@ -642,14 +683,18 @@ class JobQueue:
             return
         tier = summary_tier or self._desired_summary_tier.get(book_id, "normal")
         self._desired_summary_tier[book_id] = tier
+        self._set_intent(book_id, "active")
         await self._recover_stale_running(book_id)
         await self._enqueue_next_book_summary(book_id, summary_tier=tier)
 
     async def _enqueue_next_book_summary(
         self, book_id: str, *, summary_tier: str | None = None
     ) -> None:
-        if self.is_user_paused(book_id) or self._has_scheduled_summarize_job(book_id):
+        if self._shutting_down or self.is_user_paused(book_id):
             return
+        if self._has_scheduled_summarize_job(book_id):
+            return
+        await self._recover_stale_running(book_id)
         tier = summary_tier or self._desired_summary_tier.get(book_id, "normal")
         segments = await self._run_db(
             lambda: self._segments_repo.list_for_book(book_id, include_body=False)
@@ -664,21 +709,58 @@ class JobQueue:
                     summary_tier=tier,
                 )
                 return
+        self._set_intent(book_id, "idle")
 
     async def recover_on_startup(self) -> None:
-        """Reset orphan running segments; resume prefetch only if auto-start is on.
+        """Reset orphan running segments; resume books the user already started.
+
+        `auto_start_summary` still starts every incomplete book. Without it,
+        only persisted `summarize_intent=active` books rejoin the queue —
+        otherwise a sidecar restart dumps the whole library back to 未摘要.
 
         Startup deliberately does not enqueue any rollup. Rebuilding every book
         index here used to flood the queue with dozens of slow serial LLM jobs
         and starve segment summarization for hours.
+
+        Ingest/resegment tasks do not survive a process restart, so any
+        processing or 0-segment row here is an orphan.
         """
+        self._books_repo.repair_stale_imports(restore_orphaned_resegment=True)
         for book in self._books_repo.list_books():
-            self._books_repo.maybe_mark_summarized(book["id"])
-            await self._recover_stale_running(book["id"])
+            book_id = book["id"]
+            if self._books_repo.maybe_mark_summarized(book_id):
+                self._intent_cache[book_id] = "idle"
+                await self._recover_stale_index(book)
+                continue
+            await self._recover_stale_running(book_id)
             await self._recover_stale_index(book)
-            if self.auto_start_summary:
-                await self.start_book(book["id"], summary_tier="normal")
+            intent = book.get("summarize_intent") or "idle"
+            self._intent_cache[book_id] = intent
+            if intent == "paused":
+                self._user_paused_books.add(book_id)
+                continue
+            if intent == "active" or self.auto_start_summary:
+                await self.start_book(
+                    book_id,
+                    summary_tier=self.summary_tier_for_book(book_id),
+                )
         self.ensure_workers()
+
+    async def resume_orphaned_active(self) -> None:
+        """Re-enqueue started books that have no in-memory job (lost worker/job)."""
+        if self._shutting_down or self._resume_lock.locked():
+            return
+        async with self._resume_lock:
+            books = await asyncio.to_thread(self._books_repo.list_books)
+            for book in books:
+                book_id = book["id"]
+                intent = book.get("summarize_intent") or self._intent_for(book_id)
+                if intent != "active" or self.is_user_paused(book_id):
+                    continue
+                if self._has_scheduled_summarize_job(book_id):
+                    continue
+                await self._enqueue_next_book_summary(book_id)
+            self.ensure_workers()
 
     async def _recover_stale_index(self, book: dict[str, Any]) -> None:
         """Reset a 'building' index with no active rollup (crash/restart orphan).
@@ -713,6 +795,7 @@ class JobQueue:
         await self.clear_book_index(book_id)
         self.unpause_book(book_id)
         self._desired_summary_tier[book_id] = summary_tier
+        self._set_intent(book_id, "active")
         segments = self._segments_repo.list_for_book(book_id, include_body=False)
         for seg in segments:
             self._segments_repo.reset_summary(seg["id"], summary_tier=summary_tier)
@@ -723,6 +806,7 @@ class JobQueue:
 
     async def stop_book(self, book_id: str) -> None:
         self._user_paused_books.add(book_id)
+        self._set_intent(book_id, "paused")
         await self._suspend_jobs(lambda item: item.book_id == book_id)
         self._clear_active_summarize_for_book(book_id)
         await self._reset_running_segments(book_id)
@@ -770,11 +854,56 @@ class JobQueue:
         self._clear_all_active_summarize()
         books = self._books_repo.list_books()
         for book in books:
-            await self._reset_running_segments(book["id"])
+            book_id = book["id"]
+            progress = self._books_repo.summary_progress(book_id)
+            ready = int(progress["summary_ready_count"] or 0)
+            total = int(progress["summary_total_count"] or 0)
+            if total > 0 and ready < total:
+                self._set_intent(book_id, "paused")
+            await self._reset_running_segments(book_id)
             await self.emit(
-                book["id"],
-                {"type": "summarize_paused", "scope": "all", "book_id": book["id"]},
+                book_id,
+                {"type": "summarize_paused", "scope": "all", "book_id": book_id},
             )
+
+    def _discard_queue(self, queue: asyncio.PriorityQueue[JobItem]) -> None:
+        while True:
+            try:
+                item = queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+            queue.task_done()
+            self._queued_keys.discard(_job_key(item))
+
+    async def shutdown(self) -> None:
+        """Cancel in-flight workers without recording a user pause.
+
+        Sidecar exit used to call stop_all(), which made the next boot treat
+        every unfinished book as idle. Intent stays active so recover_on_startup
+        can put them back in the queue.
+        """
+        self._shutting_down = True
+        tasks = [
+            task
+            for task in (*self._workers, *self._rollup_workers)
+            if not task.done()
+        ]
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        self._workers.clear()
+        self._rollup_workers.clear()
+        self._worker_count = 0
+        self._clear_all_active_summarize()
+        self._active.clear()
+        self._queued_keys.clear()
+        self._paused_backlog.clear()
+        self._cancelled.clear()
+        self._discard_queue(self._queue)
+        self._discard_queue(self._rollup_queue)
+        for book in self._books_repo.list_books():
+            await self._reset_running_segments(book["id"])
 
     async def _supersede_book_tier(self, book_id: str, summary_tier: str) -> None:
         """Cancel queued work from another tier without waiting on slow LLM calls."""
@@ -803,6 +932,7 @@ class JobQueue:
         """
         await self._supersede_book_tier(book_id, summary_tier)
         self.unpause_book(book_id)
+        self._set_intent(book_id, "active")
         await self._restore_suspended(book_id)
         self._apply_tier_to_incomplete_segments(book_id, summary_tier)
         await self._reset_segments_for_user_resume(book_id)
@@ -956,12 +1086,16 @@ class JobQueue:
             await self._paused.wait()
             item = await queue.get()
             key = _job_key(item)
-            self._queued_keys.discard(key)
             try:
+                if self._shutting_down:
+                    self._queued_keys.discard(key)
+                    continue
                 if self.is_user_paused(item.book_id):
+                    self._queued_keys.discard(key)
                     self._suspend_single(item)
                     continue
                 self._active[key] = item
+                self._queued_keys.discard(key)
                 if self._task_registry:
                     self._task_registry.mark_running_by_job_key(key)
                 try:
@@ -1000,27 +1134,51 @@ class JobQueue:
                         paused = was_cancelled and self.is_user_paused(
                             item.book_id
                         ) and not was_superseded
-                        if not paused:
-                            await self._enqueue_next_book_summary(item.book_id)
+                        if not paused and not self._shutting_down:
+                            try:
+                                await self._enqueue_next_book_summary(item.book_id)
+                            except Exception:
+                                logger.exception(
+                                    "Failed to enqueue next summary for %s",
+                                    item.book_id,
+                                )
             except Exception:
                 logger.exception("Job failed: %s", item)
+                self._active.pop(key, None)
                 if self._task_registry:
                     self._task_registry.fail_by_job_key(key, "worker exception")
+                if (
+                    item.kind == JobKind.SUMMARIZE
+                    and not self._shutting_down
+                    and not self.is_user_paused(item.book_id)
+                ):
+                    try:
+                        await self._enqueue_next_book_summary(item.book_id)
+                    except Exception:
+                        logger.exception(
+                            "Failed to requeue summarize for %s", item.book_id
+                        )
             finally:
                 queue.task_done()
 
     def _load_summarize_inputs(
         self, book_id: str, segment_idx: int
-    ) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
+    ) -> tuple[dict[str, Any] | None, list[dict[str, Any]], str]:
         seg = self._segments_repo.get_by_index(book_id, segment_idx)
         if not seg:
-            return None, []
+            return None, [], self.target_language
         rows = self._segments_repo.list_ready_summaries_before(
             book_id,
             segment_idx,
             limit=SUMMARY_CONTEXT_QUERY_LIMIT,
         )
-        return seg, rows
+        book = self._books_repo.get(book_id)
+        target = (
+            ((book or {}).get("target_language") or "").strip()
+            or self.target_language
+            or "zh-CN"
+        )
+        return seg, rows, target
 
     def _persist_ready_summary(
         self,
@@ -1056,14 +1214,17 @@ class JobQueue:
             updated = self._segments_repo.get_by_index(book_id, segment_idx)
             if updated:
                 index_segment(self.conn, book, updated)
-        return bool(self._books_repo.maybe_mark_summarized(book_id))
+        done = bool(self._books_repo.maybe_mark_summarized(book_id))
+        if done:
+            self._intent_cache[book_id] = "idle"
+        return done
 
     async def _run_summarize(self, item: JobItem) -> None:
         import time
 
         from lumina_core.debug_agent_log import agent_log
 
-        seg, context_rows = await self._run_db(
+        seg, context_rows, target_language = await self._run_db(
             lambda: self._load_summarize_inputs(item.book_id, item.segment_idx)
         )
         if not seg:
@@ -1151,6 +1312,7 @@ class JobQueue:
                     on_progress=_on_progress,
                     prompts=self.prompts,
                     background_context=background_context,
+                    target_language=target_language,
                 ),
                 timeout=job_timeout,
             )
@@ -1315,6 +1477,7 @@ class JobQueue:
             prompts=self.prompts,
             cancelled=lambda: self._was_cancelled(item),
             on_progress=_on_progress,
+            target_language=self.target_language,
         )
         event_type = "book_index_ready" if status == "ready" else "book_index_progress"
         await self.emit(

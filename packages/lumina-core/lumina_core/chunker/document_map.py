@@ -4,13 +4,18 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import re
 import threading
 from dataclasses import dataclass, replace
 from typing import Any, Protocol
 
 from pydantic import BaseModel, Field, field_validator
 
+from lumina_core.chunker.markers import (
+    bare_chapter_title,
+    heading_level_from_hashes,
+    match_bare_chapter,
+    match_heading_marker,
+)
 from lumina_core.chunker.roles import (
     DocumentRole,
     StructureRoleHint,
@@ -24,11 +29,6 @@ from lumina_core.prompts_defaults import DEFAULT_DOCUMENT_MAP
 
 logger = logging.getLogger(__name__)
 
-_SECTION_MARKER = re.compile(r"^## \[§(.+)\]\s*$", re.MULTILINE)
-_CHAPTER_LINE = re.compile(
-    r"^(?:第[零一二三四五六七八九十百千\d]+[章节篇回].*|§\s*.+)$",
-    re.MULTILINE,
-)
 _HEAD_CHARS = 180
 _TAIL_CHARS = 60
 _MAX_UNITS_FOR_LLM = 80
@@ -74,22 +74,29 @@ class LlmMap(BaseModel):
     units: list[LlmUnit] = Field(default_factory=list)
 
 
-def extract_structure_units(text: str) -> list[StructureUnit]:
-    """Collect section markers and traditional chapter lines as structure units."""
+def extract_structure_units(text: str, yielder=None) -> list[StructureUnit]:
+    """Collect part/chapter markers. Nested ### sections are not role units."""
+    from lumina_core.chunker.coop import GilYielder, iter_text_lines
+
+    coop = yielder or GilYielder()
+    coop.ensure_total(len(text))
+    coop.set_stage("正在识别序言与正文结构…", reset=False)
     starts: list[tuple[int, str]] = []
     seen: set[int] = set()
-    for match in _SECTION_MARKER.finditer(text):
-        starts.append((match.start(), match.group(1).strip()))
-        seen.add(match.start())
-    # When ingest already injected ## [§…] markers, do not also split on
-    # bare "第N章" lines — EPUB TOCs list every chapter title as a one-line
-    # entry, which would otherwise become false bodymatter units.
+    bare: list[tuple[int, str]] = []
+    for offset, line in iter_text_lines(text, coop):
+        heading = match_heading_marker(line)
+        if heading is not None:
+            level = heading_level_from_hashes(len(heading.group(1)))
+            if level <= 1:
+                starts.append((offset, heading.group(2).strip()))
+                seen.add(offset)
+            continue
+        chapter = match_bare_chapter(line)
+        if chapter is not None and offset not in seen:
+            bare.append((offset, bare_chapter_title(chapter)))
     if not starts:
-        for match in _CHAPTER_LINE.finditer(text):
-            if match.start() in seen:
-                continue
-            title = match.group(0).strip().lstrip("§ ").strip()
-            starts.append((match.start(), title))
+        starts = bare
     starts.sort(key=lambda item: item[0])
     if not starts:
         return []
@@ -99,18 +106,23 @@ def extract_structure_units(text: str) -> list[StructureUnit]:
         zip(starts, starts[1:] + [(len(text), "")])
     ):
         end = nxt[0]
-        body = text[start:end]
+        char_count = end - start
+        head = text[start : start + min(_HEAD_CHARS, char_count)]
+        tail = (
+            text[end - _TAIL_CHARS : end] if char_count > _HEAD_CHARS else ""
+        )
         units.append(
             StructureUnit(
                 index=index,
                 start=start,
                 title=title,
                 role=classify_heading(title),
-                head=body[:_HEAD_CHARS],
-                tail=body[-_TAIL_CHARS:] if len(body) > _HEAD_CHARS else "",
-                char_count=len(body),
+                head=head,
+                tail=tail,
+                char_count=char_count,
             )
         )
+        coop.bump(char_count)
     return units
 
 
@@ -192,8 +204,11 @@ def heuristic_document_map(
     text: str,
     *,
     structure_roles: list[dict[str, Any]] | None = None,
+    yielder=None,
 ) -> list[StructureUnit]:
-    return apply_structure_hints(extract_structure_units(text), structure_roles)
+    return apply_structure_hints(
+        extract_structure_units(text, yielder=yielder), structure_roles
+    )
 
 
 async def refine_document_map(

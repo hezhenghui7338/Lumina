@@ -14,16 +14,29 @@ PRD 章程 0：**任何导入、摘要、OCR、联网、切书、深聊都不得
 ## 禁止
 
 - `async` HTTP handler 内同步 CPU / 网络 / 大文件 I/O（须 `asyncio.to_thread` 或 JobQueue）
+- 纯 Python CPU 循环只丢进 `to_thread` 却不周期性放 GIL（`time.sleep(0.001)` 量级；`sleep(0)` 在忙等循环里经常不切换）；数千万字分段会饿死事件循环，书库/资讯/设置全部假死
+- 对全书 `re.finditer` 复杂章标（须按行 `match`，禁止把十余 MB 的 TXT 一次性丢进正则）
+- 对超长正文行跑 `BARE_CHAPTER` / 嵌套装饰符正则（章名行有长度上限；长行快拒）
+- 纯分隔符行（`====` / `----`，即使 ≤120）进嵌套 `{blank* dashes+}{1,n}` 章标正则（须先要求含「第」或「§」，装饰符只允许单次有限 run）
+- 每个换行 `text.rfind("\\n", 0, nl)` 扫回文件头（须记住上一换行位置）
+- ≥256KiB 文档的 ingest/resegment CPU（decode、分段、落库）必须放到 sidecar 子进程（`--cpu-worker`）。C 层 `bytes.decode` / 全书正则 / FTS 占着 GIL 且没有 yield 点，`to_thread` + `sleep` 不够；API 进程的 `/health`、书库、资讯、设置必须仍能响应
+- TXT 不得 `read_bytes()`/全书 `str` 常驻后再切段；须抽样定编码后滑窗 decode，积满一段即落库
 - JobQueue worker / rollup 落库 / FTS `index_segment` 占用 uvicorn 事件循环（须 `asyncio.to_thread`）
 - `GET .../segments` 返回 `raw_text` / 全书原文；`segment_ready` 后再拉全量段表
+- 阅读器原文搜索在 handler 内同步扫全书，或把 `raw_text` 放进搜索响应（须 `asyncio.to_thread`；只回段序号 / 偏移 / snippet）
 - 阅读器为摘要去拉含 `raw_text` 的段详情（须 `GET .../segments/{idx}/summary`）
 - NSTextView 在 `layout`/`setFrameSize` 里无条件 `invalidateIntrinsicContentSize`；宽度未稳定时对无空格 CJK `ensureLayout`
 - 在 MainActor 上解码大体量 JSON 或做同步重 I/O
 - 全屏 blocking spinner；不可取消的长任务占死 UI
+- 书架因另一本「分段中」而拒绝打开已就绪的书，或对分段中的书静默吞掉点击（应进入阅读器进度页；仅导入失败需提示）
+- 书架卡片使用不定进度 `ProgressView()`（macOS NSProgressIndicator 会抢走同屏其他书的点击）
+- 每本 processing 书的 SSE 与打开书 REST 共用 `URLSession.shared`（HTTP/1.1 连接池耗尽后切书挂起）
+- GET /books 在事件循环上跑 `summarize_state_by_book()`（全库 N+1 COUNT；分段中每 3s 轮询会卡住 open）
 
 ## 要求
 
 - ≥200ms 操作：skeleton / 进度 / 局部状态
+- 导入/分段：周期性 SSE `ingest_progress`（字数或页）；cpu-worker 无进度 180s 或单本 1800s 须标导入失败并写明原因
 - 列表瘦、详情按需；SSE 增量更新
 - 流式 UI 批处理刷新，勿每 token 强制整表重绘
 - 切书 / 离开页面须取消进行中的网络与加载任务

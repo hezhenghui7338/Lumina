@@ -26,5 +26,26 @@ final class ThemeManagerTests: XCTestCase {
 
         theme.decreaseReadingFont()
         XCTAssertEqual(theme.readingFontScale, 1.0, accuracy: 0.001)
+        XCTAssertEqual(theme.readingFontScaleLabel, "标准")
+    }
+
+    func testNightPaperUsesLightTextOnDarkPage() {
+        XCTAssertTrue(ReaderPaper.night.usesLightText)
+        XCTAssertFalse(ReaderPaper.white.usesLightText)
+        XCTAssertFalse(ReaderPaper.ivory.usesLightText)
+        XCTAssertFalse(ReaderPaper.sage.usesLightText)
+        XCTAssertEqual(ReaderPaper.allCases.count, 4)
+        XCTAssertEqual(ReaderPaper.white.page, LuminaTheme.background)
+        XCTAssertEqual(ReaderPaper.white.textPrimary, LuminaTheme.textPrimary)
+    }
+
+    func testReaderPaperDoesNotChangeAppAppearance() {
+        let theme = ThemeManager()
+        let before = theme.appearanceRaw
+        theme.readerPaper = .night
+        XCTAssertEqual(theme.readerPaper, .night)
+        XCTAssertEqual(theme.appearanceRaw, before)
+        theme.readerPaper = .white
+        XCTAssertEqual(theme.appearanceRaw, before)
     }
 }

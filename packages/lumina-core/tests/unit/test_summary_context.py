@@ -103,10 +103,10 @@ def test_repo_previous_summary_query_is_slim_and_ordered(tmp_path) -> None:
 @pytest.mark.asyncio
 async def test_prompt_injects_context_as_disambiguation_only() -> None:
     response = {
-        "sentences": ["叙述者回忆往事。"],
+        "sentences": ["我想起了小时候的往事。"],
         "bullets": [
-            {"label": "回忆", "body": "叙述者以第一人称回忆往事。"},
-            {"label": "身份", "body": "当前段没有明确说明叙述者姓名。"},
+            {"label": "回忆", "body": "林明走后，我独自回想童年经历。"},
+            {"label": "身份", "body": "当前段没有明确说明我的姓名。"},
             {"label": "关系", "body": "林明只是背景中出现的人物。"},
         ],
         "follow_ups": [],
@@ -125,6 +125,7 @@ async def test_prompt_injects_context_as_disambiguation_only() -> None:
     assert "仅用于消解人物、代词、时间线和因果关系" in prompt
     assert "不能把背景中的事件当作当前段内容" in prompt
     assert "不得仅因段首出现某个人名" in prompt
-    assert "禁止写成「阅读助手」" in prompt
+    assert "阅读助手" in prompt
+    assert "禁止写成「叙述者」" in prompt
     assert "[上一章·段 2] 林明留在家中。" in prompt
     assert "林明走后，我想起了小时候。" in prompt

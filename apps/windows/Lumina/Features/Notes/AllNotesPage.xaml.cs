@@ -42,7 +42,9 @@ public sealed partial class AllNotesPage : Page
             var notes = await App.Core.ListNotesAsync(ct: ct);
             ct.ThrowIfCancellationRequested();
             NotesList.ItemsSource = notes.ToList();
-            StatusText.Text = notes.Count == 0 ? "暂无笔记" : $"共 {notes.Count} 条 · 点击跳转原段";
+            StatusText.Text = notes.Count == 0
+                ? "暂无笔记。在阅读器里选中文字即可写想法。"
+                : $"共 {notes.Count} 条 · 点击跳转原段 · 可全选后删除";
         }
         catch (OperationCanceledException) { }
         catch (Exception ex)
@@ -58,6 +60,15 @@ public sealed partial class AllNotesPage : Page
             note.BookId,
             note.BookTitle ?? "书籍",
             note.SegmentIndex);
+    }
+
+    private void SelectAll_Click(object sender, RoutedEventArgs e)
+    {
+        if (NotesList.Items.Count == 0) return;
+        if (NotesList.SelectedItems.Count == NotesList.Items.Count)
+            NotesList.SelectedItems.Clear();
+        else
+            NotesList.SelectAll();
     }
 
     private async void DeleteSelected_Click(object sender, RoutedEventArgs e)

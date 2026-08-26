@@ -15,18 +15,24 @@ from lumina_core.config import (
     OLLAMA_SUMMARY_MAX_RETRIES,
     OLLAMA_SUMMARY_MIN_BODY_CHARS,
     PromptsConfig,
+    format_prompt,
     load_prompts_config,
     resolve_chunk_budget,
 )
 from lumina_core.models.router import ProfileModelRouter
 from lumina_core.prompts_defaults import DEFAULT_SEGMENT_QUALITY
-from lumina_core.summarize.quality import SummaryQualityError, inspect_summary_quality
+from lumina_core.summarize.quality import (
+    SummaryQualityError,
+    inspect_summary_quality,
+    quality_should_reject,
+)
 from lumina_core.summarize.schema import (
     SegmentSummary,
     parse_segment_summary,
     parse_segment_summary_minimal,
     validate_summary_richness,
 )
+from lumina_core.translate.language import language_display_name
 
 SummaryProgressCallback = Callable[[dict[str, Any]], Awaitable[None]]
 
@@ -40,8 +46,9 @@ _CONTEXT_GUIDANCE = """以下是当前段之前的摘要背景，仅用于消解
 背景使用规则：
 - 只总结当前待摘要段落，不能把背景中的事件当作当前段内容
 - 不得仅因段首出现某个人名，就把后文的“我”或其他代词认定为此人
-- 第一人称「我」是书中叙述者，禁止写成「阅读助手」或任何系统身份
+- 第一人称「我」须用「我」转述，禁止写成「叙述者」「阅读助手」或任何系统身份
 - 只有原文或背景明确支持时才能确定人物身份；无法确认时保留不确定性
+- 背景可能含专名；当前段摘要仍须用{target_language}撰写
 
 以下是当前待摘要段落：
 """
@@ -111,14 +118,22 @@ def _format_base_prompt(
     text: str,
     text_only: bool,
     background_context: str | None = None,
+    target_language: str = "zh-CN",
 ) -> str:
-    if text_only:
-        prompt = template.format(text=text)
-    else:
-        prompt = template.format(anchor=anchor_label, text=text)
+    _ = text_only
+    display = language_display_name(target_language)
+    prompt = format_prompt(
+        template,
+        text=text,
+        anchor=anchor_label,
+        target_language=display,
+    )
     if not background_context:
         return prompt
-    return _CONTEXT_GUIDANCE.format(context=background_context) + prompt
+    return (
+        format_prompt(_CONTEXT_GUIDANCE, context=background_context, target_language=display)
+        + prompt
+    )
 
 
 def _summary_row_text(row: dict[str, Any], *, scope: str) -> str | None:
@@ -217,6 +232,7 @@ async def summarize_segment(
     on_progress: SummaryProgressCallback | None = None,
     prompts: PromptsConfig | None = None,
     background_context: str | None = None,
+    target_language: str = "zh-CN",
 ) -> SummarizeResult:
     resolved = prompts or load_prompts_config()
     prompt_template, text_limit, default_retries, min_body_chars, text_only, use_minimal_parse, provider_kind = (
@@ -229,6 +245,7 @@ async def summarize_segment(
         text=segment_text,
         text_only=text_only,
         background_context=background_context,
+        target_language=target_language,
     )
     prompt = base_prompt
     last_err: Exception | None = None
@@ -301,11 +318,12 @@ async def summarize_segment(
                 summary=summary,
                 review_prompt=resolved.segment_quality or DEFAULT_SEGMENT_QUALITY,
                 summary_tier=summary_tier,
+                target_language=target_language,
             )
             if quality.review_duration_s:
                 llm_duration = round(llm_duration + quality.review_duration_s, 2)
                 total_llm_duration += quality.review_duration_s
-            if len(quality.issues) > 1:
+            if quality_should_reject(quality.issues):
                 raise SummaryQualityError(quality.issues)
             agent_log(
                 hypothesis_id="B",

@@ -11,6 +11,7 @@ def test_classify_heading_front_and_body():
     assert classify_heading("译者序") is DocumentRole.PREFACE
     assert classify_heading("楔子") is DocumentRole.PROLOGUE
     assert classify_heading("第一章") is DocumentRole.BODYMATTER
+    assert classify_heading("第七章初始") is DocumentRole.BODYMATTER
     assert classify_heading("Chapter 2") is DocumentRole.BODYMATTER
     assert classify_heading("目录") is DocumentRole.TOC
     assert classify_heading("后记") is DocumentRole.EPILOGUE

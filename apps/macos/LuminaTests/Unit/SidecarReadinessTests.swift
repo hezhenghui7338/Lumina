@@ -9,7 +9,9 @@ final class SidecarReadinessTests: XCTestCase {
     }
 
     func testConnectionError_ignoresDecodingErrors() {
-        struct Bad: Decodable {}
+        // A property-less Decodable accepts any JSON object, so the payload has
+        // to be missing a key the type actually requires.
+        struct Bad: Decodable { let required: Int }
         let data = Data("{}".utf8)
         let error: Error
         do {
@@ -19,6 +21,7 @@ final class SidecarReadinessTests: XCTestCase {
         } catch let caught {
             error = caught
         }
+        XCTAssertTrue(error is DecodingError)
         XCTAssertFalse(ConnectionError.isConnectionFailure(error))
     }
 
@@ -188,6 +191,56 @@ final class SidecarReadinessTests: XCTestCase {
                 bundledModifiedAt: Date(timeIntervalSince1970: 100)
             )
         )
+    }
+
+    func testShouldAutoStart_falseWhenUserStopped() {
+        XCTAssertFalse(SidecarReadiness.shouldAutoStart(userStopped: true))
+        XCTAssertTrue(SidecarReadiness.shouldAutoStart(userStopped: false))
+    }
+
+    func testMustKillPortListenerOnStop_evenWithoutOwnedProcess() {
+        XCTAssertTrue(
+            SidecarReadiness.mustKillPortListenerOnStop(hasOwnedProcess: false, portOccupied: true)
+        )
+        XCTAssertTrue(
+            SidecarReadiness.mustKillPortListenerOnStop(hasOwnedProcess: true, portOccupied: false)
+        )
+        XCTAssertFalse(
+            SidecarReadiness.mustKillPortListenerOnStop(hasOwnedProcess: false, portOccupied: false)
+        )
+    }
+
+    func testShouldKillListenerBeforeLaunch_whenHealthTimesOutAndPortOccupied() {
+        XCTAssertTrue(
+            SidecarReadiness.shouldKillListenerBeforeLaunch(
+                healthResponded: false,
+                shouldReplaceOrphan: false,
+                portOccupied: true
+            )
+        )
+        XCTAssertFalse(
+            SidecarReadiness.shouldKillListenerBeforeLaunch(
+                healthResponded: false,
+                shouldReplaceOrphan: false,
+                portOccupied: false
+            )
+        )
+        XCTAssertFalse(
+            SidecarReadiness.shouldReuseLeftover(healthResponded: false, shouldReplaceOrphan: false)
+        )
+    }
+
+    func testEngineStatus_userStoppedIsStoppedNotFailed() {
+        XCTAssertEqual(
+            SidecarReadiness.engineStatus(
+                isRunning: false,
+                isBootstrapping: false,
+                userStopped: true,
+                launchError: nil
+            ),
+            .stopped
+        )
+        XCTAssertEqual(SidecarReadiness.statusLabel(.running), "运行中")
     }
 
     private func replaceOrphan(

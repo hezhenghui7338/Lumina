@@ -89,6 +89,7 @@ class AppState:
     context_probe_tasks: dict[str, asyncio.Task[Any]] = field(default_factory=dict)
     context_probe_cancel: dict[str, asyncio.Event] = field(default_factory=dict)
     context_probe_status: dict[str, Any] = field(default_factory=dict)
+    cpu_job_lock: asyncio.Semaphore = field(default_factory=lambda: asyncio.Semaphore(1))
 
     @property
     def db_path(self) -> Path:

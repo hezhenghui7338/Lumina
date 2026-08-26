@@ -63,6 +63,11 @@
                     <ProgressRing x:Name="ReadRing" Width="32" Height="32" IsActive="False" HorizontalAlignment="Left"/>
                     <TextBlock x:Name="SummaryText" TextWrapping="WrapWholeWords" FontSize="15" LineHeight="26"
                                IsTextSelectionEnabled="True"/>
+                    <TextBlock x:Name="KeyPointsText" TextWrapping="WrapWholeWords" FontSize="14" LineHeight="24"
+                               IsTextSelectionEnabled="True"/>
+                    <TextBlock x:Name="WatchOutsText" TextWrapping="WrapWholeWords" FontSize="14" LineHeight="24"
+                               IsTextSelectionEnabled="True"
+                               Foreground="{ThemeResource SystemFillColorCautionBrush}"/>
                     <TextBlock x:Name="BodyText" TextWrapping="WrapWholeWords" FontSize="14" LineHeight="24"
                                IsTextSelectionEnabled="True" Opacity="0.9"/>
                 </StackPanel>

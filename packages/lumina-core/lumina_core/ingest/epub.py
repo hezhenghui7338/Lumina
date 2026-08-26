@@ -3,11 +3,158 @@
 from __future__ import annotations
 
 import re
+from html.parser import HTMLParser
 from pathlib import Path
 from urllib.parse import unquote
+from xml.etree import ElementTree
 
+from lumina_core.chunker.markers import heading_marker
 from lumina_core.chunker.roles import DocumentRole, classify_heading, landmark_role
 from lumina_core.ingest.html import parse_html_document
+
+
+class _NavTocParser(HTMLParser):
+    """Collect nested nav/toc links as (href, title, depth, parent_title)."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.entries: list[tuple[str, str, int, str | None]] = []
+        self._list_depth = 0
+        self._in_a = False
+        self._href = ""
+        self._text: list[str] = []
+        self._li_titles: list[str | None] = []
+        self._skip_nav = False
+        self._nav_depth = 0
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        tag = tag.lower()
+        attr = {key.lower(): (value or "") for key, value in attrs}
+        if tag == "nav":
+            epub_type = (attr.get("epub:type") or attr.get("type") or "").lower()
+            self._nav_depth += 1
+            if "landmark" in epub_type:
+                self._skip_nav = True
+            elif "toc" in epub_type or not epub_type:
+                self._skip_nav = False
+        if self._skip_nav:
+            return
+        if tag in {"ol", "ul"}:
+            self._list_depth += 1
+        elif tag == "li":
+            self._li_titles.append(None)
+        elif tag == "a":
+            self._in_a = True
+            self._href = attr.get("href") or ""
+            self._text = []
+
+    def handle_endtag(self, tag: str) -> None:
+        tag = tag.lower()
+        if tag == "nav":
+            self._nav_depth = max(0, self._nav_depth - 1)
+            if self._nav_depth == 0:
+                self._skip_nav = False
+            return
+        if self._skip_nav:
+            return
+        if tag == "a" and self._in_a:
+            title = " ".join("".join(self._text).split())
+            href = unquote(self._href.split("#", 1)[0])
+            parent = next((item for item in reversed(self._li_titles[:-1]) if item), None)
+            if href and title:
+                self.entries.append((href, title, max(1, self._list_depth), parent))
+                if self._li_titles:
+                    self._li_titles[-1] = title
+            self._in_a = False
+        elif tag == "li" and self._li_titles:
+            self._li_titles.pop()
+        elif tag in {"ol", "ul"}:
+            self._list_depth = max(0, self._list_depth - 1)
+
+    def handle_data(self, data: str) -> None:
+        if self._in_a and not self._skip_nav:
+            self._text.append(data)
+
+
+def _epub_nested_toc(book) -> dict[str, tuple[str, int, str | None]]:
+    """Map normalized href -> (title, depth, parent_title) from nav or NCX."""
+    lookup: dict[str, tuple[str, int, str | None]] = {}
+    get_items = getattr(book, "get_items", None)
+    items = list(get_items()) if callable(get_items) else []
+    for item in items:
+        name = (item.get_name() or "").lower()
+        props = getattr(item, "properties", None) or []
+        if "nav" not in props and "nav" not in name and not name.endswith("nav.xhtml"):
+            continue
+        try:
+            html = item.get_content().decode("utf-8", errors="replace")
+        except Exception:
+            continue
+        parser = _NavTocParser()
+        try:
+            parser.feed(html)
+            parser.close()
+        except Exception:
+            continue
+        for href, title, depth, parent in parser.entries:
+            key = _normalize_href(href)
+            if key and key not in lookup:
+                lookup[key] = (title, depth, parent)
+        if lookup:
+            return lookup
+
+    ncx = _parse_ncx_toc(book)
+    for href, title, depth, parent in ncx:
+        key = _normalize_href(href)
+        if key and key not in lookup:
+            lookup[key] = (title, depth, parent)
+    return lookup
+
+
+def _parse_ncx_toc(book) -> list[tuple[str, str, int, str | None]]:
+    entries: list[tuple[str, str, int, str | None]] = []
+    get_items = getattr(book, "get_items", None)
+    items = list(get_items()) if callable(get_items) else []
+    ncx_item = next(
+        (
+            item
+            for item in items
+            if (item.get_name() or "").lower().endswith(".ncx")
+        ),
+        None,
+    )
+    if ncx_item is None:
+        return entries
+    try:
+        raw = ncx_item.get_content().decode("utf-8", errors="replace")
+        root = ElementTree.fromstring(raw)
+    except Exception:
+        return entries
+
+    def local(tag: str) -> str:
+        return tag.rsplit("}", 1)[-1]
+
+    def walk(node, depth: int, parent: str | None) -> None:
+        for child in list(node):
+            if local(child.tag) != "navPoint":
+                continue
+            label = ""
+            href = ""
+            for sub in child:
+                name = local(sub.tag)
+                if name == "navLabel":
+                    text_el = next((el for el in sub if local(el.tag) == "text"), None)
+                    if text_el is not None and text_el.text:
+                        label = " ".join(text_el.text.split())
+                elif name == "content":
+                    href = sub.attrib.get("src") or ""
+            if href and label:
+                entries.append((href, label, depth, parent))
+            walk(child, depth + 1, label or parent)
+
+    nav_map = next((el for el in root.iter() if local(el.tag) == "navMap"), root)
+    walk(nav_map, 1, None)
+    return entries
 
 
 def _html_to_text(html: str) -> str:
@@ -172,7 +319,9 @@ def load_epub(path: Path) -> tuple[str, dict]:
     parts: list[str] = []
     skipped_chapters = 0
     landmark_lookup = _epub_landmark_roles(book)
+    toc_lookup = _epub_nested_toc(book)
     structure_roles: list[dict] = []
+    emitted_parents: set[str] = set()
 
     for item in _iter_document_items(book, ebooklib):
         if _is_nav_item(item):
@@ -204,11 +353,21 @@ def load_epub(path: Path) -> tuple[str, dict]:
             fallback_title=(landmark[1] if landmark else ""),
             html_title=html_title,
         )
-        marker = f"## [§{chapter_title}]"
+        toc = toc_lookup.get(_normalize_href(href))
+        blocks: list[str] = []
+        if toc and toc[2] and toc[2] not in emitted_parents:
+            parent_title = toc[2]
+            emitted_parents.add(parent_title)
+            blocks.append(heading_marker(parent_title, 0))
+            structure_roles.append(
+                {"title": parent_title, "role": classify_heading(parent_title).value}
+            )
+        marker = heading_marker(chapter_title, 1)
         if body.lstrip().startswith(marker):
-            parts.append(body)
+            blocks.append(body)
         else:
-            parts.append(f"{marker}\n{body}")
+            blocks.append(f"{marker}\n{body}")
+        parts.append("\n".join(blocks))
         role = (landmark[0] if landmark else None) or classify_heading(chapter_title)
         structure_roles.append({"title": chapter_title, "role": role.value})
 

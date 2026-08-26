@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import time
 import uuid
 from datetime import datetime, timezone
 from typing import Any
@@ -11,18 +12,59 @@ from typing import Any
 from lumina_core.classify.book import BOOK_CATEGORIES
 from lumina_core.db.connection import db_lock, db_transaction
 from lumina_core.search.fts import delete_note_from_fts
+from lumina_core.summarize.preview import segment_list_fields
 
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-# SQL-level filters. `summarizing` / `idle` are applied after JobQueue state
-# is attached (see routes.apply_book_list_filter).
+ORPHAN_INGEST_ERROR = "导入中断"
+
+
+TITLE_USER_SET_KEY = "title_user_set"
+
+
+def _parse_metadata(book: dict[str, Any]) -> dict[str, Any]:
+    raw = book.get("metadata_json")
+    if isinstance(raw, dict):
+        return dict(raw)
+    if isinstance(raw, str) and raw.strip():
+        try:
+            parsed = json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            return {}
+        if isinstance(parsed, dict):
+            return parsed
+    return {}
+
+
+def metadata_with_title_user_set(book: dict[str, Any]) -> dict[str, Any]:
+    meta = _parse_metadata(book)
+    meta[TITLE_USER_SET_KEY] = True
+    return meta
+
+
+def resolve_ingest_title(
+    book: dict[str, Any] | None,
+    extracted_title: str,
+    metadata: dict[str, Any],
+) -> str:
+    """Keep a user-edited display title when ingest finalizes the book."""
+    if not book or not _parse_metadata(book).get(TITLE_USER_SET_KEY):
+        return extracted_title
+    metadata[TITLE_USER_SET_KEY] = True
+    current = str(book.get("title") or "").strip()
+    return current or extracted_title
+
+
+# SQL-level filters. `summarizing` / `idle` / `segmenting` are applied after
+# JobQueue state is attached (see routes.apply_book_list_filter).
 _SQL_FILTERS = frozenset(
     {
         "all",
         "summarized",
+        "error",
         "unread",
         "reading",
         "finished",
@@ -30,9 +72,21 @@ _SQL_FILTERS = frozenset(
         *BOOK_CATEGORIES,
     }
 )
-_QUEUE_FILTERS = frozenset({"summarizing", "idle"})
+_QUEUE_FILTERS = frozenset({"summarizing", "idle", "segmenting"})
 BOOK_FILTERS = _SQL_FILTERS | _QUEUE_FILTERS
-BOOK_SORTS = frozenset({"recent", "added", "title", "favorite", "segments"})
+BOOK_SORTS = frozenset({"recent", "added", "title", "favorite", "segments", "progress"})
+
+# Reading-progress percent: unread / single-segment → 0; last segment → 1;
+# otherwise index / segment_count. Matches client ReadingProgress.percent.
+_PROGRESS_SORT_SQL = (
+    "CASE"
+    " WHEN last_opened_at IS NULL THEN 0.0"
+    " WHEN COALESCE(segment_count, 0) <= 1 THEN 0.0"
+    " WHEN COALESCE(current_segment_index, 0) >= (segment_count - 1) THEN 1.0"
+    " ELSE CAST(MAX(COALESCE(current_segment_index, 0), 0) AS REAL)"
+    "  / segment_count"
+    " END DESC, title COLLATE NOCASE ASC"
+)
 
 _SORT_ORDER: dict[str, str] = {
     "recent": "last_opened_at IS NULL, last_opened_at DESC, updated_at DESC",
@@ -40,6 +94,7 @@ _SORT_ORDER: dict[str, str] = {
     "title": "title COLLATE NOCASE ASC",
     "favorite": "is_favorite DESC, last_opened_at IS NULL, last_opened_at DESC, updated_at DESC",
     "segments": "COALESCE(segment_count, 0) DESC, title COLLATE NOCASE ASC",
+    "progress": _PROGRESS_SORT_SQL,
 }
 
 # Reading progress is derived from last_opened_at + segment index — not books.status
@@ -110,6 +165,8 @@ class BookRepo:
         sql_filter = filter if filter in _SQL_FILTERS else "all"
         if sql_filter == "summarized":
             sql += " WHERE status = 'summarized'"
+        elif sql_filter == "error":
+            sql += " WHERE status = 'error'"
         elif sql_filter == "favorite":
             sql += " WHERE is_favorite = 1"
         elif sql_filter in _READING_FILTER_SQL:
@@ -162,6 +219,85 @@ class BookRepo:
                 (*fields.values(), book_id),
             )
 
+    def repair_stale_imports(
+        self,
+        live_ids: set[str] | frozenset[str] | None = None,
+        *,
+        restore_orphaned_resegment: bool = False,
+    ) -> int:
+        """Move abandoned 0-segment imports into 导入失败.
+
+        List-path skips `status=processing` so a concurrent GET /books cannot
+        race an in-flight insert. Pass live ingest/resegment ids as extra
+        protection. 0-segment unread rows are not 未摘要 or 已摘要.
+
+        At process start, `restore_orphaned_resegment` marks abandoned
+        0-segment processing as 导入失败, and turns processing books that
+        already have segments back to unread (crashed resegment).
+        """
+        live_ids = live_ids or set()
+        repaired = 0
+        for book in self.list_books():
+            book_id = book["id"]
+            if book_id in live_ids:
+                continue
+            status = book.get("status")
+            if status == "error":
+                continue
+            # List-path must not touch processing: ingest registers the
+            # live id after insert, and a concurrent GET /books could
+            # otherwise mark an in-flight import as 导入失败.
+            # Startup (restore_orphaned_resegment) owns abandoned processing.
+            if status == "processing" and not restore_orphaned_resegment:
+                continue
+            total = int(book.get("segment_count") or 0)
+            if total <= 0:
+                meta = _parse_metadata(book)
+                if not (
+                    isinstance(meta.get("ingest_error"), str)
+                    and meta["ingest_error"].strip()
+                ):
+                    meta["ingest_error"] = ORPHAN_INGEST_ERROR
+                self.update(book_id, status="error", metadata_json=meta)
+                repaired += 1
+            elif restore_orphaned_resegment and status == "processing":
+                self.update(book_id, status="unread")
+                repaired += 1
+        return repaired
+
+    def drop_stored_document_trees(self) -> int:
+        """Strip unused ingest trees in SQLite so Python never json.loads megabytes.
+
+        sqlite3 releases the GIL around the C update, so /health can run while
+        a leftover tree is removed from an already-imported huge book.
+        """
+        try:
+            with db_transaction(self.conn):
+                cursor = self.conn.execute(
+                    """
+                    UPDATE books
+                    SET metadata_json = json_remove(metadata_json, '$.document_tree'),
+                        updated_at = ?
+                    WHERE json_type(metadata_json, '$.document_tree') IS NOT NULL
+                    """,
+                    (_now(),),
+                )
+            return int(cursor.rowcount or 0)
+        except sqlite3.OperationalError:
+            return self._drop_stored_document_trees_python()
+
+    def _drop_stored_document_trees_python(self) -> int:
+        stripped = 0
+        for book in self.list_books():
+            time.sleep(0.001)
+            meta = _parse_metadata(book)
+            if "document_tree" not in meta:
+                continue
+            meta.pop("document_tree")
+            self.update(book["id"], metadata_json=meta)
+            stripped += 1
+        return stripped
+
     def claim_processing(self, book_id: str) -> bool:
         """Atomically transition a non-processing book into processing."""
         with db_transaction(self.conn):
@@ -207,7 +343,7 @@ class BookRepo:
             ).fetchone()
         if not row or row["total"] == 0 or row["ready"] != row["total"]:
             return False
-        self.update(book_id, status="summarized")
+        self.update(book_id, status="summarized", summarize_intent="idle")
         return True
 
     def summary_progress(self, book_id: str) -> dict[str, int]:
@@ -252,6 +388,7 @@ _SEGMENT_EXPORT_COLUMNS = (
     "summary_json, label, summary_status, retry_count, "
     "summary_provider, summary_model, summary_tier, summary_duration_s, summary_llm_attempts, translation"
 )
+_SEGMENT_INSERT_BATCH = 200
 _SEGMENT_INSERT_SQL = """
 INSERT INTO segments (
   id, book_id, idx, chapter, page_range, anchor_label,
@@ -273,6 +410,18 @@ def _segment_insert_row(seg: dict[str, Any]) -> tuple[Any, ...]:
         seg.get("summary_status", "pending"),
         seg.get("retry_count", 0),
     )
+
+
+def _insert_segments_batched(conn: sqlite3.Connection, segments: list[dict[str, Any]]) -> None:
+    """Commit inserts in chunks so a huge book does not hold one WAL write for minutes."""
+    for offset in range(0, len(segments), _SEGMENT_INSERT_BATCH):
+        batch = segments[offset : offset + _SEGMENT_INSERT_BATCH]
+        with db_transaction(conn):
+            conn.executemany(
+                _SEGMENT_INSERT_SQL,
+                [_segment_insert_row(seg) for seg in batch],
+            )
+        time.sleep(0.001)
 
 
 class SegmentRepo:
@@ -298,6 +447,31 @@ class SegmentRepo:
                 (book_id,),
             ).fetchall()
         return [dict(r) for r in rows]
+
+    def list_catalog(self, book_id: str) -> list[dict[str, Any]]:
+        """Slim list plus summary_preview and bullet_labels. Never returns summary_json."""
+        cols = (
+            f"{_SEGMENT_LIST_COLUMNS}, "
+            "CASE WHEN summary_status = 'ready' THEN summary_json ELSE NULL END "
+            "AS summary_json"
+        )
+        with db_lock(self.conn):
+            rows = self.conn.execute(
+                f"SELECT {cols} FROM segments WHERE book_id = ? ORDER BY idx",
+                (book_id,),
+            ).fetchall()
+        catalog: list[dict[str, Any]] = []
+        for index, row in enumerate(rows):
+            item = dict(row)
+            preview, labels = segment_list_fields(item.pop("summary_json", None))
+            if preview:
+                item["summary_preview"] = preview
+            if labels:
+                item["bullet_labels"] = labels
+            catalog.append(item)
+            if index % 64 == 63:
+                time.sleep(0.001)
+        return catalog
 
     def list_for_export(self, book_id: str) -> list[dict[str, Any]]:
         with db_lock(self.conn):
@@ -453,18 +627,16 @@ class SegmentRepo:
         target_language: str,
         metadata_json: dict[str, Any],
     ) -> None:
-        """Insert segments and mark the book unread in one commit.
+        """Insert segments in batches, then mark the book unread.
 
         Readers must never see status=unread with an empty segment list.
+        The book stays `processing` until every batch and the final UPDATE commit.
         """
         if not segments:
             raise RuntimeError("分段结果为空")
         now = _now()
+        _insert_segments_batched(self.conn, segments)
         with db_transaction(self.conn):
-            self.conn.executemany(
-                _SEGMENT_INSERT_SQL,
-                [_segment_insert_row(seg) for seg in segments],
-            )
             self.conn.execute(
                 """
                 UPDATE books
@@ -484,6 +656,136 @@ class SegmentRepo:
                     book_id,
                 ),
             )
+
+    def complete_ingest(
+        self,
+        book_id: str,
+        *,
+        title: str,
+        author: str | None,
+        language: str | None,
+        target_language: str,
+        metadata_json: dict[str, Any],
+        segment_count: int,
+    ) -> None:
+        """Mark a book unread after streamed segment inserts."""
+        if segment_count <= 0:
+            raise RuntimeError("分段结果为空")
+        now = _now()
+        with db_transaction(self.conn):
+            self.conn.execute(
+                """
+                UPDATE books
+                SET title = ?, author = ?, language = ?, target_language = ?,
+                    segment_count = ?, status = 'unread', metadata_json = ?,
+                    updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    title,
+                    author,
+                    language,
+                    target_language,
+                    segment_count,
+                    json.dumps(metadata_json, ensure_ascii=False),
+                    now,
+                    book_id,
+                ),
+            )
+
+    def begin_segment_staging(self) -> None:
+        self.conn.execute("DROP TABLE IF EXISTS temp.staging_segments")
+        self.conn.execute(
+            """
+            CREATE TEMP TABLE staging_segments (
+              id TEXT,
+              book_id TEXT,
+              idx INTEGER,
+              chapter TEXT,
+              page_range TEXT,
+              anchor_label TEXT,
+              raw_text TEXT,
+              char_count INTEGER,
+              summary_status TEXT,
+              retry_count INTEGER
+            )
+            """
+        )
+
+    def insert_staging(self, segments: list[dict[str, Any]]) -> None:
+        if not segments:
+            return
+        with db_transaction(self.conn):
+            self.conn.executemany(
+                """
+                INSERT INTO staging_segments (
+                  id, book_id, idx, chapter, page_range, anchor_label,
+                  raw_text, char_count, summary_status, retry_count
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [_segment_insert_row(seg) for seg in segments],
+            )
+        time.sleep(0.001)
+
+    def commit_staging_replace(
+        self,
+        book_id: str,
+        *,
+        metadata_json: dict[str, Any],
+        status: str,
+        segment_count: int,
+    ) -> None:
+        if segment_count <= 0:
+            raise RuntimeError("分段结果为空")
+        now = _now()
+        with db_transaction(self.conn):
+            self.conn.execute("DELETE FROM notes WHERE book_id = ?", (book_id,))
+            self.conn.execute(
+                """
+                DELETE FROM chat_messages
+                WHERE session_id IN (
+                    SELECT id FROM chat_sessions WHERE book_id = ?
+                )
+                """,
+                (book_id,),
+            )
+            self.conn.execute("DELETE FROM chat_sessions WHERE book_id = ?", (book_id,))
+            self.conn.execute("DELETE FROM jobs WHERE book_id = ?", (book_id,))
+            self.conn.execute("DELETE FROM summary_nodes WHERE book_id = ?", (book_id,))
+            self.conn.execute(
+                "DELETE FROM search_fts WHERE book_id = ? AND kind != 'book'",
+                (book_id,),
+            )
+            self.conn.execute("DELETE FROM segments WHERE book_id = ?", (book_id,))
+            self.conn.execute(
+                """
+                INSERT INTO segments (
+                  id, book_id, idx, chapter, page_range, anchor_label,
+                  raw_text, char_count, summary_status, retry_count
+                )
+                SELECT
+                  id, book_id, idx, chapter, page_range, anchor_label,
+                  raw_text, char_count, summary_status, retry_count
+                FROM staging_segments
+                ORDER BY idx
+                """
+            )
+            self.conn.execute(
+                """
+                UPDATE books
+                SET segment_count = ?, current_segment_index = 0, status = ?,
+                    metadata_json = ?, index_status = 'idle', updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    segment_count,
+                    status,
+                    json.dumps(metadata_json, ensure_ascii=False),
+                    now,
+                    book_id,
+                ),
+            )
+        self.conn.execute("DROP TABLE IF EXISTS temp.staging_segments")
 
     def replace_for_book(
         self,
@@ -514,29 +816,8 @@ class SegmentRepo:
                 (book_id,),
             )
             self.conn.execute("DELETE FROM segments WHERE book_id = ?", (book_id,))
-            self.conn.executemany(
-                """
-                INSERT INTO segments (
-                  id, book_id, idx, chapter, page_range, anchor_label,
-                  raw_text, char_count, summary_status, retry_count
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                [
-                    (
-                        seg["id"],
-                        seg["book_id"],
-                        seg["idx"],
-                        seg.get("chapter"),
-                        seg.get("page_range"),
-                        seg.get("anchor_label"),
-                        seg["raw_text"],
-                        seg.get("char_count", len(seg.get("raw_text") or "")),
-                        seg.get("summary_status", "pending"),
-                        seg.get("retry_count", 0),
-                    )
-                    for seg in segments
-                ],
-            )
+        _insert_segments_batched(self.conn, segments)
+        with db_transaction(self.conn):
             self.conn.execute(
                 """
                 UPDATE books

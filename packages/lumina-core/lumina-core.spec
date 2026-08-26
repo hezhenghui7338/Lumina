@@ -53,11 +53,15 @@ hiddenimports += [
     "multipart",
     "multipart.multipart",
     "numpy",
+    "charset_normalizer",
     "encodings.utf_8",
     "encodings.utf_8_sig",
     "encodings.gb18030",
     "encodings.gbk",
+    "encodings.cp936",
+    "encodings.cp1252",
     "encodings.latin_1",
+    "encodings.big5",
 ]
 
 a = Analysis(

@@ -15,6 +15,7 @@ from lumina_core.models.router import ProfileModelRouter
 from lumina_core.summarize.quality import (
     inspect_summary_quality,
     merge_clarity_issues,
+    quality_should_reject,
     scan_summary_clarity,
 )
 from lumina_core.summarize.schema import SegmentSummary
@@ -128,7 +129,7 @@ def test_clarity_scan_flags_assistant_identity_leak():
     assert scan_summary_clarity(summary) == []
 
 
-def test_clarity_scan_allows_narrator_for_first_person():
+def test_clarity_scan_flags_narrator_rewrite_for_first_person():
     summary = _summary(
         sentences=["本段讲述叙述者遭遇名为无面人的男子要求画肖像。"],
         bullets=[
@@ -146,7 +147,70 @@ def test_clarity_scan_allows_narrator_for_first_person():
             },
         ],
     )
+    issues = scan_summary_clarity(summary, raw_text=_FACELESS_RAW)
+    rewritten = [issue for issue in issues if issue.code == "first_person_as_narrator"]
+    assert {issue.field for issue in rewritten} >= {
+        "sentences[0]",
+        "bullets[0].body",
+        "bullets[2].body",
+    }
+    assert all(issue.severity == "hard" for issue in rewritten)
+    assert quality_should_reject(rewritten)
+    assert scan_summary_clarity(summary) == []
+
+
+def test_clarity_scan_allows_first_person_restatement():
+    summary = _summary(
+        sentences=["我醒来时，对面沙发上坐着一位自称无面人的男子，要我为他画肖像。"],
+        bullets=[
+            {
+                "label": "遭遇无面人",
+                "body": "我醒来时，对面沙发上坐着一位戴着宽檐黑帽、身穿灰暗风衣的高个男子。",
+            },
+            {
+                "label": "交换条件",
+                "body": "无面人要我画肖像，并以交还企鹅护身符作为交换条件。",
+            },
+            {
+                "label": "肖像困境",
+                "body": "我因无面人的脸只有旋转的乳白色雾气，不知从何下笔。",
+            },
+        ],
+    )
     assert scan_summary_clarity(summary, raw_text=_FACELESS_RAW) == []
+
+
+def test_clarity_scan_allows_narrator_when_in_source():
+    summary = _summary(
+        sentences=["本段说明叙述者这一角色在开篇醒来。"],
+    )
+    issues = scan_summary_clarity(
+        summary,
+        raw_text="名叫叙述者的角色醒来，对面坐着一个男人。",
+    )
+    assert not any(issue.code == "first_person_as_narrator" for issue in issues)
+
+
+def test_clarity_scan_allows_narrator_for_third_person():
+    summary = _summary(
+        sentences=["本段讲述叙述者与科举制度的关系。"],
+    )
+    issues = scan_summary_clarity(
+        summary,
+        raw_text="他生于贫苦农家，立志金榜题名。",
+    )
+    assert not any(issue.code == "first_person_as_narrator" for issue in issues)
+
+
+def test_clarity_scan_flags_english_i_rewritten_as_narrator():
+    summary = _summary(
+        sentences=["叙述者醒来后看见无面人坐在对面。"],
+    )
+    issues = scan_summary_clarity(
+        summary,
+        raw_text="I woke up and saw a faceless man sitting across from me.",
+    )
+    assert any(issue.code == "first_person_as_narrator" for issue in issues)
 
 
 def test_clarity_scan_allows_assistant_when_in_source():
@@ -361,3 +425,148 @@ async def test_ollama_minimal_summary_uses_specific_quality_feedback():
     assert result.llm_attempts == 2
     assert "上次摘要未通过质量检查" in router.prompts[1]
     assert "上次输出不是合法 JSON" not in router.prompts[1]
+
+
+def test_clarity_scan_flags_language_mix():
+    kana = _summary(sentences=["本段交代主角こんにちは离乡赴考。"])
+    issues = scan_summary_clarity(kana, target_language="zh-CN")
+    assert any(issue.code == "wrong_language" for issue in issues)
+    assert quality_should_reject(issues)
+
+    cyrillic = _summary(sentences=["本段交代 Иван ушёл 离乡赴考。"])
+    assert any(
+        issue.code == "wrong_language"
+        for issue in scan_summary_clarity(cyrillic, target_language="zh-CN")
+    )
+
+    english = _summary(
+        sentences=["This paragraph explains the protagonist left home to take the exam."]
+    )
+    assert any(
+        issue.code == "wrong_language"
+        for issue in scan_summary_clarity(english, target_language="zh-CN")
+    )
+
+
+def test_clarity_scan_allows_latin_terms_classical_and_source_kana():
+    terms = _summary(sentences=["本段说明主角使用 ChatGPT 与 API 辅助赴考准备。"])
+    assert not any(
+        issue.code == "wrong_language"
+        for issue in scan_summary_clarity(terms, target_language="zh-CN")
+    )
+    classical = _summary(
+        sentences=["子曰：学而时习之，不亦说乎？"],
+        notes=["人物名为让-巴蒂斯特·贝尔纳，号东篱。"],
+    )
+    assert scan_summary_clarity(classical, target_language="zh-CN") == []
+    quoted = _summary(sentences=["本段提到专名こんにちは出现在信封上。"])
+    issues = scan_summary_clarity(
+        quoted,
+        raw_text="信封上写着こんにちは。",
+        target_language="zh-CN",
+    )
+    assert not any(issue.code == "wrong_language" for issue in issues)
+
+
+@pytest.mark.asyncio
+async def test_language_mix_skips_model_review():
+    summary = _summary(sentences=["本段交代主角こんにちは离乡赴考。"])
+    router = _ReviewRouter({"issues": []})
+    result = await inspect_summary_quality(
+        router,
+        raw_text="主角离乡赴考。",
+        summary=summary,
+        review_prompt=load_prompts_config().segment_quality or "",
+        target_language="zh-CN",
+    )
+    assert result.review_attempted is False
+    assert any(issue.code == "wrong_language" for issue in result.issues)
+    assert router.calls == []
+
+
+@pytest.mark.asyncio
+async def test_language_mix_retries_without_quality_llm():
+    bad = _summary(sentences=["本段交代主角こんにちは离乡赴考。"]).model_dump()
+    good = _summary().model_dump()
+
+    class RetryRouter:
+        def __init__(self) -> None:
+            self.responses = [bad, good]
+            self.prompts: list[str] = []
+
+        async def complete(self, prompt, profile="summarize", json_mode=True, **kwargs):
+            self.prompts.append(prompt)
+            return json.dumps(self.responses.pop(0), ensure_ascii=False)
+
+    router = RetryRouter()
+    result = await summarize_segment(
+        router,
+        raw_text="主角收到来信后离乡赴考。",
+        anchor_label="§第一章 · 段 1",
+        max_retries=2,
+        target_language="zh-CN",
+    )
+    assert result.llm_attempts == 2
+    assert len(router.prompts) == 2
+    assert "上次摘要未通过质量检查" in router.prompts[1]
+    assert "夹杂日语假名" in router.prompts[1]
+
+
+@pytest.mark.asyncio
+async def test_narrator_rewrite_skips_model_review():
+    summary = _summary(sentences=["叙述者醒来后看见无面人坐在对面。"])
+    router = _ReviewRouter({"issues": []})
+    result = await inspect_summary_quality(
+        router,
+        raw_text=_FACELESS_RAW,
+        summary=summary,
+        review_prompt=load_prompts_config().segment_quality or "",
+    )
+    assert result.review_attempted is False
+    assert any(issue.code == "first_person_as_narrator" for issue in result.issues)
+    assert quality_should_reject(result.issues)
+    assert router.calls == []
+
+
+@pytest.mark.asyncio
+async def test_first_person_narrator_rewrite_retries_without_quality_llm():
+    bad = _summary(sentences=["叙述者醒来后看见无面人坐在对面。"]).model_dump()
+    good = _summary(
+        sentences=["我醒来时，对面沙发上坐着一位自称无面人的男子，要我为他画肖像。"],
+        bullets=[
+            {
+                "label": "遭遇无面人",
+                "body": "我醒来时，对面沙发上坐着一位戴着宽檐黑帽、身穿灰暗风衣的高个男子。",
+            },
+            {
+                "label": "交换条件",
+                "body": "无面人要我画肖像，并以交还企鹅护身符作为交换条件。",
+            },
+            {
+                "label": "肖像困境",
+                "body": "我因无面人的脸只有旋转的乳白色雾气，不知从何下笔。",
+            },
+        ],
+    ).model_dump()
+
+    class RetryRouter:
+        def __init__(self) -> None:
+            self.responses = [bad, good]
+            self.prompts: list[str] = []
+
+        async def complete(self, prompt, profile="summarize", json_mode=True, **kwargs):
+            self.prompts.append(prompt)
+            return json.dumps(self.responses.pop(0), ensure_ascii=False)
+
+    router = RetryRouter()
+    result = await summarize_segment(
+        router,
+        raw_text=_FACELESS_RAW,
+        anchor_label="§第一章 · 段 1",
+        max_retries=2,
+    )
+    assert result.llm_attempts == 2
+    assert len(router.prompts) == 2
+    assert "上次摘要未通过质量检查" in router.prompts[1]
+    assert "改写成叙述者" in router.prompts[1]
+    assert result.summary.sentences[0].startswith("我醒来")

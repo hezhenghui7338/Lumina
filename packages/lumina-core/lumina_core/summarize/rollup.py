@@ -10,7 +10,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
-from lumina_core.config import PromptsConfig, load_prompts_config, resolve_chunk_budget
+from lumina_core.config import PromptsConfig, format_prompt, load_prompts_config, resolve_chunk_budget
 from lumina_core.db.repos import BookRepo, SegmentRepo, SummaryNodeRepo
 from lumina_core.models.router import ProfileModelRouter
 from lumina_core.prompts_defaults import DEFAULT_ROLLUP
@@ -19,6 +19,7 @@ from lumina_core.summarize.schema import (
     parse_segment_summary_minimal,
 )
 from lumina_core.summarize.segment import summary_to_json
+from lumina_core.translate.language import language_display_name
 
 
 logger = logging.getLogger(__name__)
@@ -187,12 +188,17 @@ async def synthesize_window(
     *,
     max_chars: int,
     prompts: PromptsConfig | None = None,
+    target_language: str = "zh-CN",
 ) -> tuple[str, str, str]:
     """Return (summary_json, label, plain_text) for a packed window."""
     resolved = prompts or load_prompts_config()
     template = resolved.rollup or DEFAULT_ROLLUP
     body = format_window_text(items, max_chars=max_chars)
-    prompt = template.format(text=body)
+    prompt = format_prompt(
+        template,
+        text=body,
+        target_language=language_display_name(target_language),
+    )
     fallback_anchor = _range_label(items)
     try:
         raw = await router.complete(prompt, profile="summarize", json_mode=True)
@@ -269,6 +275,7 @@ async def build_rollup_tree(
     prompts: PromptsConfig | None = None,
     cancelled: Callable[[], bool] | None = None,
     on_progress: Callable[[dict[str, Any]], Any] | None = None,
+    target_language: str = "zh-CN",
 ) -> PackItem:
     if not leaves:
         raise ValueError("no ready segment summaries to roll up")
@@ -292,7 +299,11 @@ async def build_rollup_tree(
             if cancelled and cancelled():
                 raise InterruptedError("book index cancelled")
             dumped, label, plain = await synthesize_window(
-                router, window, max_chars=max_chars, prompts=prompts
+                router,
+                window,
+                max_chars=max_chars,
+                prompts=prompts,
+                target_language=target_language,
             )
             parent = PackItem(
                 text=plain,
@@ -315,7 +326,11 @@ async def build_rollup_tree(
         current = parents
 
     dumped, label, plain = await synthesize_window(
-        router, current, max_chars=max_chars, prompts=prompts
+        router,
+        current,
+        max_chars=max_chars,
+        prompts=prompts,
+        target_language=target_language,
     )
     root = PackItem(
         text=plain,
@@ -337,6 +352,7 @@ async def rollup_book(
     prompts: PromptsConfig | None = None,
     cancelled: Callable[[], bool] | None = None,
     on_progress: Callable[[dict[str, Any]], Any] | None = None,
+    target_language: str | None = None,
 ) -> str:
     """Build and persist the summary tree. Returns index_status."""
     books = BookRepo(conn)
@@ -348,6 +364,11 @@ async def rollup_book(
 
     models = getattr(router, "models", None)
     max_chars = resolve_chunk_budget(models).max_chars
+    effective_language = (
+        (book.get("target_language") or "").strip()
+        or (target_language or "").strip()
+        or "zh-CN"
+    )
     rows = await asyncio.to_thread(segments.list_ready_summaries, book_id)
     leaves = leaves_from_segments(rows)
     if not leaves:
@@ -368,6 +389,7 @@ async def rollup_book(
             prompts=prompts,
             cancelled=cancelled,
             on_progress=on_progress,
+            target_language=effective_language,
         )
         persisted = flatten_nodes(root, book_id)
 

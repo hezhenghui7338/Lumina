@@ -49,7 +49,7 @@ def load_mobi(path: Path) -> tuple[str, dict]:
     except Exception as exc:
         msg = str(exc).lower()
         if "drm" in msg or "encrypt" in msg:
-            raise ValueError("DRM-protected MOBI is not supported") from exc
+            raise ValueError("DRM-protected Kindle/MOBI is not supported") from exc
         raise
     finally:
         if tempdir:

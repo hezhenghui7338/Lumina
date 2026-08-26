@@ -30,18 +30,20 @@ enum LuminaTextLayoutSizing {
     }
 }
 
-/// Non-selectable display text with AppKit intrinsic height (reader body copy).
+/// Mouse-selectable display text with AppKit intrinsic height (reader body copy).
 struct LuminaSelectableText: NSViewRepresentable {
     let text: String
     var fontSize: CGFloat = LuminaTheme.summaryBulletSize
     var fontWeight: NSFont.Weight = .regular
     var lineSpacing: CGFloat = LuminaTheme.summaryBulletLineSpacing
     var foreground: Color = LuminaTheme.textPrimary
+    var highlightUTF16: NSRange? = nil
 
     func makeNSView(context: Context) -> IntrinsicSizingTextContainer {
         let container = IntrinsicSizingTextContainer()
         let textView = LuminaSelectableTextView()
         configure(textView)
+        applySelectionContext(textView, environment: context.environment)
         container.embed(textView)
         return container
     }
@@ -49,6 +51,17 @@ struct LuminaSelectableText: NSViewRepresentable {
     func updateNSView(_ container: IntrinsicSizingTextContainer, context: Context) {
         guard let textView = container.textView else { return }
         configure(textView)
+        applySelectionContext(textView, environment: context.environment)
+    }
+
+    private func applySelectionContext(
+        _ textView: LuminaSelectableTextView,
+        environment: EnvironmentValues
+    ) {
+        textView.onPlainClick = environment.readerBodyTextPlainClick
+        textView.noteClient = environment.readerSelectionNoteClient
+        textView.noteAnchor = environment.readerSelectionNoteAnchor
+        textView.onNoteSaved = environment.readerSelectionNoteSaved
     }
 
     private func configure(_ textView: LuminaSelectableTextView) {
@@ -62,13 +75,63 @@ struct LuminaSelectableText: NSViewRepresentable {
         ]
 
         let attributed = NSAttributedString(string: text, attributes: attributes)
-        if textView.textStorage?.string != text
+        let textChanged = textView.textStorage?.string != text
             || textView.font?.pointSize != fontSize
-            || textView.textColor != NSColor(foreground) {
+            || textView.textColor != NSColor(foreground)
+        if textChanged {
             textView.textStorage?.setAttributedString(attributed)
             textView.invalidateIntrinsicContentSize()
             textView.superview?.invalidateIntrinsicContentSize()
         }
+        Self.applyHighlight(highlightUTF16, on: textView, textChanged: textChanged)
+    }
+
+    private static func applyHighlight(
+        _ range: NSRange?,
+        on textView: LuminaSelectableTextView,
+        textChanged: Bool
+    ) {
+        guard let layoutManager = textView.layoutManager else { return }
+        let length = textView.string.utf16.count
+        let full = NSRange(location: 0, length: length)
+        let previous = textView.appliedHighlightUTF16
+        let sameRange = previous == range
+        if textChanged || !sameRange {
+            if full.length > 0 {
+                layoutManager.removeTemporaryAttribute(.backgroundColor, forCharacterRange: full)
+            }
+            if let range, NSMaxRange(range) <= length, range.length > 0 {
+                layoutManager.addTemporaryAttribute(
+                    .backgroundColor,
+                    value: NSColor(LuminaTheme.accent).withAlphaComponent(0.35),
+                    forCharacterRange: range
+                )
+                textView.appliedHighlightUTF16 = range
+                DispatchQueue.main.async {
+                    reveal(range, in: textView)
+                }
+            } else {
+                textView.appliedHighlightUTF16 = nil
+            }
+        }
+    }
+
+    private static func reveal(_ range: NSRange, in textView: NSTextView) {
+        guard let layoutManager = textView.layoutManager,
+              let textContainer = textView.textContainer,
+              textView.window != nil
+        else { return }
+        layoutManager.ensureLayout(for: textContainer)
+        let glyphRange = layoutManager.glyphRange(forCharacterRange: range, actualCharacterRange: nil)
+        var rect = layoutManager.boundingRect(forGlyphRange: glyphRange, in: textContainer)
+        rect.origin.x += textView.textContainerOrigin.x
+        rect.origin.y += textView.textContainerOrigin.y
+        let windowRect = textView.convert(rect, to: nil)
+        NotificationCenter.default.post(
+            name: .luminaRevealTextRect,
+            object: nil,
+            userInfo: ["rect": NSValue(rect: windowRect)]
+        )
     }
 }
 
@@ -76,15 +139,86 @@ struct LuminaSelectableText: NSViewRepresentable {
 
 final class LuminaSelectableTextView: NSTextView {
     private var lastLayoutWidth: CGFloat = -1
+    var appliedHighlightUTF16: NSRange?
 
-    override var acceptsFirstResponder: Bool { false }
+    var appliedLayoutWidth: CGFloat { lastLayoutWidth }
 
-    override func becomeFirstResponder() -> Bool { false }
+    /// Where a click that turned out not to be a selection goes, so the reading
+    /// surface keeps its chrome toggle. See `LuminaBodyTextClickPolicy`.
+    var onPlainClick: (() -> Void)?
+    var noteClient: CoreClient?
+    var noteAnchor: ReaderSelectionNoteAnchor?
+    var onNoteSaved: (() -> Void)?
 
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 
     override func resetCursorRects() {
-        addCursorRect(bounds, cursor: .arrow)
+        addCursorRect(bounds, cursor: .iBeam)
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        let hadSelectionBefore = selectedRange().length > 0
+        // NSTextView runs its own tracking loop here and returns after mouse-up.
+        super.mouseDown(with: event)
+        let selectedText = currentSelectedText
+        let outcome = LuminaBodyTextClickPolicy.outcome(
+            clickCount: event.clickCount,
+            hadSelectionBefore: hadSelectionBefore,
+            selectionLengthAfter: selectedRange().length
+        )
+        if outcome == .plainClick {
+            onPlainClick?()
+            return
+        }
+        if outcome == .dismissSelection {
+            LuminaSelectionActionPopover.dismiss()
+            return
+        }
+        guard LuminaSelectionActionPolicy.shouldShowMenu(
+            clickOutcome: outcome,
+            selectedText: selectedText
+        ) else { return }
+        guard let quote = LuminaSelectionActionPolicy.capturedQuote(from: selectedText) else {
+            return
+        }
+        LuminaSelectionActionPopover.present(
+            quote: quote,
+            relativeTo: selectionAnchorRect(),
+            of: self,
+            core: noteClient,
+            anchor: noteAnchor,
+            onSaved: onNoteSaved
+        )
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        applyLayoutWidth(bounds.width, invalidate: true)
+        if window == nil {
+            LuminaSelectionActionPopover.dismissIfPresenting(from: self)
+        }
+    }
+
+    private var currentSelectedText: String {
+        let range = selectedRange()
+        guard range.length > 0 else { return "" }
+        let ns = string as NSString
+        guard range.location + range.length <= ns.length else { return "" }
+        return ns.substring(with: range)
+    }
+
+    private func selectionAnchorRect() -> NSRect {
+        let range = selectedRange()
+        var actual = NSRange()
+        let screenRect = firstRect(forCharacterRange: range, actualRange: &actual)
+        guard let window, screenRect.width > 0 || screenRect.height > 0 else {
+            return NSRect(x: bounds.midX, y: bounds.maxY, width: 1, height: 1)
+        }
+        let windowRect = window.convertFromScreen(screenRect)
+        var local = convert(windowRect, from: nil)
+        if local.width < 1 { local.size.width = 1 }
+        if local.height < 1 { local.size.height = 1 }
+        return local
     }
 
     override var intrinsicContentSize: NSSize {
@@ -107,11 +241,6 @@ final class LuminaSelectableTextView: NSTextView {
                 containerWidth: width
             )
         )
-    }
-
-    override func viewDidMoveToWindow() {
-        super.viewDidMoveToWindow()
-        applyLayoutWidth(bounds.width, invalidate: true)
     }
 
     override func setFrameSize(_ newSize: NSSize) {
@@ -149,7 +278,7 @@ final class IntrinsicSizingTextContainer: NSView {
         self.textView = textView
         textView.translatesAutoresizingMaskIntoConstraints = false
         textView.isEditable = false
-        textView.isSelectable = false
+        textView.isSelectable = true
         textView.drawsBackground = false
         textView.isRichText = false
         textView.textContainerInset = NSSize(width: 0, height: 0)
@@ -174,7 +303,12 @@ final class IntrinsicSizingTextContainer: NSView {
 
     override func layout() {
         super.layout()
-        textView?.applyLayoutWidth(bounds.width, invalidate: true)
+        guard let textView else { return }
+        let widthChanged = LuminaTextLayoutSizing.widthDidChange(
+            from: textView.appliedLayoutWidth,
+            to: bounds.width
+        )
+        textView.applyLayoutWidth(bounds.width, invalidate: widthChanged)
     }
 
     override var intrinsicContentSize: NSSize {

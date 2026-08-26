@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 import os
 import re
+import time
 from collections import Counter
 from pathlib import Path
 from typing import Any, Callable
@@ -23,7 +24,12 @@ class RuleBoundaryScorer:
     """Dependency-free lexical novelty scorer for reliable offline fallback."""
 
     def score_pairs(self, pairs: list[tuple[str, str]]) -> list[float]:
-        return [1.0 - _counter_cosine(_features(left), _features(right)) for left, right in pairs]
+        out: list[float] = []
+        for index, (left, right) in enumerate(pairs):
+            out.append(1.0 - _counter_cosine(_features(left), _features(right)))
+            if index % 64 == 63:
+                time.sleep(0.001)
+        return out
 
 
 class OllamaBoundaryScorer:
@@ -223,6 +229,8 @@ def _embedding_text(value: str) -> str:
 
 
 def _features(value: str) -> Counter[str]:
+    if len(value) > 400:
+        value = value[:400]
     normalized = re.sub(r"\s+", "", value.lower())
     han = "".join(re.findall(r"[\u3400-\u9fff]", normalized))
     features: Counter[str] = Counter(han)

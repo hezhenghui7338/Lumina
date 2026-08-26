@@ -2,96 +2,155 @@ import CoreGraphics
 import XCTest
 @testable import Lumina
 
-final class ReaderSegmentListGeometryTests: XCTestCase {
-    private let segmentsWidth: CGFloat = 240
+final class ReaderCoverPagePolicyTests: XCTestCase {
+    func testToggle_opensSegmentsWithoutAnInlineColumn() {
+        let next = ReaderCoverPagePolicy.toggle(.none, to: .segments)
+        XCTAssertEqual(next, .segments)
+        XCTAssertTrue(next.showsSegments)
+        XCTAssertTrue(next.isOpen)
+    }
 
-    func testIsPointerInSegmentList_headerPinButtonArea() {
-        XCTAssertTrue(
-            ReaderSegmentListGeometry.isPointerInSegmentList(
-                CGPoint(x: 100, y: 15),
-                segmentsWidth: segmentsWidth
-            )
+    func testToggle_sameTargetCloses() {
+        XCTAssertEqual(
+            ReaderCoverPagePolicy.toggle(.segments, to: .segments),
+            .none
         )
     }
 
-    func testIsPointerInSegmentList_bodyArea() {
-        XCTAssertTrue(
-            ReaderSegmentListGeometry.isPointerInSegmentList(
-                CGPoint(x: 100, y: 200),
-                segmentsWidth: segmentsWidth
-            )
-        )
-    }
-
-    func testIsPointerInSegmentList_outsideReadingArea() {
-        XCTAssertFalse(
-            ReaderSegmentListGeometry.isPointerInSegmentList(
-                CGPoint(x: 300, y: 200),
-                segmentsWidth: segmentsWidth
-            )
-        )
-    }
-
-    func testIsPointerInSegmentList_leftEdgeTopStillCountsAsInList() {
-        XCTAssertTrue(
-            ReaderSegmentListGeometry.isPointerInSegmentList(
-                CGPoint(x: 5, y: 15),
-                segmentsWidth: segmentsWidth
-            )
-        )
+    func testSelectItemAndClose_returnToReading() {
+        XCTAssertEqual(ReaderCoverPagePolicy.selectItem(), .none)
+        XCTAssertEqual(ReaderCoverPagePolicy.close(), .none)
+        XCTAssertEqual(ReaderCoverPagePolicy.toggle(.none, to: .none), .none)
     }
 }
 
-final class ReaderSegmentListPolicyTests: XCTestCase {
-    func testExplicitClick_hiddenPinsWithoutPeek() {
-        let next = ReaderSegmentListPolicy.toggleByExplicitClick(.hidden)
-        XCTAssertTrue(next.pinned)
-        XCTAssertFalse(next.peeking)
-        XCTAssertTrue(next.inlineVisible)
-        XCTAssertFalse(next.overlayVisible)
+final class ReaderCoverPageArchitectureTests: XCTestCase {
+    private func source(_ relativePath: String) throws -> String {
+        let macosRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        return try String(
+            contentsOf: macosRoot.appendingPathComponent(relativePath),
+            encoding: .utf8
+        )
     }
 
-    func testExplicitClick_peekingUpgradesToPinned() {
-        let peeking = ReaderSegmentListVisibility(pinned: false, peeking: true)
-        let next = ReaderSegmentListPolicy.toggleByExplicitClick(peeking)
-        XCTAssertTrue(next.pinned)
-        XCTAssertFalse(next.peeking)
-        XCTAssertTrue(next.inlineVisible)
-        XCTAssertFalse(next.overlayVisible)
+    func testReaderDoesNotSqueezeWithInlineSegmentColumn() throws {
+        let reader = try source("Lumina/Features/Reader/ReaderView.swift")
+        for banned in [
+            "segmentListInlineVisible",
+            "segmentListOverlayVisible",
+            "segmentListPinned",
+            "beginEdgePeek",
+            "ReaderSegmentListPolicy",
+            "frame(width: segmentsWidth)",
+            "ReaderEdgeIcon",
+            "EdgeHoverTracker",
+            "handleEdgePointer",
+        ] {
+            XCTAssertFalse(reader.contains(banned), "\(banned) squeezes or peeks the reading surface")
+        }
+        XCTAssertTrue(
+            reader.contains("ReaderCoverPageShell"),
+            "segment list must overlay the feed without inserting a column"
+        )
+        XCTAssertTrue(reader.contains("toggleCoverPage(.segments)"))
     }
 
-    func testExplicitClick_pinnedCloses() {
-        let pinned = ReaderSegmentListVisibility(pinned: true, peeking: false)
-        let next = ReaderSegmentListPolicy.toggleByExplicitClick(pinned)
-        XCTAssertEqual(next, .hidden)
-        XCTAssertFalse(next.anyVisible)
+    func testReadingHasNoRecentsList() throws {
+        let reader = try source("Lumina/Features/Reader/ReaderView.swift")
+        let content = try source("Lumina/ContentView.swift")
+        for banned in ["LibraryRecentsView", "展开最近阅读", "toggleCoverPage(.recents)"] {
+            XCTAssertFalse(reader.contains(banned), "\(banned) brings back the reading recents list")
+            XCTAssertFalse(content.contains(banned), "\(banned) brings back the reading recents list")
+        }
+        XCTAssertFalse(content.contains("recentsWidth"))
+        XCTAssertFalse(reader.contains("sidebar.left"))
     }
 
-    func testEndPeek_afterEdgePeekRetractsWithoutPinning() {
-        let peeking = ReaderSegmentListPolicy.beginEdgePeek(.hidden)
-        XCTAssertTrue(peeking.overlayVisible)
-        XCTAssertFalse(peeking.pinned)
-        let closed = ReaderSegmentListPolicy.endPeek(peeking)
-        XCTAssertFalse(closed.peeking)
-        XCTAssertFalse(closed.pinned)
-        XCTAssertFalse(closed.anyVisible)
+    func testSegmentCoverSlidesFromBottomAboveTheBottomBar() throws {
+        let reader = try source("Lumina/Features/Reader/ReaderView.swift")
+        let layout = readerLayoutSource(reader)
+        let coverBlock = coverPageBlock(layout)
+
+        XCTAssertTrue(
+            coverBlock.contains("ReaderCoverPageShell"),
+            "the catalog must still be a cover overlay"
+        )
+        XCTAssertTrue(
+            coverBlock.contains(".move(edge: .bottom)"),
+            "the catalog must slide up from the bottom"
+        )
+        XCTAssertFalse(
+            coverBlock.contains(".move(edge: .top)"),
+            "the catalog must not slide in from the top"
+        )
+        XCTAssertTrue(
+            coverBlock.contains(".padding(.bottom, ReaderChromeBarMetrics.height)"),
+            "the catalog must sit above the bottom bar"
+        )
+        XCTAssertFalse(
+            coverBlock.contains("zIndex(1)"),
+            "zIndex(1) covers the bottom bar so the catalog toggle cannot be reached"
+        )
+
+        guard
+            let coverRange = layout.range(of: "ReaderCoverPageShell"),
+            let bottomRange = layout.range(of: "readerBottomBarOverlay")
+        else {
+            return XCTFail("readerLayout must host both the catalog shell and the bottom bar")
+        }
+        XCTAssertLessThan(
+            coverRange.lowerBound,
+            bottomRange.lowerBound,
+            "the bottom bar must be above the catalog in ZStack order"
+        )
     }
 
-    func testPinned_endPeekAndBeginEdgePeekDoNotUnpin() {
-        let pinned = ReaderSegmentListVisibility(pinned: true, peeking: false)
-        XCTAssertEqual(ReaderSegmentListPolicy.endPeek(pinned), pinned)
-        XCTAssertEqual(ReaderSegmentListPolicy.beginEdgePeek(pinned), pinned)
-        XCTAssertTrue(pinned.inlineVisible)
-        XCTAssertFalse(pinned.overlayVisible)
+    func testBarsStayVisibleWhileSegmentCoverIsOpen() throws {
+        let reader = try source("Lumina/Features/Reader/ReaderView.swift")
+        let after = reader.components(separatedBy: "private var barsVisible: Bool").last ?? ""
+        let body = after.components(separatedBy: "private var librarySummarizeOverviewActive").first ?? ""
+        XCTAssertTrue(
+            body.contains("coverPage != .none") || body.contains("coverPage.isOpen"),
+            "the bottom bar must stay up while the catalog is open so it can close it"
+        )
     }
 
-    func testHeaderPinAndClose() {
-        let peeking = ReaderSegmentListVisibility(pinned: false, peeking: true)
-        let pinned = ReaderSegmentListPolicy.pin(peeking)
-        XCTAssertTrue(pinned.pinned)
-        XCTAssertFalse(pinned.peeking)
-        XCTAssertEqual(ReaderSegmentListPolicy.close(pinned), .hidden)
-        XCTAssertEqual(ReaderSegmentListPolicy.close(peeking), .hidden)
+    func testOpeningOverlayClosesSegmentCover() throws {
+        let reader = try source("Lumina/Features/Reader/ReaderView.swift")
+        let after = reader.components(separatedBy: "private func openOverlay").last ?? ""
+        let body = after.components(separatedBy: "private func toggleOverlay").first ?? ""
+        XCTAssertTrue(
+            body.contains("ReaderCoverPagePolicy.close()"),
+            "notes/chat must dismiss the catalog now that the bottom bar stays tappable"
+        )
+    }
+
+    func testCoverShellHasNoBackButton() throws {
+        let shell = try source("Lumina/Features/Reader/ReaderChromeClickPolicy.swift")
+        guard let start = shell.range(of: "struct ReaderCoverPageShell"),
+              let end = shell.range(of: "enum LuminaBodyTextClickOutcome")
+        else {
+            return XCTFail("could not isolate ReaderCoverPageShell")
+        }
+        let body = String(shell[start.lowerBound..<end.lowerBound])
+        XCTAssertFalse(body.contains("返回"), "the catalog must close from the bottom bar, not a back button")
+        XCTAssertFalse(body.contains("chevron.down"))
+        XCTAssertFalse(body.contains("onBack"))
+        XCTAssertFalse(body.contains("返回阅读"))
+        XCTAssertTrue(body.contains("LuminaTheme.background"))
+    }
+
+    private func readerLayoutSource(_ reader: String) -> String {
+        let after = reader.components(separatedBy: "private var readerLayout: some View").last ?? ""
+        return after.components(separatedBy: ".onExitCommand { handleExitCommand() }").first ?? ""
+    }
+
+    private func coverPageBlock(_ layout: String) -> String {
+        let after = layout.components(separatedBy: "if coverPage == .segments").last ?? ""
+        return after.components(separatedBy: "if barsVisible").first ?? ""
     }
 }
 
@@ -523,6 +582,115 @@ final class SegmentTurnNavigationTests: XCTestCase {
     }
 }
 
+final class SegmentTurnKeyPolicyTests: XCTestCase {
+    func testUnshiftedBracketsTurnEveryPress() {
+        XCTAssertEqual(
+            SegmentTurnKeyPolicy.delta(
+                keyCode: SegmentTurnKeyPolicy.openBracketKeyCode,
+                characters: "[",
+                shift: false,
+                isRepeat: false
+            ),
+            -1
+        )
+        XCTAssertEqual(
+            SegmentTurnKeyPolicy.delta(
+                keyCode: SegmentTurnKeyPolicy.closeBracketKeyCode,
+                characters: "]",
+                shift: false,
+                isRepeat: false
+            ),
+            1
+        )
+        XCTAssertEqual(
+            SegmentTurnKeyPolicy.delta(
+                keyCode: SegmentTurnKeyPolicy.openBracketKeyCode,
+                characters: "【",
+                shift: false,
+                isRepeat: false
+            ),
+            -1,
+            "Chinese IME 【 is the same key as [ and must keep turning on later presses"
+        )
+        XCTAssertEqual(
+            SegmentTurnKeyPolicy.delta(
+                keyCode: SegmentTurnKeyPolicy.closeBracketKeyCode,
+                characters: "】",
+                shift: false,
+                isRepeat: false
+            ),
+            1
+        )
+    }
+
+    func testShiftAndRepeatDoNotTurn() {
+        XCTAssertNil(
+            SegmentTurnKeyPolicy.delta(
+                keyCode: SegmentTurnKeyPolicy.openBracketKeyCode,
+                characters: "{",
+                shift: true,
+                isRepeat: false
+            )
+        )
+        XCTAssertNil(
+            SegmentTurnKeyPolicy.delta(
+                keyCode: SegmentTurnKeyPolicy.closeBracketKeyCode,
+                characters: "]",
+                shift: false,
+                isRepeat: true
+            )
+        )
+    }
+
+    func testFullwidthCharactersStillTurnWithoutKnownKeyCode() {
+        XCTAssertEqual(
+            SegmentTurnKeyPolicy.delta(
+                keyCode: 0,
+                characters: "【",
+                shift: false,
+                isRepeat: false
+            ),
+            -1
+        )
+        XCTAssertEqual(
+            SegmentTurnKeyPolicy.delta(
+                keyCode: 0,
+                characters: "】",
+                shift: false,
+                isRepeat: false
+            ),
+            1
+        )
+    }
+
+    func testReaderTurnsSegmentsFromKeyMonitorNotFocusState() throws {
+        let macosRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let reader = try String(
+            contentsOf: macosRoot.appendingPathComponent("Lumina/Features/Reader/ReaderView.swift"),
+            encoding: .utf8
+        )
+        XCTAssertFalse(
+            reader.contains(".onKeyPress(\"[\")") || reader.contains(".onKeyPress(\"【\")"),
+            "character onKeyPress dies after selectable body text steals first responder"
+        )
+        XCTAssertTrue(
+            reader.contains("SegmentTurnKeyPolicy.delta"),
+            "hardware [ ] / 【】 must be handled in the existing keyDown monitor so every press turns"
+        )
+        XCTAssertTrue(
+            reader.contains("onTurnSegment"),
+            "the key monitor must call back into navigateSegment"
+        )
+        XCTAssertTrue(
+            reader.contains("LuminaSelectableTextView { return false }"),
+            "selectable body text must not be treated as an editor or [ ] would be ignored"
+        )
+    }
+}
+
 final class LuminaTextLayoutSizingTests: XCTestCase {
     func testNarrowWidthDoesNotEnsureLayout() {
         XCTAssertFalse(LuminaTextLayoutSizing.shouldEnsureLayout(containerWidth: 0))
@@ -546,5 +714,74 @@ final class LuminaTextLayoutSizingTests: XCTestCase {
     func testWidthDidChangeIgnoresSubPointJitter() {
         XCTAssertFalse(LuminaTextLayoutSizing.widthDidChange(from: 400, to: 400.2))
         XCTAssertTrue(LuminaTextLayoutSizing.widthDidChange(from: 400, to: 401))
+    }
+
+    func testContainerLayoutDoesNotUnconditionallyInvalidate() throws {
+        let macosRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(
+            contentsOf: macosRoot.appendingPathComponent(
+                "Lumina/Features/Shared/SelectableTextView.swift"
+            ),
+            encoding: .utf8
+        )
+        guard let start = source.range(of: "final class IntrinsicSizingTextContainer"),
+              let layoutRange = source.range(of: "override func layout()", range: start.lowerBound..<source.endIndex)
+        else {
+            return XCTFail("could not isolate IntrinsicSizingTextContainer.layout()")
+        }
+        let layout = String(source[layoutRange.lowerBound...])
+            .components(separatedBy: "override var intrinsicContentSize").first ?? ""
+        XCTAssertTrue(layout.contains("widthDidChange"))
+        XCTAssertTrue(layout.contains("invalidate: widthChanged"))
+        XCTAssertFalse(
+            layout.contains("invalidate: true"),
+            "layout() must not invalidate CJK intrinsic height unless width actually changed"
+        )
+    }
+}
+
+final class SegmentSummaryPlaceholderHeightTests: XCTestCase {
+    func testReserved_usesFloorWhenCharCountMissing() {
+        XCTAssertEqual(SegmentSummaryPlaceholderHeight.reserved(charCount: nil), 200)
+        XCTAssertEqual(SegmentSummaryPlaceholderHeight.reserved(charCount: 0), 200)
+        XCTAssertEqual(SegmentSummaryPlaceholderHeight.reserved(charCount: 100), 200)
+    }
+
+    func testReserved_scalesThenCaps() {
+        XCTAssertEqual(SegmentSummaryPlaceholderHeight.reserved(charCount: 1_200), 200)
+        XCTAssertEqual(SegmentSummaryPlaceholderHeight.reserved(charCount: 2_400), 400)
+        XCTAssertEqual(SegmentSummaryPlaceholderHeight.reserved(charCount: 10_000), 600)
+    }
+
+    func testLoadingAndRunningShareReservedHeight() {
+        let count = 3_000
+        let reserved = SegmentSummaryPlaceholderHeight.reserved(charCount: count)
+        XCTAssertEqual(reserved, 500)
+        XCTAssertGreaterThan(reserved, 1, "running must not collapse to EmptyView height")
+    }
+
+    func testSegmentBlock_runningUsesReservedSkeletonNotEmptyView() throws {
+        let macosRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(
+            contentsOf: macosRoot.appendingPathComponent(
+                "Lumina/Features/Reader/SegmentReadingBlock.swift"
+            ),
+            encoding: .utf8
+        )
+        XCTAssertTrue(source.contains("SegmentSummaryPlaceholderHeight.reserved"))
+        XCTAssertTrue(source.contains("isSummaryLoading || segment.summary_status == \"running\""))
+        XCTAssertFalse(
+            source.contains("case \"running\":"),
+            "running must share the loading skeleton, not a collapsing placeholder branch"
+        )
+        XCTAssertFalse(source.contains("EmptyView()"))
+        XCTAssertTrue(source.contains("progressLabel("))
+        XCTAssertTrue(source.contains(".minimumScaleFactor(0.8)"))
     }
 }

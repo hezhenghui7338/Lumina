@@ -6,6 +6,7 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any
 
+from lumina_core.chunker.markers import heading_marker
 from lumina_core.ingest.text import decode_text_bytes
 
 
@@ -39,7 +40,7 @@ def _append_content(element: ET.Element, parts: list[str]) -> None:
     if name == "title":
         title = _element_text(element)
         if title:
-            parts.append(f"## [§{title}]")
+            parts.append(heading_marker(title, 1))
         return
     if name in {"p", "subtitle", "text-author"}:
         value = _element_text(element)

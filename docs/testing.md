@@ -12,7 +12,7 @@ Lumina 采用 **「E2E 驱动、单元测试延伸」** 的分层测试策略，
 
 **核心原则**：
 
-1. 每个 PRD 用户故事（B1–B11、N1–N4）都有对应 **E2E 用例 ID**
+1. 每个 PRD 用户故事（B1–B12、N1–N4）都有对应 **E2E 用例 ID**
 2. 每个 E2E 向下延伸 **3–8 个单元测试**，覆盖边界分支
 3. **默认 Mock LLM** — CI 快速、确定性
 4. **唯一 Live 例外** — 长文本切割 + 真实 Ollama 摘要段 0/1（见 [chunking-review.md](testing/chunking-review.md)）
@@ -128,23 +128,25 @@ Lumina/
 | ID | PRD | 场景 | 断言 | 层 | LLM |
 |----|-----|------|------|-----|-----|
 | **E2E-BOOT-01** | §3.4 | 启动时书库/设置/资讯三接口 JSON 契约 | `is_favorite` 为 JSON bool；Swift `BookSummary`/`AppSettings`/`NewsBrief` 可解码 | API unit + XCTest | Mock |
-| **E2E-BOOT-02** | §3.4 | Sidecar 启动就绪与连接错误映射 | `/health` 即时响应；lifespan 不阻塞 health；Swift 连接错误中文 fallback；Release sidecar 冒烟 | API unit + XCTest + release smoke | Mock |
+| **E2E-BOOT-02** | §3.4 / §5.9 | Sidecar 启动就绪、退出必停、设置可停/重启 | `/health` 即时响应；`POST /shutdown` 结束 uvicorn；卡死/复用孤儿退出时仍杀端口监听；Swift 连接错误中文 fallback；Release sidecar 冒烟 | API unit + XCTest + release smoke | Mock |
 
 实现：`tests/unit/test_api_swift_contract.py` · `LuminaTests/Unit/CoreClientDecodingTests.swift`
 
-实现（E2E-BOOT-02）：`tests/unit/test_sidecar_startup.py`（含跨栈 `CHUNKER_VERSION` 契约）· `LuminaTests/Unit/SidecarReadinessTests.swift`（本地 XCTest）· `scripts/build-release.sh` sidecar smoke（断言 `/health` JSON `chunker_version`）
+实现（E2E-BOOT-02）：`tests/unit/test_sidecar_startup.py`（含跨栈 `CHUNKER_VERSION` 契约、`POST /shutdown`）· `LuminaTests/Unit/SidecarReadinessTests.swift`（本地 XCTest）· `scripts/build-release.sh` sidecar smoke（断言 `/health` JSON `chunker_version`）
 
 ### 6.1 Wave 1 — 书库阅读核心（P0）
 
 | ID | PRD | 场景 | 断言 | 层 | LLM |
 |----|-----|------|------|-----|-----|
 | **E2E-CHUNK-LIVE** | §5.3 | 长文切割 + 摘要段 0/1 | 段长区间、无 overlap、schema、人工 report | live | **真实 Ollama** |
-| **E2E-B1** | §5.1 B1 | 批量导入混合格式 | 无 crash；复制到 App Support；元数据 ≥90% | API | Mock |
+| **E2E-B1** | §5.1 B1 | 批量导入混合格式 | 无 crash；复制到 App Support；元数据 ≥90%；大 TXT 结构扫描有字数进度，无进度超时进导入失败 | API | Mock |
 | **E2E-B1-formats** | §5.2 | Markdown/HTML/RTF/DOCX/ODT/FB2 导入 | 立即返回 processing；后台 ready；正文可读 | API | Mock |
 | **E2E-B1-dup** | TDD §14 | 同 hash 二次导入 | 409 + overwrite 重建 | API | Mock |
+| **E2E-B1-dup-skip-rest** | §5.1 | 批量冲突跳过剩下所有 | 后续重复不再弹窗；新书仍导入；与取消剩余导入区分 | Swift/Win unit | Mock |
 | **E2E-B1-reject** | TDD §14 | >500MB 拒绝 | 明确错误 | API | Mock |
 | **E2E-B2** | §5.3 B2 | 打开书 → 段列表 | 章节分组 + label；三句话+要点+锚点 | API | Mock |
 | **E2E-B11** | §5.3 B11 | 长书导入后立即 open | 段 0 ready；段 1+ pending；SSE 进度 | API + SSE | Mock |
+| **E2E-B12** | §5.3.1 B12 | 听稿 summary/detailed/original | 简要=sentences；完整含要点不含 notes/follow_ups；summary 模式不读 raw_text | API | Mock |
 | **E2E-B2-switch** | §7.1 | 已缓存段切换 | ≤200ms | perf + XCUITest | — |
 | **E2E-B4** | §5.5 B4 | 深聊 10 轮 follow-up | 上下文不丢；每书单 thread | API + SSE | Mock |
 | **E2E-B6** | §5.5 B6 | Citation 跳转 | 100% 正确 segment_index | API + XCUITest | Mock |
@@ -168,6 +170,7 @@ Lumina/
 | **E2E-B5** | §5.5 B5 | 联网补充 `[网]` | API + 双端 UI 可点链接 | Mock ddgs |
 | **E2E-B5-refuse** | §5.5 | 源中无信息 → 拒答 | API | Mock + corpus |
 | **E2E-B8** | §5.6 B8 | ⌘K 跨书搜索跳转 | API + XCUITest | Mock |
+| **E2E-B13** | §5.3.2 B13 | 阅读器原文搜索定位 | 只命中 raw_text；响应无 raw_text；偏移可高亮 | API + Swift/Win unit | Mock |
 | **E2E-B9** | §5.7 B9 | 100 段导出 Markdown ≤10s | API | Mock |
 | **E2E-ingest-ocr** | §5.2 | 扫描 PDF OCR → 摘要 | API | Mock |
 | **E2E-ingest-ocr-cloud** | §5.2 | 云端配置完整 → 优先云端 OCR；失败不回退 | API | Mock HTTP |
@@ -198,15 +201,17 @@ Lumina/
 | E2E | lumina-core unit | Swift unit / Snapshot |
 |-----|------------------|---------------------|
 | **E2E-BOOT-01** | `test_api_swift_contract` · `test_books_list_is_favorite_is_json_bool` | `CoreClientDecodingTests` |
-| **E2E-BOOT-02** | `test_sidecar_startup` · `test_e2e_boot_02d_health_responds_immediately` · `test_e2e_priv_01_settings_default_localhost` | `SidecarReadinessTests` |
+| **E2E-BOOT-02** | `test_sidecar_startup` · `test_e2e_boot_02d_health_responds_immediately` · `test_shutdown_sets_uvicorn_should_exit` · `test_macos_stop_kills_port_listener` · `test_e2e_priv_01_settings_default_localhost` | `SidecarReadinessTests` |
 | **E2E-CHUNK-LIVE** | `test_chunker_chapter_boundary` · `test_chunker_max_segment_size` · `test_chunker_no_overlap_offsets` · `test_short_book_single_segment` · `test_summary_json_schema` | — |
-| **B1 导入** | `test_detect_format` · `test_extract_metadata_epub` · `test_copy_to_app_support` · `test_file_hash_dedup` | `LibraryViewModel_importProgress` |
+| **B1 导入** | `test_detect_format` · `test_extract_metadata_epub` · `test_copy_to_app_support` · `test_file_hash_dedup` · `test_processing_book_is_segmenting_state` · `test_library_facet_filters` | `LibraryViewModelMergeTests.testSegmentingCollectionIncludesProcessingBooks` · `apps/windows/Lumina.Tests/ModelJsonTests.cs` |
 | **B2 段列表** | `test_summary_json_parse` · `test_label_max_20_chars` · `test_summary_quality`（0/1/2 问题边界、误报、复核降级、带反馈重试） | `SegmentListGroupingTests` · Snapshot |
 | **E2E-boundary-move** | `test_boundary_move` · `test_boundary_api` | `CoreClientDecodingTests.testSegmentBoundaryPreview_decodesCandidates` |
 | **B11 prefetch** | `test_same_book_summaries_are_strictly_ordered` · `test_different_books_still_summarize_in_parallel` · `test_final_failure_does_not_block_later_segments` · `test_chat_pauses_prefetch` · `test_job_persist_on_restart` | `ReaderViewModel_SSEHandler` |
+| **B12 听文本** | `test_listen_script` · `test_listen_speech_api`（listen-script 路由） | `ListenScriptTests` · `ListenSessionTests` · `apps/windows/Lumina.Tests/ListenScriptTests.cs` |
 | **B4/B5 深聊** | `test_evidence_sufficiency_router` · `test_chat_dca` · `test_chat_evidence` · `test_web_search` · `test_rollup` · `test_book_scope_chat_after_index` | `CoreClientDecodingTests.testChatResponse_fromSSEDone_parsesMetrics` |
 | **B8 笔记/搜索** | `test_fts5_trigger_on_note_insert` · `test_search_group_by_kind` | `SearchViewModel_jumpToSegment` · Snapshot |
-| **B9 导出** | `test_export_markdown_structure` · `test_export_with_notes_optional` | — |
+| **B13 原文搜索** | `test_original_search` · `test_original_search_api` | `ReaderOriginalSearchTests` · `apps/windows/Lumina.Tests/ModelJsonTests.cs` |
+| **B9 导出** | `test_export_includes_translation_by_default` · `test_export_with_notes_optional` · `test_export_sentences_only` | `MarkdownExportModeTests` · `apps/windows/Lumina.Tests/ExportMarkdownModeTests.cs` |
 | **E2E-ingest-ocr / cloud** | `test_ocr` · `test_ingest` · `test_import_ocr` · `test_resource_probe` · `test_secrets_store` · `test_release_ocr_bundle` | `CoreClientDecodingTests.testAppSettings_decodesDefaultSettings` |
 
 **LocalAgent 参考测试**（移植为 unit，不直接依赖 LA 代码）：

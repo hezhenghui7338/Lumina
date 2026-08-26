@@ -9,7 +9,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from lumina_core.chunker.chunker import chunk_text
+from lumina_core.chunker.chunker import ChunkSegment, chunk_text
 from lumina_core.chunker.semantic import PairScorer
 from lumina_core.config import MAX_FILE_BYTES, ChunkBudget, Settings
 from lumina_core.ingest.docx import load_docx
@@ -19,7 +19,7 @@ from lumina_core.ingest.html import load_html
 from lumina_core.ingest.odt import load_odt
 from lumina_core.ingest.pdf import load_pdf
 from lumina_core.ingest.rtf import load_rtf
-from lumina_core.ingest.text import decode_text_bytes
+from lumina_core.ingest.text import decode_text_bytes, iter_decoded_file
 
 TEXT_EXTENSIONS = {"txt", "text", "md", "markdown", "mdown", "mkd", "log"}
 FORMAT_EXTENSIONS = {
@@ -33,6 +33,8 @@ FORMAT_EXTENSIONS = {
     "pdf": "pdf",
     "epub": "epub",
     "mobi": "mobi",
+    "azw": "mobi",
+    "azw3": "mobi",
 }
 
 
@@ -54,7 +56,7 @@ def detect_format(path: Path) -> str:
 
 
 def load_txt(path: Path) -> str:
-    return decode_text_bytes(path.read_bytes())
+    return "".join(iter_decoded_file(path))
 
 
 def load_document(
@@ -128,16 +130,20 @@ def build_segments(
     scorer: PairScorer | None = None,
     document_map: list | None = None,
     structure_roles: list | None = None,
+    chunks: list[ChunkSegment] | None = None,
 ) -> list[dict]:
-    chunks = chunk_text(
+    from lumina_core.chunker.coop import GilYielder
+
+    resolved = chunks or chunk_text(
         text,
         budget=budget,
         scorer=scorer,
         document_map=document_map,
         structure_roles=structure_roles,
     )
+    coop = GilYielder()
     segments: list[dict] = []
-    for chunk in chunks:
+    for chunk in resolved:
         anchor = f"段 {chunk.index + 1}"
         if chunk.chapter:
             anchor = f"{chunk.chapter} · 段 {chunk.index + 1}"
@@ -157,4 +163,5 @@ def build_segments(
                 "retry_count": 0,
             }
         )
+        coop.bump(len(chunk.raw_text) or 1)
     return segments

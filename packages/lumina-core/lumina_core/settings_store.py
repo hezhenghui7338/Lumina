@@ -16,6 +16,7 @@ from lumina_core.config import (
     load_models_config,
     migrate_legacy_models,
     normalize_models_raw,
+    normalize_segment_tier,
 )
 from lumina_core.prompts_store import (
     default_prompts,
@@ -153,6 +154,7 @@ def settings_public_dict(settings: Settings) -> dict[str, Any]:
         "ocr_cloud_timeout_seconds": settings.ocr_cloud_timeout_seconds,
         "debug_mode": settings.debug_mode,
         "auto_start_summary": settings.auto_start_summary,
+        "default_segment_tier": normalize_segment_tier(settings.default_segment_tier),
         "prompts": prompts_to_dict(prompts),
         "prompts_defaults": prompts_to_dict(default_prompts()),
     }
@@ -181,6 +183,17 @@ def _overlay_user_models(base: dict[str, Any], raw: dict[str, Any]) -> dict[str,
         block = raw.get(profile)
         if isinstance(block, dict) and "priority" in block:
             merged[profile] = {"priority": list(block.get("priority") or [])}
+
+    if isinstance(raw.get("tts"), dict):
+        base_tts = dict(merged.get("tts") or {})
+        incoming_tts = raw["tts"]
+        if isinstance(incoming_tts.get("priority"), list):
+            base_tts["priority"] = list(incoming_tts.get("priority") or [])
+        for key in ("engine", "model", "voice", "speed"):
+            if key in incoming_tts:
+                base_tts[key] = incoming_tts[key]
+        base_tts["engine"] = "system"
+        merged["tts"] = base_tts
 
     if isinstance(raw.get("job_concurrency"), dict):
         merged["job_concurrency"] = raw["job_concurrency"]

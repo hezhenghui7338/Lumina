@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 import uvicorn
 from fastapi import FastAPI
@@ -23,7 +24,7 @@ async def lifespan(app: FastAPI):
     _wire_job_events(state)
     await state.job_queue.recover_on_startup()
     yield
-    await state.job_queue.stop_all()
+    await state.job_queue.shutdown()
     await state.router.aclose()
 
 
@@ -57,12 +58,27 @@ def cli() -> None:
         action="store_true",
         help="Verify OCR deps load and exit (release build smoke test)",
     )
+    parser.add_argument(
+        "--cpu-worker",
+        default=None,
+        metavar="JOB.json",
+        help="Run ingest/resegment CPU in this process and exit (sidecar child)",
+    )
     args = parser.parse_args()
     if args.smoke_ocr:
         raise SystemExit(smoke_ocr())
+    if args.cpu_worker:
+        from lumina_core.jobs.cpu_worker import run_cpu_job_file
+
+        raise SystemExit(run_cpu_job_file(Path(args.cpu_worker)))
     settings = Settings(host=args.host, port=args.port)
     app = create_app(settings)
-    uvicorn.run(app, host=settings.host, port=settings.port, log_level="info")
+    config = uvicorn.Config(
+        app, host=settings.host, port=settings.port, log_level="info"
+    )
+    server = uvicorn.Server(config)
+    app.state.uvicorn_server = server
+    server.run()
 
 
 def main() -> None:

@@ -8,6 +8,7 @@ struct BookRow: View {
     var isChecked: Bool = false
     var onToggleCheck: (() -> Void)? = nil
     let onToggleFavorite: () -> Void
+    let onRename: () -> Void
     let onReclassify: () -> Void
     let onResegment: () -> Void
     let onExport: () -> Void
@@ -16,8 +17,11 @@ struct BookRow: View {
     var onStopSummarize: (() -> Void)? = nil
 
     private var statusText: String {
-        if book.isProcessing, let ingestProgress {
-            return ingestProgress.label
+        if book.isSegmenting {
+            return ingestProgress?.label ?? book.summaryFacetLabel
+        }
+        if book.isIngestFailed {
+            return book.statusLabel
         }
         return summarizeStatusLabel
     }
@@ -92,32 +96,12 @@ struct BookRow: View {
                         .font(.caption)
                         .foregroundStyle(LuminaTheme.textSecondary)
                 }
-                if book.isProcessing {
-                    if let ingestProgress, ingestProgress.total > 0 {
-                        ProgressView(
-                            value: Double(ingestProgress.page),
-                            total: Double(ingestProgress.total)
-                        )
-                        .controlSize(.small)
-                        .tint(LuminaTheme.accent)
-                    } else {
-                        ProgressView()
-                            .controlSize(.small)
-                            .tint(LuminaTheme.accent)
-                    }
+                if book.isSegmenting {
+                    LibraryIngestMeter(progress: ingestProgress)
                 } else if book.summaryTotal > 0, !book.hasCompletedSummary {
-                    if book.summarize_state == "queued" {
-                        ProgressView()
-                            .controlSize(.small)
-                            .tint(LuminaTheme.accent)
-                    } else {
-                        ProgressView(
-                            value: Double(book.summaryReady),
-                            total: Double(book.summaryTotal)
-                        )
-                        .controlSize(.small)
-                        .tint(LuminaTheme.accent)
-                    }
+                    LibraryIngestMeter(
+                        fraction: Double(book.summaryReady) / Double(book.summaryTotal)
+                    )
                 }
                 HStack(spacing: 6) {
                     summarizeStateBadge
@@ -137,6 +121,7 @@ struct BookRow: View {
             bookLibraryContextMenu(
                 book: book,
                 onToggleFavorite: onToggleFavorite,
+                onRename: onRename,
                 onReclassify: onReclassify,
                 onResegment: onResegment,
                 onExport: onExport,
@@ -162,52 +147,7 @@ struct BookRow: View {
 
     @ViewBuilder
     private var summarizeStateBadge: some View {
-        if book.hasCompletedSummary {
-            Text("已摘要")
-                .font(.caption2)
-                .padding(.horizontal, 6)
-                .padding(.vertical, 2)
-                .background(LuminaTheme.border.opacity(0.45))
-                .foregroundStyle(LuminaTheme.textSecondary)
-                .clipShape(Capsule())
-        } else {
-            switch book.summarize_state {
-            case "running":
-                Text("正在摘要")
-                    .font(.caption2)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 2)
-                    .background(LuminaTheme.accentMuted)
-                    .foregroundStyle(LuminaTheme.accent)
-                    .clipShape(Capsule())
-            case "queued":
-                Text("排队中")
-                    .font(.caption2)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 2)
-                    .background(LuminaTheme.border.opacity(0.45))
-                    .foregroundStyle(LuminaTheme.textSecondary)
-                    .clipShape(Capsule())
-            case "paused":
-                Text("已暂停")
-                    .font(.caption2)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 2)
-                    .background(Color.orange.opacity(0.15))
-                    .foregroundStyle(.orange)
-                    .clipShape(Capsule())
-            case "idle":
-                Text("待摘要")
-                    .font(.caption2)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 2)
-                    .background(LuminaTheme.border.opacity(0.35))
-                    .foregroundStyle(LuminaTheme.textSecondary)
-                    .clipShape(Capsule())
-            default:
-                EmptyView()
-            }
-        }
+        BookSummaryStateBadge(book: book)
     }
 
     @ViewBuilder
@@ -236,6 +176,7 @@ struct BookRow: View {
 func bookLibraryContextMenu(
     book: BookSummary,
     onToggleFavorite: @escaping () -> Void,
+    onRename: @escaping () -> Void,
     onReclassify: @escaping () -> Void,
     onResegment: @escaping () -> Void,
     onExport: @escaping () -> Void,
@@ -244,14 +185,12 @@ func bookLibraryContextMenu(
     onStopSummarize: (() -> Void)? = nil
 ) -> some View {
     Button(book.isFavorite ? "取消收藏" : "收藏", action: onToggleFavorite)
+    Button("重命名", action: onRename)
     Button("重新分类", action: onReclassify)
         .disabled(!LibraryBookContextMenuPolicy.isEnabled(.reclassify, for: book))
     if book.canStartSummarize, let onStartSummarize {
-        Menu("开始摘要") {
-            ForEach(SummaryTier.allCases) { tier in
-                Button(tier.startMenuLabel) { onStartSummarize(tier) }
-            }
-        }
+        Button("开始摘要") { onStartSummarize(.normal) }
+        Button(SummaryTier.advanced.startMenuLabel) { onStartSummarize(.advanced) }
     }
     if book.canStopSummarize, let onStopSummarize {
         Button("停止摘要", action: onStopSummarize)
@@ -262,4 +201,38 @@ func bookLibraryContextMenu(
         .disabled(!LibraryBookContextMenuPolicy.isEnabled(.exportMarkdown, for: book))
     Divider()
     Button("删除", role: .destructive, action: onDelete)
+}
+
+struct BookSummaryStateBadge: View {
+    let book: BookSummary
+
+    var body: some View {
+        Text(book.summaryFacetLabel)
+            .font(.caption2)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background(background)
+            .foregroundStyle(foreground)
+            .clipShape(Capsule())
+    }
+
+    private var background: Color {
+        if book.isIngestFailed { return Color.orange.opacity(0.15) }
+        if book.isSegmenting { return LuminaTheme.accentMuted }
+        switch book.summarize_state {
+        case "running": return LuminaTheme.accentMuted
+        case "paused": return Color.orange.opacity(0.15)
+        default: return LuminaTheme.border.opacity(book.hasCompletedSummary ? 0.45 : 0.35)
+        }
+    }
+
+    private var foreground: Color {
+        if book.isIngestFailed { return .orange }
+        if book.isSegmenting { return LuminaTheme.accent }
+        switch book.summarize_state {
+        case "running": return LuminaTheme.accent
+        case "paused": return .orange
+        default: return LuminaTheme.textSecondary
+        }
+    }
 }

@@ -44,6 +44,60 @@ def test_parse_summary_legacy_string_bullets():
     assert summary.bullets[0].label == "寒门出身"
 
 
+def test_segment_list_preview_uses_sentence_not_inferred_label():
+    from lumina_core.summarize.preview import segment_list_preview
+
+    payload = {
+        "sentences": ["邻里虽敬其向学，却无力资助书卷。"],
+        "bullets": [{"label": "邻里", "body": "乡邻敬其向学但无力资助。"}],
+        "label": "邻里虽敬",
+    }
+    preview = segment_list_preview(payload)
+    assert preview == "邻里虽敬其向学，却无力资助书卷。"
+    assert preview != "邻里虽敬"
+
+
+def test_segment_list_bullet_labels_extracts_titles_not_bodies():
+    from lumina_core.summarize.preview import segment_list_bullet_labels, segment_list_fields
+
+    payload = {
+        "sentences": ["邻里虽敬其向学，却无力资助书卷。"],
+        "bullets": [
+            {"label": "寒门出身", "body": "主角生于贫苦农家。"},
+            {"label": "赴考之志", "body": "段末誓要金榜题名。"},
+            "邻里期望：乡邻将其视为希望。",
+        ],
+        "label": "寒门",
+    }
+    assert segment_list_bullet_labels(payload) == ["寒门出身", "赴考之志", "邻里期望"]
+    preview, labels = segment_list_fields(payload)
+    assert preview == "邻里虽敬其向学，却无力资助书卷。"
+    assert labels == ["寒门出身", "赴考之志", "邻里期望"]
+    assert segment_list_bullet_labels(None) == []
+
+
+def test_segment_list_preview_falls_back_to_bullets_and_clips():
+    from lumina_core.summarize.preview import LIST_PREVIEW_MAX_CHARS, segment_list_preview
+
+    payload = {
+        "sentences": [],
+        "bullets": [
+            {"label": "寒门出身", "body": "主角生于贫苦农家。"},
+            {"label": "赴考之志", "body": "段末誓要金榜题名。"},
+        ],
+        "label": "寒门",
+    }
+    preview = segment_list_preview(payload)
+    assert preview and "寒门出身" in preview
+    assert "主角生于贫苦农家" in preview
+
+    long_sentence = "甲" * 200
+    clipped = segment_list_preview({"sentences": [long_sentence], "bullets": []})
+    assert clipped is not None
+    assert len(clipped) == LIST_PREVIEW_MAX_CHARS
+    assert clipped.endswith("…")
+
+
 def test_parse_summary_preserves_optional_notes_when_present():
     raw = {
         "sentences": ["一句概述。"],

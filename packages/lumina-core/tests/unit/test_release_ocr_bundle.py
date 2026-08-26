@@ -89,6 +89,20 @@ def test_app_size_cap_is_not_tighter_than_sidecar():
     assert app >= sidecar
 
 
+def test_test_macos_recipe_cannot_launch_two_app_hosts():
+    """LuminaTests runs inside Lumina.app, and LaunchServices refuses a second
+    instance of the same bundle id: parallel clones and an already running app
+    both surface as an opaque "Could not launch LuminaTests"."""
+    import re
+
+    justfile = (ROOT / "justfile").read_text(encoding="utf-8")
+    recipe = re.search(r"^test-macos:\n(?:[ \t]+.*\n)+", justfile, re.M)
+    assert recipe, "test-macos recipe missing"
+    body = recipe.group(0)
+    assert "-parallel-testing-enabled NO" in body
+    assert "pgrep -x Lumina" in body
+
+
 def test_windows_reader_avoids_missing_winui_symbols():
     """WinUI VirtualKey has no Oem*Brackets; SliderSnapsTo lives in Primitives."""
     text = (

@@ -99,37 +99,33 @@ final class SummarizeActivityChipTests: XCTestCase {
             ReaderSummaryProgressPolicy.shouldShowContentBanner(
                 readyCount: 2,
                 totalCount: 10,
-                overviewActive: false,
                 segmentListVisible: false
             )
         )
     }
 
-    func testReaderContentBanner_hidesWhenSegmentListAlreadyShowsIt() {
+    func testReaderContentBanner_hidesWhenSegmentListOpen() {
         XCTAssertFalse(
             ReaderSummaryProgressPolicy.shouldShowContentBanner(
                 readyCount: 2,
                 totalCount: 10,
-                overviewActive: true,
                 segmentListVisible: true
             )
         )
     }
 
-    func testReaderContentBanner_showsLibraryQueueOnCompleteBook() {
-        XCTAssertTrue(
-            ReaderSummaryProgressPolicy.shouldShowContentBanner(
-                readyCount: 10,
-                totalCount: 10,
-                overviewActive: true,
-                segmentListVisible: false
-            )
-        )
+    func testReaderContentBanner_hidesOnCompleteBook() {
         XCTAssertFalse(
             ReaderSummaryProgressPolicy.shouldShowContentBanner(
                 readyCount: 10,
                 totalCount: 10,
-                overviewActive: false,
+                segmentListVisible: false
+            )
+        )
+        XCTAssertTrue(
+            ReaderSummaryProgressPolicy.shouldShowContentBanner(
+                readyCount: 9,
+                totalCount: 10,
                 segmentListVisible: false
             )
         )
@@ -180,6 +176,180 @@ final class SummarizeActivityChipTests: XCTestCase {
         XCTAssertFalse(
             source.contains("&& !librarySidebarPinned"),
             "pinning recents must not hide reading-surface summarize progress"
+        )
+        XCTAssertTrue(
+            source.contains("onStatusTap: openLibrarySummarizingCollection"),
+            "tapping the 进行中/排队 chip must leave the reader for the bookshelf 摘要中 collection"
+        )
+        guard let start = source.range(of: "private func openLibrarySummarizingCollection"),
+              let end = source.range(of: "private func stopAllSummarize")
+        else {
+            return XCTFail("could not isolate openLibrarySummarizingCollection in ReaderView.swift")
+        }
+        let jump = String(source[start.lowerBound..<end.lowerBound])
+        XCTAssertTrue(
+            jump.contains("SummarizeActivityNavigationPolicy.destinationCollection"),
+            "the chip must select the 摘要中 sidebar collection"
+        )
+        XCTAssertTrue(
+            jump.contains("onReturnToBookshelf()"),
+            "the chip must leave the reader for the bookshelf"
+        )
+        XCTAssertTrue(
+            jump.contains("flushProgressSave()"),
+            "leaving via the chip must save reading progress like the back button"
+        )
+    }
+
+    @MainActor
+    func testStatusTap_opensSummarizingCollectionWithoutClearingOtherFacets() {
+        XCTAssertEqual(
+            SummarizeActivityNavigationPolicy.destinationCollection,
+            .summarizing
+        )
+        XCTAssertEqual(
+            SummarizeActivityNavigationPolicy.destinationCollection.label,
+            "摘要中"
+        )
+
+        let viewModel = LibraryViewModel()
+        viewModel.selectFacet(.unread)
+        viewModel.selectFacet(SummarizeActivityNavigationPolicy.destinationCollection)
+        XCTAssertEqual(viewModel.query.summary, .summarizing)
+        XCTAssertEqual(viewModel.query.reading, .unread)
+        XCTAssertTrue(viewModel.query.isSelected(.summarizing))
+    }
+
+    func testChipSource_statusTapIsSeparateFromStop() throws {
+        let macosRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(
+            contentsOf: macosRoot.appendingPathComponent(
+                "Lumina/Features/Library/SummarizeActivityChip.swift"
+            ),
+            encoding: .utf8
+        )
+        XCTAssertTrue(source.contains("var onStatusTap: (() -> Void)? = nil"))
+        XCTAssertTrue(source.contains("Button(action: onStop)"))
+        XCTAssertTrue(source.contains("Button(action: onStatusTap)"))
+        XCTAssertTrue(source.contains("停止全部摘要"))
+        XCTAssertTrue(source.contains("SummarizeActivityNavigationPolicy.statusTapHelp"))
+
+        let bookshelf = try String(
+            contentsOf: macosRoot.appendingPathComponent(
+                "Lumina/Features/Library/BookshelfView.swift"
+            ),
+            encoding: .utf8
+        )
+        XCTAssertTrue(
+            bookshelf.contains("onStatusTap:"),
+            "bookshelf chip text must also jump to 摘要中; only x stops"
+        )
+        XCTAssertTrue(
+            bookshelf.contains("SummarizeActivityNavigationPolicy.destinationCollection")
+        )
+    }
+
+    /// Segment list used to duplicate 摘要 n/m + the activity chip already on the chrome bar.
+    func testSegmentList_doesNotHostOverallSummaryProgress() throws {
+        let macosRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(
+            contentsOf: macosRoot.appendingPathComponent(
+                "Lumina/Features/Reader/ReaderView.swift"
+            ),
+            encoding: .utf8
+        )
+        guard let start = source.range(of: "private var segmentCoverPanel"),
+              let end = source.range(of: "private var sidebarHeaderButtons")
+        else {
+            return XCTFail("could not isolate segmentCoverPanel in ReaderView.swift")
+        }
+        let panel = String(source[start.lowerBound..<end.lowerBound])
+        XCTAssertFalse(
+            panel.contains("SummaryProgressBanner"),
+            "segment list must not show book-level 摘要 n/m; the chrome bar already has it"
+        )
+        XCTAssertFalse(
+            panel.contains("readerSummarizeActivityChip"),
+            "segment list must not repeat the 进行中/排队 chip from the chrome bar"
+        )
+        XCTAssertFalse(source.contains("hideWhenComplete"))
+    }
+
+    func testSummaryProgressBannerReservedHeight_isConstant() {
+        let height = SummaryProgressBannerMetrics.reservedHeight
+        XCTAssertEqual(height, 82)
+        XCTAssertEqual(
+            SummaryProgressBannerMetrics.verticalPadding * 2
+                + SummaryProgressBannerMetrics.titleLineHeight
+                + SummaryProgressBannerMetrics.rowSpacing
+                + SummaryProgressBannerMetrics.barHeight
+                + SummaryProgressBannerMetrics.rowSpacing
+                + SummaryProgressBannerMetrics.captionLineHeight
+                + SummaryProgressBannerMetrics.rowSpacing
+                + SummaryProgressBannerMetrics.activeLineHeight,
+            height
+        )
+    }
+
+    func testSummaryProgressBanner_alwaysReservesCaptionRows() throws {
+        let macosRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(
+            contentsOf: macosRoot.appendingPathComponent(
+                "Lumina/Features/Reader/SummaryProgressBanner.swift"
+            ),
+            encoding: .utf8
+        )
+        XCTAssertTrue(source.contains("frame(height: SummaryProgressBannerMetrics.reservedHeight"))
+        XCTAssertFalse(
+            source.contains("if let activityLabel"),
+            "omitting the activity row when a caption is missing changes inset height"
+        )
+        XCTAssertFalse(
+            source.contains("if totalCount > 0, readyCount < totalCount"),
+            "hiding the whole banner body when the book completes while overview is active collapses the inset"
+        )
+        XCTAssertTrue(source.contains("captionRow("))
+        XCTAssertTrue(source.contains(".lineLimit(1)"))
+    }
+
+    func testReaderFeedBannerInset_usesReservedHeight() throws {
+        let macosRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(
+            contentsOf: macosRoot.appendingPathComponent(
+                "Lumina/Features/Reader/ReaderView.swift"
+            ),
+            encoding: .utf8
+        )
+        guard let start = source.range(of: ".scrollPosition(id: $topSegmentIdx, anchor: .top)"),
+              let end = source.range(of: "ReaderChromeBarMetrics.height")
+        else {
+            return XCTFail("could not isolate the summary-progress inset in ReaderView.swift")
+        }
+        let inset = String(source[start.lowerBound..<end.lowerBound])
+        XCTAssertTrue(
+            inset.contains("SummaryProgressBannerMetrics.reservedHeight"),
+            "the feed inset must keep a constant height while summarizing"
+        )
+        XCTAssertFalse(
+            inset.contains("padding(.vertical"),
+            "extra vertical padding on top of reservedHeight would make caption rows shift the feed"
+        )
+        XCTAssertTrue(
+            inset.contains("transaction { $0.animation = nil }")
+                || inset.contains(".animation(nil, value: shouldShowContentSummaryProgress)"),
+            "showing or hiding the banner must not animate the feed sliding"
         )
     }
 

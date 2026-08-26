@@ -5,6 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from lumina_core.chunker.markers import heading_marker
+
 
 def load_odt(path: Path) -> tuple[str, dict[str, Any]]:
     try:
@@ -24,7 +26,12 @@ def load_odt(path: Path) -> tuple[str, dict[str, Any]]:
         if tag_name == "text:h":
             value = teletype.extractText(node).strip()
             if value:
-                parts.append(f"## [§{value}]")
+                raw_level = node.getAttribute("outlinelevel") or "1"
+                try:
+                    level = max(1, int(raw_level))
+                except (TypeError, ValueError):
+                    level = 1
+                parts.append(heading_marker(value, level))
         elif tag_name == "text:p":
             value = teletype.extractText(node).strip()
             if value:

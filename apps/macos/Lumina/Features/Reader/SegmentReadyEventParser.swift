@@ -80,6 +80,49 @@ enum SegmentReadyEventParser {
         return bullets.joined(separator: " · ")
     }
 
+    static func parseBulletLabels(_ json: String?) -> [String] {
+        guard let json, let data = json.data(using: .utf8),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let bullets = obj["bullets"] as? [Any]
+        else { return [] }
+        return bullets.compactMap { bulletLabel(from: $0) }
+    }
+
+    private static func bulletLabel(from item: Any) -> String? {
+        if let text = item as? String {
+            return labelFromBulletString(text)
+        }
+        guard let dict = item as? [String: Any] else { return nil }
+        let label = (dict["label"] as? String ?? dict["tag"] as? String)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !label.isEmpty {
+            return String(label.prefix(8))
+        }
+        let body = (dict["body"] as? String ?? dict["content"] as? String ?? dict["text"] as? String)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return labelFromBulletString(body)
+    }
+
+    private static func labelFromBulletString(_ text: String) -> String? {
+        let cleaned = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleaned.isEmpty else { return nil }
+        for sep in ["：", ":"] {
+            guard let range = cleaned.range(of: sep) else { continue }
+            let left = String(cleaned[..<range.lowerBound]).trimmingCharacters(in: .whitespacesAndNewlines)
+            let right = String(cleaned[range.upperBound...]).trimmingCharacters(in: .whitespacesAndNewlines)
+            if !left.isEmpty, !right.isEmpty, left.count <= 12, !left.contains("。") {
+                return String(left.prefix(8))
+            }
+        }
+        if cleaned.count <= 8 { return cleaned }
+        return String(cleaned.prefix(8))
+    }
+
+    /// Catalog line: first sentence, else joined bullets. Not the 2–8 char inferred label.
+    static func formatListPreview(_ json: String?, maxChars: Int = SegmentCatalogPreview.maxChars) -> String? {
+        SegmentCatalogPreview.fromSummaryJSON(json, maxChars: maxChars)
+    }
+
     static func parseBullets(_ json: String?) -> [String] {
         guard let json, let data = json.data(using: .utf8),
               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],

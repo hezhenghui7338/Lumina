@@ -168,7 +168,7 @@ struct OnboardingView: View {
         case 1:
             return "默认使用本机 Ollama 做摘要（免费）。也可稍后在设置中添加 OpenAI / OpenRouter 等外部 API，并为深聊与摘要分别配置优先级链。"
         default:
-            return "支持 PDF、EPUB、MOBI、TXT。点书库「导入」选文件即可；第一段准备好就能开始读。"
+            return "支持 PDF、EPUB、MOBI、AZW3、TXT。点书库「导入」选文件即可；第一段准备好就能开始读。"
         }
     }
 }

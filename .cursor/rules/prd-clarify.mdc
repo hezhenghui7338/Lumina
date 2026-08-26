@@ -1,0 +1,10 @@
+---
+description: 用户要求相对 PRD 是新增、修改或删除时，先澄清再改文档和代码
+alwaysApply: true
+---
+
+# PRD 需求澄清（每次对话）
+
+用户输入的要求和 [`docs/PRD.md`](docs/PRD.md) 不符，且属于 **新增需求 / 修改需求 / 删除需求** 时：停止实现，读项目 skill `prd-clarify`（[`.cursor/skills/prd-clarify/SKILL.md`](.cursor/skills/prd-clarify/SKILL.md)），整理 **原需求、现在的实现、新的需求**，要求用户澄清。确认后再改 PRD，然后才写代码。
+
+不触发：修 bug、对齐已有 PRD 的实现缺口、不改变产品行为的重构。

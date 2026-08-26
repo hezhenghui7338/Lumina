@@ -18,7 +18,20 @@ from tests.support.mock_router import MockModelRouter
 BOOK_ID = "b1"
 SEG_ID = "s1"
 
-REQUIRED_BOOK_COLUMNS = frozenset({"is_favorite", "category", "last_opened_at", "index_status"})
+REQUIRED_BOOK_COLUMNS = frozenset(
+    {
+        "is_favorite",
+        "category",
+        "last_opened_at",
+        "index_status",
+        "summarize_intent",
+        "current_segment_index",
+        "cover_path",
+        "language",
+        "target_language",
+        "translation_mode",
+    }
+)
 REQUIRED_SEGMENT_COLUMNS = frozenset(
     {
         "chapter",
@@ -161,6 +174,7 @@ def test_legacy_db_library_apis_return_200(legacy_upgraded_client):
 
     assert client.get("/books", params={"sort": "recent"}).status_code == 200
     assert client.get("/books", params={"sort": "favorite"}).status_code == 200
+    assert client.get("/books", params={"sort": "progress"}).status_code == 200
 
     book = client.get(f"/books/{BOOK_ID}")
     assert book.status_code == 200
@@ -191,4 +205,27 @@ def test_legacy_db_list_books_after_migration(tmp_path):
 
     favorites = repo.list_books(sort="favorite")
     assert len(favorites) == 1
+
+    by_progress = repo.list_books(sort="progress")
+    assert len(by_progress) == 1
+    assert by_progress[0]["id"] == BOOK_ID
     conn.close()
+
+
+def test_legacy_schema_migrates_all_fresh_book_columns(tmp_path):
+    """Migrated legacy DBs must have the same books columns as a newly created DB.
+
+    sort=progress and reading filters reference current_segment_index; if that
+    column is in SCHEMA_SQL but missing from _BOOK_COLUMNS, GET /books returns 503.
+    """
+    legacy_path = tmp_path / "legacy.db"
+    _create_legacy_db(legacy_path)
+    legacy = init_db(legacy_path)
+    migrated = {row[1] for row in legacy.execute("PRAGMA table_info(books)")}
+    legacy.close()
+
+    fresh = init_db(tmp_path / "fresh.db")
+    expected = {row[1] for row in fresh.execute("PRAGMA table_info(books)")}
+    fresh.close()
+
+    assert expected <= migrated, f"legacy upgrade missing books columns: {expected - migrated}"

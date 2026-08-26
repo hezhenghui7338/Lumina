@@ -1,64 +1,29 @@
 import CoreGraphics
 
-enum ReaderSegmentListGeometry {
-    static func isPointerInSegmentList(_ point: CGPoint, segmentsWidth: CGFloat) -> Bool {
-        point.x <= segmentsWidth
-    }
+/// Segment catalog overlay over the reader. Must not insert a column that
+/// squeezes the reading surface. Recents while reading is not a surface.
+enum ReaderCoverPage: Equatable {
+    case none
+    case segments
+
+    var isOpen: Bool { self != .none }
+    var showsSegments: Bool { self == .segments }
 }
 
-/// Toolbar / edge-icon click pins the list. Left-edge hover only peeks.
-struct ReaderSegmentListVisibility: Equatable {
-    var pinned: Bool
-    var peeking: Bool
-
-    var overlayVisible: Bool { peeking && !pinned }
-    var inlineVisible: Bool { pinned }
-    var anyVisible: Bool { overlayVisible || inlineVisible }
-
-    static let hidden = ReaderSegmentListVisibility(pinned: false, peeking: false)
-}
-
-enum ReaderSegmentListPolicy {
-    /// Window toolbar and left-edge icon: persist as an inline sidebar.
-    static func toggleByExplicitClick(
-        _ state: ReaderSegmentListVisibility
-    ) -> ReaderSegmentListVisibility {
-        if state.pinned {
-            return .hidden
-        }
-        return ReaderSegmentListVisibility(pinned: true, peeking: false)
+enum ReaderCoverPagePolicy {
+    /// Bottom-bar catalog click. Same target again closes the page.
+    static func toggle(
+        _ current: ReaderCoverPage,
+        to target: ReaderCoverPage
+    ) -> ReaderCoverPage {
+        guard target != .none else { return .none }
+        return current == target ? .none : target
     }
 
-    /// Left-edge dwell: overlay peek that retracts when the pointer leaves.
-    static func beginEdgePeek(
-        _ state: ReaderSegmentListVisibility
-    ) -> ReaderSegmentListVisibility {
-        if state.pinned { return state }
-        return ReaderSegmentListVisibility(pinned: false, peeking: true)
-    }
+    static func close() -> ReaderCoverPage { .none }
 
-    /// Pointer left the overlay, blank click, or chrome collapse. Does not unpin.
-    static func endPeek(
-        _ state: ReaderSegmentListVisibility
-    ) -> ReaderSegmentListVisibility {
-        var next = state
-        next.peeking = false
-        return next
-    }
-
-    /// Header pin while peeking.
-    static func pin(
-        _: ReaderSegmentListVisibility
-    ) -> ReaderSegmentListVisibility {
-        ReaderSegmentListVisibility(pinned: true, peeking: false)
-    }
-
-    /// Header chevron: dismiss peek or unpin.
-    static func close(
-        _: ReaderSegmentListVisibility
-    ) -> ReaderSegmentListVisibility {
-        .hidden
-    }
+    /// Choosing a segment dismisses the cover so reading is visible.
+    static func selectItem() -> ReaderCoverPage { .none }
 }
 
 /// Reading progress is the segment pinned to the top of the viewport, reported
@@ -152,6 +117,20 @@ enum ReaderKeyboardScroll {
     }
 }
 
+/// Height reserved for a segment that does not yet have a summary, so
+/// `pending` → `running` → `ready` does not explode the feed and yank
+/// `scrollPosition` back to the pinned segment's top.
+enum SegmentSummaryPlaceholderHeight {
+    static let minimum: CGFloat = 200
+    static let maximum: CGFloat = 600
+    static let charsPerPoint: CGFloat = 6
+
+    static func reserved(charCount: Int?) -> CGFloat {
+        guard let charCount, charCount > 0 else { return minimum }
+        return min(max(CGFloat(charCount) / charsPerPoint, minimum), maximum)
+    }
+}
+
 enum ReaderSegmentPanelHeight {
     static let minHeight: CGFloat = 160
     static let maxHeight: CGFloat = 420
@@ -183,5 +162,35 @@ enum SegmentTurnNavigation {
         let newPos = pos + delta
         guard sortedIdxs.indices.contains(newPos) else { return nil }
         return sortedIdxs[newPos]
+    }
+}
+
+/// Hardware `[` / `]` (keyCode 33 / 30). Chinese IME types 【】 on the same keys.
+/// Character `onKeyPress` only fires while the SwiftUI reader view is first
+/// responder; after a turn, selectable body text steals focus and the second
+/// press dies. Key codes keep working.
+enum SegmentTurnKeyPolicy {
+    static let openBracketKeyCode: UInt16 = 33
+    static let closeBracketKeyCode: UInt16 = 30
+
+    static func delta(
+        keyCode: UInt16,
+        characters: String,
+        shift: Bool,
+        isRepeat: Bool
+    ) -> Int? {
+        if isRepeat { return nil }
+        if shift { return nil }
+        switch keyCode {
+        case openBracketKeyCode: return -1
+        case closeBracketKeyCode: return 1
+        default:
+            break
+        }
+        switch characters {
+        case "[", "【": return -1
+        case "]", "】": return 1
+        default: return nil
+        }
     }
 }

@@ -120,7 +120,7 @@ _BACK_EXACT = {
     "index": DocumentRole.INDEX,
 }
 _BODY_HEADING = re.compile(
-    r"^(?:第[零一二三四五六七八九十百千\d]+[章节篇回]|chapter\s+\d+|正文)\b",
+    r"^(?:第[零一二三四五六七八九十百千\d]+[章节篇回]|chapter\s+\d+|正文)",
     re.IGNORECASE,
 )
 _STRIP_MARKER = re.compile(r"^##\s*\[§(.+)\]\s*$")

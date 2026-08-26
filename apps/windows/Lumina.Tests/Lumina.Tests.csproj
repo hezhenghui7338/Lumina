@@ -17,5 +17,20 @@
     <Compile Include="..\Lumina\Services\CoreClient.cs" Link="CoreClient.cs" />
     <Compile Include="..\Lumina\Services\SummaryJsonParser.cs" Link="SummaryJsonParser.cs" />
     <Compile Include="..\Lumina\Services\SidecarReadiness.cs" Link="SidecarReadiness.cs" />
+    <Compile Include="..\Lumina\Features\Reader\SelectionActionPolicy.cs" Link="SelectionActionPolicy.cs" />
+    <Compile Include="..\Lumina\Features\Reader\ChatCitationJumpPolicy.cs" Link="ChatCitationJumpPolicy.cs" />
+    <Compile Include="..\Lumina\Features\Reader\NeighborPrefetchPolicy.cs" Link="NeighborPrefetchPolicy.cs" />
+    <Compile Include="..\Lumina\Features\Reader\SegmentCatalogPolicy.cs" Link="SegmentCatalogPolicy.cs" />
+    <Compile Include="..\Lumina\Features\Library\SummarizeActivityPolicy.cs" Link="SummarizeActivityPolicy.cs" />
+    <Compile Include="..\Lumina\Features\Library\LibraryImportPolicy.cs" Link="LibraryImportPolicy.cs" />
+    <Compile Include="..\Lumina\Features\Library\LibrarySummarizeScope.cs" Link="LibrarySummarizeScope.cs" />
+    <Compile Include="..\Lumina\Features\Library\LibraryNavArgs.cs" Link="LibraryNavArgs.cs" />
+    <Compile Include="..\Lumina\Features\Settings\CustomResourceDraft.cs" Link="CustomResourceDraft.cs" />
+    <Compile Include="..\Lumina\Design\ReaderPaper.cs" Link="ReaderPaper.cs" />
+    <Compile Include="..\Lumina\Design\ReadingFontScale.cs" Link="ReadingFontScale.cs" />
+    <Compile Include="..\Lumina\Features\Shared\ImportConflictPolicy.cs" Link="ImportConflictPolicy.cs" />
+    <Compile Include="..\Lumina\Features\Reader\Listen\ListenScript.cs" Link="ListenScript.cs" />
+    <Compile Include="..\Lumina\Features\Reader\Listen\ListenAdvancePolicy.cs" Link="ListenAdvancePolicy.cs" />
+    <Compile Include="..\Lumina\Features\Shared\ExportMarkdownMode.cs" Link="ExportMarkdownMode.cs" />
   </ItemGroup>
 </Project>

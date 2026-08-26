@@ -15,6 +15,9 @@ struct BookshelfView: View {
     var onStopSummarize: () -> Void
 
     @State private var bookPendingDelete: BookSummary?
+    @State private var bookPendingRename: BookSummary?
+    @State private var showRenameAlert = false
+    @State private var renameDraft = ""
     @State private var actionError: String?
     @State private var isSelectionMode = false
     @State private var checkedBookIds: Set<String> = []
@@ -22,8 +25,10 @@ struct BookshelfView: View {
     @State private var bookPendingExport: BookSummary?
     @State private var bookPendingResegment: BookSummary?
     @State private var resegmentTargetChars = 4000
+    @State private var resegmentTier: SegmentTier = .normal
     @State private var isResegmentSubmitting = false
     @State private var exportIncludeNotes = false
+    @State private var exportMode = MarkdownExportMode.full
     @State private var exportDocument = MarkdownExportDocument(text: "")
     @State private var showFileExporter = false
     @State private var exportDefaultFilename = "summary.md"
@@ -31,11 +36,13 @@ struct BookshelfView: View {
     @State private var shouldPresentFileExporter = false
     @State private var exportFeedback: ExportFeedback?
     @State private var summarizeActionInFlight = false
+    @State private var showAdvancedStartConfirm = false
+    @State private var showSummarizePopover = false
     @State private var dropTargeted = false
 
     private static let importExtensions: Set<String> = [
         "txt", "text", "md", "markdown", "mdown", "mkd", "log",
-        "pdf", "epub", "mobi",
+        "pdf", "epub", "mobi", "azw", "azw3",
         "html", "htm", "xhtml", "rtf", "docx", "odt", "fb2",
     ]
 
@@ -57,12 +64,11 @@ struct BookshelfView: View {
             }
             .background(dropTargeted ? LuminaTheme.accentMuted.opacity(0.45) : Color.clear)
         }
-        .navigationTitle(viewModel.collection.label)
+        .navigationTitle(viewModel.query.title)
         .toolbar { toolbarContent }
         .onChange(of: viewModel.displayedBooks.map(\.id)) { _, _ in
             syncCheckedBooks()
         }
-        .onDrop(of: [.fileURL], isTargeted: $dropTargeted, perform: handleDrop)
         .confirmationDialog(
             "确定删除这本书？",
             isPresented: Binding(
@@ -99,6 +105,13 @@ struct BookshelfView: View {
         } message: {
             Text("将删除本地副本、摘要与笔记，且不可恢复。")
         }
+        .alert("重命名", isPresented: $showRenameAlert) {
+            TextField("书名", text: $renameDraft)
+            Button("保存") {
+                Task { await confirmRename() }
+            }
+            Button("取消", role: .cancel) {}
+        }
         .alert("出错了", isPresented: Binding(
             get: { actionError != nil },
             set: { if !$0 { actionError = nil } }
@@ -106,6 +119,16 @@ struct BookshelfView: View {
             Button("好") { actionError = nil }
         } message: {
             Text(actionError ?? "")
+        }
+        .confirmationDialog(
+            "高级摘要",
+            isPresented: $showAdvancedStartConfirm,
+            titleVisibility: .visible
+        ) {
+            Button("开始高级摘要") { onStartSummarize(.advanced) }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("将用高级模型补齐尚未摘要的段落，消耗更多计算与 API。已有摘要不会被覆盖。")
         }
         .exportFeedbackAlert($exportFeedback)
         .sheet(item: $bookPendingExport, onDismiss: presentFileExporterIfNeeded) { book in
@@ -115,6 +138,7 @@ struct BookshelfView: View {
                     set: { if !$0 { bookPendingExport = nil } }
                 ),
                 includeNotes: $exportIncludeNotes,
+                mode: $exportMode,
                 summaryReadyCount: book.summaryReady,
                 summaryTotalCount: book.summaryTotal,
                 onFetchMarkdown: {
@@ -122,12 +146,16 @@ struct BookshelfView: View {
                         core: core,
                         bookId: book.id,
                         summaryReadyCount: book.summaryReady,
-                        includeNotes: exportIncludeNotes
+                        includeNotes: exportIncludeNotes,
+                        mode: exportMode
                     )
                 },
                 onMarkdownReady: { markdown in
                     exportDocument = MarkdownExportDocument(text: markdown)
-                    exportDefaultFilename = BookMarkdownExporter.defaultFilename(for: book.title)
+                    exportDefaultFilename = BookMarkdownExporter.defaultFilename(
+                        for: book.title,
+                        mode: exportMode
+                    )
                     exportFallbackBookTitle = book.title
                     shouldPresentFileExporter = true
                     bookPendingExport = nil
@@ -139,6 +167,7 @@ struct BookshelfView: View {
             ResegmentBookSheet(
                 bookTitle: book.title,
                 targetChars: $resegmentTargetChars,
+                segmentTier: $resegmentTier,
                 isPresented: Binding(
                     get: { bookPendingResegment != nil },
                     set: { if !$0 { bookPendingResegment = nil } }
@@ -175,7 +204,12 @@ struct BookshelfView: View {
                     queued: overview.counts.queued,
                     indexing: overview.indexingCount,
                     stalledReason: overview.stalled_reason,
-                    isBusy: summarizeActionInFlight
+                    isBusy: summarizeActionInFlight,
+                    onStatusTap: {
+                        viewModel.selectFacet(
+                            SummarizeActivityNavigationPolicy.destinationCollection
+                        )
+                    }
                 ) {
                     Task { await stopAllSummarize() }
                 }
@@ -198,16 +232,33 @@ struct BookshelfView: View {
                 Label("全部笔记", systemImage: "note.text")
             }
 
-            Menu {
-                Menu("开始全部摘要") {
-                    ForEach(SummaryTier.allCases) { tier in
-                        Button(tier.startMenuLabel) { onStartSummarize(tier) }
-                    }
-                }
-                Button("停止全部摘要", action: onStopSummarize)
+            Button {
+                showSummarizePopover.toggle()
             } label: {
                 Label("摘要", systemImage: "text.alignleft")
             }
+            .popover(isPresented: $showSummarizePopover, arrowEdge: .bottom) {
+                VStack(alignment: .leading, spacing: 4) {
+                    SummarizeChevronSplit(title: "全部开始摘要") {
+                        showSummarizePopover = false
+                        onStartSummarize(.normal)
+                    } advancedMenu: {
+                        Button("高级摘要（仅未摘要）") {
+                            showSummarizePopover = false
+                            showAdvancedStartConfirm = true
+                        }
+                    }
+                    Button("全部停止摘要", action: {
+                        showSummarizePopover = false
+                        onStopSummarize()
+                    })
+                    .buttonStyle(.plain)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 6)
+                }
+                .padding(10)
+            }
+            .help("点「全部开始摘要」立即正常档；点旁边箭头才展开高级（悬停不弹出）")
         }
     }
 
@@ -256,13 +307,13 @@ struct BookshelfView: View {
     private var emptyState: some View {
         ContentUnavailableView {
             Label(
-                viewModel.books.isEmpty ? "书架是空的" : "这个集合里没有书",
+                viewModel.books.isEmpty ? "书架是空的" : "没有符合筛选的书",
                 systemImage: "books.vertical"
             )
         } description: {
             Text(viewModel.books.isEmpty
                  ? "导入电子书，或把文件拖到这里"
-                 : "试试其他集合，或导入新书")
+                 : "试试其他筛选，或导入新书")
         } actions: {
             Button(action: onImport) {
                 Label("导入书籍", systemImage: "square.and.arrow.down")
@@ -289,6 +340,7 @@ struct BookshelfView: View {
                         onToggleCheck: { toggleCheck(book.id) },
                         onOpen: { openBook(book) },
                         onToggleFavorite: { Task { await toggleFavorite(book) } },
+                        onRename: { presentRename(book) },
                         onReclassify: { Task { await reclassify(book.id) } },
                         onResegment: { presentResegment(for: book) },
                         onExport: { presentExport(for: book) },
@@ -326,6 +378,7 @@ struct BookshelfView: View {
             isChecked: checkedBookIds.contains(book.id),
             onToggleCheck: { toggleCheck(book.id) },
             onToggleFavorite: { Task { await toggleFavorite(book) } },
+            onRename: { presentRename(book) },
             onReclassify: { Task { await reclassify(book.id) } },
             onResegment: { presentResegment(for: book) },
             onExport: { presentExport(for: book) },
@@ -374,8 +427,7 @@ struct BookshelfView: View {
     }
 
     private func openBook(_ book: BookSummary) {
-        if book.isProcessing { return }
-        if book.status == "error" {
+        if !book.canOpenInReader {
             actionError = book.statusLabel
             return
         }
@@ -384,6 +436,7 @@ struct BookshelfView: View {
 
     private func presentExport(for book: BookSummary) {
         exportIncludeNotes = false
+        exportMode = .full
         bookPendingExport = book
     }
 
@@ -394,6 +447,7 @@ struct BookshelfView: View {
             totalChars: book.total_char_count,
             segmentCount: book.segment_count ?? 0
         )
+        resegmentTier = .normal
         bookPendingResegment = book
     }
 
@@ -405,6 +459,7 @@ struct BookshelfView: View {
                 try await viewModel.resegmentBook(
                     book,
                     chunkTargetChars: resegmentTargetChars,
+                    segmentTier: resegmentTier,
                     using: core
                 )
                 bookPendingResegment = nil
@@ -435,7 +490,8 @@ struct BookshelfView: View {
         case .failure:
             exportFeedback = BookMarkdownExporter.presentSavePanelFallback(
                 markdown: markdown,
-                bookTitle: bookTitle
+                bookTitle: bookTitle,
+                mode: exportMode
             )
         }
     }
@@ -534,6 +590,23 @@ struct BookshelfView: View {
             try await viewModel.deleteBook(id: book.id, using: core)
             if selectedBookId == book.id { selectedBookId = nil }
             syncCheckedBooks()
+        } catch {
+            actionError = ConnectionError.userMessage(for: error)
+        }
+    }
+
+    private func presentRename(_ book: BookSummary) {
+        bookPendingRename = book
+        renameDraft = book.title
+        showRenameAlert = true
+    }
+
+    private func confirmRename() async {
+        guard let book = bookPendingRename else { return }
+        let title = renameDraft
+        bookPendingRename = nil
+        do {
+            try await viewModel.renameBook(book, title: title, using: core)
         } catch {
             actionError = ConnectionError.userMessage(for: error)
         }

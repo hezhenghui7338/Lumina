@@ -7,6 +7,7 @@ from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, ClassVar
 
+from lumina_core.chunker.markers import heading_marker
 from lumina_core.ingest.text import decode_text_bytes
 
 
@@ -77,7 +78,7 @@ class _DocumentParser(HTMLParser):
         elif re.fullmatch(r"h[1-6]", tag) and self._heading_depth:
             heading = _clean_inline("".join(self._heading_parts))
             if heading:
-                self.parts.append(f"\n\n## [§{heading}]\n")
+                self.parts.append(f"\n\n{heading_marker(heading, int(tag[1]))}\n")
                 self.metadata.setdefault("title", heading)
             self._heading_depth -= 1
             self._heading_parts = []

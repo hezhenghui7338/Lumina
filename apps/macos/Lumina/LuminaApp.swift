@@ -56,7 +56,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         Task { @MainActor in
             await ReadingProgressStore.shared.flushAll()
-            sidecar?.stop()
+            await sidecar?.stop(userInitiated: false)
             sender.reply(toApplicationShouldTerminate: true)
         }
         return .terminateLater

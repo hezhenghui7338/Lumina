@@ -5,16 +5,19 @@ struct FollowUpChip: View {
     let text: String
     let index: Int
 
+    @EnvironmentObject private var theme: ThemeManager
+    @Environment(\.readerPaper) private var paper
+
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
             Text("\(index).")
-                .font(.system(size: LuminaTheme.summaryBulletSize, weight: .medium))
+                .font(.system(size: theme.scaled(LuminaTheme.summaryBulletSize), weight: .medium))
                 .foregroundStyle(LuminaTheme.accent)
                 .frame(minWidth: 16, alignment: .trailing)
             Text(text)
-                .font(.system(size: LuminaTheme.summaryBulletSize, weight: .regular))
-                .foregroundStyle(LuminaTheme.textPrimary)
-                .lineSpacing(LuminaTheme.summaryBulletLineSpacing)
+                .font(.system(size: theme.scaled(LuminaTheme.summaryBulletSize), weight: .regular))
+                .foregroundStyle(paper.textPrimary)
+                .lineSpacing(theme.scaled(LuminaTheme.summaryBulletLineSpacing))
                 .multilineTextAlignment(.leading)
                 .fixedSize(horizontal: false, vertical: true)
         }
@@ -23,7 +26,7 @@ struct FollowUpChip: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
             RoundedRectangle(cornerRadius: 8)
-                .fill(LuminaTheme.accentMuted.opacity(0.35))
+                .fill(paper.card.opacity(0.35))
         )
         .overlay(
             RoundedRectangle(cornerRadius: 8)

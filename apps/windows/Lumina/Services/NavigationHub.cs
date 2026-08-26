@@ -7,6 +7,7 @@ public static class NavigationHub
     public static event Action? OpenAllNotesRequested;
     public static event Action? OpenSearchRequested;
     public static event Action? OpenTaskManagerRequested;
+    public static event Action? OpenImportRequested;
 
     public static void RequestOpenBook(string bookId, string title, int? segmentIndex = null) =>
         OpenBookRequested?.Invoke(bookId, title, segmentIndex);
@@ -16,4 +17,6 @@ public static class NavigationHub
     public static void RequestSearch() => OpenSearchRequested?.Invoke();
 
     public static void RequestTaskManager() => OpenTaskManagerRequested?.Invoke();
+
+    public static void RequestImport() => OpenImportRequested?.Invoke();
 }

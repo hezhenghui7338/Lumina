@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import time
 from pathlib import Path
 
@@ -9,6 +10,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from lumina_core.config import Settings
+from lumina_core.db.repos import BookRepo
 from lumina_core.main import create_app
 from lumina_core.models.router import set_router
 from tests.support.import_helpers import import_sample_book
@@ -61,9 +63,19 @@ def test_list_books_filter_and_patch_favorite(client):
     body = patched.json()
     assert body["is_favorite"] is True
     assert body["title"] == "新标题"
+    stored = BookRepo(client.app.state.lumina.conn).get(book_id)
+    assert json.loads(stored["metadata_json"]).get("title_user_set") is True
 
     favorites = client.get("/books", params={"sort": "favorite"}).json()["books"]
     assert favorites[0]["id"] == book_id
+
+
+def test_patch_book_rejects_empty_title(client):
+    book_id = _import_sample(client)
+    before = client.get(f"/books/{book_id}").json()["title"]
+    resp = client.patch(f"/books/{book_id}", json={"title": "   "})
+    assert resp.status_code == 400
+    assert client.get(f"/books/{book_id}").json()["title"] == before
 
 
 def test_list_books_filter_unread_reading_finished(client):

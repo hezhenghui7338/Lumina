@@ -139,8 +139,8 @@ def test_ollama_budget_segments_within_max_chars():
 
 
 def test_ollama_budget_defaults():
-    """Ollama chunk budget: target 2500, max 3000 (60%–120% 浮动)."""
-    assert OLLAMA_CHUNK_TARGET == 2500
+    """Ollama chunk budget: target 2000, max 3000 (60%–150% 浮动)."""
+    assert OLLAMA_CHUNK_TARGET == 2000
     assert OLLAMA_CHUNK_MAX == 3000
 
 
@@ -151,7 +151,7 @@ def test_ollama_budget_more_segments_than_cloud():
         max_chars=OLLAMA_CHUNK_MAX,
         min_chars=int(OLLAMA_CHUNK_TARGET * 0.6),
     )
-    cloud = ChunkBudget(target_chars=4000, max_chars=4800, min_chars=2400)
+    cloud = ChunkBudget(target_chars=4000, max_chars=6000, min_chars=2400)
     ollama_count = len(chunk_text(text, budget=ollama))
     cloud_count = len(chunk_text(text, budget=cloud))
     assert ollama_count > cloud_count
@@ -172,3 +172,100 @@ def test_openrouter_budget_fewer_segments_than_ollama():
     ollama_count = len(chunk_text(text, budget=ollama))
     openrouter_count = len(chunk_text(text, budget=openrouter))
     assert ollama_count > openrouter_count
+
+
+def test_page_marker_scanned_once_not_per_segment(monkeypatch):
+    from lumina_core.chunker import chunker as chunker_mod
+
+    real = chunker_mod.PAGE_MARKER
+
+    class Probe:
+        def __init__(self) -> None:
+            self.finditer_on_book = 0
+
+        def finditer(self, text: str, *args, **kwargs):
+            if len(text) > 80:
+                self.finditer_on_book += 1
+            return real.finditer(text, *args, **kwargs)
+
+        def match(self, text: str, *args, **kwargs):
+            return real.match(text, *args, **kwargs)
+
+    probe = Probe()
+    monkeypatch.setattr(chunker_mod, "PAGE_MARKER", probe)
+    parts = [f"## [p.{i}]\n" + ("正文句子。" * 50) for i in range(1, 30)]
+    text = "\n".join(parts)
+    segments = chunk_text(text)
+    assert len(segments) >= 2
+    assert probe.finditer_on_book == 0
+
+
+def test_chunk_text_large_txt_finishes_without_full_book_regex(monkeypatch):
+    """~0.5MB line-oriented TXT must chunk in seconds, not scan BARE_CHAPTER on the book."""
+    import time
+
+    from lumina_core.chunker import markers as markers_mod
+    from lumina_core.chunker.chunker import chunk_text
+
+    real = markers_mod.BARE_CHAPTER
+
+    class Probe:
+        def finditer(self, text: str, *args, **kwargs):
+            if len(text) > 400:
+                raise AssertionError("BARE_CHAPTER must not finditer the whole book")
+            return real.finditer(text, *args, **kwargs)
+
+        def match(self, text: str, *args, **kwargs):
+            return real.match(text, *args, **kwargs)
+
+    monkeypatch.setattr(markers_mod, "BARE_CHAPTER", Probe())
+    line = "　　这是一段用于测试超大 TXT 导入的中文句子，保证每段都有句号。\n"
+    text = "第一章 开篇\n\n" + line * 4000
+    started = time.monotonic()
+    segments = chunk_text(text)
+    elapsed = time.monotonic() - started
+    assert "".join(s.raw_text for s in segments) == text.strip()
+    assert elapsed < 8.0
+    assert len(segments) >= 2
+
+
+def test_chunk_text_releases_gil_for_other_thread():
+    import threading
+    import time
+
+    ticks: list[int] = []
+    stop = threading.Event()
+
+    def ticker() -> None:
+        n = 0
+        while not stop.is_set():
+            n += 1
+            ticks.append(n)
+            time.sleep(0)
+
+    worker = threading.Thread(target=ticker)
+    worker.start()
+    deadline = time.monotonic() + 1.0
+    while not ticks and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert ticks
+    before = len(ticks)
+    para = "这是一段用来占用分段器的测试文字。\n\n"
+    text = "第一章 开篇\n\n" + para * 2500
+    chunk_text(text)
+    after = len(ticks)
+    stop.set()
+    worker.join(timeout=2)
+    assert after > before
+
+
+def test_large_atom_count_uses_rule_scorer_not_embeddings(monkeypatch):
+    monkeypatch.setattr("lumina_core.chunker.chunker.LARGE_ATOM_EMBED_LIMIT", 1)
+
+    class Boom:
+        def score_pairs(self, pairs):
+            raise AssertionError("Ollama/ONNX must not score huge books")
+
+    text = "第一段内容在这里。\n\n第二段内容也在这里。"
+    segments = chunk_text(text, scorer=Boom())
+    assert "".join(s.raw_text for s in segments) == text.strip()

@@ -9,11 +9,11 @@
             <TextBlock Text="本地 AI 伴读。三步即可开始：" TextWrapping="WrapWholeWords"
                        Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
 
-            <TextBlock Text="1. Lumina 引擎" FontSize="18" FontWeight="SemiBold" Margin="0,12,0,0"/>
+            <TextBlock Text="1. 引擎就绪" FontSize="18" FontWeight="SemiBold" Margin="0,12,0,0"/>
             <TextBlock x:Name="EngineText" Text="正在启动本地引擎…" TextWrapping="WrapWholeWords"/>
 
-            <TextBlock Text="2. 安装 Ollama（本地 AI）" FontSize="18" FontWeight="SemiBold" Margin="0,12,0,0"/>
-            <TextBlock Text="从 ollama.com 安装后，拉取模型 qwen3.5:4b（约 3.4 GB，仅首次）。"
+            <TextBlock Text="2. 安装并检测 Ollama" FontSize="18" FontWeight="SemiBold" Margin="0,12,0,0"/>
+            <TextBlock Text="从 ollama.com 安装后，拉取模型 qwen3.5:4b（约 3.4 GB，仅首次）。本机即可摘要与深聊，无需 API。"
                        TextWrapping="WrapWholeWords"/>
             <StackPanel Orientation="Horizontal" Spacing="8">
                 <Button Content="打开 Ollama 下载页" Click="OpenOllama_Click"/>
@@ -22,8 +22,8 @@
             <TextBlock x:Name="OllamaText" Text="" TextWrapping="WrapWholeWords"
                        Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
 
-            <TextBlock Text="3. 导入书籍" FontSize="18" FontWeight="SemiBold" Margin="0,12,0,0"/>
-            <TextBlock Text="支持 PDF / EPUB / MOBI / TXT。导入后即可分段阅读与深聊。"
+            <TextBlock Text="3. 进入书库，导入第一本书" FontSize="18" FontWeight="SemiBold" Margin="0,12,0,0"/>
+            <TextBlock Text="支持 PDF / EPUB / MOBI / AZW3 / TXT。导入后即可分段阅读与深聊。快捷键 Ctrl+O 随时导入。"
                        TextWrapping="WrapWholeWords"/>
 
             <Button Content="进入书库" Style="{StaticResource AccentButtonStyle}"

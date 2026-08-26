@@ -11,6 +11,10 @@ enum LuminaTheme {
     static let listSelectionBackground = accentMuted.opacity(0.45)
     /// 书库列表当前选中行背景：accent 浅 tint，与 textPrimary 对比清晰。
     static let libraryRowSelectionBackground = accentMuted
+    /// 资讯列表选中行：浅桃底，标题仍用 textPrimary。
+    static let newsRowSelectionBackground = accentMuted
+    /// 资讯列表选中框：低饱和 accent 描边，不当填充。
+    static let newsRowSelectionStroke = accent.opacity(0.25)
     static let sidebarWidth: CGFloat = 260
 
     // MARK: - Summary reading typography

@@ -6,6 +6,8 @@ import re
 from pathlib import Path
 from typing import Any
 
+from lumina_core.chunker.markers import heading_marker
+
 
 def _paragraph_text(paragraph) -> str:
     return re.sub(r"[ \t]+", " ", paragraph.text).strip()
@@ -29,7 +31,12 @@ def load_docx(path: Path) -> tuple[str, dict[str, Any]]:
             continue
         style_name = (getattr(paragraph.style, "name", "") or "").lower()
         if style_name.startswith("heading") or style_name in {"title", "subtitle"}:
-            parts.append(f"## [§{text}]")
+            level = 1
+            if style_name.startswith("heading"):
+                suffix = style_name.replace("heading", "").strip()
+                if suffix.isdigit():
+                    level = max(1, int(suffix))
+            parts.append(heading_marker(text, level))
         else:
             parts.append(text)
 

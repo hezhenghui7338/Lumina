@@ -154,12 +154,88 @@ def test_apply_book_list_filter_summarizing_and_idle():
         {"id": "running", "summarize_state": "running"},
         {"id": "queued", "summarize_state": "queued"},
         {"id": "done", "summarize_state": "summarized"},
+        {"id": "chunking", "summarize_state": "segmenting", "status": "processing"},
+        {"id": "fail", "status": "error", "summarize_state": "summarized"},
+        {"id": "cancel", "status": "error", "summarize_state": "idle"},
+        {
+            "id": "hole",
+            "status": "unread",
+            "summarize_state": "summarized",
+            "segment_count": 0,
+        },
     ]
     summarizing = apply_book_list_filter(books, "summarizing")
     idle = apply_book_list_filter(books, "idle")
+    segmenting = apply_book_list_filter(books, "segmenting")
+    failed = apply_book_list_filter(books, "error")
     assert [b["id"] for b in summarizing] == ["running", "queued"]
     assert [b["id"] for b in idle] == ["idle", "paused"]
+    assert [b["id"] for b in segmenting] == ["chunking", "hole"]
+    assert [b["id"] for b in failed] == ["fail", "cancel"]
     assert apply_book_list_filter(books, "all") == books
+
+
+def test_book_public_dict_processing_is_segmenting():
+    """Import/resegment must not look summarized while segment_count is still 0."""
+    row = {
+        "id": "b1",
+        "title": "Importing",
+        "status": "processing",
+        "segment_count": 0,
+        "is_favorite": 0,
+    }
+    out = book_public_dict(row, summarize_state="summarized")
+    assert out["summarize_state"] == "segmenting"
+    assert out["summarize_queued_count"] == 0
+
+
+def test_book_public_dict_empty_unread_is_segmenting_not_summarized():
+    """0-segment unread must not occupy 已摘要 — that hid new imports."""
+    row = {
+        "id": "b1",
+        "title": "Stuck",
+        "status": "unread",
+        "segment_count": 0,
+        "is_favorite": 0,
+    }
+    out = book_public_dict(row, summarize_state="summarized")
+    assert out["summarize_state"] == "segmenting"
+    assert out["status"] == "unread"
+
+
+def test_list_books_repairs_empty_unread_to_ingest_failed(client):
+    conn = client.app.state.lumina.conn
+    book_id = BookRepo(conn).insert(
+        title="Orphan",
+        format="txt",
+        file_path="/tmp/orphan.txt",
+        segment_count=0,
+        status="unread",
+    )["id"]
+
+    listed = next(b for b in client.get("/books").json()["books"] if b["id"] == book_id)
+    assert listed["status"] == "error"
+    assert listed["ingest_error"] == "导入中断"
+
+    failed_ids = [
+        b["id"]
+        for b in client.get("/books", params={"filter": "error"}).json()["books"]
+    ]
+    idle_ids = [
+        b["id"] for b in client.get("/books", params={"filter": "idle"}).json()["books"]
+    ]
+    segmenting_ids = [
+        b["id"]
+        for b in client.get("/books", params={"filter": "segmenting"}).json()["books"]
+    ]
+    summarized_ids = [
+        b["id"]
+        for b in client.get("/books", params={"filter": "summarized"}).json()["books"]
+    ]
+    assert book_id in failed_ids
+    assert book_id not in idle_ids
+    assert book_id not in segmenting_ids
+    assert book_id not in summarized_ids
 
 
 def test_list_books_recent_prioritizes_summarize_activity(client):
@@ -173,21 +249,16 @@ def test_list_books_recent_prioritizes_summarize_activity(client):
     )
 
     queue = client.app.state.lumina.job_queue
-    original = queue.summarize_state_by_book
+    original = queue.summarize_state_for_book
 
-    def fake_state_by_book():
-        base = original()
-        base[book_running] = {
-            "summarize_state": "running",
-            "summarize_queued_count": 0,
-        }
-        base[book_queued] = {
-            "summarize_state": "queued",
-            "summarize_queued_count": 3,
-        }
-        return base
+    def fake_state(book_id, *, ready, total):
+        if book_id == book_running:
+            return "running"
+        if book_id == book_queued:
+            return "queued"
+        return original(book_id, ready=ready, total=total)
 
-    queue.summarize_state_by_book = fake_state_by_book
+    queue.summarize_state_for_book = fake_state
 
     ids = [b["id"] for b in client.get("/books", params={"sort": "recent"}).json()["books"]]
     assert ids[:2] == [book_running, book_queued]
@@ -207,21 +278,16 @@ def test_list_books_filter_summarizing_uses_queue_state(client):
     book_idle = import_sample_book(client, sample_name="chunk_classical.txt")
 
     queue = client.app.state.lumina.job_queue
-    original = queue.summarize_state_by_book
+    original = queue.summarize_state_for_book
 
-    def fake_state_by_book():
-        base = original()
-        base[book_running] = {
-            "summarize_state": "running",
-            "summarize_queued_count": 0,
-        }
-        base[book_idle] = {
-            "summarize_state": "idle",
-            "summarize_queued_count": 0,
-        }
-        return base
+    def fake_state(book_id, *, ready, total):
+        if book_id == book_running:
+            return "running"
+        if book_id == book_idle:
+            return "idle"
+        return original(book_id, ready=ready, total=total)
 
-    queue.summarize_state_by_book = fake_state_by_book
+    queue.summarize_state_for_book = fake_state
 
     summarizing_ids = [
         b["id"]
@@ -233,6 +299,39 @@ def test_list_books_filter_summarizing_uses_queue_state(client):
     assert summarizing_ids == [book_running]
     assert book_idle in idle_ids
     assert book_running not in idle_ids
+
+
+def test_processing_book_is_segmenting_state(client):
+    book_id = import_sample_book(client, sample_name="sample.txt")
+    BookRepo(client.app.state.lumina.conn).update(book_id, status="processing")
+
+    listed = next(b for b in client.get("/books").json()["books"] if b["id"] == book_id)
+    assert listed["summarize_state"] == "segmenting"
+    assert listed["status"] == "processing"
+
+    segmenting_ids = [
+        b["id"]
+        for b in client.get("/books", params={"filter": "segmenting"}).json()["books"]
+    ]
+    idle_ids = [
+        b["id"] for b in client.get("/books", params={"filter": "idle"}).json()["books"]
+    ]
+    summarizing_ids = [
+        b["id"]
+        for b in client.get("/books", params={"filter": "summarizing"}).json()["books"]
+    ]
+    summarized_ids = [
+        b["id"]
+        for b in client.get("/books", params={"filter": "summarized"}).json()["books"]
+    ]
+    assert book_id in segmenting_ids
+    assert book_id not in idle_ids
+    assert book_id not in summarizing_ids
+    assert book_id not in summarized_ids
+
+    detail = client.get(f"/books/{book_id}").json()
+    assert detail["summarize_state"] == "segmenting"
+    assert client.get("/books/summarize/overview").json()["counts"]["segmenting"] >= 1
 
 
 def test_summarize_batch_start_stop(client):
@@ -305,6 +404,7 @@ def test_settings_matches_swift_app_settings(client):
     assert isinstance(body["ocr_cloud_timeout_seconds"], (int, float))
     assert body.get("debug_mode") is False
     assert body.get("auto_start_summary") is False
+    assert body.get("default_segment_tier") == "normal"
     prompts = body["prompts"]
     assert isinstance(prompts["segment"], str)
     assert isinstance(prompts["document"], str)
@@ -423,6 +523,11 @@ def test_news_sources_is_preset_and_restore(client):
 
 def test_resegment_request_allows_min_target_200():
     assert ResegmentRequest(chunk_target_chars=200).chunk_target_chars == 200
+    assert ResegmentRequest(chunk_target_chars=200).segment_tier == "normal"
+    assert (
+        ResegmentRequest(chunk_target_chars=200, segment_tier="advanced").segment_tier
+        == "advanced"
+    )
     with pytest.raises(ValidationError):
         ResegmentRequest(chunk_target_chars=199)
     with pytest.raises(ValidationError):
@@ -440,3 +545,31 @@ def test_book_public_dict_exposes_ingest_error():
     }
     out = book_public_dict(row)
     assert out["ingest_error"] == "unknown encoding: utf-8-sig"
+    assert "metadata_json" not in out
+    assert "document_tree" not in out
+
+
+def test_books_list_omits_metadata_json_and_document_tree(client):
+    book_id = import_sample_book(client)
+    listed = next(b for b in client.get("/books").json()["books"] if b["id"] == book_id)
+    assert "metadata_json" not in listed
+    assert "document_tree" not in listed
+    detail = client.get(f"/books/{book_id}").json()
+    assert "metadata_json" not in detail
+    assert "document_tree" not in detail
+    conn = client.app.state.lumina.conn
+    stored = json.loads(BookRepo(conn).get(book_id)["metadata_json"] or "{}")
+    assert "document_tree" not in stored
+
+
+def test_drop_stored_document_trees_strips_legacy_blob(client):
+    conn = client.app.state.lumina.conn
+    book_id = import_sample_book(client)
+    repo = BookRepo(conn)
+    meta = json.loads(repo.get(book_id)["metadata_json"] or "{}")
+    meta["document_tree"] = {"kind": "book", "children": [{"title": "x"} for _ in range(50)]}
+    repo.update(book_id, metadata_json=meta)
+    assert "document_tree" in json.loads(repo.get(book_id)["metadata_json"])
+    listed = next(b for b in client.get("/books").json()["books"] if b["id"] == book_id)
+    assert "metadata_json" not in listed
+    assert "document_tree" not in json.loads(repo.get(book_id)["metadata_json"])

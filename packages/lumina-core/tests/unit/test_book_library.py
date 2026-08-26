@@ -2,12 +2,20 @@
 
 from __future__ import annotations
 
+import json
 import uuid
 from datetime import datetime, timezone
 
 import pytest
 
-from lumina_core.db.repos import BookRepo, NoteRepo, SegmentRepo, reading_progress_bucket
+from lumina_core.db.repos import (
+    BookRepo,
+    NoteRepo,
+    SegmentRepo,
+    metadata_with_title_user_set,
+    reading_progress_bucket,
+    resolve_ingest_title,
+)
 from lumina_core.db.schema import init_db
 
 
@@ -186,6 +194,17 @@ def test_list_books_reading_progress_and_favorite_filters(db_conn):
     assert short["id"] in {b["id"] for b in repo.list_books(filter="reading")}
 
 
+def test_list_books_filter_ingest_failed(db_conn):
+    repo = BookRepo(db_conn)
+    failed = _insert_book(db_conn, title="Failed", status="error", segment_count=0)
+    cancelled = _insert_book(db_conn, title="Cancelled", status="error", segment_count=0)
+    ok = _insert_book(db_conn, title="Ok", status="summarized", segment_count=8)
+    ids = {b["id"] for b in repo.list_books(filter="error")}
+    assert ids == {failed["id"], cancelled["id"]}
+    assert ok["id"] not in ids
+    assert failed["id"] in {b["id"] for b in repo.list_books(filter="all")}
+
+
 def test_list_books_sort_by_segment_count(db_conn):
     repo = BookRepo(db_conn)
     _insert_book(db_conn, title="Short", segment_count=3)
@@ -194,6 +213,48 @@ def test_list_books_sort_by_segment_count(db_conn):
 
     titles = [b["title"] for b in repo.list_books(sort="segments")]
     assert titles == ["Long", "Mid", "Short"]
+
+
+def test_list_books_sort_by_reading_progress_desc(db_conn):
+    repo = BookRepo(db_conn)
+    _insert_book(
+        db_conn,
+        title="Unread",
+        last_opened_at=None,
+        segment_count=10,
+        current_segment_index=0,
+    )
+    _insert_book(
+        db_conn,
+        title="Mid",
+        last_opened_at="2024-05-01T00:00:00+00:00",
+        segment_count=10,
+        current_segment_index=4,
+    )
+    _insert_book(
+        db_conn,
+        title="Finished",
+        last_opened_at="2024-06-01T00:00:00+00:00",
+        segment_count=10,
+        current_segment_index=9,
+    )
+    _insert_book(
+        db_conn,
+        title="Low",
+        last_opened_at="2024-04-01T00:00:00+00:00",
+        segment_count=10,
+        current_segment_index=1,
+    )
+    _insert_book(
+        db_conn,
+        title="Short",
+        last_opened_at="2024-07-01T00:00:00+00:00",
+        segment_count=1,
+        current_segment_index=0,
+    )
+
+    titles = [b["title"] for b in repo.list_books(sort="progress")]
+    assert titles == ["Finished", "Mid", "Low", "Short", "Unread"]
 
 
 def test_delete_removes_fts(db_conn):
@@ -320,3 +381,157 @@ def test_maybe_mark_summarized_promotes_stale_reading(db_conn):
 
     summarized = repo.list_books(filter="summarized")
     assert [b["id"] for b in summarized] == [book["id"]]
+
+
+def test_init_db_does_not_clear_in_flight_processing(tmp_path):
+    db_path = tmp_path / "lumina.db"
+    conn = init_db(db_path)
+    book = _insert_book(conn, title="Importing", status="processing", segment_count=0)
+    conn.close()
+
+    again = init_db(db_path)
+    row = BookRepo(again).get(book["id"])
+    assert row["status"] == "processing"
+    again.close()
+
+
+def test_repair_stale_imports_marks_empty_unread_as_error(db_conn):
+    repo = BookRepo(db_conn)
+    hole = _insert_book(db_conn, title="Hole", status="unread", segment_count=0)
+    live = _insert_book(db_conn, title="Live", status="processing", segment_count=0)
+    ready = _insert_book(db_conn, title="Ready", status="unread", segment_count=3)
+
+    repaired = repo.repair_stale_imports(live_ids={live["id"]})
+    assert repaired == 1
+    assert repo.get(hole["id"])["status"] == "error"
+    assert json.loads(repo.get(hole["id"])["metadata_json"])["ingest_error"] == "导入中断"
+    assert repo.get(live["id"])["status"] == "processing"
+    assert repo.get(ready["id"])["status"] == "unread"
+
+
+def test_repair_stale_imports_list_path_keeps_in_flight_processing(db_conn):
+    repo = BookRepo(db_conn)
+    live = _insert_book(db_conn, title="Live", status="processing", segment_count=0)
+    hole = _insert_book(db_conn, title="Hole", status="unread", segment_count=0)
+
+    repaired = repo.repair_stale_imports()
+    assert repaired == 1
+    assert repo.get(live["id"])["status"] == "processing"
+    assert repo.get(hole["id"])["status"] == "error"
+
+
+def test_repair_stale_imports_startup_marks_orphaned_processing(db_conn):
+    repo = BookRepo(db_conn)
+    orphan = _insert_book(db_conn, title="Orphan", status="processing", segment_count=0)
+
+    repaired = repo.repair_stale_imports(restore_orphaned_resegment=True)
+    assert repaired == 1
+    assert repo.get(orphan["id"])["status"] == "error"
+    assert json.loads(repo.get(orphan["id"])["metadata_json"])["ingest_error"] == "导入中断"
+
+
+def test_repair_stale_imports_restores_orphaned_resegment_on_startup(db_conn):
+    repo = BookRepo(db_conn)
+    resegment = _insert_book(
+        db_conn, title="Resegment", status="processing", segment_count=8
+    )
+    repaired = repo.repair_stale_imports(restore_orphaned_resegment=True)
+    assert repaired == 1
+    assert repo.get(resegment["id"])["status"] == "unread"
+
+
+def test_resolve_ingest_title_keeps_user_set_name():
+    book = {"title": "自定义书名", "metadata_json": json.dumps({"title_user_set": True})}
+    meta: dict = {"title": "文件元数据"}
+    assert resolve_ingest_title(book, "文件元数据", meta) == "自定义书名"
+    assert meta["title_user_set"] is True
+
+
+def test_resolve_ingest_title_uses_extracted_when_unlocked():
+    book = {"title": "stem", "metadata_json": "{}"}
+    meta: dict = {}
+    assert resolve_ingest_title(book, "文件元数据", meta) == "文件元数据"
+    assert "title_user_set" not in meta
+    assert resolve_ingest_title(None, "文件元数据", meta) == "文件元数据"
+
+
+def test_complete_ingest_preserves_user_title(db_conn):
+    repo = BookRepo(db_conn)
+    book = _insert_book(db_conn, title="自定义书名", status="processing", segment_count=0)
+    repo.update(book["id"], metadata_json=metadata_with_title_user_set(book))
+    locked = repo.get(book["id"])
+    meta: dict = {"source_filename": "file.txt"}
+    title = resolve_ingest_title(locked, "文件元数据书名", meta)
+    SegmentRepo(db_conn).complete_ingest(
+        book["id"],
+        title=title,
+        author="作者",
+        language="zh",
+        target_language="zh",
+        metadata_json=meta,
+        segment_count=1,
+    )
+    stored = repo.get(book["id"])
+    assert stored["title"] == "自定义书名"
+    assert json.loads(stored["metadata_json"])["title_user_set"] is True
+
+
+def test_finalize_ingest_preserves_user_title(db_conn):
+    repo = BookRepo(db_conn)
+    book = _insert_book(db_conn, title="自定义书名", status="processing", segment_count=0)
+    repo.update(book["id"], metadata_json=metadata_with_title_user_set(book))
+    locked = repo.get(book["id"])
+    meta: dict = {"source_filename": "file.txt"}
+    title = resolve_ingest_title(locked, "文件元数据书名", meta)
+    SegmentRepo(db_conn).finalize_ingest(
+        book["id"],
+        [
+            {
+                "id": str(uuid.uuid4()),
+                "book_id": book["id"],
+                "idx": 0,
+                "raw_text": "正文",
+                "anchor_label": "段 1",
+            }
+        ],
+        title=title,
+        author=None,
+        language="zh",
+        target_language="zh",
+        metadata_json=meta,
+    )
+    stored = repo.get(book["id"])
+    assert stored["title"] == "自定义书名"
+    assert json.loads(stored["metadata_json"])["title_user_set"] is True
+
+
+def test_persist_ingest_sync_keeps_user_title(tmp_path):
+    from lumina_core.jobs.ingest import _persist_ingest_sync
+
+    db_path = tmp_path / "library.db"
+    conn = init_db(db_path)
+    book = _insert_book(conn, title="自定义书名", status="processing", segment_count=0)
+    BookRepo(conn).update(book["id"], metadata_json={"title_user_set": True})
+    src = tmp_path / "novel.txt"
+    src.write_text("正文", encoding="utf-8")
+    _persist_ingest_sync(
+        db_path,
+        book_id=book["id"],
+        src=src,
+        metadata={"title": "文件元数据书名"},
+        detected_language="zh",
+        target_language="zh",
+        segments=[
+            {
+                "id": str(uuid.uuid4()),
+                "book_id": book["id"],
+                "idx": 0,
+                "raw_text": "正文",
+                "anchor_label": "段 1",
+            }
+        ],
+        ingest_meta={"source_filename": src.name},
+    )
+    stored = BookRepo(conn).get(book["id"])
+    assert stored["title"] == "自定义书名"
+    assert json.loads(stored["metadata_json"])["title_user_set"] is True

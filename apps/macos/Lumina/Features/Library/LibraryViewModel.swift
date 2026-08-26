@@ -6,9 +6,13 @@ struct IngestProgress: Equatable {
     var message: String
 
     var label: String {
+        if total > 0 {
+            let pct = min(100, max(0, Int((Double(page) / Double(max(total, 1)) * 100.0).rounded())))
+            if !message.isEmpty { return "\(message) · \(pct)%" }
+            return "分段中 · \(pct)%"
+        }
         if !message.isEmpty { return message }
-        guard total > 0 else { return "处理中" }
-        return "处理中 · \(page)/\(total)"
+        return "分段中"
     }
 }
 
@@ -32,10 +36,17 @@ enum BookshelfViewMode: String, CaseIterable, Identifiable {
     }
 }
 
+enum BookDisplayTitle {
+    static func normalized(_ raw: String) -> String? {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+}
+
 @MainActor
 final class LibraryViewModel: ObservableObject {
     @Published var books: [BookSummary] = []
-    @Published var collection: LibraryCollection = .recent
+    @Published var query = LibraryFacetQuery()
     @Published var sort: LibrarySort = .recent
     @Published var viewMode: BookshelfViewMode = .grid
     @Published var titleQuery: String = ""
@@ -47,37 +58,39 @@ final class LibraryViewModel: ObservableObject {
     private var ingestEventTasks: [String: Task<Void, Never>] = [:]
 
     var sidebarCollections: [LibraryCollection] {
-        LibraryCollection.sidebarItems(categories: categories)
+        LibraryCollection.sidebarItems(categories: categories, selectedCategory: query.category)
     }
 
     var displayedBooks: [BookSummary] {
-        var result = books.filter { collection.matches($0) }
-        let query = titleQuery.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !query.isEmpty {
-            result = result.filter { $0.title.localizedCaseInsensitiveContains(query) }
+        var result = books.filter { query.matches($0) }
+        let trimmedTitle = titleQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmedTitle.isEmpty {
+            result = result.filter { $0.title.localizedCaseInsensitiveContains(trimmedTitle) }
         }
         result = Self.sorted(result, by: sort)
-        if collection == .recent, sort == .recent {
+        if query.isDefault, sort == .recent {
             result = Self.prioritizeSummarizeActivity(result)
         }
         return result
     }
 
-    var recentBooks: [BookSummary] {
-        books
-            .filter { $0.last_opened_at != nil }
-            .sorted { ($0.last_opened_at ?? "") > ($1.last_opened_at ?? "") }
-    }
-
     func count(for item: LibraryCollection) -> Int {
-        books.filter { item.matches($0) }.count
+        let projected = query.projecting(item)
+        return books.filter { projected.matches($0) }.count
     }
 
     func loadPreferences() {
-        if let raw = UserDefaults.standard.string(forKey: Self.filterKey) {
-            collection = LibraryCollection.fromPersisted(raw)
+        if let data = UserDefaults.standard.data(forKey: Self.facetsKey),
+           let stored = try? JSONDecoder().decode(LibraryFacetQuery.self, from: data) {
+            query = stored
+        } else if let text = UserDefaults.standard.string(forKey: Self.facetsKey),
+                  let data = text.data(using: .utf8),
+                  let stored = try? JSONDecoder().decode(LibraryFacetQuery.self, from: data) {
+            query = stored
+        } else if let raw = UserDefaults.standard.string(forKey: Self.filterKey) {
+            query = LibraryFacetQuery.fromLegacyCollection(raw)
         } else if let legacy = UserDefaults.standard.string(forKey: Self.legacyCollectionKey) {
-            collection = LibraryCollection.fromPersisted(legacy)
+            query = LibraryFacetQuery.fromLegacyCollection(legacy)
         }
         if let raw = UserDefaults.standard.string(forKey: Self.sortKey),
            let value = LibrarySort(rawValue: raw) {
@@ -90,7 +103,9 @@ final class LibraryViewModel: ObservableObject {
     }
 
     func persistPreferences() {
-        UserDefaults.standard.set(collection.rawValue, forKey: Self.filterKey)
+        if let data = try? JSONEncoder().encode(query) {
+            UserDefaults.standard.set(data, forKey: Self.facetsKey)
+        }
         UserDefaults.standard.set(sort.rawValue, forKey: Self.sortKey)
         UserDefaults.standard.set(viewMode.rawValue, forKey: Self.viewModeKey)
     }
@@ -250,6 +265,13 @@ final class LibraryViewModel: ObservableObject {
                 if left != right { return left > right }
                 return lhs.title.localizedStandardCompare(rhs.title) == .orderedAscending
             }
+        case .progress:
+            return books.sorted { lhs, rhs in
+                let left = lhs.sortReadingProgress
+                let right = rhs.sortReadingProgress
+                if left != right { return left > right }
+                return lhs.title.localizedStandardCompare(rhs.title) == .orderedAscending
+            }
         case .favorite:
             return books.sorted { lhs, rhs in
                 if lhs.isFavorite != rhs.isFavorite { return lhs.isFavorite && !rhs.isFavorite }
@@ -267,8 +289,10 @@ final class LibraryViewModel: ObservableObject {
         }
     }
 
-    func setCollection(_ value: LibraryCollection) {
-        collection = value
+    func selectFacet(_ item: LibraryCollection) {
+        var next = query
+        next.apply(item)
+        query = next
         persistPreferences()
     }
 
@@ -284,6 +308,12 @@ final class LibraryViewModel: ObservableObject {
 
     func toggleFavorite(_ book: BookSummary, using core: CoreClient) async throws {
         let updated = try await core.updateBook(id: book.id, isFavorite: !book.isFavorite)
+        replace(updated)
+    }
+
+    func renameBook(_ book: BookSummary, title: String, using core: CoreClient) async throws {
+        guard let prepared = BookDisplayTitle.normalized(title) else { return }
+        let updated = try await core.updateBook(id: book.id, title: prepared)
         replace(updated)
     }
 
@@ -325,12 +355,14 @@ final class LibraryViewModel: ObservableObject {
     func resegmentBook(
         _ book: BookSummary,
         chunkTargetChars: Int,
+        segmentTier: SegmentTier = .normal,
         using core: CoreClient
     ) async throws {
         ReaderPreferences.clearCachedProgress(for: book.id)
         try await core.resegmentBook(
             bookId: book.id,
-            chunkTargetChars: chunkTargetChars
+            chunkTargetChars: chunkTargetChars,
+            segmentTier: segmentTier
         )
         try await refresh(using: core, preserveOrder: true)
     }
@@ -354,7 +386,9 @@ final class LibraryViewModel: ObservableObject {
         if let overview = summarizeOverview, overview.activeCount > 0 {
             return true
         }
+        if hasProcessingBooks { return true }
         return books.contains {
+            if $0.isSegmenting { return true }
             switch $0.summarize_state {
             case "running", "queued", "paused": return true
             default:
@@ -367,6 +401,7 @@ final class LibraryViewModel: ObservableObject {
         books.contains(where: \.isProcessing)
     }
 
+    private static let facetsKey = "lumina.library.facets"
     private static let filterKey = "lumina.library.filter"
     private static let legacyCollectionKey = "lumina.library.collection"
     private static let sortKey = "lumina.library.sort"

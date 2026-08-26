@@ -2,6 +2,19 @@ import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
 
+enum MarkdownExportMode: String, CaseIterable, Identifiable {
+    case full
+    case sentences
+
+    var id: String { rawValue }
+
+    var apiValue: String { rawValue }
+
+    var allowsNotes: Bool { self == .full }
+
+    var filenameSuffix: String { self == .sentences ? "总结" : "summary" }
+}
+
 enum ExportFeedback: Identifiable {
     case success(URL)
     case cancelled
@@ -42,7 +55,8 @@ enum BookMarkdownExporter {
         core: CoreClient,
         bookId: String,
         summaryReadyCount: Int,
-        includeNotes: Bool
+        includeNotes: Bool,
+        mode: MarkdownExportMode = .full
     ) async throws -> String {
         guard summaryReadyCount > 0 else {
             throw NSError(
@@ -52,7 +66,11 @@ enum BookMarkdownExporter {
             )
         }
 
-        let md = try await core.exportMarkdown(bookId: bookId, includeNotes: includeNotes)
+        let md = try await core.exportMarkdown(
+            bookId: bookId,
+            includeNotes: mode.allowsNotes && includeNotes,
+            mode: mode.apiValue
+        )
         guard !md.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw NSError(
                 domain: "Lumina",
@@ -63,8 +81,8 @@ enum BookMarkdownExporter {
         return md
     }
 
-    static func defaultFilename(for bookTitle: String) -> String {
-        "\(sanitizeFilename(bookTitle))-summary.md"
+    static func defaultFilename(for bookTitle: String, mode: MarkdownExportMode = .full) -> String {
+        "\(sanitizeFilename(bookTitle))-\(mode.filenameSuffix).md"
     }
 
     static func feedback(from result: Result<URL, Error>) -> ExportFeedback {
@@ -80,9 +98,13 @@ enum BookMarkdownExporter {
 
     /// Fallback when SwiftUI `fileExporter` fails (matches import flow).
     @MainActor
-    static func presentSavePanelFallback(markdown: String, bookTitle: String) -> ExportFeedback {
+    static func presentSavePanelFallback(
+        markdown: String,
+        bookTitle: String,
+        mode: MarkdownExportMode = .full
+    ) -> ExportFeedback {
         let panel = NSSavePanel()
-        panel.nameFieldStringValue = defaultFilename(for: bookTitle)
+        panel.nameFieldStringValue = defaultFilename(for: bookTitle, mode: mode)
         panel.allowedContentTypes = [.plainText]
         panel.canCreateDirectories = true
 

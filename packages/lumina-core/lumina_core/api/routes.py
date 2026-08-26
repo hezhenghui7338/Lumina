@@ -41,10 +41,18 @@ from lumina_core.config import (
     ModelsConfig,
     PromptsConfig,
     Settings,
+    normalize_segment_tier,
 )
 from lumina_core.classify.book import BOOK_CATEGORIES
 from lumina_core.classify.tasks import run_classify_book, validate_manual_category
-from lumina_core.db.repos import BookRepo, ChatRepo, NewsChatRepo, NoteRepo, SegmentRepo
+from lumina_core.db.repos import (
+    BookRepo,
+    ChatRepo,
+    NewsChatRepo,
+    NoteRepo,
+    SegmentRepo,
+    metadata_with_title_user_set,
+)
 from lumina_core.export.markdown import content_disposition_attachment, export_book_markdown
 from lumina_core.ingest.loader import (
     copy_to_library,
@@ -60,6 +68,9 @@ from lumina_core.news.read import load_cached_body, read_article
 from lumina_core.news.store import NewsSourceRepo, NewsStore
 from lumina_core.news.sync import sync_all
 from lumina_core.search.fts import index_book, index_note, index_segment, search
+from lumina_core.search.original import search_original
+from lumina_core.tts.script import LISTEN_MODES, ListenMode
+from lumina_core.tts.service import load_listen_script
 from lumina_core.resource_probe import probe_ocr, probe_resource
 from lumina_core.ops.helpers import (
     book_title,
@@ -118,6 +129,7 @@ class NewsChatRequest(BaseModel):
 
 class ExportRequest(BaseModel):
     include_notes: bool = False
+    mode: Literal["full", "sentences"] = "full"
 
 
 class RetrySegmentsRequest(BaseModel):
@@ -130,6 +142,7 @@ class ResegmentRequest(BaseModel):
         ge=RESEGMENT_MIN_TARGET_CHARS,
         le=RESEGMENT_MAX_TARGET_CHARS,
     )
+    segment_tier: Literal["normal", "advanced"] = "normal"
 
 
 class SummarizeBatchRequest(BaseModel):
@@ -172,6 +185,7 @@ class SettingsUpdate(BaseModel):
     ocr_cloud_timeout_seconds: float | None = Field(default=None, ge=1.0, le=300.0)
     debug_mode: bool | None = None
     auto_start_summary: bool | None = None
+    default_segment_tier: Literal["normal", "advanced"] | None = None
     models: ModelsConfig | None = None
     prompts: PromptsConfig | None = None
 
@@ -284,19 +298,40 @@ def apply_book_list_filter(
     books: list[dict[str, Any]], filter_name: str
 ) -> list[dict[str, Any]]:
     """Queue-derived filters that cannot be expressed in SQL (summarize_state)."""
+    if filter_name == "error":
+        return [book for book in books if book.get("status") == "error"]
     if filter_name == "summarizing":
         return [
             book
             for book in books
-            if book.get("summarize_state") in ("running", "queued")
+            if book.get("status") != "error"
+            and not _book_is_segmenting(book)
+            and book.get("summarize_state") in ("running", "queued")
         ]
     if filter_name == "idle":
         return [
             book
             for book in books
-            if book.get("summarize_state") in ("idle", "paused")
+            if book.get("status") != "error"
+            and not _book_is_segmenting(book)
+            and book.get("summarize_state") in ("idle", "paused")
         ]
+    if filter_name == "segmenting":
+        return [book for book in books if _book_is_segmenting(book)]
     return books
+
+
+def _book_is_segmenting(book: dict[str, Any]) -> bool:
+    if book.get("status") == "error":
+        return False
+    if book.get("status") == "processing" or book.get("summarize_state") == "segmenting":
+        return True
+    if book.get("summarize_state") in ("idle", "paused", "running", "queued"):
+        return False
+    if "summary_total_count" not in book and "segment_count" not in book:
+        return False
+    total = int(book.get("summary_total_count") or book.get("segment_count") or 0)
+    return total <= 0
 
 
 def book_public_dict(
@@ -340,11 +375,19 @@ def book_public_dict(
     if summarize_active is not None:
         out["summarize_active"] = summarize_active
 
-    if summarize_state is not None and row.get("status") != "processing":
+    total = int(out.get("summary_total_count") or 0)
+    if row.get("status") == "processing" or (
+        row.get("status") != "error" and total <= 0
+    ):
+        out["summarize_state"] = "segmenting"
+        out["summarize_queued_count"] = 0
+        out["summary_tier"] = summary_tier or "normal"
+    elif summarize_state is not None:
         out["summarize_state"] = summarize_state
         out["summarize_queued_count"] = summarize_queued_count or 0
         out["summary_tier"] = summary_tier or "normal"
 
+    out.pop("metadata_json", None)
     return out
 
 
@@ -409,6 +452,44 @@ def _schedule_classify(state: AppState, book_id: str) -> None:
     asyncio.create_task(_run())
 
 
+def _book_ingest_error(conn, book_id: str) -> str | None:
+    row = BookRepo(conn).get(book_id)
+    if not row:
+        return None
+    raw = row.get("metadata_json")
+    meta: dict[str, Any] = {}
+    if isinstance(raw, str) and raw.strip():
+        try:
+            parsed = json.loads(raw)
+            if isinstance(parsed, dict):
+                meta = parsed
+        except (json.JSONDecodeError, TypeError):
+            meta = {}
+    elif isinstance(raw, dict):
+        meta = raw
+    err = meta.get("ingest_error") or meta.get("resegment_error")
+    if isinstance(err, str) and err.strip():
+        return err.strip()
+    return None
+
+
+async def _await_cpu_lock(state: AppState, queued_book_id: str) -> None:
+    queued = {
+        "type": "ingest_progress",
+        "page": 0,
+        "total": 0,
+        "message": "排队等待分段…",
+    }
+    if state.cpu_job_lock.locked():
+        await _emit_book_event(state, queued_book_id, queued)
+    while True:
+        try:
+            await asyncio.wait_for(state.cpu_job_lock.acquire(), timeout=1.0)
+            return
+        except TimeoutError:
+            await _emit_book_event(state, queued_book_id, queued)
+
+
 def _schedule_ingest(
     state: AppState,
     *,
@@ -432,31 +513,36 @@ def _schedule_ingest(
     )
 
     async def _run() -> str:
-        state.task_registry.mark_running(record.id)
-        outcome = await run_ingest_job(
-            book_id=book_id,
-            dest=dest,
-            fmt=fmt,
-            src=src,
-            conn=state.conn,
-            db_path=state.db_path,
-            models=state.models,
-            settings=state.settings.model_copy(deep=True),
-            target_language=state.settings.target_language,
-            job_queue=state.job_queue,
-            emit=lambda event_book_id, payload: _emit_book_event(
-                state, event_book_id, payload
-            ),
-            schedule_classify=lambda bid: _schedule_classify(state, bid),
-            cancel_event=cancel_event,
-        )
-        if outcome == "completed":
-            state.task_registry.complete(record.id)
-        elif outcome == "cancelled":
-            state.task_registry.cancel(record.id)
-        else:
-            state.task_registry.fail(record.id, "导入失败")
-        return outcome
+        await _await_cpu_lock(state, book_id)
+        try:
+            state.task_registry.mark_running(record.id)
+            outcome = await run_ingest_job(
+                book_id=book_id,
+                dest=dest,
+                fmt=fmt,
+                src=src,
+                conn=state.conn,
+                db_path=state.db_path,
+                models=state.models,
+                settings=state.settings.model_copy(deep=True),
+                target_language=state.settings.target_language,
+                job_queue=state.job_queue,
+                emit=lambda event_book_id, payload: _emit_book_event(
+                    state, event_book_id, payload
+                ),
+                schedule_classify=lambda bid: _schedule_classify(state, bid),
+                cancel_event=cancel_event,
+            )
+            if outcome == "completed":
+                state.task_registry.complete(record.id)
+            elif outcome == "cancelled":
+                state.task_registry.cancel(record.id)
+            else:
+                reason = await asyncio.to_thread(_book_ingest_error, state.conn, book_id)
+                state.task_registry.fail(record.id, reason or "导入失败")
+            return outcome
+        finally:
+            state.cpu_job_lock.release()
 
     task = asyncio.create_task(_run())
     state.ingest_tasks[book_id] = task
@@ -476,15 +562,20 @@ def _schedule_resegment(
     book_id: str,
     chunk_target_chars: int,
     previous_status: str,
+    segment_tier: str = "normal",
 ) -> None:
     cancel_event = threading.Event()
     title = book_title(state.conn, book_id)
+    resolved_tier = normalize_segment_tier(segment_tier)
+    detail = f"整书重新分段 · 目标 {chunk_target_chars} 字"
+    if resolved_tier == "advanced":
+        detail += " · 高级"
     record = state.task_registry.register(
         kind="resegment",
         subject_type="book",
         subject_id=book_id,
         subject_label=title,
-        detail=f"整书重新分段 · 目标 {chunk_target_chars} 字",
+        detail=detail,
         cancellable=True,
         cancel_fn=cancel_event.set,
         job_key=f"{book_id}:resegment",
@@ -492,27 +583,33 @@ def _schedule_resegment(
     )
 
     async def _run() -> str:
-        state.task_registry.mark_running(record.id)
-        outcome = await run_resegment_job(
-            book_id=book_id,
-            chunk_target_chars=chunk_target_chars,
-            previous_status=previous_status,
-            conn=state.conn,
-            db_path=state.db_path,
-            settings=state.settings.model_copy(deep=True),
-            job_queue=state.job_queue,
-            emit=lambda event_book_id, payload: _emit_book_event(
-                state, event_book_id, payload
-            ),
-            cancel_event=cancel_event,
-        )
-        if outcome == "completed":
-            state.task_registry.complete(record.id)
-        elif outcome == "cancelled":
-            state.task_registry.cancel(record.id)
-        else:
-            state.task_registry.fail(record.id, "重新分段失败")
-        return outcome
+        await _await_cpu_lock(state, book_id)
+        try:
+            state.task_registry.mark_running(record.id)
+            outcome = await run_resegment_job(
+                book_id=book_id,
+                chunk_target_chars=chunk_target_chars,
+                previous_status=previous_status,
+                conn=state.conn,
+                db_path=state.db_path,
+                settings=state.settings.model_copy(deep=True),
+                job_queue=state.job_queue,
+                emit=lambda event_book_id, payload: _emit_book_event(
+                    state, event_book_id, payload
+                ),
+                cancel_event=cancel_event,
+                segment_tier=resolved_tier,
+            )
+            if outcome == "completed":
+                state.task_registry.complete(record.id)
+            elif outcome == "cancelled":
+                state.task_registry.cancel(record.id)
+            else:
+                reason = await asyncio.to_thread(_book_ingest_error, state.conn, book_id)
+                state.task_registry.fail(record.id, reason or "重新分段失败")
+            return outcome
+        finally:
+            state.cpu_job_lock.release()
 
     task = asyncio.create_task(_run())
     state.resegment_tasks[book_id] = task
@@ -681,26 +778,44 @@ async def list_books(
     state = _state(request)
     conn = state.conn
     try:
-        books = BookRepo(conn).list_books(filter=filter, sort=sort)
+        await state.job_queue.resume_orphaned_active()
+        live_ids = set(state.ingest_tasks) | set(state.resegment_tasks)
         active_by_book = state.job_queue.summarize_active_by_book()
-        state_by_book = state.job_queue.summarize_state_by_book()
+
+        def _load_rows() -> list[dict[str, Any]]:
+            repo = BookRepo(conn)
+            repo.repair_stale_imports(live_ids)
+            repo.drop_stored_document_trees()
+            books = repo.list_books(filter=filter, sort=sort)
+            rows: list[dict[str, Any]] = []
+            for book in books:
+                row = dict(book)
+                row.update(repo.summary_progress(book["id"]))
+                rows.append(row)
+            return rows
+
+        rows = await asyncio.to_thread(_load_rows)
+        # Queue fields stay in-memory. Do not call summarize_state_by_book()
+        # here: that re-scans every book on the event loop (N+1 COUNT) and
+        # stalls POST /open while the library polls during 分段中.
         result = [
             book_public_dict(
                 b,
-                conn=conn,
                 summarize_active=active_by_book.get(b["id"]),
-                summarize_state=state_by_book.get(b["id"], {}).get(
-                    "summarize_state"
+                summarize_state=state.job_queue.summarize_state_for_book(
+                    b["id"],
+                    ready=int(b.get("summary_ready_count") or 0),
+                    total=int(b.get("summary_total_count") or 0),
                 ),
-                summarize_queued_count=state_by_book.get(b["id"], {}).get(
-                    "summarize_queued_count", 0
+                summarize_queued_count=state.job_queue._summarize_queued_count_for_book(
+                    b["id"]
                 ),
-                summary_tier=state_by_book.get(b["id"], {}).get(
-                    "summary_tier", "normal"
+                summary_tier=state.job_queue._desired_summary_tier.get(
+                    b["id"], "normal"
                 ),
                 processing_kind=_processing_kind(state, b["id"]),
             )
-            for b in books
+            for b in rows
         ]
         result = apply_book_list_filter(result, filter)
         if sort == "recent":
@@ -730,6 +845,7 @@ async def patch_book(
         if not title:
             raise HTTPException(400, "title cannot be empty")
         updates["title"] = title
+        updates["metadata_json"] = metadata_with_title_user_set(book)
 
     if not updates:
         return _book_public_with_queue(state, book)
@@ -776,11 +892,13 @@ async def resegment_book(
         book_id=book_id,
         chunk_target_chars=body.chunk_target_chars,
         previous_status=previous_status,
+        segment_tier=body.segment_tier,
     )
     return {
         "status": "processing",
         "book_id": book_id,
         "chunk_target_chars": body.chunk_target_chars,
+        "segment_tier": body.segment_tier,
         "processing_kind": "resegment",
     }
 
@@ -871,19 +989,43 @@ async def list_segments(
     include_summary: bool = Query(False),
 ) -> dict[str, Any]:
     # Slim meta — raw_text/translation/summary_json via GET .../segments/{idx} (never-freeze).
+    # Default list may include summary_preview (first sentence) and bullet_labels, never the JSON blob.
     repo = SegmentRepo(_state(request).conn)
 
     def _list_meta() -> list[dict[str, Any]]:
         try:
-            return repo.list_for_book(
-                book_id, include_body=False, include_summary=include_summary
-            )
+            if include_summary:
+                return repo.list_for_book(
+                    book_id, include_body=False, include_summary=True
+                )
+            return repo.list_catalog(book_id)
         except sqlite3.OperationalError as e:
             _raise_on_db_schema_error(e)
             raise  # pragma: no cover
 
     segments = await asyncio.to_thread(_list_meta)
     return {"segments": segments}
+
+
+@router.get("/books/{book_id}/original-search")
+async def search_book_original(
+    book_id: str,
+    request: Request,
+    q: str = Query(""),
+) -> dict[str, Any]:
+    state = _state(request)
+
+    def _run() -> dict[str, Any]:
+        book = BookRepo(state.conn).get(book_id)
+        if not book:
+            return {"missing_book": True}
+        result = search_original(state.conn, book_id, q)
+        return result
+
+    payload = await asyncio.to_thread(_run)
+    if payload.pop("missing_book", False):
+        raise HTTPException(404, "Book not found")
+    return payload
 
 
 @router.get("/books/{book_id}/segments/{idx}")
@@ -904,6 +1046,53 @@ async def get_segment_summary(book_id: str, idx: int, request: Request) -> dict[
     if not seg:
         raise HTTPException(404, "Segment not found")
     return seg
+
+
+def _normalize_listen_mode(mode: str) -> ListenMode:
+    normalized = (mode or "").strip().lower()
+    if normalized not in LISTEN_MODES:
+        raise HTTPException(400, "mode must be summary, detailed, or original")
+    return normalized  # type: ignore[return-value]
+
+
+def _listen_language_hint(state: AppState) -> str | None:
+    lang = (state.settings.target_language or "").lower()
+    if lang.startswith("zh"):
+        return "zh"
+    if lang.startswith("en"):
+        return "en"
+    return None
+
+
+@router.get("/books/{book_id}/segments/{idx}/listen-script")
+async def get_listen_script(
+    book_id: str,
+    idx: int,
+    request: Request,
+    mode: str = Query("summary"),
+) -> dict[str, Any]:
+    typed = _normalize_listen_mode(mode)
+    state = _state(request)
+    repo = SegmentRepo(state.conn)
+
+    def _load() -> dict[str, Any]:
+        script, row = load_listen_script(
+            repo,
+            book_id,
+            idx,
+            typed,
+            language_hint=_listen_language_hint(state),
+        )
+        if row is None and script.skip_reason == "missing_segment":
+            return {"missing": True}
+        payload = script.to_dict()
+        payload["idx"] = idx
+        return payload
+
+    payload = await asyncio.to_thread(_load)
+    if payload.get("missing"):
+        raise HTTPException(404, "Segment not found")
+    return payload
 
 
 def _boundary_pair(
@@ -1117,6 +1306,7 @@ async def update_reading_progress(
 @router.get("/books/summarize/overview")
 async def summarize_overview(request: Request) -> dict[str, Any]:
     state = _state(request)
+    await state.job_queue.resume_orphaned_active()
     return state.job_queue.summarize_overview()
 
 
@@ -1467,18 +1657,19 @@ async def export_book(book_id: str, body: ExportRequest, request: Request) -> Pl
 
     def _build_markdown() -> str:
         segments = SegmentRepo(state.conn).list_for_export(book_id)
-        notes = (
-            NoteRepo(state.conn).list_for_book(book_id) if body.include_notes else None
-        )
+        want_notes = body.include_notes and body.mode != "sentences"
+        notes = NoteRepo(state.conn).list_for_book(book_id) if want_notes else None
         return export_book_markdown(
             book,
             segments,
-            include_notes=body.include_notes,
+            include_notes=want_notes,
             notes=notes,
+            mode=body.mode,
         )
 
     md = await asyncio.to_thread(_build_markdown)
-    filename = f"{book.get('title', 'book')}-summary.md"
+    suffix = "总结" if body.mode == "sentences" else "summary"
+    filename = f"{book.get('title', 'book')}-{suffix}.md"
     return PlainTextResponse(
         md,
         media_type="text/markdown; charset=utf-8",
@@ -1523,6 +1714,10 @@ async def update_settings(body: SettingsUpdate, request: Request) -> dict[str, A
     if body.auto_start_summary is not None:
         state.settings.auto_start_summary = body.auto_start_summary
         state.job_queue.auto_start_summary = body.auto_start_summary
+    if body.default_segment_tier is not None:
+        state.settings.default_segment_tier = normalize_segment_tier(
+            body.default_segment_tier
+        )
     if body.prompts is not None:
         try:
             existing = _prompts(state)
@@ -1635,7 +1830,10 @@ async def ollama_status_for_resource(resource_id: str, request: Request) -> dict
 
 
 @router.post("/shutdown")
-async def shutdown() -> dict[str, str]:
+async def shutdown(request: Request) -> dict[str, str]:
+    server = getattr(request.app.state, "uvicorn_server", None)
+    if server is not None:
+        server.should_exit = True
     return {"status": "shutting_down"}
 
 
@@ -1706,7 +1904,12 @@ def _news_source_public(row: dict[str, Any]) -> dict[str, Any]:
 
 @router.get("/news/sources")
 async def list_news_sources(request: Request) -> dict[str, Any]:
-    sources = NewsSourceRepo(_state(request).conn).list_sources()
+    conn = _state(request).conn
+
+    def _load() -> list[dict[str, Any]]:
+        return NewsSourceRepo(conn).list_sources()
+
+    sources = await asyncio.to_thread(_load)
     return {"sources": [_news_source_public(s) for s in sources]}
 
 
@@ -1830,6 +2033,7 @@ async def news_article_read(
                 force_refetch=force,
                 use_llm=True,
                 prompts=_prompts(state),
+                target_language=state.settings.target_language,
             ),
             router_resource=lambda: state.router.last_resource_id,
         )

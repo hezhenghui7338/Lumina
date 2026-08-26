@@ -24,6 +24,10 @@ from lumina_core.ingest.loader import build_segments, detect_format, load_docume
         ("book.docx", "docx"),
         ("book.odt", "odt"),
         ("book.fb2", "fb2"),
+        ("book.mobi", "mobi"),
+        ("book.azw", "mobi"),
+        ("book.azw3", "mobi"),
+        ("book.AZW3", "mobi"),
     ],
 )
 def test_detect_format(filename, expected):
@@ -91,7 +95,15 @@ def test_decode_text_bytes_never_requests_utf8_sig():
 def test_pyinstaller_spec_bundles_text_encodings():
     spec = Path(__file__).resolve().parents[2] / "lumina-core.spec"
     text = spec.read_text(encoding="utf-8")
-    for name in ("encodings.utf_8_sig", "encodings.gb18030", "encodings.latin_1"):
+    for name in (
+        "encodings.utf_8_sig",
+        "encodings.gb18030",
+        "encodings.gbk",
+        "encodings.cp936",
+        "encodings.cp1252",
+        "encodings.latin_1",
+        "encodings.big5",
+    ):
         assert name in text, f"{name} must be a PyInstaller hiddenimport"
 
 
@@ -124,6 +136,102 @@ def test_load_txt_strips_utf8_bom(tmp_path):
     assert text.startswith("第一章")
 
 
+def _gbk_prose() -> str:
+    return "　　双方继续对峙，刘长无奈的放开了系带。" * 8
+
+
+def test_decode_raw_gbk_bytes_to_han():
+    from lumina_core.ingest.text import decode_text_bytes
+
+    original = _gbk_prose()
+    assert "双方继续对峙" in decode_text_bytes(original.encode("gbk"))
+
+
+def test_decode_utf8_stored_gbk_latin1_mojibake():
+    from lumina_core.ingest.text import decode_text_bytes
+
+    original = _gbk_prose()
+    mojibake = original.encode("gbk").decode("latin-1")
+    recovered = decode_text_bytes(mojibake.encode("utf-8"))
+    assert "双方继续对峙" in recovered
+    assert "¡¡¡¡" not in recovered
+
+
+def test_decode_utf8_chinese_not_rewritten():
+    from lumina_core.ingest.text import decode_text_bytes
+
+    original = _gbk_prose()
+    assert decode_text_bytes(original.encode("utf-8")) == original
+
+
+def test_load_txt_recovers_utf8_mojibake_file(tmp_path):
+    original = _gbk_prose()
+    p = tmp_path / "mojibake.txt"
+    p.write_bytes(original.encode("gbk").decode("latin-1").encode("utf-8"))
+    text, _ = load_document(p, "txt")
+    assert "双方继续对峙" in text
+
+
+def test_detect_plan_utf8_chinese_not_mojibake():
+    from lumina_core.ingest.text import detect_encoding_plan
+
+    plan = detect_encoding_plan(_gbk_prose().encode("utf-8"))
+    assert plan.encoding == "utf-8"
+    assert plan.recover_gbk_mojibake is False
+
+
+def test_detect_plan_gbk_bytes():
+    from lumina_core.ingest.text import detect_encoding_plan
+
+    plan = detect_encoding_plan(_gbk_prose().encode("gbk"))
+    assert plan.encoding == "gb18030"
+    assert plan.recover_gbk_mojibake is False
+
+
+def test_detect_plan_utf8_mojibake_recovers():
+    from lumina_core.ingest.text import detect_encoding_plan
+
+    original = _gbk_prose()
+    data = original.encode("gbk").decode("latin-1").encode("utf-8")
+    plan = detect_encoding_plan(data)
+    assert plan.recover_gbk_mojibake is True
+
+
+def test_detect_plan_utf8_not_rejected_when_sample_cuts_multibyte():
+    from lumina_core.ingest.text import _SAMPLE_BYTES, detect_encoding_plan
+
+    payload = ("学而时习之，不亦说乎。" * 40).encode("utf-8")
+    data = b"A" * (_SAMPLE_BYTES - 2) + payload
+    with pytest.raises(UnicodeDecodeError):
+        data[:_SAMPLE_BYTES].decode("utf-8")
+    plan = detect_encoding_plan(data)
+    assert plan.encoding == "utf-8"
+    assert plan.recover_gbk_mojibake is False
+
+
+def test_detect_plan_utf8_fixture_books_larger_than_sample():
+    from lumina_core.ingest.text import detect_encoding_plan
+
+    books = Path(__file__).resolve().parents[1] / "fixtures" / "books"
+    for name in ("chunk_classical.txt", "chunk_long_novel.txt"):
+        raw = (books / name).read_bytes()
+        plan = detect_encoding_plan(raw)
+        assert plan.encoding == "utf-8", name
+        assert plan.recover_gbk_mojibake is False, name
+
+
+def test_load_txt_classical_fixture_roundtrip():
+    books = Path(__file__).resolve().parents[1] / "fixtures" / "books"
+    text, _ = load_document(books / "chunk_classical.txt", "txt")
+    assert "学而" in text
+
+
+def test_pyinstaller_spec_bundles_charset_normalizer():
+    spec = Path(__file__).resolve().parents[2] / "lumina-core.spec"
+    text = spec.read_text(encoding="utf-8")
+    assert "charset_normalizer" in text
+
+
 def test_load_html_preserves_headings_and_metadata(tmp_path):
     p = tmp_path / "sample.html"
     p.write_text(
@@ -138,6 +246,25 @@ def test_load_html_preserves_headings_and_metadata(tmp_path):
     assert "正文段落" in text
     assert "不要收录" not in text
     assert meta == {"title": "HTML 测试书", "author": "测试作者"}
+
+
+def test_load_html_nests_h2_as_section_not_chapter(tmp_path):
+    p = tmp_path / "nested.html"
+    p.write_text(
+        """
+        <html><head><title>分层</title></head>
+        <body>
+          <h1>第一章</h1><p>章正文。</p>
+          <h2>第一节</h2><p>节正文。</p>
+        </body></html>
+        """,
+        encoding="utf-8",
+    )
+    text, _ = load_document(p, "html")
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    assert "## [§第一章]" in lines
+    assert "### [§第一节]" in lines
+    assert "## [§第一节]" not in lines
 
 
 def test_load_rtf_text_and_metadata(tmp_path):
@@ -638,3 +765,34 @@ def test_load_epub_landmarks_set_structure_roles_not_raw_text(tmp_path):
     roles = meta.get("structure_roles") or []
     assert any(item["role"] == "preface" and "序" in item["title"] for item in roles)
     assert any(item["role"] == "bodymatter" for item in roles)
+
+
+def test_load_azw3_extracts_via_mobi_epub(tmp_path, monkeypatch):
+    pytest.importorskip("ebooklib")
+    mobi = pytest.importorskip("mobi")
+
+    extract_dir = tmp_path / "mobi-extract"
+    extract_dir.mkdir()
+    epub_path = extract_dir / "book.epub"
+    _write_epub_with_id_href_mismatch(epub_path)
+
+    azw3 = tmp_path / "kindle-book.azw3"
+    azw3.write_bytes(b"BOOKMOBI-fake")
+
+    monkeypatch.setattr(mobi, "extract", lambda _path: (str(extract_dir), str(epub_path)))
+
+    text, _meta = load_document(azw3, detect_format(azw3))
+    assert "正文段落甲乙丙" in text
+
+
+def test_load_azw3_drm_rejected(tmp_path, monkeypatch):
+    mobi = pytest.importorskip("mobi")
+    azw3 = tmp_path / "locked.azw3"
+    azw3.write_bytes(b"encrypted")
+
+    def _boom(_path):
+        raise RuntimeError("DRM encrypted book")
+
+    monkeypatch.setattr(mobi, "extract", _boom)
+    with pytest.raises(ValueError, match="DRM-protected Kindle/MOBI"):
+        load_document(azw3, detect_format(azw3))
