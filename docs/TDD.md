@@ -823,7 +823,7 @@ class ModelRouter:
 - `GET /books/{id}/segments` **默认不含** `raw_text`；原文仅 `GET .../segments/{idx}`。目录含 `heading_path`（0–2 个标题）；客户端用已加载瘦段表组最多 3 层树。禁止把全书 `document_tree` 放进书列表/详情。旧段无 `heading_path` 时从 `chapter` 按 ` · ` 拆并去掉 `§`，不强制重新分段。
 - `GET /books/{id}/original-search` **禁止**同步扫库；**禁止**在 hits 中返回 `raw_text`。
 - `segment_ready` SSE 须携带 UI 所需摘要字段；客户端 **禁止** 为此再拉全量段表。
-- 手动调界只改相邻两段 `raw_text`；客户端在拼接原文上点击后 POST `left_char_count`（服务端吸附），不再拖动或步进 candidates；SSE `segment_boundary_moved` 后客户端补丁这两行，禁止整表 reload。
+- 手动调界只改相邻两段 `raw_text`；客户端在拼接原文上点击只更新预览，点「保存」后才 POST `left_char_count`（服务端吸附），取消不发请求；不再拖动或步进 candidates；SSE `segment_boundary_moved` 后客户端补丁这两行，禁止整表 reload。
 - Swift：网络收发与大 JSON 解码不得堵 MainActor；切书请求须可取消。
 
 **三队列分池**：

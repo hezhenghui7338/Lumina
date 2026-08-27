@@ -1189,8 +1189,20 @@ public sealed partial class ReaderPage : Page
                 return;
             }
 
-            var currentCut = (left.RawText ?? "").EnumerateRunes().Count();
-            var (leftText, rightText) = SegmentBoundaryOffset.Split(concat, currentCut);
+            var originalCut = (left.RawText ?? "").EnumerateRunes().Count();
+            var previewCut = originalCut;
+            var total = concat.EnumerateRunes().Count();
+            var candidateOffsets = new List<int>();
+            try
+            {
+                var preview = await App.Core.FetchSegmentBoundaryAsync(_bookId, leftIdx);
+                candidateOffsets = preview.Candidates?.ConvertAll(c => c.Offset) ?? [];
+            }
+            catch
+            {
+                // Preview still works at the raw click; the server snaps on save.
+            }
+            var (leftText, rightText) = SegmentBoundaryOffset.Split(concat, previewCut);
             var counts = new TextBlock
             {
                 Opacity = 0.7,
@@ -1219,7 +1231,7 @@ public sealed partial class ReaderPage : Page
             var panel = new StackPanel { Spacing = 8, MaxWidth = 640 };
             panel.Children.Add(new TextBlock
             {
-                Text = "点击正文中要作为新分界的位置。切点会吸附到最近的句子或段落。点击后立即保存并重新摘要这两段。",
+                Text = "点击正文中要作为新分界的位置。切点会吸附到最近的句子或段落。点「保存」才落库并重新摘要这两段；取消不保存。",
                 TextWrapping = TextWrapping.WrapWholeWords,
             });
             panel.Children.Add(counts);
@@ -1231,49 +1243,84 @@ public sealed partial class ReaderPage : Page
             {
                 Title = "调整分段",
                 Content = panel,
+                PrimaryButtonText = "保存",
                 CloseButtonText = "取消",
-                DefaultButton = ContentDialogButton.Close,
+                DefaultButton = ContentDialogButton.Primary,
+                IsPrimaryButtonEnabled = false,
                 XamlRoot = XamlRoot,
             };
             var isSaving = false;
-            editor.PointerReleased += async (_, _) =>
+            void RefreshPreview()
+            {
+                var (nextLeft, nextRight) = SegmentBoundaryOffset.Split(concat, previewCut);
+                counts.Text = $"段 {leftIdx + 1} · {nextLeft.EnumerateRunes().Count()} 字    段 {leftIdx + 2} · {nextRight.EnumerateRunes().Count()} 字";
+                var caret = SegmentBoundaryOffset.Utf16Index(concat, previewCut);
+                editor.Select(caret, 0);
+                dlg.IsPrimaryButtonEnabled = SegmentBoundaryOffset.CanSave(
+                    previewCut, originalCut, total, isSaving);
+            }
+            editor.PointerReleased += (_, _) =>
             {
                 if (isSaving || editor.SelectionLength > 0) return;
-                var offset = SegmentBoundaryOffset.UnicodeOffset(concat, editor.SelectionStart);
-                var total = concat.EnumerateRunes().Count();
+                var offset = SegmentBoundaryOffset.NearestOffset(
+                    SegmentBoundaryOffset.UnicodeOffset(concat, editor.SelectionStart),
+                    candidateOffsets);
                 if (offset <= 0 || offset >= total)
                 {
                     error.Text = "调整后两侧都必须保留正文";
                     error.Visibility = Visibility.Visible;
                     return;
                 }
-                isSaving = true;
                 error.Visibility = Visibility.Collapsed;
-                saving.Visibility = Visibility.Visible;
-                saving.IsActive = true;
-                editor.IsEnabled = false;
+                previewCut = offset;
+                RefreshPreview();
+            };
+            dlg.PrimaryButtonClick += async (_, args) =>
+            {
+                var deferral = args.GetDeferral();
                 try
                 {
-                    var result = await App.Core.MoveSegmentBoundaryAsync(_bookId, leftIdx, offset);
+                    if (!SegmentBoundaryOffset.CanSave(previewCut, originalCut, total, isSaving))
+                    {
+                        args.Cancel = true;
+                        return;
+                    }
+                    isSaving = true;
+                    dlg.IsPrimaryButtonEnabled = false;
+                    editor.IsEnabled = false;
+                    error.Visibility = Visibility.Collapsed;
+                    saving.Visibility = Visibility.Visible;
+                    saving.IsActive = true;
+                    var result = await App.Core.MoveSegmentBoundaryAsync(_bookId, leftIdx, previewCut);
                     ApplyMoveResult(result);
                     ProgressText.Text = result.Unchanged ? "分界未改变" : "已调整分界，正在重新摘要这两段";
                     ProgressBanner.Visibility = Visibility.Visible;
-                    dlg.Hide();
+                    isSaving = false;
                     if (_selected?.Idx == leftIdx || _selected?.Idx == leftIdx + 1)
-                        await HydrateSelectedAsync();
+                    {
+                        try { await HydrateSelectedAsync(); }
+                        catch { /* boundary already saved */ }
+                    }
                 }
                 catch (Exception ex)
                 {
+                    args.Cancel = true;
                     error.Text = ex.Message;
                     error.Visibility = Visibility.Visible;
                     editor.IsEnabled = true;
                     isSaving = false;
+                    RefreshPreview();
                 }
                 finally
                 {
                     saving.IsActive = false;
                     saving.Visibility = Visibility.Collapsed;
+                    deferral.Complete();
                 }
+            };
+            dlg.Closing += (_, args) =>
+            {
+                if (isSaving) args.Cancel = true;
             };
 
             await dlg.ShowAsync();

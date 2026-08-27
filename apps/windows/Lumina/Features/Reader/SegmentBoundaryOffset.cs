@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using System.Linq;
 
 namespace Lumina.Features.Reader;
@@ -39,4 +40,28 @@ public static class SegmentBoundaryOffset
         if (utf16 >= text.Length) return (text, "");
         return (text[..utf16], text[utf16..]);
     }
+
+    /// <summary>
+    /// Matches Python <c>snap_cut_offset</c>: nearest candidate, ties go to the smaller offset.
+    /// </summary>
+    public static int NearestOffset(int offset, IReadOnlyList<int> candidates)
+    {
+        if (candidates is null || candidates.Count == 0) return offset;
+        var best = candidates[0];
+        var bestKey = (Math.Abs(best - offset), best);
+        for (var i = 1; i < candidates.Count; i++)
+        {
+            var item = candidates[i];
+            var key = (Math.Abs(item - offset), item);
+            if (key.CompareTo(bestKey) < 0)
+            {
+                best = item;
+                bestKey = key;
+            }
+        }
+        return best;
+    }
+
+    public static bool CanSave(int previewCut, int originalCut, int totalChars, bool isSaving) =>
+        !isSaving && previewCut != originalCut && previewCut > 0 && previewCut < totalChars;
 }

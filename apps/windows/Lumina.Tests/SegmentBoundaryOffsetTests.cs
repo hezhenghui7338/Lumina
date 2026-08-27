@@ -50,7 +50,7 @@ public class SegmentBoundaryOffsetTests
     }
 
     [Fact]
-    public void AdjustDialog_dropsSliderAndSaveButton()
+    public void AdjustDialog_previewsClickUntilSave()
     {
         var testsRoot = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", ".."));
         var path = Path.GetFullPath(Path.Combine(
@@ -61,9 +61,33 @@ public class SegmentBoundaryOffsetTests
             .Split("private void ApplyBoundaryEvent", 2)[0];
         Assert.DoesNotContain("new Slider", method);
         Assert.DoesNotContain("拖动滑块", method);
-        Assert.DoesNotContain("PrimaryButtonText", method);
+        Assert.Contains("PrimaryButtonText = \"保存\"", method);
         Assert.Contains("点击正文中要作为新分界的位置", method);
-        Assert.Contains("点击后立即保存并重新摘要这两段", method);
+        Assert.Contains("点「保存」才落库并重新摘要这两段", method);
+        Assert.DoesNotContain("点击后立即保存并重新摘要这两段", method);
         Assert.Contains("SelectionStart", method);
+        var clickHandler = method.Split("editor.PointerReleased", 2)[1]
+            .Split("dlg.PrimaryButtonClick", 2)[0];
+        Assert.DoesNotContain("MoveSegmentBoundaryAsync", clickHandler);
+        Assert.Contains("MoveSegmentBoundaryAsync", method.Split("dlg.PrimaryButtonClick", 2)[1]);
+    }
+
+    [Fact]
+    public void NearestOffset_picksClosestThenSmaller()
+    {
+        Assert.Equal(10, SegmentBoundaryOffset.NearestOffset(10, Array.Empty<int>()));
+        Assert.Equal(8, SegmentBoundaryOffset.NearestOffset(10, [8, 14]));
+        Assert.Equal(5, SegmentBoundaryOffset.NearestOffset(10, [5, 15]));
+        Assert.Equal(15, SegmentBoundaryOffset.NearestOffset(12, [5, 15]));
+    }
+
+    [Fact]
+    public void CanSave_requiresChangedInteriorCut()
+    {
+        Assert.False(SegmentBoundaryOffset.CanSave(12, 12, 40, false));
+        Assert.False(SegmentBoundaryOffset.CanSave(20, 12, 40, true));
+        Assert.False(SegmentBoundaryOffset.CanSave(0, 12, 40, false));
+        Assert.False(SegmentBoundaryOffset.CanSave(40, 12, 40, false));
+        Assert.True(SegmentBoundaryOffset.CanSave(20, 12, 40, false));
     }
 }

@@ -58,7 +58,40 @@ final class SegmentBoundaryOffsetTests: XCTestCase {
         XCTAssertFalse(source.contains("拖动调整"))
         XCTAssertFalse(source.contains("DragGesture"))
         XCTAssertTrue(source.contains("点击正文中要作为新分界的位置"))
-        XCTAssertTrue(source.contains("点击后立即保存并重新摘要这两段"))
+        XCTAssertTrue(source.contains("点「保存」才落库并重新摘要这两段"))
+        XCTAssertFalse(source.contains("点击后立即保存并重新摘要这两段"))
+        XCTAssertTrue(source.contains("Button(\"保存\")"))
+        XCTAssertTrue(source.contains("preview(atUTF16:"))
         XCTAssertTrue(source.contains("characterIndexForInsertion"))
+        let clickHandler = source.components(separatedBy: "SegmentBoundaryClickText(").last?
+            .components(separatedBy: ".help(").first ?? ""
+        XCTAssertTrue(clickHandler.contains("preview(atUTF16:"))
+        XCTAssertFalse(clickHandler.contains("moveSegmentBoundary"))
+        XCTAssertFalse(clickHandler.contains("isSaving = true"))
+    }
+
+    func testNearestOffset_picksClosestThenSmaller() {
+        XCTAssertEqual(SegmentBoundaryOffset.nearestOffset(10, among: []), 10)
+        XCTAssertEqual(SegmentBoundaryOffset.nearestOffset(10, among: [8, 14]), 8)
+        XCTAssertEqual(SegmentBoundaryOffset.nearestOffset(10, among: [5, 15]), 5)
+        XCTAssertEqual(SegmentBoundaryOffset.nearestOffset(12, among: [5, 15]), 15)
+    }
+
+    func testCanSave_requiresChangedInteriorCut() {
+        XCTAssertFalse(SegmentBoundaryOffset.canSave(
+            previewCut: 12, originalCut: 12, totalChars: 40, isSaving: false
+        ))
+        XCTAssertFalse(SegmentBoundaryOffset.canSave(
+            previewCut: 20, originalCut: 12, totalChars: 40, isSaving: true
+        ))
+        XCTAssertFalse(SegmentBoundaryOffset.canSave(
+            previewCut: 0, originalCut: 12, totalChars: 40, isSaving: false
+        ))
+        XCTAssertFalse(SegmentBoundaryOffset.canSave(
+            previewCut: 40, originalCut: 12, totalChars: 40, isSaving: false
+        ))
+        XCTAssertTrue(SegmentBoundaryOffset.canSave(
+            previewCut: 20, originalCut: 12, totalChars: 40, isSaving: false
+        ))
     }
 }

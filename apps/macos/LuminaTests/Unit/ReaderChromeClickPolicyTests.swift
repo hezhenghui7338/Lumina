@@ -712,7 +712,10 @@ final class ReaderChromeClickArchitectureTests: XCTestCase {
     func testBoundaryEditorUsesClickNotDrag() throws {
         let editor = try source("Lumina/Features/Reader/SegmentBoundaryEditor.swift")
         XCTAssertTrue(editor.contains("点击正文中要作为新分界的位置"))
-        XCTAssertTrue(editor.contains("点击后立即保存并重新摘要这两段"))
+        XCTAssertTrue(editor.contains("点「保存」才落库并重新摘要这两段"))
+        XCTAssertTrue(editor.contains("Button(\"保存\")"))
+        XCTAssertTrue(editor.contains("preview(atUTF16:"))
+        XCTAssertFalse(editor.contains("点击后立即保存并重新摘要这两段"))
         XCTAssertTrue(editor.contains("characterIndexForInsertion"))
         XCTAssertTrue(editor.contains("NSScrollView"))
         XCTAssertFalse(editor.contains("上一处"))

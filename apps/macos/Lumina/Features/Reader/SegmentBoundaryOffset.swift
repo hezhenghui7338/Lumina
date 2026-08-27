@@ -35,4 +35,21 @@ enum SegmentBoundaryOffset {
         let right = String(String.UnicodeScalarView(text.unicodeScalars.dropFirst(clamped)))
         return (left, right)
     }
+
+    /// Matches Python `snap_cut_offset`: nearest candidate, ties go to the smaller offset.
+    static func nearestOffset(_ offset: Int, among candidates: [Int]) -> Int {
+        guard let first = candidates.first else { return offset }
+        return candidates.min { lhs, rhs in
+            (abs(lhs - offset), lhs) < (abs(rhs - offset), rhs)
+        } ?? first
+    }
+
+    static func canSave(
+        previewCut: Int,
+        originalCut: Int,
+        totalChars: Int,
+        isSaving: Bool
+    ) -> Bool {
+        !isSaving && previewCut != originalCut && previewCut > 0 && previewCut < totalChars
+    }
 }

@@ -9,10 +9,21 @@ struct SegmentBoundarySheet: View {
     var onCancel: () -> Void
 
     @State private var concat = ""
+    @State private var originalCut = 0
     @State private var currentCut = 0
+    @State private var candidateOffsets: [Int] = []
     @State private var isLoading = true
     @State private var isSaving = false
     @State private var loadError: String?
+
+    private var canSave: Bool {
+        SegmentBoundaryOffset.canSave(
+            previewCut: currentCut,
+            originalCut: originalCut,
+            totalChars: concat.unicodeScalars.count,
+            isSaving: isSaving
+        )
+    }
 
     private var leftText: String {
         SegmentBoundaryOffset.split(concat, unicodeOffset: currentCut).0
@@ -26,7 +37,7 @@ struct SegmentBoundarySheet: View {
         VStack(alignment: .leading, spacing: 16) {
             Text("调整分段")
                 .font(.title2.weight(.semibold))
-            Text("点击正文中要作为新分界的位置。切点会吸附到最近的句子或段落。点击后立即保存并重新摘要这两段。")
+            Text("点击正文中要作为新分界的位置。切点会吸附到最近的句子或段落。点「保存」才落库并重新摘要这两段；取消不保存。")
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
@@ -45,6 +56,12 @@ struct SegmentBoundarySheet: View {
                 Spacer()
                 Button("取消", role: .cancel) { onCancel() }
                     .disabled(isSaving)
+                Button("保存") {
+                    Task { await save() }
+                }
+                .buttonStyle(.borderedProminent)
+                .keyboardShortcut(.defaultAction)
+                .disabled(!canSave)
             }
         }
         .padding(24)
@@ -70,12 +87,11 @@ struct SegmentBoundarySheet: View {
                 isEnabled: !isSaving,
                 onClickUTF16: { utf16 in
                     guard !isSaving else { return }
-                    isSaving = true
-                    Task { await save(atUTF16: utf16) }
+                    preview(atUTF16: utf16)
                 }
             )
-            .help("点击设为新分界")
-            .accessibilityLabel("拼接原文，点击设置分界")
+            .help("点击预览新分界")
+            .accessibilityLabel("拼接原文，点击预览分界")
             .clipShape(RoundedRectangle(cornerRadius: 8))
             .overlay(
                 RoundedRectangle(cornerRadius: 8)
@@ -103,12 +119,15 @@ struct SegmentBoundarySheet: View {
         do {
             async let leftTask = core.getSegment(bookId: bookId, idx: leftIdx)
             async let rightTask = core.getSegment(bookId: bookId, idx: leftIdx + 1)
+            async let previewTask = core.fetchSegmentBoundary(bookId: bookId, idx: leftIdx)
             let left = try await leftTask
             let right = try await rightTask
             let leftRaw = left.raw_text ?? ""
             let rightRaw = right.raw_text ?? ""
             concat = leftRaw + rightRaw
-            currentCut = leftRaw.unicodeScalars.count
+            originalCut = leftRaw.unicodeScalars.count
+            currentCut = originalCut
+            candidateOffsets = ((try? await previewTask)?.candidates.map(\.offset)) ?? []
             if concat.isEmpty {
                 loadError = "这两段没有可调整的正文"
             }
@@ -118,20 +137,27 @@ struct SegmentBoundarySheet: View {
         isLoading = false
     }
 
-    private func save(atUTF16 utf16Index: Int) async {
-        let offset = SegmentBoundaryOffset.unicodeOffset(utf16Index: utf16Index, in: concat)
+    private func preview(atUTF16 utf16Index: Int) {
+        let tapped = SegmentBoundaryOffset.unicodeOffset(utf16Index: utf16Index, in: concat)
+        let offset = SegmentBoundaryOffset.nearestOffset(tapped, among: candidateOffsets)
         let total = concat.unicodeScalars.count
         if offset <= 0 || offset >= total {
             loadError = "调整后两侧都必须保留正文"
-            isSaving = false
             return
         }
+        loadError = nil
+        currentCut = offset
+    }
+
+    private func save() async {
+        guard canSave else { return }
+        isSaving = true
         loadError = nil
         do {
             let result = try await core.moveSegmentBoundary(
                 bookId: bookId,
                 idx: leftIdx,
-                leftCharCount: offset
+                leftCharCount: currentCut
             )
             let split = SegmentBoundaryOffset.split(
                 concat,
