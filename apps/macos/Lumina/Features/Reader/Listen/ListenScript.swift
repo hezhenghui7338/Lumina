@@ -1,5 +1,28 @@
 import Foundation
 
+/// Speaker click follows the panel on screen, not only the 摘要|原文 picker.
+/// Per-segment 「切换原文 / 切换摘要」 can diverge from the picker; listen must match.
+enum ListenChromePolicy {
+    static func isShowingOriginal(
+        contentMode: ReaderContentMode,
+        sourceExpanded: Bool,
+        summaryExpanded: Bool
+    ) -> Bool {
+        switch contentMode {
+        case .summary: sourceExpanded
+        case .original: !summaryExpanded
+        }
+    }
+
+    static func primaryMode(showingOriginal: Bool) -> ListenMode {
+        showingOriginal ? .original : .summary
+    }
+
+    static func showsSummaryChevron(showingOriginal: Bool) -> Bool {
+        !showingOriginal
+    }
+}
+
 enum ListenMode: String, CaseIterable, Equatable {
     case summary
     case detailed

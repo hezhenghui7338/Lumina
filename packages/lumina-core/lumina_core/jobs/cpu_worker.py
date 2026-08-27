@@ -29,8 +29,14 @@ INLINE_ENV = "LUMINA_CPU_INLINE"
 STALL_ENV = "LUMINA_CPU_STALL_SECONDS"
 JOB_MAX_ENV = "LUMINA_CPU_JOB_MAX_SECONDS"
 CPU_STALL_SECONDS = 180.0
-CPU_JOB_MAX_SECONDS = 1800.0
+CPU_JOB_MAX_FLOOR_SECONDS = 1800.0
+CPU_JOB_MAX_CEILING_SECONDS = 8 * 3600.0
+CPU_JOB_SECONDS_PER_PAGE = 60.0
+CPU_JOB_SECONDS_PER_MIB = 30.0
+CPU_JOB_MAX_PLAUSIBLE_PAGES = 20_000
+PAGE_PROGRESS_FORMATS = frozenset({"pdf"})
 CPU_WORKER_ENV = "LUMINA_CPU_WORKER"
+_MIB = 1024 * 1024
 
 ProgressFn = Callable[[int, int, str], None]
 
@@ -76,6 +82,101 @@ def _env_seconds(name: str, default: float) -> float:
         return default
 
 
+def _env_seconds_optional(name: str) -> float | None:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return None
+    try:
+        return max(0.05, float(raw))
+    except ValueError:
+        return None
+
+
+def cpu_job_max_seconds(*, file_bytes: int = 0, page_count: int | None = None) -> float:
+    """Wall-clock budget: max(30min, pages×60s, MiB×30s), capped at 8h."""
+    mb_budget = max(0, int(file_bytes)) / _MIB * CPU_JOB_SECONDS_PER_MIB
+    page_budget = 0.0
+    if page_count is not None and int(page_count) > 0:
+        page_budget = int(page_count) * CPU_JOB_SECONDS_PER_PAGE
+    budget = max(mb_budget, page_budget)
+    return min(max(CPU_JOB_MAX_FLOOR_SECONDS, budget), CPU_JOB_MAX_CEILING_SECONDS)
+
+
+def page_count_from_progress(fmt: str, total: int, message: str) -> int | None:
+    """PDF/OCR progress totals are pages; TXT char/byte totals must not count."""
+    if str(fmt or "").lower() not in PAGE_PROGRESS_FORMATS:
+        return None
+    if total < 1 or total > CPU_JOB_MAX_PLAUSIBLE_PAGES:
+        return None
+    msg = message or ""
+    if "页" in msg or "PDF" in msg or "OCR" in msg or "扫描" in msg:
+        return total
+    return None
+
+
+def probe_pdf_page_count(path: Path) -> int | None:
+    try:
+        import fitz
+
+        doc = fitz.open(str(path))
+        try:
+            count = int(doc.page_count)
+        finally:
+            doc.close()
+        return count if count > 0 else None
+    except Exception:
+        pass
+    try:
+        from pypdf import PdfReader
+
+        count = len(PdfReader(str(path)).pages)
+        return count if count > 0 else None
+    except Exception:
+        return None
+
+
+def _job_file_path(job: dict[str, Any]) -> Path | None:
+    for key in ("dest", "file_path", "src"):
+        raw = job.get(key)
+        if not raw:
+            continue
+        path = Path(str(raw))
+        try:
+            if path.is_file():
+                return path
+        except OSError:
+            continue
+    return None
+
+
+def job_scale(job: dict[str, Any]) -> tuple[int, int | None]:
+    path = _job_file_path(job)
+    file_bytes = 0
+    if path is not None:
+        try:
+            file_bytes = int(path.stat().st_size)
+        except OSError:
+            file_bytes = 0
+    page_count: int | None = None
+    explicit = job.get("page_count")
+    if explicit is not None:
+        try:
+            parsed = int(explicit)
+            if parsed > 0:
+                page_count = parsed
+        except (TypeError, ValueError):
+            page_count = None
+    fmt = str(job.get("fmt") or "").lower()
+    if page_count is None and fmt == "pdf" and path is not None:
+        page_count = probe_pdf_page_count(path)
+    return file_bytes, page_count
+
+
+def _job_max_timeout_message(max_job: float) -> str:
+    minutes = max(1, int(round(max_job / 60.0)))
+    return f"分段超时：单本处理超过 {minutes} 分钟"
+
+
 def _emit(payload: dict[str, Any]) -> None:
     sys.stdout.write(json.dumps(payload, ensure_ascii=False) + "\n")
     sys.stdout.flush()
@@ -108,6 +209,12 @@ def run_cpu_worker_sync(
     env["PYTHONPATH"] = os.pathsep.join(p for p in (root, existing) if p)
     stderr_chunks: list[str] = []
     result: dict[str, Any] | None = None
+    env_max = _env_seconds_optional(JOB_MAX_ENV)
+    file_bytes, page_count = job_scale(job)
+    computed_max = cpu_job_max_seconds(file_bytes=file_bytes, page_count=page_count)
+    max_job = [env_max if env_max is not None else computed_max]
+    job_max_locked = env_max is not None
+    fmt = str(job.get("fmt") or "")
     proc = subprocess.Popen(
         cpu_worker_command(job_path),
         stdout=subprocess.PIPE,
@@ -135,16 +242,25 @@ def run_cpu_worker_sync(
                 return
             time.sleep(0.05)
 
+    def _maybe_extend_job_max(total: int, message: str) -> None:
+        if job_max_locked:
+            return
+        pages = page_count_from_progress(fmt, total, message)
+        if pages is None:
+            return
+        extended = cpu_job_max_seconds(file_bytes=file_bytes, page_count=pages)
+        if extended > max_job[0]:
+            max_job[0] = extended
+
     def _watch_timeout() -> None:
         stall = _env_seconds(STALL_ENV, CPU_STALL_SECONDS)
-        max_job = _env_seconds(JOB_MAX_ENV, CPU_JOB_MAX_SECONDS)
         started = time.monotonic()
         while proc.poll() is None:
             if cancel_event.is_set() or timed_out.is_set():
                 return
             now = time.monotonic()
-            if now - started >= max_job:
-                timeout_reason[0] = "分段超时：单本处理超过 30 分钟"
+            if now - started >= max_job[0]:
+                timeout_reason[0] = _job_max_timeout_message(max_job[0])
                 timed_out.set()
                 proc.kill()
                 return
@@ -179,6 +295,7 @@ def run_cpu_worker_sync(
             if kind == "progress":
                 last_progress_at[0] = time.monotonic()
                 last_message[0] = str(msg.get("message") or "")
+                _maybe_extend_job_max(int(msg.get("total") or 0), last_message[0])
                 if on_progress is not None:
                     on_progress(
                         int(msg.get("page") or 0),

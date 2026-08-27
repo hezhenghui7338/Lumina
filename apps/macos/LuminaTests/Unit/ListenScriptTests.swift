@@ -74,6 +74,41 @@ final class ListenScriptTests: XCTestCase {
     }
 }
 
+final class ListenChromePolicyTests: XCTestCase {
+    func testSpeakerFollowsVisiblePanelNotOnlyThePicker() {
+        XCTAssertFalse(
+            ListenChromePolicy.isShowingOriginal(
+                contentMode: .summary, sourceExpanded: false, summaryExpanded: false
+            ),
+            "摘要层默认面板是总结"
+        )
+        XCTAssertTrue(
+            ListenChromePolicy.isShowingOriginal(
+                contentMode: .summary, sourceExpanded: true, summaryExpanded: false
+            ),
+            "摘要层点「切换原文」后喇叭必须听原文"
+        )
+        XCTAssertTrue(
+            ListenChromePolicy.isShowingOriginal(
+                contentMode: .original, sourceExpanded: true, summaryExpanded: false
+            )
+        )
+        XCTAssertFalse(
+            ListenChromePolicy.isShowingOriginal(
+                contentMode: .original, sourceExpanded: true, summaryExpanded: true
+            ),
+            "原文层点「切换摘要」后喇叭必须听简要摘要"
+        )
+    }
+
+    func testPrimaryClickAndChevronFollowTheVisiblePanel() {
+        XCTAssertEqual(ListenChromePolicy.primaryMode(showingOriginal: false), .summary)
+        XCTAssertEqual(ListenChromePolicy.primaryMode(showingOriginal: true), .original)
+        XCTAssertTrue(ListenChromePolicy.showsSummaryChevron(showingOriginal: false))
+        XCTAssertFalse(ListenChromePolicy.showsSummaryChevron(showingOriginal: true))
+    }
+}
+
 final class ListenSessionTests: XCTestCase {
     func testAdvancePlaysReadySegment() {
         XCTAssertEqual(

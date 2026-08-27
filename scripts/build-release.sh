@@ -107,18 +107,29 @@ chmod +x "$RES/lumina-core"
 echo "==> Sidecar startup smoke (embedded binary)…"
 SMOKE_PORT=17433
 SMOKE_PID=""
+# Never open the developer's live library: a running Lumina holds lumina.db
+# and init_db migrations then fail with "database is locked".
+SMOKE_DATA_DIR="$(mktemp -d "${TMPDIR:-/tmp}/lumina-release-smoke.XXXXXX")"
 cleanup_smoke() {
   if [[ -n "${SMOKE_PID:-}" ]] && kill -0 "$SMOKE_PID" 2>/dev/null; then
     kill "$SMOKE_PID" 2>/dev/null || true
     wait "$SMOKE_PID" 2>/dev/null || true
   fi
+  if [[ -n "${SMOKE_DATA_DIR:-}" && -d "$SMOKE_DATA_DIR" ]]; then
+    rm -rf "$SMOKE_DATA_DIR"
+  fi
 }
 trap cleanup_smoke EXIT
-"$RES/lumina-core" --host 127.0.0.1 --port "$SMOKE_PORT" &
+LUMINA_DATA_DIR="$SMOKE_DATA_DIR" "$RES/lumina-core" --host 127.0.0.1 --port "$SMOKE_PORT" &
 SMOKE_PID=$!
 SMOKE_OK=0
 HEALTH_JSON=""
 for _ in $(seq 1 60); do
+  if ! kill -0 "$SMOKE_PID" 2>/dev/null; then
+    wait "$SMOKE_PID" 2>/dev/null || true
+    echo "ERROR: Embedded sidecar exited before /health" >&2
+    exit 1
+  fi
   if HEALTH_JSON=$(curl -sf "http://127.0.0.1:${SMOKE_PORT}/health"); then
     SMOKE_OK=1
     break

@@ -6,6 +6,7 @@ struct SettingsView: View {
     @EnvironmentObject private var core: CoreClient
     @EnvironmentObject private var sidecar: SidecarManager
     @EnvironmentObject private var theme: ThemeManager
+    @EnvironmentObject private var tour: OnboardingTourController
     @State private var settings: AppSettings?
     @State private var promptsDefaults: PromptsSettings?
     @State private var error: String?
@@ -29,11 +30,29 @@ struct SettingsView: View {
     @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
-        Form {
-            formContent
+        ScrollViewReader { proxy in
+            Form {
+                formContent
+            }
+            .formStyle(.grouped)
+            .navigationTitle("设置")
+            .onChange(of: tour.step) { _, step in
+                if step == .configureAPI {
+                    DispatchQueue.main.async {
+                        withAnimation {
+                            proxy.scrollTo(TourAnchorID.apiResources, anchor: .center)
+                        }
+                    }
+                }
+            }
+            .onAppear {
+                if tour.step == .configureAPI {
+                    DispatchQueue.main.async {
+                        proxy.scrollTo(TourAnchorID.apiResources, anchor: .center)
+                    }
+                }
+            }
         }
-        .formStyle(.grouped)
-        .navigationTitle("设置")
         .task { await load() }
         .onChange(of: sidecar.isRunning) { _, running in
             if running { Task { await load() } }
@@ -410,6 +429,9 @@ struct SettingsView: View {
                 Spacer()
             }
             .padding(.vertical, 4)
+            Button("使用指南") {
+                NotificationCenter.default.post(name: .luminaOpenUsageGuide, object: nil)
+            }
             Link("GitHub 仓库", destination: AppLinks.githubRepository)
                 .font(.caption)
             Link("反馈问题", destination: AppLinks.githubIssues)
@@ -494,6 +516,8 @@ struct SettingsView: View {
         } footer: {
             Text("Ollama 只是 API 的一种。在此配置各 endpoint，再在下方深聊/摘要入口关联优先级。")
         }
+        .id(TourAnchorID.apiResources)
+        .tourAnchor(.apiResources)
     }
 
     private func apiResourceRow(_ resource: ModelResourceSettings) -> some View {

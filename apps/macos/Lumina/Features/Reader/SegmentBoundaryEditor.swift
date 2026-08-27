@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 struct SegmentBoundarySheet: View {
@@ -8,40 +9,34 @@ struct SegmentBoundarySheet: View {
     var onCancel: () -> Void
 
     @State private var concat = ""
-    @State private var candidates: [SegmentBoundaryCandidate] = []
-    @State private var candidateIndex = 0
-    @State private var dragStartIndex = 0
-    @State private var oversizedLimit = 6000
+    @State private var currentCut = 0
     @State private var isLoading = true
     @State private var isSaving = false
     @State private var loadError: String?
 
-    private var cut: Int {
-        guard candidates.indices.contains(candidateIndex) else { return 0 }
-        return candidates[candidateIndex].offset
+    private var leftText: String {
+        SegmentBoundaryOffset.split(concat, unicodeOffset: currentCut).0
     }
 
-    private var leftText: String { String(concat.prefix(cut)) }
-    private var rightText: String { String(concat.dropFirst(cut)) }
-    private var oversized: Bool {
-        leftText.count > oversizedLimit || rightText.count > oversizedLimit
+    private var rightText: String {
+        SegmentBoundaryOffset.split(concat, unicodeOffset: currentCut).1
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text("调整分段")
                 .font(.title2.weight(.semibold))
-            Text("拖动中间的分界线，切点会吸附到句子或段落边界。保存后只重新摘要这两段。")
+            Text("点击正文中要作为新分界的位置。切点会吸附到最近的句子或段落。点击后立即保存并重新摘要这两段。")
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
             if isLoading {
                 ProgressView("正在加载原文…")
-                    .frame(maxWidth: .infinity, minHeight: 220)
-            } else if let loadError {
-                Text(loadError)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if concat.isEmpty {
+                Text(loadError ?? "这两段没有可调整的正文")
                     .foregroundStyle(.orange)
-                    .frame(maxWidth: .infinity, minHeight: 220, alignment: .leading)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
             } else {
                 editorBody
             }
@@ -50,123 +45,56 @@ struct SegmentBoundarySheet: View {
                 Spacer()
                 Button("取消", role: .cancel) { onCancel() }
                     .disabled(isSaving)
-                Button {
-                    Task { await save() }
-                } label: {
-                    if isSaving {
-                        ProgressView().controlSize(.small)
-                    } else {
-                        Text("保存并重新摘要")
-                    }
-                }
-                .buttonStyle(.borderedProminent)
-                .disabled(isLoading || isSaving || candidates.isEmpty || loadError != nil)
             }
         }
         .padding(24)
-        .frame(width: 640, height: 560)
+        .frame(width: 720, height: 620)
+        .interactiveDismissDisabled(isSaving)
         .task { await load() }
     }
 
     @ViewBuilder
     private var editorBody: some View {
         HStack {
-            Text("段 \(leftIdx + 1) · \(leftText.count) 字")
+            Text("段 \(leftIdx + 1) · \(leftText.unicodeScalars.count) 字")
             Spacer()
-            Text("段 \(leftIdx + 2) · \(rightText.count) 字")
+            Text("段 \(leftIdx + 2) · \(rightText.unicodeScalars.count) 字")
         }
         .font(.callout)
         .foregroundStyle(.secondary)
 
-        VStack(spacing: 0) {
-            previewPane(leftText.suffix(480), alignment: .bottom)
-            handle
-            previewPane(rightText.prefix(480), alignment: .top)
-        }
-        .clipShape(RoundedRectangle(cornerRadius: 8))
-        .overlay(
-            RoundedRectangle(cornerRadius: 8)
-                .stroke(LuminaTheme.border, lineWidth: 1)
-        )
+        ZStack {
+            SegmentBoundaryClickText(
+                text: concat,
+                currentCut: currentCut,
+                isEnabled: !isSaving,
+                onClickUTF16: { utf16 in
+                    guard !isSaving else { return }
+                    isSaving = true
+                    Task { await save(atUTF16: utf16) }
+                }
+            )
+            .help("点击设为新分界")
+            .accessibilityLabel("拼接原文，点击设置分界")
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .overlay(
+                RoundedRectangle(cornerRadius: 8)
+                    .stroke(LuminaTheme.border, lineWidth: 1)
+            )
+            .opacity(isSaving ? 0.45 : 1)
 
-        HStack {
-            Button("上一处") { step(-1) }
-                .disabled(candidateIndex <= 0)
-            Button("下一处") { step(1) }
-                .disabled(candidateIndex >= candidates.count - 1)
-            Spacer()
-            Text(kindLabel)
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            if isSaving {
+                ProgressView("正在保存…")
+                    .padding(12)
+                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
+            }
         }
 
-        if oversized {
-            Text("其中一段超过 \(oversizedLimit) 字，摘要时可能会截断。仍可保存。")
+        if let loadError {
+            Text(loadError)
                 .font(.callout)
                 .foregroundStyle(.orange)
         }
-    }
-
-    private var kindLabel: String {
-        guard candidates.indices.contains(candidateIndex) else { return "" }
-        switch candidates[candidateIndex].kind {
-        case "heading": return "吸附：章节"
-        case "paragraph": return "吸附：段落"
-        case "current": return "当前分界"
-        default: return "吸附：句子"
-        }
-    }
-
-    private var handle: some View {
-        HStack(spacing: 8) {
-            Capsule()
-                .fill(LuminaTheme.accent)
-                .frame(width: 48, height: 4)
-            Text("拖动调整")
-                .font(.caption.weight(.medium))
-                .foregroundStyle(LuminaTheme.accent)
-            Capsule()
-                .fill(LuminaTheme.accent)
-                .frame(width: 48, height: 4)
-        }
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 10)
-        .background(LuminaTheme.accentMuted.opacity(0.5))
-        .contentShape(Rectangle())
-        .gesture(
-            DragGesture(minimumDistance: 2)
-                .onChanged { value in
-                    let delta = Int((-value.translation.height / 22).rounded())
-                    candidateIndex = clampIndex(dragStartIndex + delta)
-                }
-                .onEnded { _ in
-                    dragStartIndex = candidateIndex
-                }
-        )
-        .onAppear { dragStartIndex = candidateIndex }
-        .help("上下拖动以改分界")
-    }
-
-    private func previewPane(_ text: Substring, alignment: Alignment) -> some View {
-        ScrollView {
-            Text(String(text))
-                .font(.body)
-                .textSelection(.enabled)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(12)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: alignment)
-        .background(LuminaTheme.surface)
-    }
-
-    private func step(_ delta: Int) {
-        candidateIndex = clampIndex(candidateIndex + delta)
-        dragStartIndex = candidateIndex
-    }
-
-    private func clampIndex(_ value: Int) -> Int {
-        guard !candidates.isEmpty else { return 0 }
-        return min(max(0, value), candidates.count - 1)
     }
 
     private func load() async {
@@ -175,38 +103,175 @@ struct SegmentBoundarySheet: View {
         do {
             async let leftTask = core.getSegment(bookId: bookId, idx: leftIdx)
             async let rightTask = core.getSegment(bookId: bookId, idx: leftIdx + 1)
-            async let previewTask = core.fetchSegmentBoundary(bookId: bookId, idx: leftIdx)
             let left = try await leftTask
             let right = try await rightTask
-            let preview = try await previewTask
-            concat = (left.raw_text ?? "") + (right.raw_text ?? "")
-            candidates = preview.candidates
-            oversizedLimit = preview.oversized_limit
-            if let match = candidates.firstIndex(where: { $0.offset == preview.left_char_count }) {
-                candidateIndex = match
-            } else {
-                candidateIndex = 0
+            let leftRaw = left.raw_text ?? ""
+            let rightRaw = right.raw_text ?? ""
+            concat = leftRaw + rightRaw
+            currentCut = leftRaw.unicodeScalars.count
+            if concat.isEmpty {
+                loadError = "这两段没有可调整的正文"
             }
-            dragStartIndex = candidateIndex
         } catch {
             loadError = error.localizedDescription
         }
         isLoading = false
     }
 
-    private func save() async {
-        guard !isSaving else { return }
-        isSaving = true
-        defer { isSaving = false }
+    private func save(atUTF16 utf16Index: Int) async {
+        let offset = SegmentBoundaryOffset.unicodeOffset(utf16Index: utf16Index, in: concat)
+        let total = concat.unicodeScalars.count
+        if offset <= 0 || offset >= total {
+            loadError = "调整后两侧都必须保留正文"
+            isSaving = false
+            return
+        }
+        loadError = nil
         do {
             let result = try await core.moveSegmentBoundary(
                 bookId: bookId,
                 idx: leftIdx,
-                leftCharCount: cut
+                leftCharCount: offset
             )
-            onApplied(result, leftText, rightText)
+            let split = SegmentBoundaryOffset.split(
+                concat,
+                unicodeOffset: result.left_char_count
+            )
+            onApplied(result, split.0, split.1)
         } catch {
             loadError = error.localizedDescription
+            isSaving = false
         }
+    }
+}
+
+private struct SegmentBoundaryClickText: NSViewRepresentable {
+    let text: String
+    let currentCut: Int
+    var isEnabled: Bool
+    var onClickUTF16: (Int) -> Void
+
+    func makeNSView(context: Context) -> NSScrollView {
+        let scroll = NSScrollView()
+        scroll.hasVerticalScroller = true
+        scroll.hasHorizontalScroller = false
+        scroll.autohidesScrollers = true
+        scroll.borderType = .noBorder
+        scroll.drawsBackground = false
+        scroll.automaticallyAdjustsContentInsets = false
+
+        let textView = SegmentBoundaryClickTextView()
+        textView.minSize = .zero
+        textView.maxSize = NSSize(
+            width: CGFloat.greatestFiniteMagnitude,
+            height: CGFloat.greatestFiniteMagnitude
+        )
+        textView.isEditable = false
+        textView.isSelectable = true
+        textView.isRichText = true
+        textView.drawsBackground = true
+        textView.backgroundColor = NSColor(LuminaTheme.surface)
+        textView.textContainerInset = NSSize(width: 12, height: 12)
+        textView.isVerticallyResizable = true
+        textView.isHorizontallyResizable = false
+        textView.autoresizingMask = [.width]
+        textView.textContainer?.widthTracksTextView = false
+        textView.textContainer?.lineFragmentPadding = 0
+        textView.textContainer?.containerSize = NSSize(
+            width: LuminaTextLayoutSizing.fallbackLayoutWidth,
+            height: CGFloat.greatestFiniteMagnitude
+        )
+        textView.clicksEnabled = isEnabled
+        textView.onClickUTF16 = onClickUTF16
+        applyBody(to: textView)
+
+        scroll.documentView = textView
+        return scroll
+    }
+
+    func updateNSView(_ scroll: NSScrollView, context: Context) {
+        guard let textView = scroll.documentView as? SegmentBoundaryClickTextView else { return }
+        textView.clicksEnabled = isEnabled
+        textView.onClickUTF16 = onClickUTF16
+        applyBody(to: textView)
+        let width = scroll.contentSize.width
+        if width > 0 {
+            var frame = textView.frame
+            if abs(frame.width - width) >= LuminaTextLayoutSizing.widthChangeEpsilon {
+                frame.size.width = width
+                textView.frame = frame
+            }
+            textView.applyLayoutWidth(width)
+        }
+    }
+
+    private func applyBody(to textView: SegmentBoundaryClickTextView) {
+        let attributed = Self.attributedConcat(text: text, cut: currentCut)
+        if textView.textStorage?.string != text
+            || textView.appliedCut != currentCut
+        {
+            textView.textStorage?.setAttributedString(attributed)
+            textView.appliedCut = currentCut
+        }
+    }
+
+    private static func attributedConcat(text: String, cut: Int) -> NSAttributedString {
+        let ns = text as NSString
+        let result = NSMutableAttributedString(string: text)
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.lineSpacing = 4
+        let full = NSRange(location: 0, length: ns.length)
+        result.addAttributes(
+            [
+                .font: NSFont.systemFont(ofSize: NSFont.systemFontSize),
+                .foregroundColor: NSColor(LuminaTheme.textPrimary),
+                .paragraphStyle: paragraph,
+            ],
+            range: full
+        )
+        let cutUTF16 = SegmentBoundaryOffset.utf16Index(forUnicodeOffset: cut, in: text)
+        if cutUTF16 > 0, ns.length > 0 {
+            result.addAttribute(
+                .backgroundColor,
+                value: NSColor(LuminaTheme.accentMuted).withAlphaComponent(0.55),
+                range: NSRange(location: 0, length: min(cutUTF16, ns.length))
+            )
+        }
+        return result
+    }
+}
+
+private final class SegmentBoundaryClickTextView: NSTextView {
+    var clicksEnabled = true
+    var onClickUTF16: ((Int) -> Void)?
+    var appliedCut: Int = -1
+    private var lastLayoutWidth: CGFloat = -1
+
+    override func mouseDown(with event: NSEvent) {
+        let local = convert(event.locationInWindow, from: nil)
+        super.mouseDown(with: event)
+        guard clicksEnabled, event.clickCount == 1, selectedRange().length == 0 else { return }
+        onClickUTF16?(characterIndexForInsertion(at: local))
+    }
+
+    override func setFrameSize(_ newSize: NSSize) {
+        super.setFrameSize(newSize)
+        applyLayoutWidth(newSize.width)
+    }
+
+    func applyLayoutWidth(_ width: CGFloat) {
+        guard let textContainer else { return }
+        let usable = max(0, width - textContainerInset.width * 2)
+        guard let layoutWidth = LuminaTextLayoutSizing.layoutWidth(for: usable) else { return }
+        let changed = LuminaTextLayoutSizing.widthDidChange(
+            from: lastLayoutWidth,
+            to: layoutWidth
+        )
+        guard changed || lastLayoutWidth < 0 else { return }
+        textContainer.containerSize = NSSize(
+            width: layoutWidth,
+            height: CGFloat.greatestFiniteMagnitude
+        )
+        lastLayoutWidth = layoutWidth
     }
 }

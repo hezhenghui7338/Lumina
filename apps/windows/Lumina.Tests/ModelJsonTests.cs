@@ -93,14 +93,42 @@ public class ModelJsonTests
     [Fact]
     public void Deserializes_segment_summary_preview_without_json()
     {
-        var json = """{"id":"s1","idx":0,"summary_status":"ready","summary_preview":"邻里虽敬其向学，却无力资助书卷。","label":"邻里虽敬","chapter":"第一章","bullet_labels":["邻里","赴考"]}""";
+        var json = """{"id":"s1","idx":0,"summary_status":"ready","summary_preview":"邻里虽敬其向学，却无力资助书卷。","label":"邻里虽敬","chapter":"第一章","bullet_labels":["邻里","赴考"],"heading_path":["第一部分","第一章"]}""";
         var row = JsonSerializer.Deserialize<SegmentRow>(json, Opts)!;
         Assert.Equal("邻里虽敬其向学，却无力资助书卷。", row.SummaryPreview);
         Assert.Null(row.SummaryJson);
         Assert.Equal("邻里虽敬", row.Label);
         Assert.Equal(new[] { "邻里", "赴考" }, row.BulletLabels);
-        Assert.Equal("第一章 · 段 1 · 邻里虽敬", row.CatalogHeadline);
+        Assert.Equal(new[] { "第一部分", "第一章" }, row.HeadingPath);
+        Assert.Equal("第一章", row.CatalogTitle);
+        Assert.Equal("段 1 · 第一章", row.CatalogHeadline);
+        Assert.Equal("段 1 · 邻里虽敬", row.CatalogHeadlineGrouped);
         Assert.Equal("邻里 · 赴考", row.BulletLabelsLine);
+    }
+
+    [Fact]
+    public void CatalogHeadline_uses_label_when_no_chapter()
+    {
+        var withLabel = new SegmentRow { Idx = 0, Label = "引子", SummaryStatus = "ready" };
+        Assert.Equal("引子", withLabel.CatalogTitle);
+        Assert.Equal("段 1 · 引子", withLabel.CatalogHeadline);
+
+        var pending = new SegmentRow { Idx = 3, SummaryStatus = "pending" };
+        Assert.Equal("", pending.CatalogTitle);
+        Assert.Equal("段 4", pending.CatalogHeadline);
+
+        var running = new SegmentRow { Idx = 0, Chapter = "第二章", SummaryStatus = "running" };
+        Assert.Equal("第二章", running.CatalogTitle);
+        Assert.Equal("段 1 · 第二章", running.CatalogHeadline);
+
+        var stacked = new SegmentRow { Idx = 0, Chapter = "§§第一章", Label = "引子" };
+        Assert.Equal("第一章", stacked.CatalogTitle);
+        Assert.Equal("段 1 · 第一章", stacked.CatalogHeadline);
+        Assert.DoesNotContain("§", stacked.CatalogHeadline);
+
+        var trailing = new SegmentRow { Idx = 0, Chapter = "卷一 §", Label = "引子" };
+        Assert.Equal("卷一", trailing.CatalogTitle);
+        Assert.DoesNotContain("§", trailing.CatalogHeadline);
     }
 
     [Fact]
@@ -264,11 +292,50 @@ public class ModelJsonTests
 
         var sorted = LibrarySorts.Sorted([unread, reading, summarizing], LibrarySorts.Segments);
         Assert.Equal(["A", "B", "E"], sorted.Select(b => b.Title).ToList());
+        var segmentsAsc = LibrarySorts.Sorted(
+            [unread, reading, summarizing], LibrarySorts.Segments, LibrarySorts.Asc);
+        Assert.Equal(["E", "B", "A"], segmentsAsc.Select(b => b.Title).ToList());
 
         var byProgress = LibrarySorts.Sorted(
             [unread, reading, finished, shortOpened],
             LibrarySorts.Progress);
         Assert.Equal(["C", "B", "A", "D"], byProgress.Select(b => b.Title).ToList());
+        Assert.Equal(LibrarySorts.Asc, LibrarySorts.DefaultOrder(LibrarySorts.Title));
+        Assert.Equal(LibrarySorts.Desc, LibrarySorts.DefaultOrder(LibrarySorts.Recent));
+        Assert.Equal(LibrarySorts.Desc, LibrarySorts.NormalizeOrder("", LibrarySorts.Recent));
+        Assert.Equal(LibrarySorts.Asc, LibrarySorts.NormalizeOrder("", LibrarySorts.Title));
+
+        var fav = new BookSummary { Title = "Fav", IsFavorite = true, SegmentCount = 5 };
+        var plain = new BookSummary { Title = "Plain", IsFavorite = false, SegmentCount = 5 };
+        Assert.Equal(
+            ["Fav", "Plain"],
+            LibrarySorts.Sorted([plain, fav], LibrarySorts.Favorite).Select(b => b.Title).ToList());
+        Assert.Equal(
+            ["Plain", "Fav"],
+            LibrarySorts.Sorted([plain, fav], LibrarySorts.Favorite, LibrarySorts.Asc)
+                .Select(b => b.Title).ToList());
+
+        var pinned = LibrarySorts.PrioritizeSummarizeActivity(
+            LibrarySorts.Sorted(
+                [
+                    new BookSummary { Title = "Idle", LastOpenedAt = "2024-01-01T00:00:00Z" },
+                    new BookSummary
+                    {
+                        Title = "Running",
+                        SummarizeState = "running",
+                        LastOpenedAt = "2024-02-01T00:00:00Z",
+                    },
+                    new BookSummary { Title = "Recent", LastOpenedAt = "2024-05-01T00:00:00Z" },
+                    new BookSummary
+                    {
+                        Title = "Queued",
+                        SummarizeState = "queued",
+                        LastOpenedAt = "2024-03-01T00:00:00Z",
+                    },
+                ],
+                LibrarySorts.Recent,
+                LibrarySorts.Asc));
+        Assert.Equal(["Running", "Queued", "Idle", "Recent"], pinned.Select(b => b.Title).ToList());
     }
 
     [Fact]

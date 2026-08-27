@@ -155,6 +155,7 @@ def build_segments(
                 "book_id": book_id,
                 "idx": chunk.index,
                 "chapter": chunk.chapter,
+                "heading_path": list(chunk.heading_path),
                 "page_range": chunk.page_range,
                 "anchor_label": f"〔{anchor}〕",
                 "raw_text": chunk.raw_text,

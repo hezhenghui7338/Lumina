@@ -48,6 +48,7 @@ final class LibraryViewModel: ObservableObject {
     @Published var books: [BookSummary] = []
     @Published var query = LibraryFacetQuery()
     @Published var sort: LibrarySort = .recent
+    @Published var sortOrder: LibrarySortOrder = .descending
     @Published var viewMode: BookshelfViewMode = .grid
     @Published var titleQuery: String = ""
     @Published var categories: [String] = LibraryFilter.fallbackCategories
@@ -67,7 +68,7 @@ final class LibraryViewModel: ObservableObject {
         if !trimmedTitle.isEmpty {
             result = result.filter { $0.title.localizedCaseInsensitiveContains(trimmedTitle) }
         }
-        result = Self.sorted(result, by: sort)
+        result = Self.sorted(result, by: sort, order: sortOrder)
         if query.isDefault, sort == .recent {
             result = Self.prioritizeSummarizeActivity(result)
         }
@@ -96,6 +97,12 @@ final class LibraryViewModel: ObservableObject {
            let value = LibrarySort(rawValue: raw) {
             sort = value
         }
+        if let raw = UserDefaults.standard.string(forKey: Self.sortOrderKey),
+           let value = LibrarySortOrder(rawValue: raw) {
+            sortOrder = value
+        } else {
+            sortOrder = sort.defaultOrder
+        }
         if let raw = UserDefaults.standard.string(forKey: Self.viewModeKey),
            let value = BookshelfViewMode(rawValue: raw) {
             viewMode = value
@@ -107,6 +114,7 @@ final class LibraryViewModel: ObservableObject {
             UserDefaults.standard.set(data, forKey: Self.facetsKey)
         }
         UserDefaults.standard.set(sort.rawValue, forKey: Self.sortKey)
+        UserDefaults.standard.set(sortOrder.rawValue, forKey: Self.sortOrderKey)
         UserDefaults.standard.set(viewMode.rawValue, forKey: Self.viewModeKey)
     }
 
@@ -237,10 +245,16 @@ final class LibraryViewModel: ObservableObject {
         return running + queued + rest
     }
 
-    static func sorted(_ books: [BookSummary], by sort: LibrarySort) -> [BookSummary] {
+    static func sorted(
+        _ books: [BookSummary],
+        by sort: LibrarySort,
+        order: LibrarySortOrder? = nil
+    ) -> [BookSummary] {
+        let resolved = order ?? sort.defaultOrder
+        let base: [BookSummary]
         switch sort {
         case .recent:
-            return books.sorted { lhs, rhs in
+            base = books.sorted { lhs, rhs in
                 switch (lhs.last_opened_at, rhs.last_opened_at) {
                 case (nil, nil):
                     return (lhs.created_at ?? "") > (rhs.created_at ?? "")
@@ -253,27 +267,27 @@ final class LibraryViewModel: ObservableObject {
                 }
             }
         case .added:
-            return books.sorted { ($0.created_at ?? "") > ($1.created_at ?? "") }
+            base = books.sorted { ($0.created_at ?? "") > ($1.created_at ?? "") }
         case .title:
-            return books.sorted {
+            base = books.sorted {
                 $0.title.localizedStandardCompare($1.title) == .orderedAscending
             }
         case .segments:
-            return books.sorted { lhs, rhs in
+            base = books.sorted { lhs, rhs in
                 let left = lhs.segment_count ?? 0
                 let right = rhs.segment_count ?? 0
                 if left != right { return left > right }
                 return lhs.title.localizedStandardCompare(rhs.title) == .orderedAscending
             }
         case .progress:
-            return books.sorted { lhs, rhs in
+            base = books.sorted { lhs, rhs in
                 let left = lhs.sortReadingProgress
                 let right = rhs.sortReadingProgress
                 if left != right { return left > right }
                 return lhs.title.localizedStandardCompare(rhs.title) == .orderedAscending
             }
         case .favorite:
-            return books.sorted { lhs, rhs in
+            base = books.sorted { lhs, rhs in
                 if lhs.isFavorite != rhs.isFavorite { return lhs.isFavorite && !rhs.isFavorite }
                 switch (lhs.last_opened_at, rhs.last_opened_at) {
                 case (nil, nil):
@@ -287,6 +301,7 @@ final class LibraryViewModel: ObservableObject {
                 }
             }
         }
+        return resolved == sort.defaultOrder ? base : Array(base.reversed())
     }
 
     func selectFacet(_ item: LibraryCollection) {
@@ -298,6 +313,12 @@ final class LibraryViewModel: ObservableObject {
 
     func setSort(_ value: LibrarySort) {
         sort = value
+        sortOrder = value.defaultOrder
+        persistPreferences()
+    }
+
+    func setSortOrder(_ value: LibrarySortOrder) {
+        sortOrder = value
         persistPreferences()
     }
 
@@ -405,5 +426,6 @@ final class LibraryViewModel: ObservableObject {
     private static let filterKey = "lumina.library.filter"
     private static let legacyCollectionKey = "lumina.library.collection"
     private static let sortKey = "lumina.library.sort"
+    private static let sortOrderKey = "lumina.library.sortOrder"
     private static let viewModeKey = "lumina.library.viewMode"
 }

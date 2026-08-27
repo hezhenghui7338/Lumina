@@ -99,9 +99,30 @@ def match_structure_line(line: str) -> re.Match[str] | None:
     return STRUCTURE_LINE.match(stripped)
 
 
+def clean_structure_title(title: str | None) -> str:
+    """Strip format-native section signs from TOC / heading titles.
+
+    Lumina markers stay ``## [§{cleaned}]``. Does not strip mid-title §.
+    """
+    text = (title or "").strip()
+    while text.startswith("§"):
+        text = text[1:].lstrip()
+    while text.endswith("§"):
+        text = text[:-1].rstrip()
+    return text.strip()
+
+
+def lumina_chapter_label(title: str | None) -> str | None:
+    """User-visible chapter field: one Lumina § prefix, never stacked."""
+    name = clean_structure_title(title)
+    if not name:
+        return None
+    return f"§{name}"
+
+
 def heading_marker(title: str, level: int) -> str:
     """Render a structure marker. level 0 = part, 1 = chapter, 2+ = section."""
-    cleaned = (title or "").strip()
+    cleaned = clean_structure_title(title)
     if level <= 0:
         hashes = 1
     else:
@@ -115,9 +136,9 @@ def heading_level_from_hashes(hashes: int) -> int:
 
 
 def bare_chapter_title(match: re.Match[str]) -> str:
-    """Chapter title without glued separator runs."""
+    """Chapter title without glued separator runs or source §."""
     captured = match.group(1) if match.lastindex else match.group(0)
-    return captured.strip().lstrip("§ ").strip()
+    return clean_structure_title(captured)
 
 
 def parse_heading_line(stripped: str) -> tuple[int, str] | None:
@@ -129,12 +150,18 @@ def parse_heading_line(stripped: str) -> tuple[int, str] | None:
             return None
         match = HASH_HEADING.match(stripped)
         if match:
-            return heading_level_from_hashes(len(match.group(1))), match.group(2).strip()
+            return (
+                heading_level_from_hashes(len(match.group(1))),
+                clean_structure_title(match.group(2)),
+            )
         if PAGE_LINE.match(stripped):
             return None
         match = MD_TITLE.match(stripped)
         if match and not stripped.startswith("## ["):
-            return heading_level_from_hashes(len(match.group(1))), match.group(2).strip()
+            return (
+                heading_level_from_hashes(len(match.group(1))),
+                clean_structure_title(match.group(2)),
+            )
         return None
     if PAGE_LINE.match(stripped):
         return None

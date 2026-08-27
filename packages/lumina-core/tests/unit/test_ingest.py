@@ -226,6 +226,64 @@ def test_load_txt_classical_fixture_roundtrip():
     assert "学而" in text
 
 
+def _gbk_ebook_with_binary_junk() -> bytes:
+    """GBK novel bytes plus an illegal lead/trail pair, as in pirated TXT dumps."""
+    prose = "一九六五年八月九日，照顾二百万人民生计的重担突然落在李光耀肩上。\n" * 80
+    body = prose.encode("gbk")
+    junk = b"$ \x00  \x00\x00\x00\x00   \x00\x00\x00\xd0\x14\xc0\x85H@\"\x06\x0c\x00"
+    return body + junk + body
+
+
+def test_detect_plan_gbk_with_embedded_binary_junk():
+    from lumina_core.ingest.text import _SAMPLE_BYTES, detect_encoding_plan
+
+    data = _gbk_ebook_with_binary_junk()
+    with pytest.raises(UnicodeDecodeError):
+        data[:_SAMPLE_BYTES].decode("gb18030")
+    plan = detect_encoding_plan(data)
+    assert plan.encoding == "gb18030"
+    assert plan.recover_gbk_mojibake is False
+
+
+def test_load_txt_gbk_with_embedded_binary_junk(tmp_path):
+    p = tmp_path / "lee.txt"
+    p.write_bytes(_gbk_ebook_with_binary_junk())
+    text, _ = load_document(p, "txt")
+    assert text.count("李光耀") >= 2
+    assert "生计" in text
+    assert "\x00" not in text
+
+
+def test_decode_text_bytes_gbk_embedded_binary_strips_nuls():
+    from lumina_core.ingest.text import decode_text_bytes
+
+    text = decode_text_bytes(_gbk_ebook_with_binary_junk())
+    assert "李光耀" in text
+    assert "\x00" not in text
+
+
+def test_detect_plan_utf8_with_illegal_byte_in_sample():
+    from lumina_core.ingest.text import _SAMPLE_BYTES, detect_encoding_plan
+
+    payload = ("学而时习之，不亦说乎。" * 3000).encode("utf-8")
+    data = bytearray(payload[:_SAMPLE_BYTES])
+    data[40_000] = 0xFF
+    raw = bytes(data)
+    with pytest.raises(UnicodeDecodeError):
+        raw.decode("utf-8")
+    plan = detect_encoding_plan(raw)
+    assert plan.encoding == "utf-8"
+    assert plan.recover_gbk_mojibake is False
+
+
+def test_detect_plan_rejects_binary_without_cjk_prose():
+    from lumina_core.ingest.text import UNRECOGNIZED_ENCODING, detect_encoding_plan
+
+    data = b"\xd0\x14\x00\xff" * 16_384
+    with pytest.raises(ValueError, match=UNRECOGNIZED_ENCODING):
+        detect_encoding_plan(data)
+
+
 def test_pyinstaller_spec_bundles_charset_normalizer():
     spec = Path(__file__).resolve().parents[2] / "lumina-core.spec"
     text = spec.read_text(encoding="utf-8")
@@ -246,6 +304,17 @@ def test_load_html_preserves_headings_and_metadata(tmp_path):
     assert "正文段落" in text
     assert "不要收录" not in text
     assert meta == {"title": "HTML 测试书", "author": "测试作者"}
+
+
+def test_load_html_strips_source_section_sign_from_heading(tmp_path):
+    p = tmp_path / "section.html"
+    p.write_text(
+        "<html><body><h1>§ 第一章</h1><p>正文段落。</p></body></html>",
+        encoding="utf-8",
+    )
+    text, _ = load_document(p, "html")
+    assert "## [§第一章]" in text
+    assert "## [§§" not in text
 
 
 def test_load_html_nests_h2_as_section_not_chapter(tmp_path):
@@ -765,6 +834,36 @@ def test_load_epub_landmarks_set_structure_roles_not_raw_text(tmp_path):
     roles = meta.get("structure_roles") or []
     assert any(item["role"] == "preface" and "序" in item["title"] for item in roles)
     assert any(item["role"] == "bodymatter" for item in roles)
+
+
+def test_load_epub_strips_source_section_sign_from_title(tmp_path):
+    ebooklib = pytest.importorskip("ebooklib")
+    from ebooklib import epub
+
+    from lumina_core.ingest.epub import load_epub
+
+    book = epub.EpubBook()
+    book.set_identifier("lumina-section-sign")
+    book.set_title("带节号的书")
+    book.add_author("测试")
+    chapter = epub.EpubHtml(
+        title="§ 卷一",
+        file_name="c1.xhtml",
+        uid="c1",
+        lang="zh",
+    )
+    chapter.set_content("<html><body><h1>§ 卷一</h1><p>正文段落甲乙丙。</p></body></html>")
+    book.add_item(chapter)
+    book.add_item(epub.EpubNcx())
+    book.add_item(epub.EpubNav())
+    book.spine = [chapter]
+    path = tmp_path / "section-sign.epub"
+    epub.write_epub(str(path), book)
+
+    text, _meta = load_epub(path)
+    assert "正文段落甲乙丙" in text
+    assert "## [§卷一]" in text
+    assert "## [§§" not in text
 
 
 def test_load_azw3_extracts_via_mobi_epub(tmp_path, monkeypatch):

@@ -1,5 +1,6 @@
 using System.Globalization;
 using Lumina.Design;
+using Lumina.Features.Onboarding;
 using Lumina.Features.Reader.Listen;
 using Lumina.Features.Shared;
 using Lumina.Features.Tasks;
@@ -32,6 +33,9 @@ public sealed partial class SettingsPage : Page
             TaskManagerBtn.Visibility = DebugToggle.IsOn ? Visibility.Visible : Visibility.Collapsed;
         WireChunkPresets();
     }
+
+    internal FrameworkElement? TourTarget(OnboardingTourAnchor anchor) =>
+        anchor == OnboardingTourAnchor.ApiResources ? ApiResourcesHeader : null;
 
     protected override void OnNavigatedTo(NavigationEventArgs e)
     {
@@ -375,6 +379,11 @@ public sealed partial class SettingsPage : Page
 
     private void TaskManager_Click(object sender, RoutedEventArgs e) =>
         Frame.Navigate(typeof(TaskManagerPage));
+
+    private async void UsageGuide_Click(object sender, RoutedEventArgs e)
+    {
+        await UsageGuideDialog.ShowAsync(XamlRoot);
+    }
 
     private async void Save_Click(object sender, RoutedEventArgs e) =>
         await FlushSettingsAsync("已保存", captureForm: true);

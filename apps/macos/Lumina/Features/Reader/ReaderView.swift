@@ -24,6 +24,7 @@ struct ReaderView: View {
     var onImport: () -> Void = {}
     @EnvironmentObject private var core: CoreClient
     @EnvironmentObject private var theme: ThemeManager
+    @EnvironmentObject private var tour: OnboardingTourController
     @Environment(\.scenePhase) private var scenePhase
 
     @ObservedObject var libraryViewModel: LibraryViewModel
@@ -100,6 +101,14 @@ struct ReaderView: View {
     private let chatHeight: CGFloat = 300
     private let segmentSwitchDuration: TimeInterval = 0.05
     private let segmentFeedGap: CGFloat = 0
+
+    /// Chat / notes / catalog sit above the function bar and the listen mini-bar.
+    private var overlayBottomPadding: CGFloat {
+        ReaderBottomStackPolicy.overlayBottomPadding(
+            listenActive: listenSession.isActive,
+            listenHasNotice: listenSession.skipNotice != nil || listenSession.statusMessage != nil
+        )
+    }
 
     private var barsVisible: Bool {
         viewModel.bookStatus == "processing"
@@ -370,44 +379,53 @@ struct ReaderView: View {
             }
     }
 
+    private var listenStartIdx: Int {
+        topSegmentIdx ?? viewModel.selectedIdx ?? 0
+    }
+
+    private var listenTargetShowsOriginal: Bool {
+        ListenChromePolicy.isShowingOriginal(
+            contentMode: contentMode,
+            sourceExpanded: expandedSourceSegments.contains(listenStartIdx),
+            summaryExpanded: expandedSummarySegments.contains(listenStartIdx)
+        )
+    }
+
     @ViewBuilder
     private var listenChromeControl: some View {
-        if contentMode == .original {
+        if listenTargetShowsOriginal {
             Button {
                 startListening(.original)
             } label: {
-                Label(
-                    "听原文",
-                    systemImage: listenSession.isActive && listenSession.mode == .original
+                Image(
+                    systemName: listenSession.isActive && listenSession.mode == .original
                         ? "speaker.wave.2.fill"
                         : "speaker.wave.2"
                 )
+                .padding(.horizontal, 6)
+                .padding(.vertical, 4)
+                .contentShape(Rectangle())
             }
-            .labelStyle(.iconOnly)
             .readerChromeIconAction()
             .help("听原文")
+            .accessibilityLabel("听原文")
             .accessibilityIdentifier("lumina.reader.listen")
         } else {
-            Menu {
+            ReaderChromeIconChevronSplit(
+                systemImage: listenSession.isActive && listenSession.mode.isSummaryLayer
+                    ? "speaker.wave.2.fill"
+                    : "speaker.wave.2",
+                primaryHelp: "听简要摘要",
+                chevronHelp: "选择听简要摘要或听完整摘要",
+                primaryAccessibilityLabel: "听简要摘要",
+                chevronAccessibilityLabel: "听摘要选项",
+                accessibilityIdentifier: "lumina.reader.listen"
+            ) {
+                startListening(.summary)
+            } menu: {
                 Button("听简要摘要") { startListening(.summary) }
                 Button("听完整摘要") { startListening(.detailed) }
-            } label: {
-                Label(
-                    "听",
-                    systemImage: listenSession.isActive && listenSession.mode.isSummaryLayer
-                        ? "speaker.wave.2.fill"
-                        : "speaker.wave.2"
-                )
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 4)
-                    .contentShape(Rectangle())
-            } primaryAction: {
-                startListening(.summary)
             }
-            .labelStyle(.iconOnly)
-            .readerChromeIconAction()
-            .help("听简要摘要或听完整摘要")
-            .accessibilityIdentifier("lumina.reader.listen")
         }
     }
 
@@ -509,8 +527,7 @@ struct ReaderView: View {
             highlightSegment = idx
             navigateToSegment(idx)
         }
-        let startIdx = topSegmentIdx ?? viewModel.selectedIdx ?? 0
-        listenSession.start(mode: mode, from: startIdx)
+        listenSession.start(mode: mode, from: listenStartIdx)
     }
 
     private var readerChromeBar: some View {
@@ -542,6 +559,7 @@ struct ReaderView: View {
             .labelsHidden()
             .frame(width: ReaderChromeBarMetrics.modePickerWidth)
             .help("切换摘要 / 原文阅读模式（⌘⇧O）")
+            .tourAnchor(.modePicker)
 
             listenChromeControl
 
@@ -600,6 +618,7 @@ struct ReaderView: View {
             }
             .help("点「开始摘要」立即正常档；点旁边箭头才展开高级（悬停不弹出）；重新摘要整书都会再确认覆盖")
             .accessibilityLabel("摘要")
+            .tourAnchor(.summarize)
             .disabled(viewModel.bookStatus == "processing")
             Button {
                 showSegmentPopover.toggle()
@@ -699,6 +718,7 @@ struct ReaderView: View {
             ) {
                 toggleOverlay(.chat)
             }
+            .tourAnchor(.chat)
             readerBottomBarButton(
                 title: "笔记",
                 systemImage: "note.text",
@@ -707,6 +727,7 @@ struct ReaderView: View {
             ) {
                 toggleOverlay(.notes)
             }
+            .tourAnchor(.notes)
             readerBottomBarButton(
                 title: "显示",
                 systemImage: "textformat.size",
@@ -767,7 +788,7 @@ struct ReaderView: View {
                 Spacer(minLength: 0)
                 notesDrawer
                     .padding(.top, ReaderChromeBarMetrics.height)
-                    .padding(.bottom, ReaderChromeBarMetrics.height)
+                    .padding(.bottom, overlayBottomPadding)
                     .offset(x: overlay == .notes ? 0 : notesWidth)
             }
             .allowsHitTesting(overlay == .notes)
@@ -777,7 +798,7 @@ struct ReaderView: View {
                 chatDrawer
                     .offset(y: overlay == .chat ? 0 : chatHeight + 40)
             }
-            .padding(.bottom, ReaderChromeBarMetrics.height)
+            .padding(.bottom, overlayBottomPadding)
             .allowsHitTesting(overlay == .chat)
 
             if barsVisible {
@@ -789,7 +810,7 @@ struct ReaderView: View {
                 ReaderCoverPageShell {
                     segmentCoverPanel
                 }
-                .padding(.bottom, ReaderChromeBarMetrics.height)
+                .padding(.bottom, overlayBottomPadding)
                 .transition(.move(edge: .bottom).combined(with: .opacity))
             }
 
@@ -805,7 +826,10 @@ struct ReaderView: View {
                         ListenMiniBar(session: listenSession) {
                             listenSession.stop()
                         }
-                        .padding(.bottom, barsVisible ? ReaderChromeBarMetrics.height : 0)
+                        .padding(
+                            .bottom,
+                            ReaderBottomStackPolicy.miniBarBottomPadding(barsVisible: barsVisible)
+                        )
                     }
             }
         }
@@ -813,6 +837,7 @@ struct ReaderView: View {
         .animation(.easeInOut(duration: 0.25), value: overlay)
         .animation(.easeInOut(duration: 0.25), value: chromeMode)
         .animation(.easeInOut(duration: 0.25), value: coverPage)
+        .animation(.easeInOut(duration: 0.25), value: listenSession.isActive)
         .onExitCommand { handleExitCommand() }
         .onChange(of: overlay) { _, newValue in
             chatFocused = newValue == .chat && overlayEngaged
@@ -848,6 +873,10 @@ struct ReaderView: View {
         }
         .onAppear {
             readerOverlayActive = overlay != .none
+            revealChromeIfTouringReader()
+        }
+        .onChange(of: tour.step) { _, _ in
+            revealChromeIfTouringReader()
         }
         .onChange(of: viewModel.selectedIdx) { _, idx in
             guard let idx else { return }
@@ -1465,12 +1494,16 @@ struct ReaderView: View {
     }
 
     private var segmentSidebar: some View {
-        ScrollViewReader { proxy in
+        let rows = SegmentOutlinePolicy.build(
+            segments: viewModel.segments,
+            collapsed: viewModel.collapsedOutlineKeys
+        )
+        return ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 0) {
-                    ForEach(viewModel.segments) { seg in
-                        segmentSidebarRow(seg)
-                            .id(seg.idx)
+                    ForEach(rows) { row in
+                        outlineCatalogRow(row)
+                            .id(row.isHeader ? "h:\(row.pathKey)" : "s:\(row.idx ?? 0)")
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
                 }
@@ -1478,22 +1511,62 @@ struct ReaderView: View {
             }
             .onChange(of: viewModel.selectedIdx) { _, idx in
                 guard let idx else { return }
+                viewModel.revealOutline(for: idx)
                 withAnimation(.easeInOut(duration: segmentSwitchDuration)) {
-                    proxy.scrollTo(idx, anchor: .center)
+                    proxy.scrollTo("s:\(idx)", anchor: .center)
                 }
             }
             .onAppear {
+                viewModel.revealOutline(for: viewModel.selectedIdx)
                 guard let idx = viewModel.selectedIdx else { return }
                 Task { @MainActor in
                     await Task.yield()
-                    proxy.scrollTo(idx, anchor: .center)
+                    proxy.scrollTo("s:\(idx)", anchor: .center)
                 }
             }
         }
     }
 
     @ViewBuilder
-    private func segmentSidebarRow(_ seg: SegmentRow) -> some View {
+    private func outlineCatalogRow(_ row: SegmentOutlinePolicy.Row) -> some View {
+        if row.isHeader {
+            outlineHeaderRow(row)
+        } else if let seg = row.segment {
+            segmentSidebarRow(seg, grouped: row.grouped)
+                .padding(.leading, CGFloat(row.depth) * SegmentOutlinePolicy.indentStep)
+        }
+    }
+
+    private func outlineHeaderRow(_ row: SegmentOutlinePolicy.Row) -> some View {
+        Button {
+            viewModel.toggleOutlineKey(row.pathKey)
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: row.isCollapsed ? "chevron.right" : "chevron.down")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 12)
+                Text(row.title)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                Text("\(row.headerCount)")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+            .padding(.leading, CGFloat(row.depth) * SegmentOutlinePolicy.indentStep)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    @ViewBuilder
+    private func segmentSidebarRow(_ seg: SegmentRow, grouped: Bool = false) -> some View {
         let rowContent = HStack(alignment: .top, spacing: 8) {
             if viewModel.isSegmentSelectionMode {
                 Toggle(
@@ -1515,10 +1588,7 @@ struct ReaderView: View {
             }
 
             statusIcon(for: seg)
-            SegmentSidebarRow(
-                segment: seg,
-                runningMetrics: viewModel.segmentRunningMetrics[seg.idx]
-            )
+            SegmentSidebarRow(segment: seg, grouped: grouped)
         }
         .contentShape(Rectangle())
         .padding(.horizontal, 12)
@@ -1713,13 +1783,20 @@ struct ReaderView: View {
     private func toggleChromeOnBlankClick() {
         switch ReaderChromeClickPolicy.outcome(
             overlayOpen: overlay != .none,
-            chromeHidden: chromeMode == .hidden
+            chromeHidden: chromeMode == .hidden,
+            tourLocksChrome: tour.isActive && tour.surface == .reader
         ) {
         case .ignore:
             break
         case .collapse:
             collapseAllChrome()
         case .reveal:
+            setChromeMode(.revealed)
+        }
+    }
+
+    private func revealChromeIfTouringReader() {
+        if tour.isActive, tour.surface == .reader {
             setChromeMode(.revealed)
         }
     }
@@ -1731,6 +1808,9 @@ struct ReaderView: View {
             coverPage = ReaderCoverPagePolicy.toggle(coverPage, to: target)
             if coverPage != .none {
                 chromeMode = .revealed
+            }
+            if coverPage == .segments {
+                viewModel.revealOutline(for: viewModel.selectedIdx)
             }
         }
     }
@@ -1918,28 +1998,7 @@ struct ReaderView: View {
 
 struct SegmentSidebarRow: View {
     let segment: SegmentRow
-    var runningMetrics: SegmentRunningMetrics?
-
-    private var showsLiveProgress: Bool {
-        segment.summary_status == "running" && (segment.label == nil || segment.label?.isEmpty == true)
-    }
-
-    private var outlineLabel: String? {
-        if let label = segment.label, !label.isEmpty { return label }
-        switch segment.summary_status {
-        case "running":
-            return nil
-        case "pending":
-            return "等待摘要…"
-        case "failed", "error":
-            return SummaryMetricsFormatter.failureLabel(
-                durationS: segment.summary_duration_s,
-                retryCount: segment.retry_count
-            )
-        default:
-            return nil
-        }
-    }
+    var grouped: Bool = false
 
     private var bulletLabelsLine: String? {
         let labels = (segment.bullet_labels ?? []).compactMap { raw -> String? in
@@ -1951,13 +2010,13 @@ struct SegmentSidebarRow: View {
 
     var body: some View {
         SegmentCatalogRowLines(
-            chapter: segment.chapter.flatMap { $0.isEmpty ? nil : $0 },
             idx: segment.idx,
-            suffix: showsLiveProgress ? nil : outlineLabel,
+            title: SegmentCatalogHeadlineText.title(
+                chapter: grouped ? nil : segment.chapter,
+                label: segment.label
+            ),
             summaryPreview: SegmentCatalogPreview.line(summaryPreview: segment.summary_preview),
-            bulletLabelsLine: bulletLabelsLine,
-            showsLiveProgress: showsLiveProgress,
-            runningMetrics: runningMetrics
+            bulletLabelsLine: bulletLabelsLine
         )
     }
 }
@@ -2349,6 +2408,8 @@ final class ReaderViewModel: ObservableObject {
     @Published var selectedIdx: Int?
     @Published var checkedSegmentIndices: Set<Int> = []
     @Published var isSegmentSelectionMode = false
+    @Published var collapsedOutlineKeys: Set<String> = []
+    private var collapsedOutlineByBook: [String: Set<String>] = [:]
     @Published var currentSegment: SegmentRow?
     @Published private(set) var sourceCacheVersion = 0
     @Published var loadingSourceIndices: Set<Int> = []
@@ -2554,10 +2615,14 @@ final class ReaderViewModel: ObservableObject {
         await flushProgressSave()
         cancelAllTasks()
         clearAllSourceCache()
+        if !self.bookId.isEmpty {
+            collapsedOutlineByBook[self.bookId] = collapsedOutlineKeys
+        }
         segments = []
         selectedIdx = nil
         checkedSegmentIndices = []
         isSegmentSelectionMode = false
+        collapsedOutlineKeys = collapsedOutlineByBook[bookId] ?? []
         currentSegment = nil
         messages = []
         summaryReadyCount = 0
@@ -3057,6 +3122,21 @@ final class ReaderViewModel: ObservableObject {
             checkedSegmentIndices.remove(idx)
         } else {
             checkedSegmentIndices.insert(idx)
+        }
+    }
+
+    func toggleOutlineKey(_ key: String) {
+        if collapsedOutlineKeys.contains(key) {
+            collapsedOutlineKeys.remove(key)
+        } else {
+            collapsedOutlineKeys.insert(key)
+        }
+    }
+
+    func revealOutline(for idx: Int?) {
+        guard let idx else { return }
+        for key in SegmentOutlinePolicy.keysToReveal(for: idx, in: segments) {
+            collapsedOutlineKeys.remove(key)
         }
     }
 

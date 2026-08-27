@@ -56,10 +56,14 @@ public class WindowsParityPolicyTests
         var open = SegmentCatalogPolicy.Build(segments, new HashSet<string>());
         Assert.Equal(5, open.Count);
         Assert.True(open[0].IsHeader);
-        Assert.Contains("§ 第一章", open[0].HeaderText);
+        Assert.Contains("第一章", open[0].HeaderText);
+        Assert.DoesNotContain("§", open[0].HeaderText);
         Assert.Equal(2, open[0].HeaderCount);
         Assert.False(open[1].IsHeader);
         Assert.Equal(0, open[1].Segment!.Idx);
+        Assert.Equal(12, open[1].IndentLeft);
+        Assert.Equal("段 1 · 引子", open[1].Headline);
+        Assert.Equal("段 2 · 科举", open[2].Headline);
 
         var collapsed = SegmentCatalogPolicy.Build(segments, new HashSet<string> { "第一章" });
         Assert.Equal(3, collapsed.Count);
@@ -68,6 +72,60 @@ public class WindowsParityPolicyTests
         Assert.Equal(2, collapsed[2].Segment!.Idx);
         Assert.True(collapsed[0].TitleSize < collapsed.First(i => !i.IsHeader).TitleSize);
         Assert.Equal(0, collapsed[0].PreviewSize);
+    }
+
+    [Fact]
+    public void SegmentCatalog_header_strips_source_section_sign()
+    {
+        Assert.Equal("第一章", SegmentCatalogPolicy.HeaderTitle("§第一章"));
+        Assert.Equal("第一章", SegmentCatalogPolicy.HeaderTitle("§ §第一章"));
+        Assert.Equal("1. Intro", SegmentCatalogPolicy.HeaderTitle("§§ 1. Intro"));
+        Assert.DoesNotContain("§", SegmentCatalogPolicy.HeaderTitle("§第一章"));
+        Assert.Equal("未分章", SegmentCatalogPolicy.HeaderTitle(""));
+        Assert.Equal("未分章", SegmentCatalogPolicy.HeaderTitle("§"));
+        Assert.Equal("第一章", SegmentCatalogPolicy.HeaderTitle("卷一/§第一章"));
+        Assert.Equal("卷一", SegmentCatalogPolicy.HeaderTitle("卷一 §"));
+
+        var nested = SegmentCatalogPolicy.Build(
+            [
+                new() { Idx = 0, Chapter = "§其它", HeadingPath = ["§第一部分", "第一章"], Label = "入京" },
+            ],
+            new HashSet<string>());
+        Assert.Contains("第一部分", nested[0].HeaderText);
+        Assert.DoesNotContain("§", nested[0].HeaderText);
+        Assert.Contains("第一章", nested[1].HeaderText);
+        Assert.Equal("段 1 · 入京", nested[2].Headline);
+    }
+
+    [Fact]
+    public void SegmentCatalog_nests_part_and_chapter()
+    {
+        var segments = new List<SegmentRow>
+        {
+            new() { Idx = 0, HeadingPath = ["序言"], Label = "开场" },
+            new() { Idx = 1, HeadingPath = ["第一部分", "第一章"], Label = "入京" },
+            new() { Idx = 2, HeadingPath = ["第一部分", "第一章"], Label = "夜谈" },
+            new() { Idx = 3, HeadingPath = ["第一部分", "第二章"], Label = "离京" },
+        };
+        var open = SegmentCatalogPolicy.Build(segments, new HashSet<string>());
+        Assert.Equal(
+            new[] { true, false, true, true, false, false, true, false },
+            open.Select(i => i.IsHeader).ToArray());
+        Assert.Contains("序言", open[0].HeaderText);
+        Assert.Contains("第一部分", open[2].HeaderText);
+        Assert.Contains("第一章", open[3].HeaderText);
+        Assert.Equal(0, open[2].Depth);
+        Assert.Equal(1, open[3].Depth);
+        Assert.Equal(2, open[4].Depth);
+        Assert.Equal(24, open[4].IndentLeft);
+        Assert.Equal("段 2 · 入京", open[4].Headline);
+        Assert.Equal(3, open[2].HeaderCount);
+        Assert.Equal(2, open[3].HeaderCount);
+
+        var collapsed = SegmentCatalogPolicy.Build(
+            segments, new HashSet<string> { "第一部分/第一章" });
+        Assert.Equal(new[] { 0, 3 }, collapsed.Where(i => !i.IsHeader).Select(i => i.Segment!.Idx));
+        Assert.True(collapsed.First(i => i.ChapterKey == "第一部分/第一章").IsCollapsed);
     }
 
     [Fact]
@@ -82,6 +140,8 @@ public class WindowsParityPolicyTests
         var items = SegmentCatalogPolicy.Build(segments, new HashSet<string>());
         Assert.Equal(2, items.Count);
         Assert.All(items, i => Assert.False(i.IsHeader));
+        Assert.Equal("段 1 · a", items[0].Headline);
+        Assert.Equal("段 2 · b", items[1].Headline);
     }
 
     [Fact]

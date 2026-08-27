@@ -9,6 +9,12 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
+from lumina_core.chunker.markers import lumina_chapter_label
+from lumina_core.chunker.tree import (
+    decode_heading_path,
+    encode_heading_path,
+    heading_path_from_chapter,
+)
 from lumina_core.classify.book import BOOK_CATEGORIES
 from lumina_core.db.connection import db_lock, db_transaction
 from lumina_core.search.fts import delete_note_from_fts
@@ -367,7 +373,7 @@ class BookRepo:
 
 # List API / UI sidebar: slim meta — no raw_text, translation, or summary_json.
 _SEGMENT_LIST_COLUMNS = (
-    "id, book_id, idx, chapter, page_range, anchor_label, char_count, "
+    "id, book_id, idx, chapter, heading_path, page_range, anchor_label, char_count, "
     "label, summary_status, retry_count, "
     "summary_provider, summary_model, summary_tier, summary_duration_s, summary_llm_attempts"
 )
@@ -391,10 +397,21 @@ _SEGMENT_EXPORT_COLUMNS = (
 _SEGMENT_INSERT_BATCH = 200
 _SEGMENT_INSERT_SQL = """
 INSERT INTO segments (
-  id, book_id, idx, chapter, page_range, anchor_label,
+  id, book_id, idx, chapter, heading_path, page_range, anchor_label,
   raw_text, char_count, summary_status, retry_count
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 """
+
+
+def _heading_path_db_value(seg: dict[str, Any]) -> str | None:
+    raw = seg.get("heading_path")
+    if isinstance(raw, str) and raw.strip().startswith("["):
+        return raw
+    if isinstance(raw, (list, tuple)):
+        encoded = encode_heading_path(raw)
+        if encoded:
+            return encoded
+    return encode_heading_path(heading_path_from_chapter(seg.get("chapter")))
 
 
 def _segment_insert_row(seg: dict[str, Any]) -> tuple[Any, ...]:
@@ -402,7 +419,8 @@ def _segment_insert_row(seg: dict[str, Any]) -> tuple[Any, ...]:
         seg["id"],
         seg["book_id"],
         seg["idx"],
-        seg.get("chapter"),
+        lumina_chapter_label(seg.get("chapter")),
+        _heading_path_db_value(seg),
         seg.get("page_range"),
         seg.get("anchor_label"),
         seg["raw_text"],
@@ -410,6 +428,17 @@ def _segment_insert_row(seg: dict[str, Any]) -> tuple[Any, ...]:
         seg.get("summary_status", "pending"),
         seg.get("retry_count", 0),
     )
+
+
+def _segment_public(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
+    item = dict(row)
+    if "chapter" in item:
+        item["chapter"] = lumina_chapter_label(item.get("chapter"))
+    if "heading_path" in item or "chapter" in item:
+        item["heading_path"] = decode_heading_path(
+            item.get("heading_path"), chapter=item.get("chapter")
+        )
+    return item
 
 
 def _insert_segments_batched(conn: sqlite3.Connection, segments: list[dict[str, Any]]) -> None:
@@ -446,7 +475,7 @@ class SegmentRepo:
                 f"SELECT {cols} FROM segments WHERE book_id = ? ORDER BY idx",
                 (book_id,),
             ).fetchall()
-        return [dict(r) for r in rows]
+        return [_segment_public(r) for r in rows]
 
     def list_catalog(self, book_id: str) -> list[dict[str, Any]]:
         """Slim list plus summary_preview and bullet_labels. Never returns summary_json."""
@@ -462,7 +491,7 @@ class SegmentRepo:
             ).fetchall()
         catalog: list[dict[str, Any]] = []
         for index, row in enumerate(rows):
-            item = dict(row)
+            item = _segment_public(row)
             preview, labels = segment_list_fields(item.pop("summary_json", None))
             if preview:
                 item["summary_preview"] = preview
@@ -479,7 +508,7 @@ class SegmentRepo:
                 f"SELECT {_SEGMENT_EXPORT_COLUMNS} FROM segments WHERE book_id = ? ORDER BY idx",
                 (book_id,),
             ).fetchall()
-        return [dict(r) for r in rows]
+        return [_segment_public(r) for r in rows]
 
     def backfill_char_counts(self, book_id: str) -> None:
         with db_lock(self.conn):
@@ -512,7 +541,7 @@ class SegmentRepo:
             row = self.conn.execute(
                 "SELECT * FROM segments WHERE id = ?", (segment_id,)
             ).fetchone()
-        return dict(row) if row else None
+        return _segment_public(row) if row else None
 
     def get_by_index(self, book_id: str, idx: int) -> dict[str, Any] | None:
         with db_lock(self.conn):
@@ -520,7 +549,7 @@ class SegmentRepo:
                 "SELECT * FROM segments WHERE book_id = ? AND idx = ?",
                 (book_id, idx),
             ).fetchone()
-        return dict(row) if row else None
+        return _segment_public(row) if row else None
 
     def get_summary_by_index(self, book_id: str, idx: int) -> dict[str, Any] | None:
         with db_lock(self.conn):
@@ -528,7 +557,7 @@ class SegmentRepo:
                 f"SELECT {_SEGMENT_SUMMARY_COLUMNS} FROM segments WHERE book_id = ? AND idx = ?",
                 (book_id, idx),
             ).fetchone()
-        return dict(row) if row else None
+        return _segment_public(row) if row else None
 
     def summary_tier_for_book(self, book_id: str) -> str:
         with db_lock(self.conn):
@@ -567,7 +596,14 @@ class SegmentRepo:
                 """,
                 (book_id, idx, max(1, limit)),
             ).fetchall()
-        return [dict(row) for row in rows]
+        return [
+            {
+                "idx": row["idx"],
+                "chapter": lumina_chapter_label(row["chapter"]),
+                "summary_json": row["summary_json"],
+            }
+            for row in rows
+        ]
 
     def list_ready_summaries(self, book_id: str) -> list[dict[str, Any]]:
         """Ready segment summaries in reading order, without raw_text."""
@@ -584,7 +620,7 @@ class SegmentRepo:
                 """,
                 (book_id,),
             ).fetchall()
-        return [dict(row) for row in rows]
+        return [_segment_public(row) for row in rows]
 
     def get_bodies_by_indices(
         self,
@@ -605,7 +641,7 @@ class SegmentRepo:
                 """,
                 (book_id, *unique),
             ).fetchall()
-        return {int(row["idx"]): dict(row) for row in rows}
+        return {int(row["idx"]): _segment_public(row) for row in rows}
 
     def insert_many(self, segments: list[dict[str, Any]]) -> None:
         if not segments:
@@ -702,6 +738,7 @@ class SegmentRepo:
               book_id TEXT,
               idx INTEGER,
               chapter TEXT,
+              heading_path TEXT,
               page_range TEXT,
               anchor_label TEXT,
               raw_text TEXT,
@@ -719,9 +756,9 @@ class SegmentRepo:
             self.conn.executemany(
                 """
                 INSERT INTO staging_segments (
-                  id, book_id, idx, chapter, page_range, anchor_label,
+                  id, book_id, idx, chapter, heading_path, page_range, anchor_label,
                   raw_text, char_count, summary_status, retry_count
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 [_segment_insert_row(seg) for seg in segments],
             )
@@ -760,11 +797,11 @@ class SegmentRepo:
             self.conn.execute(
                 """
                 INSERT INTO segments (
-                  id, book_id, idx, chapter, page_range, anchor_label,
+                  id, book_id, idx, chapter, heading_path, page_range, anchor_label,
                   raw_text, char_count, summary_status, retry_count
                 )
                 SELECT
-                  id, book_id, idx, chapter, page_range, anchor_label,
+                  id, book_id, idx, chapter, heading_path, page_range, anchor_label,
                   raw_text, char_count, summary_status, retry_count
                 FROM staging_segments
                 ORDER BY idx
@@ -964,7 +1001,7 @@ class SegmentRepo:
         self.conn.execute(
             """
             UPDATE segments
-            SET raw_text = ?, char_count = ?, chapter = ?, page_range = ?,
+            SET raw_text = ?, char_count = ?, chapter = ?, heading_path = ?, page_range = ?,
                 anchor_label = ?, summary_json = NULL, label = NULL,
                 translation = NULL, summary_status = 'pending', retry_count = 0,
                 summary_provider = NULL, summary_model = NULL, summary_tier = ?,
@@ -974,7 +1011,8 @@ class SegmentRepo:
             (
                 raw_text,
                 len(raw_text),
-                chapter,
+                lumina_chapter_label(chapter),
+                encode_heading_path(heading_path_from_chapter(chapter)),
                 page_range,
                 anchor_label,
                 summary_tier,

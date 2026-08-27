@@ -43,5 +43,20 @@
         </Border>
 
         <Frame x:Name="ContentFrame" Grid.Row="1"/>
+
+        <TeachingTip x:Name="OnboardingTip"
+                     Title="导入书籍"
+                     IsLightDismissEnabled="False"
+                     PreferredPlacement="Bottom"
+                     CloseButtonContent="跳过引导"
+                     ActionButtonContent="下一步"
+                     ActionButtonClick="OnboardingNext_Click"
+                     CloseButtonClick="OnboardingSkip_Click"
+                     Closed="OnboardingTip_Closed">
+            <TeachingTip.Content>
+                <HyperlinkButton x:Name="OnboardingBackButton" Content="上一步"
+                                 Click="OnboardingBack_Click"/>
+            </TeachingTip.Content>
+        </TeachingTip>
     </Grid>
 </Window>

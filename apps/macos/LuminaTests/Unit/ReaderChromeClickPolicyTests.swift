@@ -33,6 +33,25 @@ final class ReaderChromeClickPolicyTests: XCTestCase {
             )
         }
     }
+
+    func testTourLocksChrome_doesNotCollapse() {
+        XCTAssertEqual(
+            ReaderChromeClickPolicy.outcome(
+                overlayOpen: false,
+                chromeHidden: false,
+                tourLocksChrome: true
+            ),
+            .ignore
+        )
+        XCTAssertEqual(
+            ReaderChromeClickPolicy.outcome(
+                overlayOpen: false,
+                chromeHidden: true,
+                tourLocksChrome: true
+            ),
+            .reveal
+        )
+    }
 }
 
 /// Locks the architecture that fixed reader control clicks toggling the chrome.
@@ -127,8 +146,8 @@ final class ReaderChromeClickArchitectureTests: XCTestCase {
         let reader = try readerSource()
         XCTAssertEqual(
             reader.components(separatedBy: "ReaderChromeBarMetrics.height").count - 1,
-            9,
-            "top/bottom bars, listen mini-bar clearance, top/bottom feed insets, notes top/bottom pad, chat clearance, and catalog clearance must share the same reserved height"
+            5,
+            "top/bottom bar frames, notes top pad, and top/bottom feed insets must share the same reserved height"
         )
         XCTAssertTrue(reader.contains("ReaderChromeBarMetrics.labelFont"))
         XCTAssertTrue(reader.contains("ReaderChromeBarMetrics.controlSize"))
@@ -136,6 +155,81 @@ final class ReaderChromeClickArchitectureTests: XCTestCase {
         XCTAssertFalse(
             body.contains(".controlSize(.small)"),
             "the action bar must not pin controlSize.small or the icons and labels shrink again"
+        )
+    }
+
+    func testListenMiniBarDoesNotCoverChatInput() throws {
+        XCTAssertEqual(ListenMiniBarMetrics.clearance(isActive: false, hasNotice: true), 0)
+        XCTAssertEqual(ListenMiniBarMetrics.clearance(isActive: true, hasNotice: false), ListenMiniBarMetrics.height)
+        XCTAssertEqual(
+            ListenMiniBarMetrics.clearance(isActive: true, hasNotice: true),
+            ListenMiniBarMetrics.height + ListenMiniBarMetrics.noticeHeight
+        )
+        XCTAssertEqual(ListenMiniBarMetrics.height, ReaderChromeBarMetrics.height)
+        XCTAssertEqual(
+            ReaderBottomStackPolicy.overlayBottomPadding(
+                listenActive: false,
+                listenHasNotice: false
+            ),
+            ReaderChromeBarMetrics.height
+        )
+        XCTAssertEqual(
+            ReaderBottomStackPolicy.overlayBottomPadding(
+                listenActive: true,
+                listenHasNotice: false
+            ),
+            ReaderChromeBarMetrics.height + ListenMiniBarMetrics.height
+        )
+        XCTAssertEqual(
+            ReaderBottomStackPolicy.overlayBottomPadding(
+                listenActive: true,
+                listenHasNotice: true
+            ),
+            ReaderChromeBarMetrics.height
+                + ListenMiniBarMetrics.height
+                + ListenMiniBarMetrics.noticeHeight
+        )
+        XCTAssertEqual(
+            ReaderBottomStackPolicy.miniBarBottomPadding(barsVisible: true),
+            ReaderChromeBarMetrics.height
+        )
+        XCTAssertEqual(
+            ReaderBottomStackPolicy.miniBarBottomPadding(barsVisible: false),
+            0
+        )
+
+        let reader = try readerSource()
+        XCTAssertEqual(
+            reader.components(separatedBy: "overlayBottomPadding").count - 1,
+            5,
+            "the padding helper, its policy call, plus notes/chat/catalog must share overlayBottomPadding"
+        )
+        let layout = reader.components(separatedBy: "private var readerLayout: some View").last?
+            .components(separatedBy: ".onExitCommand").first ?? ""
+        XCTAssertTrue(
+            layout.contains(".padding(.bottom, overlayBottomPadding)"),
+            "chat and catalog must lift above the listen mini-bar, not share its bottom edge"
+        )
+        XCTAssertTrue(
+            layout.contains("ReaderBottomStackPolicy.miniBarBottomPadding(barsVisible: barsVisible)"),
+            "the mini-bar still sits on the function bar when chrome is visible"
+        )
+        let miniBar = try source("Lumina/Features/Reader/Listen/ListenMiniBar.swift")
+        XCTAssertTrue(
+            miniBar.contains(".frame(height: ListenMiniBarMetrics.noticeHeight)"),
+            "the skip caption must occupy noticeHeight so overlay padding matches the bar"
+        )
+        XCTAssertTrue(miniBar.contains(".frame(height: ListenMiniBarMetrics.height)"))
+        guard
+            let chatRange = layout.range(of: "chatDrawer"),
+            let miniRange = layout.range(of: "ListenMiniBar")
+        else {
+            return XCTFail("readerLayout must host both the chat drawer and the listen mini-bar")
+        }
+        XCTAssertLessThan(
+            chatRange.lowerBound,
+            miniRange.lowerBound,
+            "the mini-bar stays above the chat layer in ZStack order so playback remains visible"
         )
     }
 
@@ -343,7 +437,7 @@ final class ReaderChromeClickArchitectureTests: XCTestCase {
         )
         XCTAssertFalse(
             summarizeBlock.contains("primaryAction"),
-            "listen may use primaryAction; 摘要 splits must not"
+            "listen and 摘要 splits must not use primaryAction; long-press menus are undiscoverable"
         )
         XCTAssertFalse(
             summarizeBlock.contains(".contextMenu"),
@@ -408,28 +502,65 @@ final class ReaderChromeClickArchitectureTests: XCTestCase {
         )
     }
 
-    func testListenPrimaryActionAlwaysPlaysBriefSummary() throws {
+    func testListenChevronSplitPlaysBriefOnIconClick() throws {
         let reader = try readerSource()
         let listen = reader
-            .components(separatedBy: "private var listenChromeControl: some View")
+            .components(separatedBy: "private var listenStartIdx: Int")
             .last?
             .components(separatedBy: "private var originalSearchChromeControl")
             .first ?? ""
+        XCTAssertTrue(listen.contains("listenTargetShowsOriginal"))
+        XCTAssertTrue(listen.contains("ListenChromePolicy.isShowingOriginal"))
+        XCTAssertFalse(
+            listen.contains("if contentMode == .original"),
+            "speaker must follow the visible panel, including per-segment 切换原文"
+        )
+        XCTAssertTrue(
+            listen.contains("startListening(.original)"),
+            "when the visible panel is original, the speaker must read raw_text"
+        )
+        XCTAssertTrue(listen.contains("ReaderChromeIconChevronSplit("))
         XCTAssertTrue(listen.contains("Button(\"听简要摘要\") { startListening(.summary) }"))
         XCTAssertTrue(listen.contains("Button(\"听完整摘要\") { startListening(.detailed) }"))
         XCTAssertTrue(
-            listen.contains("} primaryAction: {"),
-            "the listen icon click is a primary action, not open-menu-only"
+            listen.contains("startListening(.summary)"),
+            "when the visible panel is summary, the speaker plays the brief summary"
         )
         XCTAssertTrue(
-            listen.contains("startListening(.summary)"),
-            "clicking 听 always plays the brief summary"
+            listen.contains(".padding(.horizontal, 6)"),
+            "the original speaker must keep the same padded hit target as the summary split"
+        )
+        XCTAssertFalse(
+            listen.contains("primaryAction:"),
+            "Menu+primaryAction hides 听完整摘要 behind a long-press"
         )
         XCTAssertFalse(
             listen.contains("lastSummaryMode"),
             "clicking 听 must not replay the last full-summary choice"
         )
-        XCTAssertTrue(listen.contains(".help(\"听简要摘要或听完整摘要\")"))
+        XCTAssertTrue(listen.contains("primaryHelp: \"听简要摘要\""))
+        XCTAssertTrue(listen.contains("chevronHelp: \"选择听简要摘要或听完整摘要\""))
+
+        let block = try source("Lumina/Features/Reader/SegmentReadingBlock.swift")
+        XCTAssertTrue(
+            block.contains("ListenChromePolicy.isShowingOriginal"),
+            "the reading panel and the speaker must share one visible-layer rule"
+        )
+
+        let split = try source("Lumina/Features/Shared/ReaderChromeIconChevronSplit.swift")
+        XCTAssertTrue(split.contains("chevron.down"))
+        XCTAssertTrue(split.contains(".menuStyle(.borderlessButton)"))
+        XCTAssertTrue(split.contains(".menuIndicator(.hidden)"))
+        XCTAssertTrue(split.contains(".readerChromeIconAction()"))
+        XCTAssertFalse(
+            split.contains("primaryAction:"),
+            "the icon must be a Button, not Menu+primaryAction"
+        )
+        let menuBlock = split.components(separatedBy: "Menu(content: menu)").last ?? ""
+        XCTAssertFalse(
+            menuBlock.contains(".buttonStyle"),
+            "buttonStyle on the chevron Menu restyles NSMenuItems"
+        )
     }
 
     func testReaderFeedInsetsNeverDependOnTheChrome() throws {
@@ -576,6 +707,17 @@ final class ReaderChromeClickArchitectureTests: XCTestCase {
             separator[button.upperBound...].range(of: ".fill(paper.border)"),
             "the second boundary line must follow the button so the icon sits on the divider, not at the trailing edge"
         )
+    }
+
+    func testBoundaryEditorUsesClickNotDrag() throws {
+        let editor = try source("Lumina/Features/Reader/SegmentBoundaryEditor.swift")
+        XCTAssertTrue(editor.contains("点击正文中要作为新分界的位置"))
+        XCTAssertTrue(editor.contains("点击后立即保存并重新摘要这两段"))
+        XCTAssertTrue(editor.contains("characterIndexForInsertion"))
+        XCTAssertTrue(editor.contains("NSScrollView"))
+        XCTAssertFalse(editor.contains("上一处"))
+        XCTAssertFalse(editor.contains("下一处"))
+        XCTAssertFalse(editor.contains("DragGesture"))
     }
 
     func testWindowToolbarDoesNotFollowReaderChrome() throws {
@@ -823,9 +965,25 @@ final class ReaderHelpTooltipPolicyTests: XCTestCase {
                 "\(banned) republishes the whole reader every second and retriggers button help tags"
             )
         }
+        let models = try String(
+            contentsOf: macosRoot.appendingPathComponent(
+                "Lumina/Features/Reader/SegmentSidebarModels.swift"
+            ),
+            encoding: .utf8
+        )
+        XCTAssertFalse(
+            models.contains("TimelineView"),
+            "catalog first line must not host live summarize captions"
+        )
+        let reading = try String(
+            contentsOf: macosRoot.appendingPathComponent(
+                "Lumina/Features/Reader/SegmentReadingBlock.swift"
+            ),
+            encoding: .utf8
+        )
         XCTAssertTrue(
-            reader.contains("TimelineView(.periodic(from: .now, by: 1))"),
-            "sidebar live captions must tick locally via TimelineView, not a view-model clock"
+            reading.contains("TimelineView(.periodic(from: .now, by: 1))"),
+            "reading-block live captions must tick locally via TimelineView, not a view-model clock"
         )
     }
 

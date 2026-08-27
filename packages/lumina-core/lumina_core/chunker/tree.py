@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from typing import Any
 
 from lumina_core.chunker.markers import (
     bare_chapter_title,
+    clean_structure_title,
     heading_level_from_hashes,
     match_bare_chapter,
     match_heading_marker,
@@ -89,11 +91,8 @@ def build_document_tree(
     return book
 
 
-def chapter_path_at(tree: DocumentNode, offset: int) -> str | None:
-    """Nearest part/chapter title path covering offset, e.g. '第一卷 · 第三章'.
-
-    Sections stay in the tree but do not split reader chapter groups.
-    """
+def heading_path_at(tree: DocumentNode, offset: int) -> list[str]:
+    """Part then chapter titles covering offset, at most 2. Sections do not join."""
     parts: list[str] = []
     node = tree
     while node.children:
@@ -106,18 +105,79 @@ def chapter_path_at(tree: DocumentNode, offset: int) -> str | None:
         if child.kind in {"part", "chapter"} and child.title:
             parts.append(child.title)
         node = child
-        if child.kind == "chapter":
+        if child.kind == "chapter" or len(parts) >= 2:
             break
     if parts:
-        return " · ".join(parts)
+        return parts[:2]
     for item in reversed(tree.iter_nodes()):
         if (
             item.kind == "section"
             and item.title
             and item.start <= offset < item.end
         ):
-            return item.title
-    return None
+            return [item.title]
+    return []
+
+
+def chapter_path_at(tree: DocumentNode, offset: int) -> str | None:
+    """Nearest part/chapter title path covering offset, e.g. '第一卷 · 第三章'.
+
+    Sections stay in the tree but do not split reader chapter groups.
+    """
+    parts = heading_path_at(tree, offset)
+    return " · ".join(parts) if parts else None
+
+
+def heading_path_from_chapter(chapter: str | None) -> list[str]:
+    """Split a stored `chapter` label into at most 2 titles. Strips Lumina §."""
+    name = clean_structure_title(chapter)
+    if not name:
+        return []
+    parts: list[str] = []
+    for piece in name.split(" · "):
+        cleaned = clean_structure_title(piece)
+        if cleaned:
+            parts.append(cleaned)
+        if len(parts) >= 2:
+            break
+    return parts
+
+
+def encode_heading_path(path: list[str] | tuple[str, ...] | None) -> str | None:
+    titles: list[str] = []
+    for item in path or []:
+        cleaned = clean_structure_title(str(item) if item is not None else "")
+        if cleaned:
+            titles.append(cleaned)
+        if len(titles) >= 2:
+            break
+    if not titles:
+        return None
+    return json.dumps(titles, ensure_ascii=False)
+
+
+def decode_heading_path(raw: Any, *, chapter: str | None = None) -> list[str]:
+    parsed: list[Any] | None = None
+    if isinstance(raw, list):
+        parsed = raw
+    elif isinstance(raw, str) and raw.strip():
+        try:
+            loaded = json.loads(raw)
+        except json.JSONDecodeError:
+            loaded = None
+        if isinstance(loaded, list):
+            parsed = loaded
+    titles: list[str] = []
+    if parsed:
+        for item in parsed:
+            cleaned = clean_structure_title(str(item) if item is not None else "")
+            if cleaned:
+                titles.append(cleaned)
+            if len(titles) >= 2:
+                break
+    if titles:
+        return titles
+    return heading_path_from_chapter(chapter)
 
 
 def tree_to_structure_units(tree: DocumentNode):
@@ -164,7 +224,7 @@ def _collect_headings(text: str, yielder=None) -> list[tuple[int, int, str]]:
                 (
                     offset,
                     heading_level_from_hashes(len(heading.group(1))),
-                    heading.group(2).strip(),
+                    clean_structure_title(heading.group(2)),
                 )
             )
             seen.add(offset)

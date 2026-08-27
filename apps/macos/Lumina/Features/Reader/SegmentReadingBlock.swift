@@ -135,12 +135,11 @@ struct SegmentReadingBlock: View, Equatable {
     }
 
     private var showingSource: Bool {
-        switch contentMode {
-        case .summary:
-            isSourceExpanded
-        case .original:
-            !isSummaryExpanded
-        }
+        ListenChromePolicy.isShowingOriginal(
+            contentMode: contentMode,
+            sourceExpanded: isSourceExpanded,
+            summaryExpanded: isSummaryExpanded
+        )
     }
 
     private var showsSourceBox: Bool {

@@ -187,6 +187,7 @@ final class LibraryViewModelMergeTests: XCTestCase {
     func testDisplayedBooks_doesNotReorderForTitleSort() {
         let viewModel = LibraryViewModel()
         viewModel.sort = .title
+        viewModel.sortOrder = .ascending
         viewModel.books = [
             book(id: "idle", title: "Idle", summarizeState: "idle"),
             book(id: "running", title: "Running", summarizeState: "running"),
@@ -366,6 +367,52 @@ final class LibraryViewModelMergeTests: XCTestCase {
             viewModel.displayedBooks.map(\.id),
             ["done", "mid", "low", "stale", "unread"]
         )
+    }
+
+    func testSortOrderAscendingReversesDefaultDirection() {
+        let books = [
+            book(id: "short", title: "Short", segmentCount: 3, isFavorite: false),
+            book(id: "long", title: "Long", segmentCount: 40, isFavorite: true),
+            book(id: "mid", title: "Mid", segmentCount: 12, isFavorite: false),
+        ]
+        XCTAssertEqual(
+            LibraryViewModel.sorted(books, by: .segments, order: .ascending).map(\.id),
+            ["short", "mid", "long"]
+        )
+        XCTAssertEqual(
+            LibraryViewModel.sorted(books, by: .title, order: .descending).map(\.id),
+            ["short", "mid", "long"]
+        )
+        XCTAssertEqual(
+            LibraryViewModel.sorted(books, by: .favorite, order: .ascending).map(\.id),
+            ["mid", "short", "long"]
+        )
+        XCTAssertEqual(
+            LibraryViewModel.sorted(books, by: .favorite, order: .descending).map(\.id),
+            ["long", "short", "mid"]
+        )
+    }
+
+    func testTitleDefaultOrderIsAscendingOthersDescending() {
+        XCTAssertEqual(LibrarySort.title.defaultOrder, .ascending)
+        XCTAssertEqual(LibrarySort.recent.defaultOrder, .descending)
+        XCTAssertEqual(LibrarySort.segments.defaultOrder, .descending)
+        XCTAssertEqual(LibrarySort.favorite.defaultOrder, .descending)
+    }
+
+    func testRecentAscendingStillPinsSummarizeActivity() {
+        let viewModel = LibraryViewModel()
+        viewModel.sort = .recent
+        viewModel.sortOrder = .ascending
+        viewModel.books = [
+            book(id: "idle", summarizeState: "idle", lastOpenedAt: "2024-01-01T00:00:00Z"),
+            book(id: "running", summarizeState: "running", lastOpenedAt: "2024-02-01T00:00:00Z"),
+            book(id: "recent", lastOpenedAt: "2024-05-01T00:00:00Z"),
+            book(id: "queued", summarizeState: "queued", lastOpenedAt: "2024-03-01T00:00:00Z"),
+        ]
+
+        // Recency ascending: idle, running, queued, recent; then pin running/queued.
+        XCTAssertEqual(viewModel.displayedBooks.map(\.id), ["running", "queued", "idle", "recent"])
     }
 
     func testTitleQueryFiltersDisplayedBooks() {

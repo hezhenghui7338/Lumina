@@ -58,6 +58,17 @@ macOS 主界面（Windows 功能对等，交互为 WinUI 惯用导航）。
 
 ## 最近更新
 
+### v1.0.1 — 引导、段列表结构树与分段更稳
+
+相对 v1.0 的主要变化：
+
+- **首次引导**：在真实界面上逐项高亮（可跳过），结束后给出使用指南；设置「关于」与 macOS Help 可再打开，不重跑 spotlight
+- **段列表结构树**：按原文部/章嵌套（最多 3 层）；分组后段行不再重复章名；无结构则平铺
+- **手动调界**：点相邻两段拼接原文中的某一处作为新分界（吸附句末），不再拖动滑块
+- **分段**：同一章内每段不少于 200 字，章标题并入本章正文；导入超时按页数/文件体积计算，硬顶 8 小时
+- **书架排序**：字段旁可选升序/降序（标题默认 A→Z，其余默认新→旧）
+- **听摘要**：单击扬声器听简要；听完整必须点始终可见的下拉箭头，不再依赖长按
+
 ### v1.0 — 正式版：听读、查找与永不卡住
 
 首个正式版本。相对 v0.10 的主要变化：
@@ -299,7 +310,7 @@ just test-release  # 发布门禁：纯 mock 并行（~20s，与 PR 等价）
 **推荐：GitHub Actions（无需本机 Xcode）**
 
 1. 打开仓库 **Actions → Release → Run workflow**
-2. 输入版本号（如 `1.0.0`）运行
+2. 输入版本号（如 `1.0.1`）运行
 3. 在 Artifacts 或 tag Release 中下载 DMG
 
 **本机构建（需与 macOS 版本匹配的 Xcode）**
@@ -309,13 +320,13 @@ macOS 15 用户：**不要**从 App Store 装最新 Xcode（可能要求 macOS 2
 ```bash
 ./scripts/build-release.sh
 # 会先跑 just test-release 等价测试，通过后才打包
-# 产出：dist/Lumina-1.0.0-macOS.dmg 与 .zip
+# 产出：dist/Lumina-1.0.1-macOS.dmg 与 .zip
 ```
 
 打 tag 推送后会自动构建并上传到 Release：
 
 ```bash
-git tag v1.0.0 && git push origin v1.0.0
+git tag v1.0.1 && git push origin v1.0.1
 ```
 
 ### 文档

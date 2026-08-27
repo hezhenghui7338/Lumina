@@ -535,3 +535,27 @@ def test_persist_ingest_sync_keeps_user_title(tmp_path):
     stored = BookRepo(conn).get(book["id"])
     assert stored["title"] == "自定义书名"
     assert json.loads(stored["metadata_json"])["title_user_set"] is True
+
+
+def test_segment_repo_normalizes_stacked_section_sign(db_conn):
+    book = _insert_book(db_conn, title="带节号的书")
+    db_conn.execute(
+        """
+        INSERT INTO segments (
+          id, book_id, idx, chapter, page_range, anchor_label,
+          raw_text, char_count, summary_status, retry_count
+        ) VALUES (?, ?, 0, ?, NULL, '段 1', '正文', 2, 'pending', 0)
+        """,
+        ("seg-sec", book["id"], "§§第一章"),
+    )
+    db_conn.commit()
+    listed = SegmentRepo(db_conn).list_for_book(book["id"], include_body=False)
+    assert listed[0]["chapter"] == "§第一章"
+    assert "§§" not in listed[0]["chapter"]
+    assert listed[0]["heading_path"] == ["第一章"]
+    catalog = SegmentRepo(db_conn).list_catalog(book["id"])
+    assert catalog[0]["chapter"] == "§第一章"
+    assert catalog[0]["heading_path"] == ["第一章"]
+    detail = SegmentRepo(db_conn).get_by_index(book["id"], 0)
+    assert detail is not None
+    assert detail["chapter"] == "§第一章"

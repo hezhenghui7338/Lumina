@@ -262,6 +262,49 @@ def test_list_segments_includes_preview_without_summary_json(client):
     assert segs[0]["bullet_labels"] == ["邻里"]
 
 
+def test_list_catalog_heading_path_and_legacy_chapter_fallback(tmp_path):
+    conn = init_db(tmp_path / "heading-path.db")
+    conn.execute(
+        "INSERT INTO books (id, title, format, file_path, created_at, updated_at) "
+        "VALUES ('hp', 't', 'txt', '/x', 'now', 'now')"
+    )
+    SegmentRepo(conn).insert_many(
+        [
+            {
+                "id": "hp0",
+                "book_id": "hp",
+                "idx": 0,
+                "chapter": "§第一部分 · 第一章",
+                "heading_path": ["第一部分", "第一章"],
+                "page_range": None,
+                "anchor_label": "a",
+                "raw_text": "第一章正文",
+                "summary_status": "pending",
+                "retry_count": 0,
+            },
+            {
+                "id": "hp1",
+                "book_id": "hp",
+                "idx": 1,
+                "chapter": "§序言",
+                "page_range": None,
+                "anchor_label": "b",
+                "raw_text": "序言正文",
+                "summary_status": "pending",
+                "retry_count": 0,
+            },
+        ]
+    )
+    conn.execute("UPDATE segments SET heading_path = NULL WHERE id = 'hp1'")
+    conn.commit()
+    catalog = SegmentRepo(conn).list_catalog("hp")
+    assert catalog[0]["heading_path"] == ["第一部分", "第一章"]
+    assert catalog[1]["heading_path"] == ["序言"]
+    assert "raw_text" not in catalog[0]
+    assert "summary_json" not in catalog[0]
+    conn.close()
+
+
 def test_list_catalog_ignores_summary_json_when_not_ready(tmp_path):
     conn = init_db(tmp_path / "pending-catalog.db")
     conn.execute(
@@ -803,6 +846,92 @@ def test_cpu_worker_parent_kills_stalled_child(tmp_path, monkeypatch):
             tmp_path / "data",
         )
     assert time.monotonic() - started < 8
+
+
+def test_cpu_job_max_seconds_scales_with_pages_and_file_size():
+    from lumina_core.jobs.cpu_worker import (
+        cpu_job_max_seconds,
+        page_count_from_progress,
+    )
+
+    mib = 1024 * 1024
+    assert cpu_job_max_seconds(file_bytes=1024, page_count=None) == 1800.0
+    assert cpu_job_max_seconds(file_bytes=5 * mib, page_count=200) == 200 * 60
+    assert cpu_job_max_seconds(file_bytes=100 * mib, page_count=None) == 100 * 30
+    assert cpu_job_max_seconds(file_bytes=0, page_count=2000) == 8 * 3600
+    assert (
+        page_count_from_progress("pdf", 200, "扫描版 PDF · 本地 OCR 1/200 页…") == 200
+    )
+    assert page_count_from_progress("pdf", 320, "正在解析 PDF（共 320 页）…") == 320
+    assert page_count_from_progress("txt", 200, "扫描版 PDF · 本地 OCR 1/200 页…") is None
+    assert page_count_from_progress("pdf", 5000, "正在识别序言与正文结构…") is None
+
+
+def test_cpu_worker_pdf_page_progress_extends_job_max(tmp_path, monkeypatch):
+    import sys
+    import time
+
+    from lumina_core.jobs import cpu_worker as cw
+
+    monkeypatch.setattr(cw, "CPU_JOB_MAX_FLOOR_SECONDS", 0.35)
+    monkeypatch.setattr(cw, "CPU_JOB_SECONDS_PER_PAGE", 1.5)
+    monkeypatch.setattr(cw, "CPU_JOB_MAX_CEILING_SECONDS", 30.0)
+    monkeypatch.delenv(cw.JOB_MAX_ENV, raising=False)
+    monkeypatch.setenv(cw.STALL_ENV, "20")
+
+    def fake_cmd(_job_path):
+        script = (
+            "import json, sys, time\n"
+            "print(json.dumps({'type':'progress','page':1,'total':10,"
+            "'message':'扫描版 PDF · 本地 OCR 1/10 页…'}, ensure_ascii=False), flush=True)\n"
+            "time.sleep(0.9)\n"
+            "print(json.dumps({'type':'done','segment_count':1}), flush=True)\n"
+        )
+        return [sys.executable, "-c", script]
+
+    monkeypatch.setattr(cw, "cpu_worker_command", fake_cmd)
+    started = time.monotonic()
+    result = cw.run_cpu_worker_sync(
+        {"book_id": "b1", "kind": "ingest", "fmt": "pdf", "page_count": 10},
+        threading.Event(),
+        None,
+        tmp_path / "data",
+    )
+    assert result["segment_count"] == 1
+    assert time.monotonic() - started < 8
+
+
+def test_cpu_worker_txt_char_progress_does_not_count_as_pages(tmp_path, monkeypatch):
+    import sys
+    import time
+
+    from lumina_core.jobs import cpu_worker as cw
+
+    monkeypatch.setattr(cw, "CPU_JOB_MAX_FLOOR_SECONDS", 0.4)
+    monkeypatch.setattr(cw, "CPU_JOB_SECONDS_PER_PAGE", 60.0)
+    monkeypatch.delenv(cw.JOB_MAX_ENV, raising=False)
+    monkeypatch.setenv(cw.STALL_ENV, "20")
+
+    def fake_cmd(_job_path):
+        script = (
+            "import json, sys, time\n"
+            "print(json.dumps({'type':'progress','page':1000,'total':99999,"
+            "'message':'正在识别序言与正文结构…'}, ensure_ascii=False), flush=True)\n"
+            "time.sleep(8)\n"
+            "print(json.dumps({'type':'done','segment_count':1}), flush=True)\n"
+        )
+        return [sys.executable, "-c", script]
+
+    monkeypatch.setattr(cw, "cpu_worker_command", fake_cmd)
+    started = time.monotonic()
+    with pytest.raises(RuntimeError, match="分段超时：单本处理超过"):
+        cw.run_cpu_worker_sync(
+            {"book_id": "b1", "kind": "ingest", "fmt": "txt"},
+            threading.Event(),
+            None,
+            tmp_path / "data",
+        )
+    assert time.monotonic() - started < 4
 
 
 def test_queued_ingest_emits_wait_progress():

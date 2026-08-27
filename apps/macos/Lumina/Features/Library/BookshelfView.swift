@@ -62,6 +62,7 @@ struct BookshelfView: View {
                     bookList
                 }
             }
+            .tourAnchor(.bookshelf)
             .background(dropTargeted ? LuminaTheme.accentMuted.opacity(0.45) : Color.clear)
         }
         .navigationTitle(viewModel.query.title)
@@ -274,6 +275,14 @@ struct BookshelfView: View {
             }
             .pickerStyle(.menu)
             .frame(maxWidth: 140)
+            Picker("顺序", selection: orderBinding) {
+                ForEach(LibrarySortOrder.allCases) { item in
+                    Text(item.label).tag(item)
+                }
+            }
+            .pickerStyle(.segmented)
+            .frame(maxWidth: 140)
+            .help("升序：旧→新、A→Z、少→多、未收藏在前；降序相反")
             Picker("视图", selection: viewModeBinding) {
                 ForEach(BookshelfViewMode.allCases) { mode in
                     Label(mode.label, systemImage: mode.systemImage).tag(mode)
@@ -294,6 +303,13 @@ struct BookshelfView: View {
         Binding(
             get: { viewModel.sort },
             set: { viewModel.setSort($0) }
+        )
+    }
+
+    private var orderBinding: Binding<LibrarySortOrder> {
+        Binding(
+            get: { viewModel.sortOrder },
+            set: { viewModel.setSortOrder($0) }
         )
     }
 
@@ -320,6 +336,7 @@ struct BookshelfView: View {
             }
             .buttonStyle(.borderedProminent)
             .tint(LuminaTheme.accent)
+            .tourAnchor(.importButton)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }

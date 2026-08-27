@@ -65,8 +65,18 @@ def test_structure_marker_epub():
     segments = chunk_text(text)
     assert len(segments) >= 2
     assert any(s.chapter and "§第一章" in s.chapter for s in segments)
+    assert any(s.heading_path and "第一章" in s.heading_path[0] for s in segments)
     joined = "".join(s.raw_text for s in segments)
     assert joined == text
+
+
+def test_chapter_field_does_not_stack_section_signs():
+    from lumina_core.chunker.chunker import _chapter_at
+
+    text = "## [§§第一章]\n\n" + ("这是第一章的内容。" * 200)
+    label = _chapter_at(text, text.index("这是"))
+    assert label == "§第一章"
+    assert "§§" not in (label or "")
 
 
 def test_epub_toc_markers_do_not_create_tiny_segments():

@@ -285,3 +285,19 @@ public static class ListenScriptBuilder
         return el.ValueKind == JsonValueKind.String ? (el.GetString() ?? "").Trim() : "";
     }
 }
+
+/// Speaker click follows the panel on screen. Windows uses a global 原文 toggle;
+/// macOS also has per-segment 切换原文 / 切换摘要, encoded as the expanded flags.
+public static class ListenChromePolicy
+{
+    public static bool IsShowingOriginal(bool originalLayer, bool sourceExpanded, bool summaryExpanded)
+    {
+        if (originalLayer) return !summaryExpanded;
+        return sourceExpanded;
+    }
+
+    public static ListenMode PrimaryMode(bool showingOriginal) =>
+        showingOriginal ? ListenMode.Original : ListenMode.Summary;
+
+    public static bool ShowsSummaryChevron(bool showingOriginal) => !showingOriginal;
+}

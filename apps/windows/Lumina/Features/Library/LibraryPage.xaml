@@ -48,7 +48,7 @@
                     <Button Content="停止摘要" Click="LibraryStopSummarize_Click"/>
                     <Button Content="全部笔记" Click="AllNotes_Click"/>
                     <Button Content="刷新" Click="Refresh_Click"/>
-                    <Button Content="导入" Style="{StaticResource AccentButtonStyle}" Click="Import_Click"/>
+                    <Button x:Name="ImportButton" Content="导入" Style="{StaticResource AccentButtonStyle}" Click="Import_Click"/>
                 </StackPanel>
             </Grid>
 
@@ -62,6 +62,11 @@
                     <ComboBoxItem Content="段落数" Tag="segments"/>
                     <ComboBoxItem Content="阅读进度" Tag="progress"/>
                     <ComboBoxItem Content="收藏优先" Tag="favorite"/>
+                </ComboBox>
+                <ComboBox x:Name="OrderBox" Header="顺序" Width="100" SelectionChanged="Order_Changed"
+                          ToolTipService.ToolTip="升序：旧→新、A→Z、少→多、未收藏在前；降序相反">
+                    <ComboBoxItem Content="升序" Tag="asc"/>
+                    <ComboBoxItem Content="降序" Tag="desc" IsSelected="True"/>
                 </ComboBox>
                 <ComboBox x:Name="ViewModeBox" Header="视图" Width="120" SelectionChanged="ViewMode_Changed">
                     <ComboBoxItem Content="网格" Tag="grid" IsSelected="True"/>

@@ -17,6 +17,7 @@ from lumina_core.config import (
     ModelsConfig,
     ProfileRoute,
     ModelResource,
+    Settings,
     TTSConfig,
     _platform_default_data_dir,
     bundle_root,
@@ -177,6 +178,14 @@ def test_normalize_models_raw_migrates_job_concurrency():
 def test_default_data_dir_respects_env(monkeypatch, tmp_path):
     monkeypatch.setenv("LUMINA_DATA_DIR", str(tmp_path / "custom"))
     assert default_data_dir() == tmp_path / "custom"
+
+
+def test_cli_settings_use_lumina_data_dir(monkeypatch, tmp_path):
+    """Frozen sidecar smoke / CLI only pass host+port; env must still isolate the DB."""
+    isolated = tmp_path / "release-smoke"
+    monkeypatch.setenv("LUMINA_DATA_DIR", str(isolated))
+    settings = Settings(host="127.0.0.1", port=17433)
+    assert settings.data_dir == isolated
 
 
 def test_platform_default_data_dir_shape(monkeypatch):

@@ -37,6 +37,7 @@ CREATE TABLE IF NOT EXISTS segments (
   book_id         TEXT NOT NULL REFERENCES books(id) ON DELETE CASCADE,
   idx             INTEGER NOT NULL,
   chapter         TEXT,
+  heading_path    TEXT,
   page_range      TEXT,
   anchor_label    TEXT,
   raw_text        TEXT,
@@ -177,6 +178,7 @@ _BOOK_COLUMNS = (
 
 _SEGMENT_COLUMNS = (
     ("chapter", "TEXT"),
+    ("heading_path", "TEXT"),
     ("page_range", "TEXT"),
     ("summary_json", "TEXT"),
     ("label", "TEXT"),

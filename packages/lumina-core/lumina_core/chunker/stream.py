@@ -53,6 +53,7 @@ def iter_txt_chunks(
     global_off = 0
     index = 0
     last_chapter: str | None = None
+    last_heading_path: tuple[str, ...] = ()
     window = max(resolved.max_chars * 2, window_chars)
     try:
         file_size = max(1, path.stat().st_size)
@@ -77,7 +78,7 @@ def iter_txt_chunks(
         *,
         keep_tail: bool,
     ) -> Iterator[ChunkSegment]:
-        nonlocal buffer, global_off, index, last_chapter
+        nonlocal buffer, global_off, index, last_chapter, last_heading_path
         if not chunks:
             buffer = ""
             return
@@ -89,8 +90,12 @@ def iter_txt_chunks(
             buffer = ""
         for chunk in to_emit:
             chapter = chunk.chapter or last_chapter
+            heading_path = chunk.heading_path or last_heading_path
             if chunk.chapter:
                 last_chapter = chunk.chapter
+                last_heading_path = chunk.heading_path
+            elif chunk.heading_path:
+                last_heading_path = chunk.heading_path
             length = len(chunk.raw_text)
             yield ChunkSegment(
                 index=index,
@@ -98,6 +103,7 @@ def iter_txt_chunks(
                 start_offset=global_off,
                 end_offset=global_off + length,
                 chapter=chapter,
+                heading_path=heading_path,
                 page_range=chunk.page_range,
             )
             global_off += length

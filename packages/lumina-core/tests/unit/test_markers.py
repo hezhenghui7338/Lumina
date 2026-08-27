@@ -1,10 +1,12 @@
 """Ingest heading / page marker helpers."""
 
 from lumina_core.chunker.markers import (
+    clean_structure_title,
     heading_marker,
     is_hard_heading_line,
     is_hash_heading_line,
     is_page_line,
+    lumina_chapter_label,
     match_bare_chapter,
     parse_heading_line,
 )
@@ -15,6 +17,19 @@ def test_heading_marker_levels():
     assert heading_marker("第一章", 1) == "## [§第一章]"
     assert heading_marker("第一节", 2) == "### [§第一节]"
     assert heading_marker("小节", 5) == "###### [§小节]"
+
+
+def test_heading_marker_strips_source_section_sign():
+    assert heading_marker("§ 第一章", 1) == "## [§第一章]"
+    assert heading_marker("§§ 1. Intro", 1) == "## [§1. Intro]"
+    assert heading_marker("卷一 §", 0) == "# [§卷一]"
+    assert clean_structure_title("A § B") == "A § B"
+    assert lumina_chapter_label("§§第一章") == "§第一章"
+    assert lumina_chapter_label("§ 第一章") == "§第一章"
+    assert lumina_chapter_label("第一章") == "§第一章"
+    assert lumina_chapter_label("§") is None
+    assert parse_heading_line("## [§§第一章]") == (1, "第一章")
+    assert parse_heading_line("# § 第一卷") == (0, "第一卷")
 
 
 def test_page_line_is_not_a_hard_heading():

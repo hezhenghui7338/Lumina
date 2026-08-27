@@ -115,6 +115,24 @@ def test_macos_sidecar_replaces_orphan_on_core_version_mismatch():
     assert "expectedCoreVersion" in manager
 
 
+def test_release_smoke_isolates_data_dir():
+    """Release sidecar smoke must not open the user's live lumina.db."""
+    script = (REPO_ROOT / "scripts" / "build-release.sh").read_text(encoding="utf-8")
+    marker = "==> Sidecar startup smoke (embedded binary)"
+    start = script.find(marker)
+    assert start != -1, "missing sidecar startup smoke step"
+    smoke = script[start:]
+    assert 'SMOKE_DATA_DIR="$(mktemp -d' in smoke
+    assert (
+        'LUMINA_DATA_DIR="$SMOKE_DATA_DIR" "$RES/lumina-core" '
+        '--host 127.0.0.1 --port "$SMOKE_PORT" &'
+    ) in smoke
+    assert (
+        '\n"$RES/lumina-core" --host 127.0.0.1 --port "$SMOKE_PORT" &'
+        not in smoke
+    ), "smoke sidecar must set LUMINA_DATA_DIR; bare launch opens the live library"
+
+
 def test_release_smoke_asserts_health_chunker_version():
     """build-release.sh must compare /health JSON to CHUNKER_VERSION, not HTTP 200 only."""
     script = (REPO_ROOT / "scripts" / "build-release.sh").read_text(encoding="utf-8")

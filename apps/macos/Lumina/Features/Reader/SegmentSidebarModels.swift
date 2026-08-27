@@ -5,49 +5,16 @@ import SwiftUI
 struct SidebarSegmentItem: Identifiable, Equatable {
     let id: String
     let idx: Int
-    let chapter: String?
-    let outlineLabel: String?
+    let title: String?
     let summaryPreview: String?
     let bulletLabelsLine: String?
     let summaryStatus: String
 
     var headline: String {
-        SegmentCatalogHeadlineText.joined(chapter: chapter, idx: idx, suffix: outlineLabel)
+        SegmentCatalogHeadlineText.joined(idx: idx, title: title)
     }
 
-    static func make(
-        from segment: SegmentRow,
-        runningMetrics: SegmentRunningMetrics?
-    ) -> SidebarSegmentItem {
-        let chapter = segment.chapter.flatMap { $0.isEmpty ? nil : $0 }
-
-        let outlineLabel: String?
-        if let label = segment.label, !label.isEmpty {
-            outlineLabel = label
-        } else {
-            switch segment.summary_status {
-            case "running":
-                outlineLabel = runningMetrics.map {
-                    SummaryMetricsFormatter.inProgressLabel(
-                        startedAt: $0.startedAt,
-                        llmAttempt: $0.llmAttempt,
-                        maxLlmAttempts: $0.maxLlmAttempts,
-                        now: Date()
-                    )
-                } ?? "摘要生成中…"
-            case "pending":
-                outlineLabel = "等待摘要…"
-            case "failed", "error":
-                outlineLabel = SummaryMetricsFormatter.failureLabel(
-                    durationS: segment.summary_duration_s,
-                    retryCount: segment.retry_count
-                )
-            default:
-                outlineLabel = nil
-            }
-        }
-
-        let summaryPreview = SegmentCatalogPreview.line(summaryPreview: segment.summary_preview)
+    static func make(from segment: SegmentRow, grouped: Bool = false) -> SidebarSegmentItem {
         let labels = (segment.bullet_labels ?? []).compactMap { raw -> String? in
             let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
             return text.isEmpty ? nil : text
@@ -56,9 +23,11 @@ struct SidebarSegmentItem: Identifiable, Equatable {
         return SidebarSegmentItem(
             id: segment.id,
             idx: segment.idx,
-            chapter: chapter,
-            outlineLabel: outlineLabel,
-            summaryPreview: summaryPreview,
+            title: SegmentCatalogHeadlineText.title(
+                chapter: grouped ? nil : segment.chapter,
+                label: segment.label
+            ),
+            summaryPreview: SegmentCatalogPreview.line(summaryPreview: segment.summary_preview),
             bulletLabelsLine: labels.isEmpty ? nil : labels.joined(separator: " · "),
             summaryStatus: segment.summary_status
         )
@@ -66,12 +35,19 @@ struct SidebarSegmentItem: Identifiable, Equatable {
 }
 
 enum SegmentCatalogHeadlineText {
-    static func joined(chapter: String?, idx: Int, suffix: String?) -> String {
-        var parts: [String] = []
-        if let chapter, !chapter.isEmpty { parts.append(chapter) }
-        parts.append("段 \(idx + 1)")
-        if let suffix, !suffix.isEmpty { parts.append(suffix) }
-        return parts.joined(separator: " · ")
+    static func title(chapter: String?, label: String?) -> String? {
+        let chapter = SegmentOutlinePolicy.stripSectionMark(chapter ?? "")
+        if !chapter.isEmpty { return chapter }
+        let label = label?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !label.isEmpty { return label }
+        return nil
+    }
+
+    static func joined(idx: Int, title: String?) -> String {
+        if let title, !title.isEmpty {
+            return "段 \(idx + 1) · \(title)"
+        }
+        return "段 \(idx + 1)"
     }
 }
 
@@ -83,28 +59,19 @@ enum SegmentCatalogTypography {
 }
 
 struct SegmentCatalogHeadline: View {
-    let chapter: String?
     let idx: Int
-    let suffix: String?
+    let title: String?
 
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 0) {
-            if let chapter, !chapter.isEmpty {
-                Text(chapter)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-                Text(" · ")
-                    .fixedSize(horizontal: true, vertical: false)
-                    .layoutPriority(1)
-            }
             Text("段 \(idx + 1)")
                 .fixedSize(horizontal: true, vertical: false)
                 .layoutPriority(1)
-            if let suffix, !suffix.isEmpty {
+            if let title, !title.isEmpty {
                 Text(" · ")
                     .fixedSize(horizontal: true, vertical: false)
                     .layoutPriority(1)
-                Text(suffix)
+                Text(title)
                     .lineLimit(1)
                     .truncationMode(.tail)
             }
@@ -209,27 +176,14 @@ enum SegmentRenderWindow {
 // MARK: - Row View
 
 struct SegmentCatalogRowLines: View {
-    let chapter: String?
     let idx: Int
-    var suffix: String?
+    var title: String?
     var summaryPreview: String?
     var bulletLabelsLine: String?
-    var showsLiveProgress = false
-    var runningMetrics: SegmentRunningMetrics?
 
     var body: some View {
         VStack(alignment: .leading, spacing: SegmentCatalogTypography.rowSpacing) {
-            if showsLiveProgress, runningMetrics != nil {
-                TimelineView(.periodic(from: .now, by: 1)) { context in
-                    SegmentCatalogHeadline(
-                        chapter: chapter,
-                        idx: idx,
-                        suffix: progressLabel(at: context.date)
-                    )
-                }
-            } else {
-                SegmentCatalogHeadline(chapter: chapter, idx: idx, suffix: suffix)
-            }
+            SegmentCatalogHeadline(idx: idx, title: title)
             if let summaryPreview {
                 Text(summaryPreview)
                     .font(SegmentCatalogTypography.summary)
@@ -249,42 +203,24 @@ struct SegmentCatalogRowLines: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
-
-    private func progressLabel(at now: Date) -> String {
-        guard let runningMetrics else { return "摘要生成中…" }
-        return SummaryMetricsFormatter.inProgressLabel(
-            startedAt: runningMetrics.startedAt,
-            llmAttempt: runningMetrics.llmAttempt,
-            maxLlmAttempts: runningMetrics.maxLlmAttempts,
-            now: now
-        )
-    }
 }
 
 struct SegmentSidebarRowView: View, Equatable {
     let item: SidebarSegmentItem
     let isSelected: Bool
-    let showsLiveProgress: Bool
-    let runningMetrics: SegmentRunningMetrics?
 
     static func == (lhs: SegmentSidebarRowView, rhs: SegmentSidebarRowView) -> Bool {
-        lhs.item == rhs.item
-            && lhs.isSelected == rhs.isSelected
-            && lhs.showsLiveProgress == rhs.showsLiveProgress
-            && lhs.runningMetrics == rhs.runningMetrics
+        lhs.item == rhs.item && lhs.isSelected == rhs.isSelected
     }
 
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
             statusIcon
             SegmentCatalogRowLines(
-                chapter: item.chapter,
                 idx: item.idx,
-                suffix: item.outlineLabel,
+                title: item.title,
                 summaryPreview: item.summaryPreview,
-                bulletLabelsLine: item.bulletLabelsLine,
-                showsLiveProgress: showsLiveProgress,
-                runningMetrics: runningMetrics
+                bulletLabelsLine: item.bulletLabelsLine
             )
         }
         .padding(.vertical, 8)

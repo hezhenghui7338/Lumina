@@ -5,7 +5,6 @@ struct SegmentSidebarView: View {
     let selectedIdx: Int?
     let isSelectionMode: Bool
     let checkedIndices: Set<Int>
-    let runningMetrics: [Int: SegmentRunningMetrics]
     let segmentSwitchDuration: TimeInterval
     var onSelect: (Int) -> Void
     var onToggleCheck: (Int) -> Void
@@ -49,7 +48,6 @@ struct SegmentSidebarView: View {
     @ViewBuilder
     private func row(for item: SidebarSegmentItem) -> some View {
         let isSelected = selectedIdx == item.idx
-        let showsLiveProgress = isSelected && item.summaryStatus == "running"
         let rowContent = HStack(alignment: .top, spacing: 0) {
             if isSelectionMode {
                 Toggle(
@@ -72,9 +70,7 @@ struct SegmentSidebarView: View {
 
             SegmentSidebarRowView(
                 item: item,
-                isSelected: isSelected,
-                showsLiveProgress: showsLiveProgress,
-                runningMetrics: runningMetrics[item.idx]
+                isSelected: isSelected
             )
             .equatable()
         }

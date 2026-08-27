@@ -24,11 +24,17 @@ from lumina_core.chunker.embeddings import RuleBoundaryScorer
 from lumina_core.chunker.markers import (
     PAGE_MARKER,
     bare_chapter_title,
+    clean_structure_title,
+    lumina_chapter_label,
     match_bare_chapter,
     may_be_hash_heading_line,
 )
 from lumina_core.chunker.semantic import PairScorer, adaptive_merge, atomize_text
-from lumina_core.chunker.tree import DocumentNode, build_document_tree, chapter_path_at
+from lumina_core.chunker.tree import (
+    DocumentNode,
+    build_document_tree,
+    heading_path_at,
+)
 
 
 @dataclass(frozen=True)
@@ -38,6 +44,7 @@ class ChunkSegment:
     start_offset: int
     end_offset: int
     chapter: str | None = None
+    heading_path: tuple[str, ...] = ()
     page_range: str | None = None
 
 
@@ -181,14 +188,43 @@ def _make_segment(
     markers: TextMarkers | None = None,
 ) -> ChunkSegment:
     resolved = markers or index_text_markers(text)
+    path = _heading_path_at(text, start, tree=tree, markers=resolved)
     return ChunkSegment(
         index=idx,
         raw_text=text[start:end],
         start_offset=start,
         end_offset=end,
-        chapter=_chapter_at(text, start, tree=tree, markers=resolved),
+        chapter=lumina_chapter_label(" · ".join(path)) if path else None,
+        heading_path=path,
         page_range=_page_range_in(text, start, end, markers=resolved),
     )
+
+
+def _heading_path_at(
+    text: str,
+    offset: int,
+    tree: DocumentNode | None = None,
+    markers: TextMarkers | None = None,
+) -> tuple[str, ...]:
+    resolved_tree = tree or build_document_tree(text)
+    path = heading_path_at(resolved_tree, offset)
+    if path:
+        cleaned = tuple(
+            title
+            for title in (clean_structure_title(part) for part in path[:2])
+            if title
+        )
+        if cleaned:
+            return cleaned
+
+    resolved = markers or index_text_markers(text)
+    if not resolved.chapter_offsets:
+        return ()
+    index = bisect.bisect_right(resolved.chapter_offsets, offset) - 1
+    if index < 0:
+        return ()
+    title = clean_structure_title(resolved.chapter_titles[index])
+    return (title,) if title else ()
 
 
 def _chapter_at(
@@ -198,19 +234,10 @@ def _chapter_at(
     markers: TextMarkers | None = None,
 ) -> str | None:
     """Extract chapter path from the structure tree, falling back to markers."""
-    resolved_tree = tree or build_document_tree(text)
-    path = chapter_path_at(resolved_tree, offset)
-    if path:
-        return path if path.startswith("§") else f"§{path}"
-
-    resolved = markers or index_text_markers(text)
-    if not resolved.chapter_offsets:
+    path = _heading_path_at(text, offset, tree=tree, markers=markers)
+    if not path:
         return None
-    index = bisect.bisect_right(resolved.chapter_offsets, offset) - 1
-    if index < 0:
-        return None
-    title = resolved.chapter_titles[index]
-    return title or None
+    return lumina_chapter_label(" · ".join(path))
 
 
 def _page_range_in(

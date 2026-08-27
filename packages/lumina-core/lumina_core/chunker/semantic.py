@@ -9,6 +9,7 @@ from typing import Protocol
 
 from lumina_core.chunker.coop import GilYielder, LARGE_ATOM_EMBED_LIMIT, iter_text_lines
 from lumina_core.chunker.markers import (
+    clean_structure_title,
     is_hard_heading_line,
     is_hash_heading_line,
     is_page_line,
@@ -71,6 +72,8 @@ _CLASSICAL_TERMS = re.compile(
 _MODERN_TERMS = re.compile(r"我们|你们|他们|这个|那个|因为|所以|但是|已经|可以|进行|问题")
 _STYLE_SAMPLE_CHARS = 800
 SEGMENT_MIN_CHARS = 500
+SEGMENT_HARD_MIN_CHARS = 200
+_CHAPTER_ORDINAL = re.compile(r"第[零一二三四五六七八九十百千\d]+[章节篇回]")
 
 
 def _segment_floor(min_chars: int, max_chars: int) -> int:
@@ -253,6 +256,7 @@ def adaptive_merge(
     group_end = atoms[0].end
     effective_size = _information_size(atoms[0])
     group_style = atoms[0].style
+    group_chapter_key = _body_chapter_key(atoms[0])
 
     for i, atom in enumerate(atoms[1:], start=1):
         boundary = atom.boundary_before
@@ -268,8 +272,15 @@ def adaptive_merge(
         section_break = boundary >= BoundaryStrength.STRONG and atom.style is TextStyle.HEADING
         chapter_hard = boundary is BoundaryStrength.HARD
         chapter_like = _bodymatter_chapter_atom(atom)
+        incoming_key = _body_chapter_key(atom)
+        same_chapter_heading = (
+            incoming_key is not None
+            and group_chapter_key is not None
+            and incoming_key == group_chapter_key
+        )
+        new_chapter = (chapter_hard or chapter_like) and not same_chapter_heading
         role_hard = role_families_differ(atoms[i - 1].role, atom.role)
-        must_cut = chapter_hard or chapter_like or role_hard or next_length > max_chars
+        must_cut = new_chapter or role_hard or next_length > max_chars
         group_chars = group_end - group_start
         in_soft_window = group_chars >= floor
         should_cut = must_cut
@@ -292,18 +303,18 @@ def adaptive_merge(
             should_cut = True
 
         # A heading owns its first body block unless the model hard limit makes that impossible.
+        # Duplicate same-chapter titles (## [§第一章] + 第一章 …) stay with that body.
         if (
-            boundary is BoundaryStrength.FORBIDDEN
+            (boundary is BoundaryStrength.FORBIDDEN or same_chapter_heading)
             and next_length <= max_chars
             and not role_hard
-            and not chapter_like
+            and not new_chapter
         ):
             should_cut = False
         # Do not swallow the next chapter/role to fill the floor.
         if (
             not role_hard
-            and not chapter_hard
-            and not chapter_like
+            and not new_chapter
             and group_chars < floor
             and next_length <= max_chars
             and not (
@@ -317,9 +328,12 @@ def adaptive_merge(
             group_start = atom.start
             effective_size = 0.0
             group_style = atom.style
+            group_chapter_key = incoming_key
 
         group_end = atom.end
         effective_size += _information_size(atom)
+        if incoming_key is not None:
+            group_chapter_key = incoming_key
         if group_style in (TextStyle.HEADING, TextStyle.PROSE):
             group_style = atom.style if atom.style in (TextStyle.CLASSICAL, TextStyle.POETRY) else group_style
         coop.bump(atom.end - atom.start)
@@ -375,26 +389,89 @@ def _bodymatter_chapter_atom(atom: TextAtom) -> bool:
     )
 
 
-def _unmergeable_starts(atoms: list[TextAtom]) -> set[int]:
-    """Starts that must not be swallowed to fill the floor.
+def _normalize_chapter_key(title: str) -> str:
+    stripped = clean_structure_title(title)
+    match = _CHAPTER_ORDINAL.search(stripped)
+    if match:
+        return match.group(0)
+    return stripped
 
-    Role-family changes always win. HARD headings of bodymatter stay
-    unmergeable so a short chapter cannot eat the next one. Same-family
-    front/back HARD fragments (版权 + 献词) may still pack together.
-    """
-    starts = set(_role_hard_starts(atoms))
-    for index, atom in enumerate(atoms):
-        if index == 0:
+
+def _body_chapter_key(atom: TextAtom) -> str | None:
+    first = _atom_first_line(atom)
+    if not first or is_page_line(first):
+        return None
+    if role_family(atom.role) != "body":
+        return None
+    parsed = parse_heading_line(first)
+    if parsed is None or parsed[0] > 1:
+        return None
+    return _normalize_chapter_key(parsed[1])
+
+
+def _atom_at_offset(atoms: list[TextAtom], offset: int) -> TextAtom | None:
+    for atom in atoms:
+        if atom.start == offset:
+            return atom
+        if atom.start < offset < atom.end:
+            return atom
+    return None
+
+
+def _span_chapter_key(atoms: list[TextAtom], start: int, end: int) -> str | None:
+    for atom in atoms:
+        if atom.end <= start:
             continue
-        previous = atoms[index - 1]
-        body_involved = (
-            role_family(atom.role) == "body" or role_family(previous.role) == "body"
-        )
-        if atom.boundary_before is BoundaryStrength.HARD and body_involved:
+        if atom.start >= end:
+            break
+        key = _body_chapter_key(atom)
+        if key is not None:
+            return key
+    return None
+
+
+def _span_opens_body_chapter(atoms: list[TextAtom], start: int) -> bool:
+    atom = _atom_at_offset(atoms, start)
+    return atom is not None and _body_chapter_key(atom) is not None
+
+
+def _cross_chapter_starts(atoms: list[TextAtom]) -> set[int]:
+    """Role-family changes and a *new* body chapter (not duplicate 第N章 shells)."""
+    starts = set(_role_hard_starts(atoms))
+    last_key: str | None = None
+    first_start = atoms[0].start if atoms else 0
+    for atom in atoms:
+        key = _body_chapter_key(atom)
+        if key is None:
+            continue
+        if last_key is None:
+            if atom.start > first_start:
+                starts.add(atom.start)
+        elif key != last_key:
             starts.add(atom.start)
-        elif _bodymatter_chapter_atom(atom):
-            starts.add(atom.start)
+        last_key = key
     return starts
+
+
+def _blocks_same_chapter_merge(
+    atoms: list[TextAtom],
+    role_hard: set[int],
+    later_start: int,
+    earlier: tuple[int, int],
+) -> bool:
+    """True if joining `later_start` onto `earlier` would cross role or chapter."""
+    if later_start in role_hard:
+        return True
+    later_atom = _atom_at_offset(atoms, later_start)
+    if later_atom is None:
+        return False
+    later_key = _body_chapter_key(later_atom)
+    if later_key is None:
+        return False
+    earlier_key = _span_chapter_key(atoms, earlier[0], earlier[1])
+    if earlier_key is None:
+        return True
+    return later_key != earlier_key
 
 
 def _complete_paragraph_starts(atoms: list[TextAtom]) -> set[int]:
@@ -661,7 +738,7 @@ def _merge_noise_fragments(
     """Pack TOC/metadata crumbs first, then rebalance leftovers to min_chars."""
     if len(spans) < 2:
         return spans
-    hard_starts = _unmergeable_starts(atoms)
+    hard_starts = _cross_chapter_starts(atoms)
     packed = _pack_synthetic_fragments(
         spans,
         atoms,
@@ -687,6 +764,7 @@ def _pack_synthetic_fragments(
     min_chars: int,
 ) -> list[tuple[int, int]]:
     tiny_limit = min(120, max(24, min_chars // 10))
+    role_hard = _role_hard_starts(atoms)
     out: list[tuple[int, int]] = []
     for start, end in spans:
         length = end - start
@@ -696,6 +774,15 @@ def _pack_synthetic_fragments(
             if start <= atom.start < end
         )
         follows_toc = bool(out) and _span_has_toc(atoms, out[-1][0], out[-1][1])
+        if (
+            out
+            and (out[-1][1] - out[-1][0]) < SEGMENT_HARD_MIN_CHARS
+            and end - out[-1][0] <= max_chars
+            and not _blocks_same_chapter_merge(atoms, role_hard, start, out[-1])
+        ):
+            previous_start, _ = out[-1]
+            out[-1] = (previous_start, end)
+            continue
         packable = start not in hard_starts and (
             (synthetic_metadata and length < tiny_limit)
             or (_span_has_toc(atoms, start, end) and length < min_chars)
@@ -754,12 +841,14 @@ def _enforce_minimum_spans(
     max_chars: int,
     min_chars: int,
 ) -> list[tuple[int, int]]:
-    """Merge or rebalance tails that fall below the fragment floor."""
+    """Merge heading shells to ≥200 chars and rebalance tails below the fragment floor."""
     packer_floor = _segment_floor(min_chars, max_chars)
     fragment_floor = _fragment_floor(min_chars, max_chars)
-    if text_length < fragment_floor or len(spans) < 2:
+    hard_min = min(SEGMENT_HARD_MIN_CHARS, max_chars)
+    if len(spans) < 2 or text_length < hard_min:
         return spans
-    hard_starts = _unmergeable_starts(atoms)
+    role_hard = _role_hard_starts(atoms)
+    hard_starts = _cross_chapter_starts(atoms)
     atom_starts = [atom.start for atom in atoms]
 
     out = list(spans)
@@ -767,14 +856,50 @@ def _enforce_minimum_spans(
     while i < len(out):
         start, end = out[i]
         floor = packer_floor if _span_has_toc(atoms, start, end) else fragment_floor
-        if end - start >= floor:
+        length = end - start
+        needs_hard = length < hard_min
+        needs_fragment = length < floor
+        if not needs_hard and not needs_fragment:
             i += 1
             continue
 
-        neighbor = i - 1 if i > 0 else i + 1
+        opens_chapter = _span_opens_body_chapter(atoms, start)
+        neighbor: int | None = None
+        if needs_hard and opens_chapter:
+            nxt = i + 1
+            if nxt < len(out) and not _blocks_same_chapter_merge(
+                atoms, role_hard, out[nxt][0], (start, end)
+            ):
+                neighbor = nxt
+            else:
+                i += 1
+                continue
+        else:
+            candidate = i - 1 if i > 0 else i + 1
+            if candidate < 0 or candidate >= len(out):
+                i += 1
+                continue
+            left_index, right_index = sorted((i, candidate))
+            later_start = out[right_index][0]
+            if _blocks_same_chapter_merge(atoms, role_hard, later_start, out[left_index]):
+                other = i + 1 if candidate == i - 1 else i - 1
+                if 0 <= other < len(out):
+                    other_left, other_right = sorted((i, other))
+                    if not _blocks_same_chapter_merge(
+                        atoms, role_hard, out[other_right][0], out[other_left]
+                    ):
+                        neighbor = other
+                if neighbor is None:
+                    i += 1
+                    continue
+            else:
+                neighbor = candidate
+
         left_index, right_index = sorted((i, neighbor))
         later_start = out[right_index][0]
-        if later_start in hard_starts:
+        if later_start in hard_starts and _blocks_same_chapter_merge(
+            atoms, role_hard, later_start, out[left_index]
+        ):
             i += 1
             continue
         combined_start = out[left_index][0]
@@ -790,6 +915,7 @@ def _enforce_minimum_spans(
         if (
             original_boundary in paragraph_starts
             and not _span_has_toc(atoms, combined_start, combined_end)
+            and not (needs_hard and opens_chapter)
         ):
             # A whole natural paragraph that does not fit beside its neighbor
             # stays whole, even if one side is below the floor.
@@ -835,10 +961,25 @@ def _enforce_minimum_spans(
             if part_count <= expanded_length // floor:
                 break
             next_right = expanded_right + 1
-            can_expand_right = (
-                next_right < len(out) and out[next_right][0] not in hard_starts
+            can_expand_left = (
+                expanded_left > 0
+                and not _blocks_same_chapter_merge(
+                    atoms,
+                    role_hard,
+                    out[expanded_left][0],
+                    out[expanded_left - 1],
+                )
             )
-            if expanded_left > 0:
+            can_expand_right = (
+                next_right < len(out)
+                and not _blocks_same_chapter_merge(
+                    atoms,
+                    role_hard,
+                    out[next_right][0],
+                    (out[expanded_left][0], out[expanded_right][1]),
+                )
+            )
+            if can_expand_left:
                 expanded_left -= 1
             elif can_expand_right:
                 expanded_right += 1

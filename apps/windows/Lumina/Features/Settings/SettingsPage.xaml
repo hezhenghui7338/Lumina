@@ -72,7 +72,7 @@
                 <TextBlock x:Name="OcrStatusText" VerticalAlignment="Center" TextWrapping="WrapWholeWords"/>
             </StackPanel>
 
-            <TextBlock Text="模型资源池" FontSize="18" FontWeight="SemiBold" Margin="0,8,0,0"/>
+            <TextBlock x:Name="ApiResourcesHeader" Text="模型资源池" FontSize="18" FontWeight="SemiBold" Margin="0,8,0,0"/>
             <TextBlock Text="「测上下文」检查多段拼在一起后，模型会不会丢掉最后几段。按仍能理解的长度取 80%，上限 3500 字，保存设置后写入分段目标。"
                        FontSize="12" TextWrapping="WrapWholeWords"
                        Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
@@ -177,7 +177,7 @@
 
             <TextBlock Text="关于" FontSize="18" FontWeight="SemiBold" Margin="0,8,0,0"/>
             <TextBlock Text="Lumina for Windows · 与 macOS 功能对等（Win 惯用交互）" TextWrapping="WrapWholeWords"/>
-
+            <Button Content="使用指南" Click="UsageGuide_Click" HorizontalAlignment="Left"/>
             <Button Content="保存" Style="{StaticResource AccentButtonStyle}"
                     Click="Save_Click" HorizontalAlignment="Left" Margin="0,12,0,24"/>
         </StackPanel>

@@ -28,6 +28,11 @@ struct LuminaApp: App {
                 }
                 .keyboardShortcut("o", modifiers: .command)
             }
+            CommandGroup(replacing: .help) {
+                Button("Lumina 使用指南") {
+                    NotificationCenter.default.post(name: .luminaOpenUsageGuide, object: nil)
+                }
+            }
         }
     }
 }
