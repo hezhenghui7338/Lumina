@@ -189,6 +189,9 @@ _SEGMENT_COLUMNS = (
     ("char_count", "INTEGER"),
     ("summary_duration_s", "REAL"),
     ("summary_llm_attempts", "INTEGER"),
+    # Optional catalog cache; always decoded to a JSON array (never raw TEXT) in API.
+    ("summary_preview", "TEXT"),
+    ("bullet_labels", "TEXT"),
 )
 
 _NOTE_COLUMNS = (("quote", "TEXT"),)

@@ -15,7 +15,7 @@ from pydantic_settings import BaseSettings
 
 # App / engine identity. Must match pyproject version and desktop marketing versions.
 # Clients replace a leftover sidecar when this disagrees, even if CHUNKER_VERSION matches.
-CORE_VERSION = "1.0.1"
+CORE_VERSION = "1.0.2"
 # Segmentation algorithm id only. Do not use this as the "engine is current" signal.
 CHUNKER_VERSION = "15"
 DOCUMENT_MAP_TIMEOUT_SECONDS = float(

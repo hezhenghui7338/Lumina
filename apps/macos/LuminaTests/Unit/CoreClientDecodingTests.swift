@@ -436,6 +436,23 @@ final class CoreClientDecodingTests: XCTestCase {
         XCTAssertEqual(segment.bullet_labels, ["邻里", "赴考"])
     }
 
+    func testSegmentRow_rejectsBulletLabelsAsJSONString() {
+        // API contract: GET .../segments/{idx} must emit an array, never DB TEXT.
+        // A string here makes getSegment decode fail → UI「原文加载失败」.
+        let json = """
+        {
+          "id": "s1",
+          "idx": 0,
+          "summary_status": "ready",
+          "raw_text": "hello",
+          "bullet_labels": "[\\"邻里\\"]"
+        }
+        """
+        XCTAssertThrowsError(
+            try JSONDecoder().decode(SegmentRow.self, from: json.data(using: .utf8)!)
+        )
+    }
+
     func testSegmentRow_decodesSummaryMetrics() throws {
         let json = """
         {

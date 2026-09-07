@@ -287,8 +287,25 @@ final class ReaderChromeClickArchitectureTests: XCTestCase {
             chromeBarBody.components(separatedBy: ".readerChromeTextAction()").count - 1
         XCTAssertEqual(
             textActionPrefixHits,
-            0,
-            "摘要 / 分段 popover rows and 导出 are not chrome text actions"
+            1,
+            "only the center book title is a chrome text action; icon clusters stay icon-styled"
+        )
+        XCTAssertTrue(
+            chromeBarBody.contains("displayBookTitle"),
+            "the top bar must show the current book title"
+        )
+        XCTAssertTrue(
+            chromeBarBody.contains("lineLimit(1)"),
+            "long book titles must truncate on one line"
+        )
+        XCTAssertTrue(
+            chromeBarBody.contains("ReaderChromeBarMetrics.titleMaxWidth"),
+            "the title must share a capped width so side icons stay usable"
+        )
+        XCTAssertEqual(
+            chromeBarBody.components(separatedBy: ".help(\"返回书架\")").count - 1,
+            2,
+            "back chevron and book title are both return-to-bookshelf entries"
         )
         XCTAssertFalse(
             chromeBarBody.contains(".readerChromeTextActionLook()"),

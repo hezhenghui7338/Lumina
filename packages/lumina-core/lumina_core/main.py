@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -22,8 +23,17 @@ async def lifespan(app: FastAPI):
     from lumina_core.api.routes import _wire_job_events
 
     _wire_job_events(state)
-    await state.job_queue.recover_on_startup()
+    # E2E-BOOT-02e: /health must answer before recover finishes. A 180-book
+    # library can spend minutes in recover; awaiting it here makes the client
+    # time out, kill the process, and the next launch hits database is locked.
+    recover_task = asyncio.create_task(state.job_queue.recover_on_startup())
     yield
+    if not recover_task.done():
+        recover_task.cancel()
+        try:
+            await recover_task
+        except asyncio.CancelledError:
+            pass
     await state.job_queue.shutdown()
     await state.router.aclose()
 

@@ -261,6 +261,15 @@ def test_list_segments_includes_preview_without_summary_json(client):
     assert segs[0]["label"] == "邻里虽敬"
     assert segs[0]["bullet_labels"] == ["邻里"]
 
+    # Detail must decode bullet_labels to a JSON array (Swift SegmentRow), not DB TEXT.
+    with conn:
+        conn.execute(
+            "UPDATE segments SET bullet_labels = ? WHERE id = ?",
+            ('["邻里"]', "sp"),
+        )
+    detail = client.get("/books/bp/segments/0").json()
+    assert detail["bullet_labels"] == ["邻里"]
+    assert not isinstance(detail["bullet_labels"], str)
 
 def test_list_catalog_heading_path_and_legacy_chapter_fallback(tmp_path):
     conn = init_db(tmp_path / "heading-path.db")

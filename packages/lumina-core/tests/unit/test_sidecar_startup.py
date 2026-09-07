@@ -172,25 +172,47 @@ def test_release_smoke_asserts_health_chunker_version():
         raise AssertionError("stale core_version must fail release smoke")
 
 
-def test_e2e_boot_02e_health_during_recover_on_startup(client):
+def test_e2e_boot_02e_health_during_recover_on_startup(tmp_path, monkeypatch):
     """E2E-BOOT-02e: recover_on_startup must not block /health."""
-    state = client.app.state.lumina
-    health_during: list[int] = []
+    from lumina_core.jobs.queue import JobQueue
 
-    async def slow_recover() -> None:
-        await asyncio.sleep(0.3)
-        await state.job_queue.recover_on_startup()
+    monkeypatch.setenv("LUMINA_DATA_DIR", str(tmp_path))
+    gate = threading.Event()
 
-    def worker() -> None:
-        asyncio.run(slow_recover())
+    async def blocking_recover(self) -> None:
+        while not gate.is_set():
+            await asyncio.sleep(0.05)
 
-    thread = threading.Thread(target=worker)
+    monkeypatch.setattr(JobQueue, "recover_on_startup", blocking_recover)
+    router = MockModelRouter(responses={})
+    app = create_app(Settings(data_dir=tmp_path))
+    app.state.lumina.router = router
+    app.state.lumina.job_queue.router = router
+    set_router(router)
+
+    entered = threading.Event()
+    statuses: list[int] = []
+    errors: list[BaseException] = []
+
+    def run_client() -> None:
+        try:
+            with TestClient(app) as client:
+                entered.set()
+                statuses.append(client.get("/health").status_code)
+                gate.set()
+        except BaseException as exc:
+            errors.append(exc)
+            gate.set()
+
+    thread = threading.Thread(target=run_client, daemon=True)
     thread.start()
-    time.sleep(0.05)
-    health_during.append(client.get("/health").status_code)
-    thread.join(timeout=10)
+    if not entered.wait(timeout=3):
+        gate.set()
+        pytest.fail("lifespan blocked on recover_on_startup; /health never became reachable")
+    thread.join(timeout=5)
     assert thread.is_alive() is False
-    assert health_during == [200]
+    assert errors == []
+    assert statuses == [200]
 
 
 def test_e2e_priv_01_settings_default_localhost():

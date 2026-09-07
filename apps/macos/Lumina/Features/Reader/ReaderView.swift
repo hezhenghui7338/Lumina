@@ -567,6 +567,26 @@ struct ReaderView: View {
 
             Spacer(minLength: 8)
 
+            if !viewModel.displayBookTitle.isEmpty {
+                Button {
+                    Task {
+                        await viewModel.flushProgressSave()
+                        onReturnToBookshelf()
+                    }
+                } label: {
+                    Text(viewModel.displayBookTitle)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                        .frame(maxWidth: ReaderChromeBarMetrics.titleMaxWidth, alignment: .center)
+                }
+                .readerChromeTextAction()
+                .layoutPriority(-1)
+                .help("返回书架")
+                .accessibilityLabel("返回书架")
+
+                Spacer(minLength: 8)
+            }
+
             if librarySummarizeOverviewActive {
                 readerSummarizeActivityChip
             }
@@ -2440,7 +2460,7 @@ final class ReaderViewModel: ObservableObject {
     private var restoreSettleTask: Task<Void, Never>?
     private var bookLanguage: String?
     private var bookTargetLanguage: String?
-    private var bookTitle: String?
+    @Published private(set) var bookTitle: String?
     private var globalTargetLanguage = "zh-CN"
     private var bookId = ""
     private var eventTask: Task<Void, Never>?
@@ -3370,6 +3390,11 @@ final class ReaderViewModel: ObservableObject {
 
     var exportBookTitle: String {
         bookTitle ?? "summary"
+    }
+
+    /// Current book title for the reader chrome; empty until the book loads.
+    var displayBookTitle: String {
+        bookTitle?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
     }
 
     func fetchExportMarkdown(

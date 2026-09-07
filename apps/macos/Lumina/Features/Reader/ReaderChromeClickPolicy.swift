@@ -24,6 +24,8 @@ enum ReaderChromeBarMetrics {
     static let labelWeight: Font.Weight = .regular
     static let labelFont: Font = .system(size: labelSize, weight: labelWeight)
     static let modePickerWidth: CGFloat = 140
+    /// Center book title; long names truncate. Keeps side icon clusters usable.
+    static let titleMaxWidth: CGFloat = 220
 }
 
 /// Bottom overlays share one stack from the window edge: function bar, then

@@ -58,6 +58,15 @@ macOS 主界面（Windows 功能对等，交互为 WinUI 惯用导航）。
 
 ## 最近更新
 
+### v1.0.2 — 启动不卡死、原文契约与顶栏书名
+
+相对 v1.0.1 的主要变化：
+
+- **启动不卡死**：大书库开机时 `recover_on_startup` 不再阻塞 lifespan；`/health` 可先响应，避免客户端超时杀进程后连环 `database is locked`
+- **段详情契约**：`GET .../segments/{idx}` 的 `bullet_labels` 始终为 JSON 数组（不再把库内 TEXT 原样返回），修复切换原文时「原文加载失败」
+- **阅读顶栏书名**：中间显示当前书名（长名单行省略）；点击返回书架，与左侧书架入口并存（v1.0 仅 macOS）
+- **手动调界**：点击只预览新分界，底栏「保存」才落库并重新摘要这两段
+
 ### v1.0.1 — 引导、段列表结构树与分段更稳
 
 相对 v1.0 的主要变化：
@@ -310,7 +319,7 @@ just test-release  # 发布门禁：纯 mock 并行（~20s，与 PR 等价）
 **推荐：GitHub Actions（无需本机 Xcode）**
 
 1. 打开仓库 **Actions → Release → Run workflow**
-2. 输入版本号（如 `1.0.1`）运行
+2. 输入版本号（如 `1.0.2`）运行
 3. 在 Artifacts 或 tag Release 中下载 DMG
 
 **本机构建（需与 macOS 版本匹配的 Xcode）**
@@ -320,13 +329,13 @@ macOS 15 用户：**不要**从 App Store 装最新 Xcode（可能要求 macOS 2
 ```bash
 ./scripts/build-release.sh
 # 会先跑 just test-release 等价测试，通过后才打包
-# 产出：dist/Lumina-1.0.1-macOS.dmg 与 .zip
+# 产出：dist/Lumina-1.0.2-macOS.dmg 与 .zip
 ```
 
 打 tag 推送后会自动构建并上传到 Release：
 
 ```bash
-git tag v1.0.1 && git push origin v1.0.1
+git tag v1.0.2 && git push origin v1.0.2
 ```
 
 ### 文档

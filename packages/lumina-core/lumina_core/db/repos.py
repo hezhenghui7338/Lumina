@@ -430,6 +430,24 @@ def _segment_insert_row(seg: dict[str, Any]) -> tuple[Any, ...]:
     )
 
 
+def _decode_bullet_labels(raw: Any) -> list[str] | None:
+    """DB may store JSON text; clients expect a string array (or null)."""
+    if raw is None:
+        return None
+    if isinstance(raw, list):
+        labels = [str(x).strip() for x in raw if str(x).strip()]
+        return labels or None
+    if isinstance(raw, str) and raw.strip():
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            return None
+        if isinstance(parsed, list):
+            labels = [str(x).strip() for x in parsed if str(x).strip()]
+            return labels or None
+    return None
+
+
 def _segment_public(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
     item = dict(row)
     if "chapter" in item:
@@ -438,6 +456,10 @@ def _segment_public(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
         item["heading_path"] = decode_heading_path(
             item.get("heading_path"), chapter=item.get("chapter")
         )
+    # SELECT * may include legacy TEXT cache columns; never emit a JSON string
+    # for bullet_labels — Swift/Windows SegmentRow decode as [String]?.
+    if "bullet_labels" in item:
+        item["bullet_labels"] = _decode_bullet_labels(item.get("bullet_labels"))
     return item
 
 
