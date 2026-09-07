@@ -82,6 +82,12 @@ public static class LocalPrefs
         set { _data.LibrarySort = value; Save(); }
     }
 
+    public static string LibrarySortOrder
+    {
+        get => _data.LibrarySortOrder ?? "";
+        set { _data.LibrarySortOrder = value; Save(); }
+    }
+
     public static bool LibraryGridMode
     {
         get => _data.LibraryGridMode;
@@ -216,6 +222,7 @@ public static class LocalPrefs
         public string LibraryCategory { get; set; } = "all";
         public bool LibraryFavoriteOnly { get; set; }
         public string LibrarySort { get; set; } = "recent";
+        public string LibrarySortOrder { get; set; } = "";
         public bool LibraryGridMode { get; set; } = true;
         public Dictionary<string, bool> ShowRawByBook { get; set; } = new();
         public Dictionary<string, ProgressPref> ReadingProgressByBook { get; set; } = new();

@@ -733,6 +733,25 @@ enum LibrarySort: String, CaseIterable, Identifiable {
     }
 
     var queryValue: String { rawValue }
+
+    /// Title defaults to A→Z; every other field defaults to high/new/favorite first.
+    var defaultOrder: LibrarySortOrder {
+        self == .title ? .ascending : .descending
+    }
+}
+
+enum LibrarySortOrder: String, CaseIterable, Identifiable {
+    case ascending = "asc"
+    case descending = "desc"
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .ascending: return "升序"
+        case .descending: return "降序"
+        }
+    }
 }
 
 struct OpenBookResponse: Codable {
@@ -761,6 +780,8 @@ struct SegmentRow: Codable, Identifiable, Hashable {
     var summary_preview: String? = nil
     /// Structured-point titles from GET /segments. Not bullet bodies.
     var bullet_labels: [String]? = nil
+    /// Part/chapter titles for the catalog tree. At most two items.
+    var heading_path: [String]? = nil
 }
 
 struct SegmentBoundaryCandidate: Codable, Hashable {

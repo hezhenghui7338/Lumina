@@ -3,6 +3,10 @@
 UTF-8 succeeding is not proof the file was meant as UTF-8: GBK mis-decoded as
 Latin-1 and re-saved as UTF-8 is still valid UTF-8 (¡¡¡¡Ë«·½…). Never treat
 latin-1 as a successful guess for Chinese prose.
+
+GBK/UTF-8 novels may still contain illegal bytes (converter junk). Strict
+decode of the 64KiB sample then fails the whole book; score replace-decoded
+CJK prose instead, and decode with errors='replace'.
 """
 
 from __future__ import annotations
@@ -41,18 +45,67 @@ def _try_decode(data: bytes, encoding: str) -> str:
     return data.decode(encoding)
 
 
-def _decode_prefix(data: bytes, encoding: str) -> str | None:
+def _decode_prefix(data: bytes, encoding: str, *, errors: str = "strict") -> str | None:
     """Decode a detection sample. A cut mid-character is not a rejection."""
     if not data:
         return ""
     try:
-        decoder = codecs.getincrementaldecoder(encoding)()
+        decoder = codecs.getincrementaldecoder(encoding)(errors)
     except LookupError:
         return None
     try:
         return decoder.decode(data, final=False)
     except (UnicodeDecodeError, UnicodeError):
         return None
+
+
+def _cjk_prose_stats(text: str) -> tuple[int, int, int]:
+    cjk = len(_CJK_RE.findall(text))
+    punct = text.count("。") + text.count("，") + text.count("、")
+    repl = text.count("\ufffd")
+    return cjk, punct, repl
+
+
+def _is_cjk_prose(cjk: int, punct: int) -> bool:
+    return cjk >= 40 and punct >= 2
+
+
+def _lossy_prose_stats(text: str) -> tuple[int, int, int] | None:
+    """Score replace-decoded text. Prefer the first window; fall back to the full prefix."""
+    head = text[:_SAMPLE_CHARS]
+    stats = _cjk_prose_stats(head)
+    if _is_cjk_prose(stats[0], stats[1]):
+        return stats
+    if head != text:
+        stats = _cjk_prose_stats(text)
+        if _is_cjk_prose(stats[0], stats[1]):
+            return stats
+    return None
+
+
+def _lossy_cjk_plan(sample: bytes) -> EncodingPlan | None:
+    """GBK/UTF-8 ebooks often embed binary junk. Strict decode then fails the whole book."""
+    ranked: list[tuple[int, int, int, EncodingPlan]] = []
+    for enc in ("utf-8", "gb18030", "big5"):
+        text = _decode_prefix(sample, enc, errors="replace")
+        if not text:
+            continue
+        stats = _lossy_prose_stats(text)
+        if stats is None:
+            continue
+        cjk, punct, repl = stats
+        ranked.append((punct, cjk, -repl, EncodingPlan(enc, label=enc)))
+    if not ranked:
+        return None
+    ranked.sort(key=lambda item: (item[0], item[1], item[2]), reverse=True)
+    return ranked[0][3]
+
+
+def _scrub_decoded(text: str) -> str:
+    """Drop NULs so SQLite / native strings do not truncate the book."""
+    if "\x00" not in text:
+        return text
+    return text.replace("\x00", "")
 
 
 def _cjk_count(text: str) -> int:
@@ -70,10 +123,8 @@ def _looks_like_gbk_mojibake(text: str) -> bool:
 
 
 def _looks_like_cjk_prose(text: str) -> bool:
-    sample = text[:_SAMPLE_CHARS]
-    cjk = len(_CJK_RE.findall(sample))
-    punct = sample.count("。") + sample.count("，") + sample.count("、")
-    return cjk >= 40 and punct >= 2
+    cjk, punct, _repl = _cjk_prose_stats(text[:_SAMPLE_CHARS])
+    return _is_cjk_prose(cjk, punct)
 
 
 def _recover_sample(text: str) -> str | None:
@@ -174,6 +225,10 @@ def detect_encoding_plan(data: bytes) -> EncodingPlan:
     if big5 is not None:
         return big5
 
+    lossy = _lossy_cjk_plan(sample)
+    if lossy is not None:
+        return lossy
+
     try:
         from charset_normalizer import from_bytes
 
@@ -205,10 +260,10 @@ class IncrementalTextDecoder:
         self.plan = plan
         if plan.recover_gbk_mojibake:
             self._utf8 = codecs.getincrementaldecoder("utf-8")()
-            self._gb = codecs.getincrementaldecoder("gb18030")()
+            self._gb = codecs.getincrementaldecoder("gb18030")("replace")
             self._direct = None
         else:
-            self._direct = codecs.getincrementaldecoder(plan.encoding)()
+            self._direct = codecs.getincrementaldecoder(plan.encoding)("replace")
             self._utf8 = None
             self._gb = None
 
@@ -224,9 +279,9 @@ class IncrementalTextDecoder:
                 raw = moji.encode("latin-1")
             except UnicodeEncodeError:
                 raw = moji.encode("cp1252")
-            return self._gb.decode(raw, final=final)
+            return _scrub_decoded(self._gb.decode(raw, final=final))
         assert self._direct is not None
-        return self._direct.decode(data, final=final)
+        return _scrub_decoded(self._direct.decode(data, final=final))
 
 
 def iter_decoded_file(

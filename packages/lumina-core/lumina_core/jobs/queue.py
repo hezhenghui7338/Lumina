@@ -725,10 +725,20 @@ class JobQueue:
         Ingest/resegment tasks do not survive a process restart, so any
         processing or 0-segment row here is an orphan.
         """
-        self._books_repo.repair_stale_imports(restore_orphaned_resegment=True)
-        for book in self._books_repo.list_books():
+        await self._run_db(
+            lambda: self._books_repo.repair_stale_imports(
+                restore_orphaned_resegment=True
+            )
+        )
+        books = await self._run_db(self._books_repo.list_books)
+        for book in books:
+            if self._shutting_down:
+                return
             book_id = book["id"]
-            if self._books_repo.maybe_mark_summarized(book_id):
+            promoted = await self._run_db(
+                lambda bid=book_id: self._books_repo.maybe_mark_summarized(bid)
+            )
+            if promoted:
                 self._intent_cache[book_id] = "idle"
                 await self._recover_stale_index(book)
                 continue
@@ -1051,7 +1061,10 @@ class JobQueue:
 
     async def _recover_stale_running(self, book_id: str) -> None:
         """Reset running segments with no active worker (crash/restart orphans)."""
-        for seg in self._segments_repo.list_for_book(book_id, include_body=False):
+        segments = await self._run_db(
+            lambda: self._segments_repo.list_for_book(book_id, include_body=False)
+        )
+        for seg in segments:
             if seg["summary_status"] != "running":
                 continue
             if any(
@@ -1061,7 +1074,9 @@ class JobQueue:
                 for item in self._active.values()
             ):
                 continue
-            self._segments_repo.set_status(seg["id"], "pending")
+            await self._run_db(
+                lambda sid=seg["id"]: self._segments_repo.set_status(sid, "pending")
+            )
             await self._emit_segment_event(
                 book_id,
                 {

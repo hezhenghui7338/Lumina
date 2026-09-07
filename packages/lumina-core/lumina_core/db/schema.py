@@ -37,6 +37,7 @@ CREATE TABLE IF NOT EXISTS segments (
   book_id         TEXT NOT NULL REFERENCES books(id) ON DELETE CASCADE,
   idx             INTEGER NOT NULL,
   chapter         TEXT,
+  heading_path    TEXT,
   page_range      TEXT,
   anchor_label    TEXT,
   raw_text        TEXT,
@@ -177,6 +178,7 @@ _BOOK_COLUMNS = (
 
 _SEGMENT_COLUMNS = (
     ("chapter", "TEXT"),
+    ("heading_path", "TEXT"),
     ("page_range", "TEXT"),
     ("summary_json", "TEXT"),
     ("label", "TEXT"),
@@ -187,6 +189,9 @@ _SEGMENT_COLUMNS = (
     ("char_count", "INTEGER"),
     ("summary_duration_s", "REAL"),
     ("summary_llm_attempts", "INTEGER"),
+    # Optional catalog cache; always decoded to a JSON array (never raw TEXT) in API.
+    ("summary_preview", "TEXT"),
+    ("bullet_labels", "TEXT"),
 )
 
 _NOTE_COLUMNS = (("quote", "TEXT"),)

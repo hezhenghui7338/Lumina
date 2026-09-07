@@ -539,9 +539,23 @@ public static class LibrarySorts
         _ => raw,
     };
 
-    public static IReadOnlyList<BookSummary> Sorted(IEnumerable<BookSummary> books, string sort)
+    public const string Asc = "asc";
+    public const string Desc = "desc";
+
+    public static string DefaultOrder(string sort) => sort == Title ? Asc : Desc;
+
+    public static string NormalizeOrder(string? order, string sort)
     {
-        return sort switch
+        if (order == Asc || order == Desc) return order;
+        return DefaultOrder(sort);
+    }
+
+    public static IReadOnlyList<BookSummary> Sorted(
+        IEnumerable<BookSummary> books,
+        string sort,
+        string? order = null)
+    {
+        var list = sort switch
         {
             Added => books.OrderByDescending(b => b.CreatedAt ?? "").ToList(),
             Title => books.OrderBy(b => b.Title, StringComparer.CurrentCultureIgnoreCase).ToList(),
@@ -562,6 +576,35 @@ public static class LibrarySorts
                 .ThenByDescending(b => b.LastOpenedAt ?? "")
                 .ToList(),
         };
+        var resolved = NormalizeOrder(order, sort);
+        if (resolved != DefaultOrder(sort)) list.Reverse();
+        return list;
+    }
+
+    public static IReadOnlyList<BookSummary> PrioritizeSummarizeActivity(
+        IEnumerable<BookSummary> books)
+    {
+        var running = new List<BookSummary>();
+        var queued = new List<BookSummary>();
+        var rest = new List<BookSummary>();
+        foreach (var book in books)
+        {
+            switch (book.SummarizeState)
+            {
+                case "running":
+                    running.Add(book);
+                    break;
+                case "queued":
+                    queued.Add(book);
+                    break;
+                default:
+                    rest.Add(book);
+                    break;
+            }
+        }
+        running.AddRange(queued);
+        running.AddRange(rest);
+        return running;
     }
 }
 
@@ -617,6 +660,7 @@ public sealed class SegmentRow
     public int? SummaryLlmAttempts { get; set; }
     public string? SummaryPreview { get; set; }
     public List<string>? BulletLabels { get; set; }
+    public List<string>? HeadingPath { get; set; }
 
     [JsonIgnore]
     public string DisplayLabel =>
@@ -625,32 +669,41 @@ public sealed class SegmentRow
         $"段 {Idx + 1}";
 
     [JsonIgnore]
-    public string CatalogHeadline
+    public string CatalogTitle
     {
         get
         {
-            var parts = new List<string>();
-            if (!string.IsNullOrWhiteSpace(Chapter)) parts.Add(Chapter.Trim());
-            parts.Add($"段 {Idx + 1}");
-            var suffix = CatalogSuffix;
-            if (!string.IsNullOrWhiteSpace(suffix)) parts.Add(suffix);
-            return string.Join(" · ", parts);
+            if (!string.IsNullOrWhiteSpace(Chapter))
+            {
+                var chapter = Chapter.Trim();
+                while (chapter.Length > 0 && chapter[0] == '§')
+                    chapter = chapter[1..].Trim();
+                while (chapter.Length > 0 && chapter[^1] == '§')
+                    chapter = chapter[..^1].Trim();
+                if (!string.IsNullOrEmpty(chapter)) return chapter;
+            }
+            if (!string.IsNullOrWhiteSpace(Label)) return Label.Trim();
+            return "";
         }
     }
 
     [JsonIgnore]
-    public string CatalogSuffix
+    public string CatalogHeadline
     {
         get
         {
-            if (!string.IsNullOrWhiteSpace(Label)) return Label!;
-            return SummaryStatus switch
-            {
-                "running" => "摘要生成中…",
-                "pending" => "等待摘要…",
-                "failed" or "error" => "摘要失败",
-                _ => "",
-            };
+            var title = CatalogTitle;
+            return string.IsNullOrEmpty(title) ? $"段 {Idx + 1}" : $"段 {Idx + 1} · {title}";
+        }
+    }
+
+    [JsonIgnore]
+    public string CatalogHeadlineGrouped
+    {
+        get
+        {
+            if (!string.IsNullOrWhiteSpace(Label)) return $"段 {Idx + 1} · {Label.Trim()}";
+            return $"段 {Idx + 1}";
         }
     }
 

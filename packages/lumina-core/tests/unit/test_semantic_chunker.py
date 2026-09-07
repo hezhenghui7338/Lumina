@@ -100,6 +100,63 @@ def test_same_role_short_heading_still_reads_until_500_chars():
     assert all(segment.raw_text.strip() != "## [§第一章]" for segment in segments)
 
 
+def test_synthetic_and_bare_chapter_title_pack_with_body():
+    body = "本章先交代地点与人物关系，并补足场景与因果。" * 20
+    text = f"## [§第一章]\n\n第一章 崖高人远\n\n{body}"
+    segments = chunk_text(
+        text,
+        budget=ChunkBudget(target_chars=600, max_chars=900, min_chars=500),
+        scorer=FixedScorer(0.0),
+    )
+    first = segments[0].raw_text
+    assert "## [§第一章]" in first
+    assert "第一章 崖高人远" in first
+    assert "本章先交代" in first
+    assert len(first) >= 200
+    assert all(
+        segment.raw_text.strip() not in {"## [§第一章]", "第一章 崖高人远"}
+        for segment in segments
+    )
+
+
+def test_title_only_chapter_does_not_swallow_next_chapter():
+    sequel = "第二章展开完整的人物地点与事件。" * 30
+    text = f"## [§第一章]\n\n第一章 缘起\n\n## [§第二章]\n\n{sequel}"
+    segments = chunk_text(
+        text,
+        budget=ChunkBudget(target_chars=600, max_chars=900, min_chars=500),
+        scorer=FixedScorer(0.0),
+    )
+    assert len(segments) >= 2
+    assert "第一章 缘起" in segments[0].raw_text
+    assert "第二章展开" not in segments[0].raw_text
+    assert "第二章展开" in segments[1].raw_text
+    assert len(segments[0].raw_text) < 200
+
+
+def test_each_chapter_heading_packs_with_its_own_body():
+    first = "第一章正文补足人物地点与事件背景。" * 20
+    second = "第二章正文补足人物地点与事件背景。" * 20
+    text = (
+        f"## [§第一章]\n\n第一章 山中\n\n{first}\n\n"
+        f"## [§第二章]\n\n第二章 海上\n\n{second}"
+    )
+    segments = chunk_text(
+        text,
+        budget=ChunkBudget(target_chars=600, max_chars=900, min_chars=500),
+        scorer=FixedScorer(0.0),
+    )
+    chapter_one = next(seg for seg in segments if "第一章 山中" in seg.raw_text)
+    chapter_two = next(seg for seg in segments if "第二章 海上" in seg.raw_text)
+    assert "## [§第一章]" in chapter_one.raw_text
+    assert "第一章正文" in chapter_one.raw_text
+    assert "第二章 海上" not in chapter_one.raw_text
+    assert "## [§第二章]" in chapter_two.raw_text
+    assert "第二章正文" in chapter_two.raw_text
+    assert len(chapter_one.raw_text) >= 200
+    assert len(chapter_two.raw_text) >= 200
+
+
 def test_front_matter_fragments_can_merge_with_each_other():
     copyright_page = "本书版权归出版社所有，未经许可不得复制。" * 4
     dedication = "谨以此书献给默默支持我的家人。" * 4

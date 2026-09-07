@@ -42,7 +42,7 @@ Snapshot **不替代** XCUITest：动效时长（≤200ms）仍由 XCUITest `mea
 | `BookCard_light` | 书库卡片 | 封面 + 标题 + 进度条 |
 | `BookCard_light_noCover` | 书库卡片 | 无封面 fallback |
 | `SegmentListRow_states` | 段列表行 | ●当前 / ✓已读 / ◐生成中 / ○未生成 |
-| `SegmentList_chapterGroup` | 章节分组 | 折叠/展开两态 |
+| `SegmentList_chapterGroup` | 段列表结构树 | 2 层标题 + 折叠/展开；无结构平铺 |
 | `SegmentContent_summary` | 段内容 | 三句话 + 要点 + 锚点 |
 | `SegmentContent_originalOnly` | 段内容 | 仅原文（同语言书） |
 | `SegmentContent_bilingual` | 段内容 | 原文+译文对照 |

@@ -21,6 +21,7 @@
     <Compile Include="..\Lumina\Features\Reader\ChatCitationJumpPolicy.cs" Link="ChatCitationJumpPolicy.cs" />
     <Compile Include="..\Lumina\Features\Reader\NeighborPrefetchPolicy.cs" Link="NeighborPrefetchPolicy.cs" />
     <Compile Include="..\Lumina\Features\Reader\SegmentCatalogPolicy.cs" Link="SegmentCatalogPolicy.cs" />
+    <Compile Include="..\Lumina\Features\Reader\SegmentBoundaryOffset.cs" Link="SegmentBoundaryOffset.cs" />
     <Compile Include="..\Lumina\Features\Library\SummarizeActivityPolicy.cs" Link="SummarizeActivityPolicy.cs" />
     <Compile Include="..\Lumina\Features\Library\LibraryImportPolicy.cs" Link="LibraryImportPolicy.cs" />
     <Compile Include="..\Lumina\Features\Library\LibrarySummarizeScope.cs" Link="LibrarySummarizeScope.cs" />
@@ -31,6 +32,8 @@
     <Compile Include="..\Lumina\Features\Shared\ImportConflictPolicy.cs" Link="ImportConflictPolicy.cs" />
     <Compile Include="..\Lumina\Features\Reader\Listen\ListenScript.cs" Link="ListenScript.cs" />
     <Compile Include="..\Lumina\Features\Reader\Listen\ListenAdvancePolicy.cs" Link="ListenAdvancePolicy.cs" />
+    <Compile Include="..\Lumina\Features\Onboarding\OnboardingTourPolicy.cs" Link="OnboardingTourPolicy.cs" />
+    <Compile Include="..\Lumina\Features\Onboarding\UsageGuideCopy.cs" Link="UsageGuideCopy.cs" />
     <Compile Include="..\Lumina\Features\Shared\ExportMarkdownMode.cs" Link="ExportMarkdownMode.cs" />
   </ItemGroup>
 </Project>

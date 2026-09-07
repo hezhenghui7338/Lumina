@@ -15,6 +15,7 @@
 		A1000139 /* SegmentReadingBlock.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000235 /* SegmentReadingBlock.swift */; };
 		A1000275 /* SegmentSidebarModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000274 /* SegmentSidebarModels.swift */; };
 		A1000279 /* SegmentSidebarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000278 /* SegmentSidebarView.swift */; };
+		A10005C1 /* SegmentOutlinePolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10005C0 /* SegmentOutlinePolicy.swift */; };
 		A1000104 /* CoreClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000204 /* CoreClient.swift */; };
 		A1000105 /* SidecarManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000205 /* SidecarManager.swift */; };
 		A1000106 /* DesignSystem.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000206 /* DesignSystem.swift */; };
@@ -29,7 +30,13 @@
 		A1000122 /* BookRow.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000222 /* BookRow.swift */; };
 		A1000123 /* LibraryViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000223 /* LibraryViewModel.swift */; };
 		A1000113 /* ExportSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000213 /* ExportSheet.swift */; };
-		A1000114 /* OnboardingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000214 /* OnboardingView.swift */; };
+		A1000114 /* OnboardingTourController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000214 /* OnboardingTourController.swift */; };
+		A1000581 /* OnboardingTourPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000580 /* OnboardingTourPolicy.swift */; };
+        A1000583 /* OnboardingTourOverlay.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000582 /* OnboardingTourOverlay.swift */; };
+		A10005D1 /* UsageGuideCopy.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10005D0 /* UsageGuideCopy.swift */; };
+		A10005D3 /* UsageGuideView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10005D2 /* UsageGuideView.swift */; };
+		A10005D5 /* UsageGuideCopyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10005D4 /* UsageGuideCopyTests.swift */; };
+		A1000585 /* OnboardingTourPolicyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000584 /* OnboardingTourPolicyTests.swift */; };
 		A1000115 /* OllamaSetupHelper.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000215 /* OllamaSetupHelper.swift */; };
 		A1000117 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A1000218 /* Assets.xcassets */; };
 		A1000130 /* CoreClientDecodingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000225 /* CoreClientDecodingTests.swift */; };
@@ -43,6 +50,7 @@
 		A1000140 /* news_brief_sample.json in Resources */ = {isa = PBXBuildFile; fileRef = A1000234 /* news_brief_sample.json */; };
 		A1000142 /* FollowUpChip.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000237 /* FollowUpChip.swift */; };
 		A1000481 /* SummarizeChevronSplit.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000480 /* SummarizeChevronSplit.swift */; };
+		A1000483 /* ReaderChromeIconChevronSplit.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000482 /* ReaderChromeIconChevronSplit.swift */; };
 		A1000143 /* NewsSummaryMarkdown.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000238 /* NewsSummaryMarkdown.swift */; };
 		A1000144 /* NewsSummaryMarkdownTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000239 /* NewsSummaryMarkdownTests.swift */; };
 		A1000145 /* NewsSourcesSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000240 /* NewsSourcesSettingsView.swift */; };
@@ -63,6 +71,7 @@
 		A1000263 /* SummaryMetricsFormatter.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000273 /* SummaryMetricsFormatter.swift */; };
 		A1000297 /* ChatMetricsFormatter.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000296 /* ChatMetricsFormatter.swift */; };
 		A1000277 /* SegmentSidebarTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000276 /* SegmentSidebarTests.swift */; };
+		A10005C3 /* SegmentListGroupingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10005C2 /* SegmentListGroupingTests.swift */; };
 		A1000281 /* SummaryProgressBanner.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000280 /* SummaryProgressBanner.swift */; };
 		A1000283 /* SelectableTextView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000282 /* SelectableTextView.swift */; };
 		A1000285 /* ReaderSegmentListGeometry.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000284 /* ReaderSegmentListGeometry.swift */; };
@@ -83,6 +92,8 @@
 		A1000324 /* LibraryChromeActionPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000314 /* LibraryChromeActionPolicy.swift */; };
 		A1000325 /* LibraryChromeActionPolicyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000315 /* LibraryChromeActionPolicyTests.swift */; };
 		A1000381 /* SegmentBoundaryEditor.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000380 /* SegmentBoundaryEditor.swift */; };
+		A10005E1 /* SegmentBoundaryOffset.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10005E0 /* SegmentBoundaryOffset.swift */; };
+		A10005E3 /* SegmentBoundaryOffsetTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10005E2 /* SegmentBoundaryOffsetTests.swift */; };
 		A1000395 /* ResegmentBookSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000394 /* ResegmentBookSheet.swift */; };
 		A1000391 /* SummarizeActivityChip.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000390 /* SummarizeActivityChip.swift */; };
 		A1000393 /* SummarizeActivityChipTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000392 /* SummarizeActivityChipTests.swift */; };
@@ -110,6 +121,7 @@
 		A1000235 /* SegmentReadingBlock.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SegmentReadingBlock.swift; sourceTree = "<group>"; };
 		A1000274 /* SegmentSidebarModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SegmentSidebarModels.swift; sourceTree = "<group>"; };
 		A1000278 /* SegmentSidebarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SegmentSidebarView.swift; sourceTree = "<group>"; };
+		A10005C0 /* SegmentOutlinePolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SegmentOutlinePolicy.swift; sourceTree = "<group>"; };
 		A1000204 /* CoreClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoreClient.swift; sourceTree = "<group>"; };
 		A1000205 /* SidecarManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SidecarManager.swift; sourceTree = "<group>"; };
 		A1000206 /* DesignSystem.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignSystem.swift; sourceTree = "<group>"; };
@@ -124,7 +136,13 @@
 		A1000222 /* BookRow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BookRow.swift; sourceTree = "<group>"; };
 		A1000223 /* LibraryViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryViewModel.swift; sourceTree = "<group>"; };
 		A1000213 /* ExportSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExportSheet.swift; sourceTree = "<group>"; };
-		A1000214 /* OnboardingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingView.swift; sourceTree = "<group>"; };
+		A1000214 /* OnboardingTourController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingTourController.swift; sourceTree = "<group>"; };
+		A1000580 /* OnboardingTourPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingTourPolicy.swift; sourceTree = "<group>"; };
+		A1000582 /* OnboardingTourOverlay.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingTourOverlay.swift; sourceTree = "<group>"; };
+		A10005D0 /* UsageGuideCopy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UsageGuideCopy.swift; sourceTree = "<group>"; };
+		A10005D2 /* UsageGuideView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UsageGuideView.swift; sourceTree = "<group>"; };
+		A10005D4 /* UsageGuideCopyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UsageGuideCopyTests.swift; sourceTree = "<group>"; };
+		A1000584 /* OnboardingTourPolicyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingTourPolicyTests.swift; sourceTree = "<group>"; };
 		A1000215 /* OllamaSetupHelper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OllamaSetupHelper.swift; sourceTree = "<group>"; };
 		A1000217 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		A1000218 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
@@ -141,6 +159,7 @@
 		A1000234 /* news_brief_sample.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = news_brief_sample.json; sourceTree = "<group>"; };
 		A1000237 /* FollowUpChip.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FollowUpChip.swift; sourceTree = "<group>"; };
 		A1000480 /* SummarizeChevronSplit.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SummarizeChevronSplit.swift; sourceTree = "<group>"; };
+		A1000482 /* ReaderChromeIconChevronSplit.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderChromeIconChevronSplit.swift; sourceTree = "<group>"; };
 		A1000238 /* NewsSummaryMarkdown.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NewsSummaryMarkdown.swift; sourceTree = "<group>"; };
 		A1000239 /* NewsSummaryMarkdownTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NewsSummaryMarkdownTests.swift; sourceTree = "<group>"; };
 		A1000240 /* NewsSourcesSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NewsSourcesSettingsView.swift; sourceTree = "<group>"; };
@@ -155,6 +174,7 @@
 		A1000249 /* SegmentReadyEventParser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SegmentReadyEventParser.swift; sourceTree = "<group>"; };
 		A1000251 /* SegmentReadyEventTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SegmentReadyEventTests.swift; sourceTree = "<group>"; };
 		A1000276 /* SegmentSidebarTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SegmentSidebarTests.swift; sourceTree = "<group>"; };
+		A10005C2 /* SegmentListGroupingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SegmentListGroupingTests.swift; sourceTree = "<group>"; };
 		A1000252 /* BookMarkdownExporter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BookMarkdownExporter.swift; sourceTree = "<group>"; };
 		A1000270 /* TaskManagerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TaskManagerView.swift; sourceTree = "<group>"; };
 		A1000271 /* TaskRowView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TaskRowView.swift; sourceTree = "<group>"; };
@@ -181,6 +201,8 @@
 		A1000314 /* LibraryChromeActionPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryChromeActionPolicy.swift; sourceTree = "<group>"; };
 		A1000315 /* LibraryChromeActionPolicyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryChromeActionPolicyTests.swift; sourceTree = "<group>"; };
 		A1000380 /* SegmentBoundaryEditor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SegmentBoundaryEditor.swift; sourceTree = "<group>"; };
+		A10005E0 /* SegmentBoundaryOffset.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SegmentBoundaryOffset.swift; sourceTree = "<group>"; };
+		A10005E2 /* SegmentBoundaryOffsetTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SegmentBoundaryOffsetTests.swift; sourceTree = "<group>"; };
 		A1000394 /* ResegmentBookSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ResegmentBookSheet.swift; sourceTree = "<group>"; };
 		A1000390 /* SummarizeActivityChip.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SummarizeActivityChip.swift; sourceTree = "<group>"; };
 		A1000392 /* SummarizeActivityChipTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SummarizeActivityChipTests.swift; sourceTree = "<group>"; };
@@ -288,7 +310,9 @@
 				A1000233 /* LazyParagraphText.swift */,
 				A1000235 /* SegmentReadingBlock.swift */,
 				A1000380 /* SegmentBoundaryEditor.swift */,
+				A10005E0 /* SegmentBoundaryOffset.swift */,
 				A1000274 /* SegmentSidebarModels.swift */,
+				A10005C0 /* SegmentOutlinePolicy.swift */,
 				A1000284 /* ReaderSegmentListGeometry.swift */,
 				A1000410 /* ReaderChromeClickPolicy.swift */,
 				A1000530 /* ReaderOriginalSearch.swift */,
@@ -345,6 +369,7 @@
 			children = (
 				A1000237 /* FollowUpChip.swift */,
 				A1000480 /* SummarizeChevronSplit.swift */,
+				A1000482 /* ReaderChromeIconChevronSplit.swift */,
 				A1000282 /* SelectableTextView.swift */,
 			);
 			path = Shared;
@@ -381,7 +406,11 @@
 		A1000511 /* Onboarding */ = {
 			isa = PBXGroup;
 			children = (
-				A1000214 /* OnboardingView.swift */,
+				A1000214 /* OnboardingTourController.swift */,
+				A1000580 /* OnboardingTourPolicy.swift */,
+				A1000582 /* OnboardingTourOverlay.swift */,
+				A10005D0 /* UsageGuideCopy.swift */,
+				A10005D2 /* UsageGuideView.swift */,
 			);
 			path = Onboarding;
 			sourceTree = "<group>";
@@ -431,9 +460,11 @@
 				A1000248 /* LibraryViewModelMergeTests.swift */,
 				A1000251 /* SegmentReadyEventTests.swift */,
 				A1000276 /* SegmentSidebarTests.swift */,
+				A10005C2 /* SegmentListGroupingTests.swift */,
 				A1000286 /* ReaderSegmentListGeometryTests.swift */,
 				A1000412 /* ReaderChromeClickPolicyTests.swift */,
 				A1000532 /* ReaderOriginalSearchTests.swift */,
+				A10005E2 /* SegmentBoundaryOffsetTests.swift */,
 				A1000542 /* BookCardCoverTests.swift */,
 				A1000294 /* LibrarySidebarVisibilityPolicyTests.swift */,
 				A1000315 /* LibraryChromeActionPolicyTests.swift */,
@@ -444,6 +475,8 @@
 				A1000430 /* NewsSelectionChromeTests.swift */,
 				A1000450 /* ListenScriptTests.swift */,
 				A1000550 /* MarkdownExportModeTests.swift */,
+				A1000584 /* OnboardingTourPolicyTests.swift */,
+				A10005D4 /* UsageGuideCopyTests.swift */,
 			);
 			path = Unit;
 			sourceTree = "<group>";
@@ -595,7 +628,9 @@
 				A1000138 /* LazyParagraphText.swift in Sources */,
 				A1000139 /* SegmentReadingBlock.swift in Sources */,
 				A1000381 /* SegmentBoundaryEditor.swift in Sources */,
+				A10005E1 /* SegmentBoundaryOffset.swift in Sources */,
 				A1000275 /* SegmentSidebarModels.swift in Sources */,
+				A10005C1 /* SegmentOutlinePolicy.swift in Sources */,
 				A1000285 /* ReaderSegmentListGeometry.swift in Sources */,
 				A1000411 /* ReaderChromeClickPolicy.swift in Sources */,
 				A1000531 /* ReaderOriginalSearch.swift in Sources */,
@@ -623,6 +658,7 @@
 				A1000110 /* NewsArticleView.swift in Sources */,
 				A1000142 /* FollowUpChip.swift in Sources */,
 				A1000481 /* SummarizeChevronSplit.swift in Sources */,
+				A1000483 /* ReaderChromeIconChevronSplit.swift in Sources */,
 				A1000283 /* SelectableTextView.swift in Sources */,
 				A1000143 /* NewsSummaryMarkdown.swift in Sources */,
 				A1000154 /* NewsStructuredSummaryView.swift in Sources */,
@@ -647,7 +683,11 @@
 				A1000391 /* SummarizeActivityChip.swift in Sources */,
 				A1000113 /* ExportSheet.swift in Sources */,
 				A1000395 /* ResegmentBookSheet.swift in Sources */,
-				A1000114 /* OnboardingView.swift in Sources */,
+				A1000114 /* OnboardingTourController.swift in Sources */,
+				A1000581 /* OnboardingTourPolicy.swift in Sources */,
+				A1000583 /* OnboardingTourOverlay.swift in Sources */,
+				A10005D1 /* UsageGuideCopy.swift in Sources */,
+				A10005D3 /* UsageGuideView.swift in Sources */,
 				A1000115 /* OllamaSetupHelper.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -664,9 +704,11 @@
 				A1000153 /* LibraryViewModelMergeTests.swift in Sources */,
 				A1000156 /* SegmentReadyEventTests.swift in Sources */,
 				A1000277 /* SegmentSidebarTests.swift in Sources */,
+				A10005C3 /* SegmentListGroupingTests.swift in Sources */,
 				A1000287 /* ReaderSegmentListGeometryTests.swift in Sources */,
 				A1000413 /* ReaderChromeClickPolicyTests.swift in Sources */,
 				A1000533 /* ReaderOriginalSearchTests.swift in Sources */,
+				A10005E3 /* SegmentBoundaryOffsetTests.swift in Sources */,
 				A1000543 /* BookCardCoverTests.swift in Sources */,
 				A1000295 /* LibrarySidebarVisibilityPolicyTests.swift in Sources */,
 				A1000325 /* LibraryChromeActionPolicyTests.swift in Sources */,
@@ -677,6 +719,8 @@
 				A1000431 /* NewsSelectionChromeTests.swift in Sources */,
 				A1000451 /* ListenScriptTests.swift in Sources */,
 				A1000551 /* MarkdownExportModeTests.swift in Sources */,
+				A1000585 /* OnboardingTourPolicyTests.swift in Sources */,
+				A10005D5 /* UsageGuideCopyTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -739,7 +783,7 @@
 				CODE_SIGN_IDENTITY = "-";
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 1.0.0;
+				CURRENT_PROJECT_VERSION = 1.0.2;
 				DEVELOPMENT_TEAM = "";
 				ENABLE_APP_SANDBOX = NO;
 				ENABLE_HARDENED_RUNTIME = NO;
@@ -750,7 +794,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 1.0.0;
+				MARKETING_VERSION = 1.0.2;
 				PRODUCT_BUNDLE_IDENTIFIER = com.lumina.app;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
@@ -765,7 +809,7 @@
 				CODE_SIGN_IDENTITY = "-";
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 1.0.0;
+				CURRENT_PROJECT_VERSION = 1.0.2;
 				DEVELOPMENT_TEAM = "";
 				ENABLE_APP_SANDBOX = NO;
 				ENABLE_HARDENED_RUNTIME = NO;
@@ -776,7 +820,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 1.0.0;
+				MARKETING_VERSION = 1.0.2;
 				PRODUCT_BUNDLE_IDENTIFIER = com.lumina.app;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
@@ -789,11 +833,11 @@
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1.0.0;
+				CURRENT_PROJECT_VERSION = 1.0.2;
 				DEVELOPMENT_TEAM = "";
 				GENERATE_INFOPLIST_FILE = YES;
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
-				MARKETING_VERSION = 1.0.0;
+				MARKETING_VERSION = 1.0.2;
 				PRODUCT_BUNDLE_IDENTIFIER = com.lumina.app.tests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = NO;
@@ -807,11 +851,11 @@
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1.0.0;
+				CURRENT_PROJECT_VERSION = 1.0.2;
 				DEVELOPMENT_TEAM = "";
 				GENERATE_INFOPLIST_FILE = YES;
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
-				MARKETING_VERSION = 1.0.0;
+				MARKETING_VERSION = 1.0.2;
 				PRODUCT_BUNDLE_IDENTIFIER = com.lumina.app.tests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = NO;

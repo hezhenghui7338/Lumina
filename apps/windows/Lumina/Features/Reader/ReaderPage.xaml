@@ -47,7 +47,7 @@
                 </AppBarElementContainer>
                 <AppBarElementContainer>
                     <SplitButton x:Name="ListenSplit" Click="Listen_Click" VerticalAlignment="Center"
-                                 ToolTipService.ToolTip="听文本">
+                                 ToolTipService.ToolTip="单击听简要摘要；点箭头可选听完整摘要">
                         <SplitButton.Content>
                             <StackPanel Orientation="Horizontal" Spacing="6">
                                 <FontIcon Glyph="&#xE767;" FontSize="16"/>
@@ -101,8 +101,8 @@
                         </Flyout>
                     </AppBarButton.Flyout>
                 </AppBarButton>
-                <AppBarButton Label="笔记" FontSize="14" FontWeight="Normal" Click="ToggleNotes_Click"/>
-                <AppBarButton Label="深聊" FontSize="14" FontWeight="Normal" Click="OpenChat_Click"/>
+                <AppBarButton x:Name="NotesAppBar" Label="笔记" FontSize="14" FontWeight="Normal" Click="ToggleNotes_Click"/>
+                <AppBarButton x:Name="ChatAppBar" Label="深聊" FontSize="14" FontWeight="Normal" Click="OpenChat_Click"/>
                 <AppBarButton Label="导出" FontSize="14" FontWeight="Normal" Click="Export_Click"/>
                 <AppBarButton x:Name="SummarizeAppBar" Label="摘要" FontSize="14" FontWeight="Normal"
                               ToolTipService.ToolTip="点「开始摘要」立即正常档；箭头可选高级（需确认）；重新摘要整书都会再确认覆盖">
@@ -165,17 +165,24 @@
                       BorderThickness="0,0,1,0">
                 <ListView.ItemTemplate>
                     <DataTemplate x:DataType="reader:SegmentCatalogItem">
-                        <StackPanel Padding="10,8" Spacing="{x:Bind RowSpacing}">
-                            <TextBlock Text="{x:Bind Headline}" FontSize="{x:Bind TitleSize}"
-                                       Opacity="{x:Bind TitleOpacity}" FontWeight="SemiBold"
-                                       TextWrapping="NoWrap" TextTrimming="CharacterEllipsis"/>
-                            <TextBlock Text="{x:Bind Preview}" FontSize="{x:Bind PreviewSize}"
-                                       TextWrapping="NoWrap" TextTrimming="CharacterEllipsis"
-                                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
-                            <TextBlock Text="{x:Bind Bullets}" FontSize="{x:Bind BulletSize}"
-                                       TextWrapping="NoWrap" TextTrimming="CharacterEllipsis"
-                                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
-                        </StackPanel>
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <Border Grid.Column="0" Width="{x:Bind IndentLeft}"/>
+                            <StackPanel Grid.Column="1" Padding="10,8" Spacing="{x:Bind RowSpacing}">
+                                <TextBlock Text="{x:Bind Headline}" FontSize="{x:Bind TitleSize}"
+                                           Opacity="{x:Bind TitleOpacity}" FontWeight="SemiBold"
+                                           TextWrapping="NoWrap" TextTrimming="CharacterEllipsis"/>
+                                <TextBlock Text="{x:Bind Preview}" FontSize="{x:Bind PreviewSize}"
+                                           TextWrapping="NoWrap" TextTrimming="CharacterEllipsis"
+                                           Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                                <TextBlock Text="{x:Bind Bullets}" FontSize="{x:Bind BulletSize}"
+                                           TextWrapping="NoWrap" TextTrimming="CharacterEllipsis"
+                                           Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                            </StackPanel>
+                        </Grid>
                     </DataTemplate>
                 </ListView.ItemTemplate>
             </ListView>

@@ -3,6 +3,7 @@ using System.Globalization;
 using System.Text.Json;
 using Lumina.Design;
 using Lumina.Features.Library;
+using Lumina.Features.Onboarding;
 using Lumina.Features.Reader.Listen;
 using Lumina.Features.Shared;
 using Lumina.Services;
@@ -60,6 +61,7 @@ public sealed partial class ReaderPage : Page
     private TextBlock? _selectionIdeaError;
     private Button? _selectionSaveButton;
     private readonly HashSet<string> _collapsedChapters = new(StringComparer.Ordinal);
+    private static readonly Dictionary<string, HashSet<string>> CollapsedByBook = new(StringComparer.Ordinal);
     private IReadOnlyList<SegmentCatalogItem> _catalog = [];
     private BookSummary? _book;
     private bool _isProcessing;
@@ -79,6 +81,15 @@ public sealed partial class ReaderPage : Page
         KeyDown += ReaderPage_KeyDown;
         CharacterReceived += ReaderPage_CharacterReceived;
     }
+
+    internal FrameworkElement? TourTarget(OnboardingTourAnchor anchor) => anchor switch
+    {
+        OnboardingTourAnchor.Summarize => SummarizeAppBar,
+        OnboardingTourAnchor.ModePicker => ShowRawToggle,
+        OnboardingTourAnchor.Chat => ChatAppBar,
+        OnboardingTourAnchor.Notes => NotesAppBar,
+        _ => null,
+    };
 
     private void ReaderPage_KeyDown(object sender, KeyRoutedEventArgs e)
     {
@@ -192,6 +203,7 @@ public sealed partial class ReaderPage : Page
         _pageCts = new CancellationTokenSource();
         if (e.Parameter is ReaderNavArgs args)
         {
+            RestoreCollapsedChapters(args.BookId);
             _bookId = args.BookId;
             TitleText.Text = args.Title;
             _pendingJump = args.SegmentIndex;
@@ -208,6 +220,7 @@ public sealed partial class ReaderPage : Page
 
     protected override void OnNavigatedFrom(NavigationEventArgs e)
     {
+        PersistCollapsedChapters();
         PersistReadingProgress(patchServer: true);
         _progressTimer?.Stop();
         _pageCts?.Cancel();
@@ -596,6 +609,24 @@ public sealed partial class ReaderPage : Page
         }
     }
 
+    private void PersistCollapsedChapters()
+    {
+        if (string.IsNullOrEmpty(_bookId)) return;
+        CollapsedByBook[_bookId] = new HashSet<string>(_collapsedChapters, StringComparer.Ordinal);
+    }
+
+    private void RestoreCollapsedChapters(string bookId)
+    {
+        if (!string.IsNullOrEmpty(_bookId) && _bookId != bookId)
+            PersistCollapsedChapters();
+        _collapsedChapters.Clear();
+        if (CollapsedByBook.TryGetValue(bookId, out var saved))
+        {
+            foreach (var key in saved)
+                _collapsedChapters.Add(key);
+        }
+    }
+
     private void JumpToSegment(int idx, bool flash)
     {
         var match = _catalog.FirstOrDefault(i => i.Segment?.Idx == idx);
@@ -604,7 +635,8 @@ public sealed partial class ReaderPage : Page
             var row = _segments.FirstOrDefault(s => s.Idx == idx);
             if (row is not null)
             {
-                _collapsedChapters.Remove(SegmentCatalogPolicy.ChapterKey(row));
+                foreach (var key in SegmentCatalogPolicy.AncestorKeys(row))
+                    _collapsedChapters.Remove(key);
                 BindSegmentCatalog(idx);
                 match = _catalog.FirstOrDefault(i => i.Segment?.Idx == idx);
             }
@@ -1147,72 +1179,151 @@ public sealed partial class ReaderPage : Page
         var leftIdx = _selected.Idx >= _segments.Count - 1 ? _selected.Idx - 1 : _selected.Idx;
         try
         {
-            var preview = await App.Core.FetchSegmentBoundaryAsync(_bookId, leftIdx);
             var left = await App.Core.GetSegmentAsync(_bookId, leftIdx);
             var right = await App.Core.GetSegmentAsync(_bookId, leftIdx + 1);
             var concat = (left.RawText ?? "") + (right.RawText ?? "");
-            if (preview.Candidates.Count == 0)
+            if (string.IsNullOrEmpty(concat))
             {
-                ProgressText.Text = "这两段之间没有可调整的语义边界";
+                ProgressText.Text = "这两段没有可调整的正文";
                 ProgressBanner.Visibility = Visibility.Visible;
                 return;
             }
 
-            var index = preview.Candidates.FindIndex(c => c.Offset == preview.LeftCharCount);
-            if (index < 0) index = 0;
-            var leftPreview = new TextBlock { TextWrapping = TextWrapping.WrapWholeWords, MaxHeight = 120 };
-            var rightPreview = new TextBlock { TextWrapping = TextWrapping.WrapWholeWords, MaxHeight = 120 };
-            var counts = new TextBlock { Opacity = 0.7, Margin = new Thickness(0, 8, 0, 0) };
-            var slider = new Slider
+            var originalCut = (left.RawText ?? "").EnumerateRunes().Count();
+            var previewCut = originalCut;
+            var total = concat.EnumerateRunes().Count();
+            var candidateOffsets = new List<int>();
+            try
             {
-                Minimum = 0,
-                Maximum = Math.Max(0, preview.Candidates.Count - 1),
-                Value = index,
-                StepFrequency = 1,
-                TickFrequency = 1,
-                SnapsTo = SliderSnapsTo.Ticks,
-            };
-            void Render(int candidateIndex)
-            {
-                candidateIndex = Math.Clamp(candidateIndex, 0, preview.Candidates.Count - 1);
-                var cut = preview.Candidates[candidateIndex].Offset;
-                var leftText = cut <= concat.Length ? concat[..cut] : concat;
-                var rightText = cut <= concat.Length ? concat[cut..] : "";
-                leftPreview.Text = leftText.Length <= 360 ? leftText : leftText[^360..];
-                rightPreview.Text = rightText.Length <= 360 ? rightText : rightText[..360];
-                counts.Text = $"段 {leftIdx + 1} · {leftText.Length} 字    段 {leftIdx + 2} · {rightText.Length} 字";
+                var preview = await App.Core.FetchSegmentBoundaryAsync(_bookId, leftIdx);
+                candidateOffsets = preview.Candidates?.ConvertAll(c => c.Offset) ?? [];
             }
-            slider.ValueChanged += (_, args) => Render((int)Math.Round(args.NewValue));
-            Render(index);
-
-            var panel = new StackPanel { Spacing = 8, MaxWidth = 560 };
+            catch
+            {
+                // Preview still works at the raw click; the server snaps on save.
+            }
+            var (leftText, rightText) = SegmentBoundaryOffset.Split(concat, previewCut);
+            var counts = new TextBlock
+            {
+                Opacity = 0.7,
+                Text = $"段 {leftIdx + 1} · {leftText.EnumerateRunes().Count()} 字    段 {leftIdx + 2} · {rightText.EnumerateRunes().Count()} 字",
+            };
+            var error = new TextBlock
+            {
+                TextWrapping = TextWrapping.WrapWholeWords,
+                Visibility = Visibility.Collapsed,
+            };
+            var editor = new TextBox
+            {
+                Text = concat,
+                AcceptsReturn = true,
+                TextWrapping = TextWrapping.Wrap,
+                IsReadOnly = true,
+                MinHeight = 220,
+            };
+            var scroller = new ScrollViewer
+            {
+                Content = editor,
+                MaxHeight = 320,
+                VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+            };
+            var saving = new ProgressRing { IsActive = false, Width = 28, Height = 28, Visibility = Visibility.Collapsed };
+            var panel = new StackPanel { Spacing = 8, MaxWidth = 640 };
             panel.Children.Add(new TextBlock
             {
-                Text = "拖动滑块调整分界，切点会吸附到句子或段落边界。保存后只重新摘要这两段。",
+                Text = "点击正文中要作为新分界的位置。切点会吸附到最近的句子或段落。点「保存」才落库并重新摘要这两段；取消不保存。",
                 TextWrapping = TextWrapping.WrapWholeWords,
             });
-            panel.Children.Add(leftPreview);
-            panel.Children.Add(slider);
-            panel.Children.Add(rightPreview);
             panel.Children.Add(counts);
+            panel.Children.Add(scroller);
+            panel.Children.Add(error);
+            panel.Children.Add(saving);
 
             var dlg = new ContentDialog
             {
                 Title = "调整分段",
                 Content = panel,
-                PrimaryButtonText = "保存并重新摘要",
+                PrimaryButtonText = "保存",
                 CloseButtonText = "取消",
                 DefaultButton = ContentDialogButton.Primary,
+                IsPrimaryButtonEnabled = false,
                 XamlRoot = XamlRoot,
             };
-            if (await dlg.ShowAsync() != ContentDialogResult.Primary) return;
-            var chosen = preview.Candidates[(int)Math.Round(slider.Value)].Offset;
-            var result = await App.Core.MoveSegmentBoundaryAsync(_bookId, leftIdx, chosen);
-            ApplyMoveResult(result);
-            ProgressText.Text = result.Unchanged ? "分界未改变" : "已调整分界，正在重新摘要这两段";
-            ProgressBanner.Visibility = Visibility.Visible;
-            if (_selected?.Idx == leftIdx || _selected?.Idx == leftIdx + 1)
-                await HydrateSelectedAsync();
+            var isSaving = false;
+            void RefreshPreview()
+            {
+                var (nextLeft, nextRight) = SegmentBoundaryOffset.Split(concat, previewCut);
+                counts.Text = $"段 {leftIdx + 1} · {nextLeft.EnumerateRunes().Count()} 字    段 {leftIdx + 2} · {nextRight.EnumerateRunes().Count()} 字";
+                var caret = SegmentBoundaryOffset.Utf16Index(concat, previewCut);
+                editor.Select(caret, 0);
+                dlg.IsPrimaryButtonEnabled = SegmentBoundaryOffset.CanSave(
+                    previewCut, originalCut, total, isSaving);
+            }
+            editor.PointerReleased += (_, _) =>
+            {
+                if (isSaving || editor.SelectionLength > 0) return;
+                var offset = SegmentBoundaryOffset.NearestOffset(
+                    SegmentBoundaryOffset.UnicodeOffset(concat, editor.SelectionStart),
+                    candidateOffsets);
+                if (offset <= 0 || offset >= total)
+                {
+                    error.Text = "调整后两侧都必须保留正文";
+                    error.Visibility = Visibility.Visible;
+                    return;
+                }
+                error.Visibility = Visibility.Collapsed;
+                previewCut = offset;
+                RefreshPreview();
+            };
+            dlg.PrimaryButtonClick += async (_, args) =>
+            {
+                var deferral = args.GetDeferral();
+                try
+                {
+                    if (!SegmentBoundaryOffset.CanSave(previewCut, originalCut, total, isSaving))
+                    {
+                        args.Cancel = true;
+                        return;
+                    }
+                    isSaving = true;
+                    dlg.IsPrimaryButtonEnabled = false;
+                    editor.IsEnabled = false;
+                    error.Visibility = Visibility.Collapsed;
+                    saving.Visibility = Visibility.Visible;
+                    saving.IsActive = true;
+                    var result = await App.Core.MoveSegmentBoundaryAsync(_bookId, leftIdx, previewCut);
+                    ApplyMoveResult(result);
+                    ProgressText.Text = result.Unchanged ? "分界未改变" : "已调整分界，正在重新摘要这两段";
+                    ProgressBanner.Visibility = Visibility.Visible;
+                    isSaving = false;
+                    if (_selected?.Idx == leftIdx || _selected?.Idx == leftIdx + 1)
+                    {
+                        try { await HydrateSelectedAsync(); }
+                        catch { /* boundary already saved */ }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    args.Cancel = true;
+                    error.Text = ex.Message;
+                    error.Visibility = Visibility.Visible;
+                    editor.IsEnabled = true;
+                    isSaving = false;
+                    RefreshPreview();
+                }
+                finally
+                {
+                    saving.IsActive = false;
+                    saving.Visibility = Visibility.Collapsed;
+                    deferral.Complete();
+                }
+            };
+            dlg.Closing += (_, args) =>
+            {
+                if (isSaving) args.Cancel = true;
+            };
+
+            await dlg.ShowAsync();
         }
         catch (Exception ex)
         {
@@ -1769,8 +1880,8 @@ public sealed partial class ReaderPage : Page
 
     private void Listen_Click(object sender, RoutedEventArgs e)
     {
-        if (_showRaw) StartListening(ListenMode.Original);
-        else StartListening(ListenMode.Summary);
+        var showingOriginal = ListenChromePolicy.IsShowingOriginal(_showRaw, _showRaw, false);
+        StartListening(ListenChromePolicy.PrimaryMode(showingOriginal));
     }
 
     private void ListenMode_Click(object sender, RoutedEventArgs e)
@@ -1835,10 +1946,12 @@ public sealed partial class ReaderPage : Page
     private void UpdateListenMenu()
     {
         if (ListenSummaryItem is null) return;
-        ListenSummaryItem.Visibility = _showRaw ? Visibility.Collapsed : Visibility.Visible;
-        ListenDetailedItem.Visibility = _showRaw ? Visibility.Collapsed : Visibility.Visible;
-        ListenOriginalItem.Visibility = _showRaw ? Visibility.Visible : Visibility.Collapsed;
-        ToolTipService.SetToolTip(ListenSplit, _showRaw ? "听原文" : "听简要摘要或听完整摘要");
+        var showingOriginal = ListenChromePolicy.IsShowingOriginal(_showRaw, _showRaw, false);
+        var showChevron = ListenChromePolicy.ShowsSummaryChevron(showingOriginal);
+        ListenSummaryItem.Visibility = showChevron ? Visibility.Visible : Visibility.Collapsed;
+        ListenDetailedItem.Visibility = showChevron ? Visibility.Visible : Visibility.Collapsed;
+        ListenOriginalItem.Visibility = showingOriginal ? Visibility.Visible : Visibility.Collapsed;
+        ToolTipService.SetToolTip(ListenSplit, showingOriginal ? "听原文" : "单击听简要摘要；点箭头可选听完整摘要");
     }
 
     private void UpdateListenBar()

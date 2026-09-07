@@ -30,13 +30,14 @@ struct ContentView: View {
     @EnvironmentObject private var core: CoreClient
     @EnvironmentObject private var sidecar: SidecarManager
     @AppStorage("lumina.onboarding.done") private var onboardingDone = false
+    @StateObject private var tour = OnboardingTourController()
     @State private var tab: AppTab = .library
     @State private var selectedBookId: String?
     @State private var jumpSegmentIndex: Int?
     @State private var alertError: String?
     @State private var connectionError: String?
     @State private var showSearch = false
-    @State private var showOnboarding = false
+    @State private var showUsageGuide = false
     @State private var importConflict: ImportConflictError?
     @State private var pendingImportPaths: [String] = []
     @State private var isImportingBook = false
@@ -59,6 +60,10 @@ struct ContentView: View {
             .tag(AppTab.settings)
         }
         .background(LuminaTheme.background)
+        .environmentObject(tour)
+        .overlayPreferenceValue(TourAnchorPreferenceKey.self) { anchors in
+            tourOverlay(anchors: anchors)
+        }
         .alert("出错了", isPresented: .constant(alertError != nil)) {
             Button("好") { alertError = nil }
         } message: {
@@ -85,9 +90,8 @@ struct ContentView: View {
                 jumpSegmentIndex = segmentIndex
             }
         }
-        .sheet(isPresented: $showOnboarding) {
-            OnboardingView(isPresented: $showOnboarding)
-                .onDisappear { onboardingDone = true }
+        .sheet(isPresented: $showUsageGuide) {
+            UsageGuideSheet(isPresented: $showUsageGuide)
         }
         .confirmationDialog(
             "书籍已存在",
@@ -131,11 +135,69 @@ struct ContentView: View {
         .onReceive(NotificationCenter.default.publisher(for: .luminaOpenSearch)) { _ in
             showSearch = true
         }
+        .onReceive(NotificationCenter.default.publisher(for: .luminaOpenUsageGuide)) { _ in
+            guard !tour.isActive else { return }
+            showUsageGuide = true
+        }
         .onReceive(NotificationCenter.default.publisher(for: .luminaImportBook)) { _ in
             tab = .library
             importBook()
         }
+        .onChange(of: tour.step) { _, _ in
+            applyTourTab()
+        }
+        .onChange(of: tour.completed) { _, done in
+            if done {
+                if UsageGuidePresentationPolicy.marksOnboardingComplete(reopenOnly: false) {
+                    onboardingDone = true
+                }
+                if UsageGuidePresentationPolicy.shouldPresentGuideAfterFirstRun {
+                    showUsageGuide = true
+                }
+            }
+        }
+        .onAppear {
+            if !onboardingDone {
+                tour.start()
+            }
+        }
         .task { await finishBootstrap() }
+    }
+
+    @ViewBuilder
+    private func tourOverlay(anchors: [TourAnchorID: Anchor<CGRect>]) -> some View {
+        if tour.isActive {
+            GeometryReader { proxy in
+                let hole: CGRect? = {
+                    guard let id = tour.anchorID, let anchor = anchors[id] else { return nil }
+                    return proxy[anchor].insetBy(dx: -6, dy: -6)
+                }()
+                OnboardingTourOverlay(
+                    hole: hole,
+                    title: tour.copy.title,
+                    bodyText: tour.copy.body,
+                    stepIndex: tour.stepIndex,
+                    stepCount: tour.stepCount,
+                    isFirst: tour.isFirst,
+                    primaryTitle: tour.primaryButtonTitle,
+                    onBack: { tour.back() },
+                    onNext: { tour.advance() },
+                    onSkip: { tour.skip() }
+                )
+            }
+            .ignoresSafeArea()
+            .animation(.easeInOut(duration: 0.2), value: tour.step)
+        }
+    }
+
+    private func applyTourTab() {
+        guard tour.isActive, let surface = tour.surface else { return }
+        switch surface {
+        case .library, .reader:
+            tab = .library
+        case .settings:
+            tab = .settings
+        }
     }
 
     private var libraryTab: some View {
@@ -160,9 +222,6 @@ struct ContentView: View {
             return
         }
         NotificationCenter.default.post(name: .luminaLibraryRefresh, object: nil)
-        if !onboardingDone {
-            showOnboarding = true
-        }
     }
 
     private func importBook() {
@@ -335,6 +394,7 @@ private struct LibraryTabView: View {
 
     @EnvironmentObject private var core: CoreClient
     @EnvironmentObject private var sidecar: SidecarManager
+    @EnvironmentObject private var tour: OnboardingTourController
     @StateObject private var viewModel = LibraryViewModel()
     @ObservedObject private var readingProgress = ReadingProgressStore.shared
     @State private var showingAllNotes = false
@@ -394,6 +454,37 @@ private struct LibraryTabView: View {
                 Task { await refreshBooks() }
             }
         }
+        .onChange(of: tour.step) { _, _ in
+            applyTourNavigation()
+        }
+        .onChange(of: viewModel.books.map(\.id)) { _, _ in
+            syncTourLibrary()
+        }
+        .onAppear {
+            syncTourLibrary()
+            applyTourNavigation()
+        }
+    }
+
+    private func syncTourLibrary() {
+        let first = viewModel.books.first(where: \.canOpenInReader)
+        tour.syncLibrary(hasOpenableBook: first != nil, firstBookId: first?.id)
+    }
+
+    private func applyTourNavigation() {
+        guard tour.isActive, let surface = tour.surface else { return }
+        switch surface {
+        case .library:
+            showingAllNotes = false
+            selectedBookId = nil
+        case .settings:
+            break
+        case .reader:
+            showingAllNotes = false
+            if let id = tour.firstOpenableBookId {
+                selectedBookId = id
+            }
+        }
     }
 
     @ViewBuilder
@@ -445,6 +536,7 @@ private struct LibraryTabView: View {
     private func refreshBooks(preserveOrder: Bool = false) async {
         guard await sidecar.waitUntilReady() else { return }
         try? await viewModel.refresh(using: core, preserveOrder: preserveOrder)
+        syncTourLibrary()
     }
 
     private func pollSummaryProgress() async {
@@ -459,6 +551,7 @@ private struct LibraryTabView: View {
 
 extension Notification.Name {
     static let luminaOpenSearch = Notification.Name("luminaOpenSearch")
+    static let luminaOpenUsageGuide = Notification.Name("luminaOpenUsageGuide")
     static let luminaImportBook = Notification.Name("luminaImportBook")
     static let luminaLibraryRefresh = Notification.Name("luminaLibraryRefresh")
     static let luminaReadingProgressDidChange = Notification.Name("luminaReadingProgressDidChange")

@@ -9,7 +9,7 @@ Windows 桌面壳：与 macOS 功能对等（Windows 惯用交互），业务引
 - **搜索**：`Ctrl+K` 跨书籍 / 段落 / 笔记，跳转原段
 - **资讯**：RSS 同步、简报、精读、深聊、信源管理
 - **设置**：语言、联网、模型资源池与优先级、Prompt、调试模式 → 任务管理
-- **Onboarding**：引擎就绪 → Ollama 引导 → 进入书库
+- **Onboarding**：首次进入书库后 spotlight（导入 / 选书 / API / 摘要 / 切换 / 深聊 / 笔记），可跳过；Ollama 在设置里按需引导
 
 交互采用顶栏 `NavigationView`、工具栏与抽屉，不复刻 macOS 顶底浮栏。
 

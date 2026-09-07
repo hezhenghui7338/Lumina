@@ -204,6 +204,7 @@ CREATE TABLE segments (
   book_id         TEXT NOT NULL REFERENCES books(id),
   idx             INTEGER NOT NULL,       -- 0-based 段序号
   chapter         TEXT,
+  heading_path    TEXT,                   -- JSON 数组，部/章最多 2 项；段列表组树用
   page_range      TEXT,
   anchor_label    TEXT,                   -- 〔§… · 段 N · p.…〕
   raw_text        TEXT,
@@ -324,7 +325,7 @@ sequenceDiagram
 | PDF（扫描 / 乱码层） | **PyMuPDF + OpenAI 兼容视觉 API / RapidOCR PP-OCRv6** | 覆盖率 < 15% 或文本层判定为 CID 乱码时触发；云端配置完整时优先 |
 | EPUB | **`ebooklib` 为核心**，自建解析 Pipeline（spine → 章节 → 纯文本 + § 锚点） | 不用 epub2txt |
 | MOBI | `mobi` | 同 LA |
-| TXT/Markdown | 内置 | `.txt/.text/.md/.markdown/.mdown/.mkd/.log`。**字节抽样**识别编码（BOM → UTF-8 合法且非乱码 → GB18030/Big5 → charset-normalizer）。抽样用 IncrementalDecoder（`final=False`），64KiB 截在多字节中间不得判失败。UTF-8 能解开不算数：Latin-1 误解的 GBK 再存成 UTF-8 须恢复为汉字。latin-1 不得作为中文成功路径；认不出则导入失败。锁定 codec 后 **IncrementalDecoder 滑窗**解码，禁止 `read_bytes()` 全书。 |
+| TXT/Markdown | 内置 | `.txt/.text/.md/.markdown/.mdown/.mkd/.log`。**字节抽样**识别编码（BOM → UTF-8 合法且非乱码 → GB18030/Big5 → replace 评分汉字+中文标点 → charset-normalizer）。抽样用 IncrementalDecoder（`final=False`），64KiB 截在多字节中间不得判失败。抽样中段遇非法字节（电子书残留二进制，如 `0xd0 0x14`）不得整书报「无法识别文本编码」：用 `errors=replace` 按汉字与 `。，、` 密度认 UTF-8/GB18030/Big5。UTF-8 能解开不算数：Latin-1 误解的 GBK 再存成 UTF-8 须恢复为汉字。latin-1 不得作为中文成功路径；认不出则导入失败。锁定 codec 后 **IncrementalDecoder 滑窗**解码（`replace`，去掉 NUL），禁止 `read_bytes()` 全书。 |
 | HTML/XHTML | 内置 `HTMLParser` | 去除脚本/样式，保留标题锚点与元数据 |
 | RTF | `striprtf` | 纯文本 + title/author |
 | DOCX | `python-docx` | 段落、标题、表格文本、核心元数据 |
@@ -380,7 +381,7 @@ RapidOCR(params={
 
 **配置与探活 API**：`GET/PUT /settings` 管理非敏感配置与掩码 Key；`GET /settings/ocr/status` 检查本地依赖或云端 `/models` 连通性。macOS 与 Windows 设置页均提示“扫描页会上传云端”。
 
-**进度 UX**：OCR 经 SSE 推送 `{book_id, page, total, message}`，消息区分本地/云端；App 显示局部进度，不 blocking 全屏。PDF 渲染和云端同步 HTTP 均位于 ingest 的 `asyncio.to_thread` 工作线程。TXT / 非 OCR 导入同样走 `ingest_progress`：`page/total` 为已处理字数（或文件字节）与总量；结构扫描不得等整步结束才发第一帧。CPU 队列占用时先发「排队等待分段…」。`--cpu-worker` 父进程看门狗：无进度 180s 或单本 1800s 杀子进程，`ingest_error` 写清阶段。
+**进度 UX**：OCR 经 SSE 推送 `{book_id, page, total, message}`，消息区分本地/云端；App 显示局部进度，不 blocking 全屏。PDF 渲染和云端同步 HTTP 均位于 ingest 的 `asyncio.to_thread` 工作线程。TXT / 非 OCR 导入同样走 `ingest_progress`：`page/total` 为已处理字数（或文件字节）与总量；结构扫描不得等整步结束才发第一帧。CPU 队列占用时先发「排队等待分段…」。`--cpu-worker` 父进程看门狗：无进度 180s 杀子进程；单本墙钟 `max(1800s, pages×60s, MiB×30s)` 硬顶 8h（PDF 打开后按页数，否则按文件体积；TXT 字数进度不得当页数）。`ingest_error` 写清阶段与实际上限。
 
 ### 4.2 智能分段（Chunker）
 
@@ -394,10 +395,10 @@ load_document
   → 角色硬切（序/前言不得并入第一章）
   → 章内按整段自然段打包到 hard max；切点阶梯：章/角色 > 自然段 > 句号 > 语义
   → 高级档：LLM offset → 段/句吸附
-  → DocumentSegment[] + chapter/page 元数据
+  → DocumentSegment[] + chapter / heading_path / page 元数据
 ```
 
-角色只存在于结构元数据，**不得**写入 `raw_text` / 读者可见锚点。`SEGMENT_MIN_CHARS = 500` 只约束同一角色内的空壳标题 / TOC 碎屑合并；角色变化与正文 HARD 章界不受该地板限制（短章不得吞下一章）。用户 budget 的 `min_chars < 500`（目标约 200–416）时地板让位于该 budget。章内二次切分按 **章 > 自然段 > 句号 > 语义** 的硬阶梯：未超过 `max_chars` 的自然段不得劈开；句号只用于单段超长；embedding / 规则 novelty 只在段界上提前停。完整自然段优先于 0.6T 地板；章末或下一段整段放不进 max 时允许短块。有句末标点时禁止按字数在句中硬切。重平衡无法同时满足地板与 `max_chars` 时，优先遵守 `max_chars` 与段完整性，不得把全书并成一段。
+角色只存在于结构元数据，**不得**写入 `raw_text` / 读者可见锚点。同一章内每段不少于 `SEGMENT_HARD_MIN_CHARS = 200` 字；HARD 章标题空壳（含 `## [§…]` 与紧随的「第N章」行）必须并入**本章**后续正文至 ≥200。`SEGMENT_MIN_CHARS = 500` 仍约束同一角色内 TOC 碎屑与话题切碎片。角色变化与**跨章** HARD 不受 200/500 地板限制（短章不得吞下一章；整章或全书不足 200 字时允许短段）。用户 budget 的 `min_chars < 500`（目标约 200–416）时 500 碎屑地板让位于该 budget，但不得低于 200，除非整章不足。章内二次切分按 **章 > 自然段 > 句号 > 语义** 的硬阶梯：未超过 `max_chars` 的自然段不得劈开；句号只用于单段超长；embedding / 规则 novelty 只在段界上提前停。完整自然段优先于 0.6T 地板；章末或下一段整段放不进 max 时允许短块。有句末标点时禁止按字数在句中硬切。重平衡无法同时满足地板与 `max_chars` 时，优先遵守 `max_chars` 与段完整性，不得把全书并成一段。
 
 **Lumina 参数（v1.0 默认）**
 
@@ -633,10 +634,10 @@ Sidecar 绑定 `127.0.0.1` only；无认证（本机进程）。
 | POST | `/books/{id}/classify` | 后台 LLM 重新分类 |
 | GET | `/books/{id}` | 书籍详情 |
 | PATCH | `/books/{id}/reading-progress` | 更新当前段进度 |
-| GET | `/books/{id}/segments` | 段列表（含 label、summary_status） |
+| GET | `/books/{id}/segments` | 段列表（含 label、summary_status、heading_path；默认不含 raw_text） |
 | GET | `/books/{id}/segments/{idx}` | 单段详情 |
-| GET | `/books/{id}/segments/{idx}/boundary` | 相邻两段可吸附切点（`candidates`，不含拼接全文） |
-| POST | `/books/{id}/segments/{idx}/boundary` | 移动与下一段的分界；body `{ left_char_count }`；只重摘要这两段；SSE `segment_boundary_moved` |
+| GET | `/books/{id}/segments/{idx}/boundary` | 相邻两段可吸附切点（`candidates`，不含拼接全文）；点击调界以 POST 为准，客户端不再用 candidates 步进 |
+| POST | `/books/{id}/segments/{idx}/boundary` | 移动与下一段的分界；body `{ left_char_count }`（点击处的 Unicode 码点偏移，服务端吸附）；只重摘要这两段；SSE `segment_boundary_moved` |
 | POST | `/books/{id}/open` | 打开书（订阅 SSE；**不触发**分段，导入时已 queue） |
 | POST | `/books/{id}/segments/{idx}/retry` | 手动重试单段摘要；可选 `summary_tier`，缺省沿用原档位 |
 | POST | `/books/{id}/segments/retry` | 批量重试段摘要（body: `{ indices: number[], summary_tier?: normal \| advanced }`） |
@@ -697,7 +698,7 @@ Sidecar 绑定 `127.0.0.1` only；无认证（本机进程）。
 @MainActor
 final class ReaderViewModel: ObservableObject {
   @Published var book: Book
-  @Published var segments: [SegmentRow]      // 章节分组 + label
+  @Published var segments: [SegmentRow]      // heading_path 组树（最多 3 层）+ label
   @Published var currentSegment: SegmentDetail?
   @Published var chatMessages: [ChatMessage]
   @Published var chatScope: ChatScope = .segment
@@ -798,7 +799,7 @@ class ModelRouter:
 | 未 pull | `ollama pull {model}` + 进度回调 → SSE 推 App |
 | 跳过 | 用户可跳过；AI 功能灰显 |
 
-App Onboarding → `GET /settings/ollama/status` → 必要时 `POST /settings/ollama/setup`
+设置 → API 资源 → 编辑 Ollama 资源 → `GET /settings/ollama/status` → 必要时安装 / `ollama pull`。首次 spotlight 不引导 Ollama。
 
 ### 7.4 模型档位（PRD §7.5）
 
@@ -817,12 +818,12 @@ App Onboarding → `GET /settings/ollama/status` → 必要时 `POST /settings/o
 - `async` HTTP handler **禁止**同步 CPU / 网络 / 大文件 I/O；必须 `asyncio.to_thread` 或投递 JobQueue。
 - 大文件 ingest/resegment 的 decode / chunk / persist **须在 sidecar 子进程**执行（`--cpu-worker`）。`to_thread` + 协作式 `sleep` 不能让出 CPython `decode`、`re.finditer`、FTS 的 GIL；导入期间 `/health`、书库、资讯、设置必须可响应。
 - 章标（`BARE_CHAPTER`）只对短行 `match`；禁止对超长正文行或全书跑嵌套装饰符正则。换行扫描不得对每个 `\n` 从文件头 `rfind`。
-- cpu-worker 子进程无进度 180s / 单本 1800s 必须失败，不得停在「分段中」。
+- cpu-worker 子进程无进度 180s，或单本墙钟 `max(1800s, pages×60s, MiB×30s)`（顶 8h）必须失败，不得停在「分段中」。PDF/OCR 按页数拉长墙钟；TXT 字数进度不得当成页数。
 - TXT 解码与分段 **禁止全书 `str` 常驻**：峰值 RAM = 窗口 + 当前段 + 一批 INSERT；覆盖校验用偏移首尾相接，禁止 `join(raw_text)` 全书。
-- `GET /books/{id}/segments` **默认不含** `raw_text`；原文仅 `GET .../segments/{idx}`。
+- `GET /books/{id}/segments` **默认不含** `raw_text`；原文仅 `GET .../segments/{idx}`。目录含 `heading_path`（0–2 个标题）；客户端用已加载瘦段表组最多 3 层树。禁止把全书 `document_tree` 放进书列表/详情。旧段无 `heading_path` 时从 `chapter` 按 ` · ` 拆并去掉 `§`，不强制重新分段。
 - `GET /books/{id}/original-search` **禁止**同步扫库；**禁止**在 hits 中返回 `raw_text`。
 - `segment_ready` SSE 须携带 UI 所需摘要字段；客户端 **禁止** 为此再拉全量段表。
-- 手动调界只改相邻两段 `raw_text`；SSE `segment_boundary_moved` 后客户端补丁这两行，禁止整表 reload。
+- 手动调界只改相邻两段 `raw_text`；客户端在拼接原文上点击只更新预览，点「保存」后才 POST `left_char_count`（服务端吸附），取消不发请求；不再拖动或步进 candidates；SSE `segment_boundary_moved` 后客户端补丁这两行，禁止整表 reload。
 - Swift：网络收发与大 JSON 解码不得堵 MainActor；切书请求须可取消。
 
 **三队列分池**：
@@ -894,7 +895,7 @@ JobQueue：`asyncio.PriorityQueue` + worker pool；每书一个摘要链锁，�
 - [x] 导出可选含笔记
 - [x] 导出可选仅各段三句话
 - [x] 资讯精读视图 + 单篇深聊 SSE（`/news/articles/{id}/chat`）
-- [x] Onboarding 三步引导
+- [x] Onboarding spotlight（导入 / 选书 / API / 摘要 / 切换 / 深聊 / 笔记，可跳过）
 - [x] Xcode 工程同步 Wave 2/3 全部 Swift 源文件
 
 ---

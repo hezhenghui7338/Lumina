@@ -54,7 +54,7 @@ final class SegmentSidebarTests: XCTestCase {
         XCTAssertEqual(SegmentRenderWindow.segmentIndexDelta(from: nil, to: 10, in: segments), Int.max)
     }
 
-    func testSidebarSegmentItem_usesLabelFirst() {
+    func testSidebarSegmentItem_prefersChapterTitleOverLabel() {
         let segment = SegmentRow(
             id: "s1", idx: 0, label: "引子", chapter: "第一章", summary_status: "ready",
             summary_json: nil, raw_text: nil, translation: nil, anchor_label: nil,
@@ -63,10 +63,9 @@ final class SegmentSidebarTests: XCTestCase {
             summary_preview: "主角生于贫苦农家，父亲早逝，母亲靠纺织维生。",
             bullet_labels: ["寒门出身", "赴考之志"]
         )
-        let item = SidebarSegmentItem.make(from: segment, runningMetrics: nil)
-        XCTAssertEqual(item.outlineLabel, "引子")
-        XCTAssertEqual(item.chapter, "第一章")
-        XCTAssertEqual(item.headline, "第一章 · 段 1 · 引子")
+        let item = SidebarSegmentItem.make(from: segment)
+        XCTAssertEqual(item.title, "第一章")
+        XCTAssertEqual(item.headline, "段 1 · 第一章")
         XCTAssertEqual(item.summaryPreview, "主角生于贫苦农家，父亲早逝，母亲靠纺织维生。")
         XCTAssertEqual(item.bulletLabelsLine, "寒门出身 · 赴考之志")
         let fromList = SidebarSegmentItem.make(
@@ -76,14 +75,69 @@ final class SegmentSidebarTests: XCTestCase {
                 summary_provider: nil, summary_model: nil, summary_tier: nil, char_count: nil, retry_count: nil,
                 summary_duration_s: nil, summary_llm_attempts: nil,
                 summary_preview: "主角生于贫苦农家，父亲早逝，母亲靠纺织维生。"
-            ),
-            runningMetrics: nil
+            )
         )
         XCTAssertEqual(
             fromList.summaryPreview,
             "主角生于贫苦农家，父亲早逝，母亲靠纺织维生。"
         )
         XCTAssertNil(fromList.bulletLabelsLine)
+    }
+
+    func testSidebarSegmentItem_stripsSectionMarkFromChapterTitle() {
+        let segment = SegmentRow(
+            id: "s1", idx: 0, label: "引子", chapter: "§§第一章", summary_status: "ready",
+            summary_json: nil, raw_text: nil, translation: nil, anchor_label: nil,
+            summary_provider: nil, summary_model: nil, summary_tier: nil, char_count: nil, retry_count: nil,
+            summary_duration_s: nil, summary_llm_attempts: nil
+        )
+        let item = SidebarSegmentItem.make(from: segment)
+        XCTAssertEqual(item.title, "第一章")
+        XCTAssertEqual(item.headline, "段 1 · 第一章")
+        XCTAssertFalse(item.headline.contains("§"))
+        XCTAssertEqual(SegmentOutlinePolicy.stripSectionMark("第一章§"), "第一章")
+        XCTAssertEqual(
+            SegmentCatalogHeadlineText.title(chapter: "卷一 §", label: "引子"),
+            "卷一"
+        )
+    }
+
+    func testSidebarSegmentItem_groupedOmitsChapterFromHeadline() {
+        let segment = SegmentRow(
+            id: "s1", idx: 0, label: "引子", chapter: "第一章", summary_status: "ready",
+            summary_json: nil, raw_text: nil, translation: nil, anchor_label: nil,
+            summary_provider: nil, summary_model: nil, summary_tier: nil, char_count: nil, retry_count: nil,
+            summary_duration_s: nil, summary_llm_attempts: nil
+        )
+        let item = SidebarSegmentItem.make(from: segment, grouped: true)
+        XCTAssertEqual(item.title, "引子")
+        XCTAssertEqual(item.headline, "段 1 · 引子")
+    }
+
+    func testSidebarSegmentItem_usesLabelWhenNoChapter() {
+        let segment = SegmentRow(
+            id: "s1", idx: 0, label: "引子", chapter: nil, summary_status: "ready",
+            summary_json: nil, raw_text: nil, translation: nil, anchor_label: nil,
+            summary_provider: nil, summary_model: nil, summary_tier: nil, char_count: nil, retry_count: nil,
+            summary_duration_s: nil, summary_llm_attempts: nil
+        )
+        let item = SidebarSegmentItem.make(from: segment)
+        XCTAssertEqual(item.title, "引子")
+        XCTAssertEqual(item.headline, "段 1 · 引子")
+    }
+
+    func testCatalogHeadlineText_ignoresBlankChapterAndLabel() {
+        XCTAssertEqual(
+            SegmentCatalogHeadlineText.title(chapter: "  第一章  ", label: "引子"),
+            "第一章"
+        )
+        XCTAssertEqual(
+            SegmentCatalogHeadlineText.title(chapter: "   ", label: " 引子 "),
+            "引子"
+        )
+        XCTAssertNil(SegmentCatalogHeadlineText.title(chapter: nil, label: nil))
+        XCTAssertEqual(SegmentCatalogHeadlineText.joined(idx: 0, title: nil), "段 1")
+        XCTAssertEqual(SegmentCatalogHeadlineText.joined(idx: 4, title: "学而"), "段 5 · 学而")
     }
 
     func testCatalogPreview_usesSentenceNotInferredLabelPrefix() {
@@ -111,30 +165,42 @@ final class SegmentSidebarTests: XCTestCase {
         XCTAssertTrue(clipped.hasSuffix("…"))
     }
 
-    func testSidebarSegmentItem_pendingUsesStaticCopy() {
+    func testSidebarSegmentItem_pendingWithoutChapterIsSegmentOnly() {
         let segment = SegmentRow(
             id: "s1", idx: 0, label: nil, chapter: nil, summary_status: "pending",
             summary_json: nil, raw_text: nil, translation: nil, anchor_label: nil,
             summary_provider: nil, summary_model: nil, summary_tier: nil, char_count: nil, retry_count: nil,
             summary_duration_s: nil, summary_llm_attempts: nil
         )
-        let item = SidebarSegmentItem.make(from: segment, runningMetrics: nil)
-        XCTAssertEqual(item.outlineLabel, "等待摘要…")
-        XCTAssertEqual(item.headline, "段 1 · 等待摘要…")
+        let item = SidebarSegmentItem.make(from: segment)
+        XCTAssertNil(item.title)
+        XCTAssertEqual(item.headline, "段 1")
         XCTAssertNil(item.summaryPreview)
         XCTAssertNil(item.bulletLabelsLine)
     }
 
-    func testSidebarSegmentItem_runningUsesGeneratingCopy() {
+    func testSidebarSegmentItem_runningWithoutChapterIsSegmentOnly() {
         let segment = SegmentRow(
             id: "s1", idx: 0, label: nil, chapter: nil, summary_status: "running",
             summary_json: nil, raw_text: nil, translation: nil, anchor_label: nil,
             summary_provider: nil, summary_model: nil, summary_tier: nil, char_count: nil, retry_count: nil,
             summary_duration_s: nil, summary_llm_attempts: nil
         )
-        let item = SidebarSegmentItem.make(from: segment, runningMetrics: nil)
-        XCTAssertEqual(item.outlineLabel, "摘要生成中…")
-        XCTAssertEqual(item.headline, "段 1 · 摘要生成中…")
+        let item = SidebarSegmentItem.make(from: segment)
+        XCTAssertNil(item.title)
+        XCTAssertEqual(item.headline, "段 1")
+    }
+
+    func testSidebarSegmentItem_pendingWithChapterUsesChapter() {
+        let segment = SegmentRow(
+            id: "s1", idx: 2, label: nil, chapter: "第二章", summary_status: "pending",
+            summary_json: nil, raw_text: nil, translation: nil, anchor_label: nil,
+            summary_provider: nil, summary_model: nil, summary_tier: nil, char_count: nil, retry_count: nil,
+            summary_duration_s: nil, summary_llm_attempts: nil
+        )
+        let item = SidebarSegmentItem.make(from: segment)
+        XCTAssertEqual(item.title, "第二章")
+        XCTAssertEqual(item.headline, "段 3 · 第二章")
     }
 }
 
@@ -181,6 +247,14 @@ final class SegmentCatalogPreviewArchitectureTests: XCTestCase {
         XCTAssertFalse(
             reader.contains("scheduleSidebarPreview"),
             "the catalog must not hydrate summary_json just to stitch bullet bodies"
+        )
+        XCTAssertTrue(
+            models.contains("SegmentCatalogHeadlineText.title"),
+            "catalog first line must resolve title via chapter-then-label helper"
+        )
+        XCTAssertFalse(
+            models.contains("TimelineView"),
+            "catalog first line must not host live summarize captions"
         )
         let iconSlice = models.components(separatedBy: "private var statusIcon: some View").last ?? ""
         XCTAssertTrue(

@@ -82,6 +82,19 @@ public class ListenScriptTests
         Assert.Equal("zh", ListenScriptBuilder.DetectLanguage("本段交代主角出身寒门。"));
         Assert.Equal("en", ListenScriptBuilder.DetectLanguage("The hero leaves home at dawn."));
     }
+
+    [Fact]
+    public void Speaker_follows_visible_panel_not_only_the_picker()
+    {
+        Assert.False(ListenChromePolicy.IsShowingOriginal(false, false, false));
+        Assert.True(ListenChromePolicy.IsShowingOriginal(false, true, false));
+        Assert.True(ListenChromePolicy.IsShowingOriginal(true, true, false));
+        Assert.False(ListenChromePolicy.IsShowingOriginal(true, true, true));
+        Assert.Equal(ListenMode.Summary, ListenChromePolicy.PrimaryMode(false));
+        Assert.Equal(ListenMode.Original, ListenChromePolicy.PrimaryMode(true));
+        Assert.True(ListenChromePolicy.ShowsSummaryChevron(false));
+        Assert.False(ListenChromePolicy.ShowsSummaryChevron(true));
+    }
 }
 
 public class ListenAdvancePolicyTests

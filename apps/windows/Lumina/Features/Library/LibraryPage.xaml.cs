@@ -1,5 +1,6 @@
 using Lumina.Design;
 using Lumina.Features.Notes;
+using Lumina.Features.Onboarding;
 using Lumina.Features.Shared;
 using Lumina.Services;
 using Microsoft.UI.Xaml;
@@ -25,6 +26,7 @@ public sealed partial class LibraryPage : Page
     private string _category = LibraryFacets.All;
     private bool _favoriteOnly;
     private string _sort = LibrarySorts.Recent;
+    private string _sortOrder = LibrarySorts.Desc;
     private string _titleQuery = "";
     private bool _gridMode = true;
     private bool _suppressFilter;
@@ -40,8 +42,17 @@ public sealed partial class LibraryPage : Page
         _category = LocalPrefs.LibraryCategory;
         _favoriteOnly = LocalPrefs.LibraryFavoriteOnly;
         _sort = LocalPrefs.LibrarySort;
+        _sortOrder = LibrarySorts.NormalizeOrder(LocalPrefs.LibrarySortOrder, _sort);
         _gridMode = LocalPrefs.LibraryGridMode;
     }
+
+    internal FrameworkElement? TourTarget(OnboardingTourAnchor anchor) => anchor switch
+    {
+        OnboardingTourAnchor.ImportButton => ImportButton,
+        OnboardingTourAnchor.Bookshelf =>
+            BooksGrid.Visibility == Visibility.Visible ? BooksGrid : BooksList,
+        _ => null,
+    };
 
     protected override void OnNavigatedTo(NavigationEventArgs e)
     {
@@ -114,6 +125,7 @@ public sealed partial class LibraryPage : Page
             _suppressFilter = true;
             RebuildCollections(catsTask.Result);
             SelectCombo(SortBox, _sort);
+            SelectCombo(OrderBox, _sortOrder);
             SelectCombo(ViewModeBox, _gridMode ? "grid" : "list");
             BooksGrid.Visibility = _gridMode ? Visibility.Visible : Visibility.Collapsed;
             BooksList.Visibility = _gridMode ? Visibility.Collapsed : Visibility.Visible;
@@ -223,15 +235,11 @@ public sealed partial class LibraryPage : Page
             LibraryFacets.Matches(b, _summary, _reading, _category, _favoriteOnly));
         if (!string.IsNullOrWhiteSpace(_titleQuery))
             q = q.Where(b => b.Title.Contains(_titleQuery, StringComparison.CurrentCultureIgnoreCase));
-        var list = LibrarySorts.Sorted(q, _sort).ToList();
+        var list = LibrarySorts.Sorted(q, _sort, _sortOrder).ToList();
         if (LibraryFacets.IsDefault(_summary, _reading, _category, _favoriteOnly)
             && _sort == LibrarySorts.Recent)
         {
-            list = list
-                .OrderBy(b => b.SummarizeState == "running" ? 0 : b.SummarizeState == "queued" ? 1 : 2)
-                .ThenBy(b => b.LastOpenedAt is null)
-                .ThenByDescending(b => b.LastOpenedAt ?? "")
-                .ToList();
+            list = LibrarySorts.PrioritizeSummarizeActivity(list).ToList();
         }
         BooksList.ItemsSource = null;
         BooksGrid.ItemsSource = null;
@@ -256,6 +264,7 @@ public sealed partial class LibraryPage : Page
         LocalPrefs.LibraryCategory = _category;
         LocalPrefs.LibraryFavoriteOnly = _favoriteOnly;
         LocalPrefs.LibrarySort = _sort;
+        LocalPrefs.LibrarySortOrder = _sortOrder;
         LocalPrefs.LibraryGridMode = _gridMode;
     }
 
@@ -387,9 +396,22 @@ public sealed partial class LibraryPage : Page
         if (newSort != _sort)
         {
             _sort = newSort;
+            _sortOrder = LibrarySorts.DefaultOrder(_sort);
+            _suppressFilter = true;
+            SelectCombo(OrderBox, _sortOrder);
+            _suppressFilter = false;
             await ReloadAsync();
             return;
         }
+        ApplyLocalFilters();
+    }
+
+    private void Order_Changed(object sender, SelectionChangedEventArgs e)
+    {
+        if (_suppressFilter) return;
+        _sortOrder = LibrarySorts.NormalizeOrder(
+            (OrderBox.SelectedItem as ComboBoxItem)?.Tag as string,
+            _sort);
         ApplyLocalFilters();
     }
 

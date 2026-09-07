@@ -144,7 +144,7 @@ Lumina/
 | **E2E-B1-dup** | TDD §14 | 同 hash 二次导入 | 409 + overwrite 重建 | API | Mock |
 | **E2E-B1-dup-skip-rest** | §5.1 | 批量冲突跳过剩下所有 | 后续重复不再弹窗；新书仍导入；与取消剩余导入区分 | Swift/Win unit | Mock |
 | **E2E-B1-reject** | TDD §14 | >500MB 拒绝 | 明确错误 | API | Mock |
-| **E2E-B2** | §5.3 B2 | 打开书 → 段列表 | 章节分组 + label；三句话+要点+锚点 | API | Mock |
+| **E2E-B2** | §5.3 B2 | 打开书 → 段列表 | 最多 3 层结构树；第一行 `段 N · 章名或 label`；三句话+要点+锚点 | API | Mock |
 | **E2E-B11** | §5.3 B11 | 长书导入后立即 open | 段 0 ready；段 1+ pending；SSE 进度 | API + SSE | Mock |
 | **E2E-B12** | §5.3.1 B12 | 听稿 summary/detailed/original | 简要=sentences；完整含要点不含 notes/follow_ups；summary 模式不读 raw_text | API | Mock |
 | **E2E-B2-switch** | §7.1 | 已缓存段切换 | ≤200ms | perf + XCUITest | — |
@@ -157,7 +157,7 @@ Lumina/
 
 | 测试名 | PRD 锚点 |
 |--------|----------|
-| `UITest_Onboarding_ImportFirstSegment` | §3.4 三步 onboarding |
+| `UITest_Onboarding_SpotlightDismiss` | §3.4 首次 spotlight 可跳过且不再出现；指南可再打开 |
 | `UITest_Reader_ChatCitationJump` | 深聊 → citation → 段高亮 |
 | `UITest_OfflineLibraryBrowse` | 无 Ollama 书库可读、AI 灰显 |
 
@@ -179,7 +179,7 @@ Lumina/
 | **E2E-N3** | §5.8 N3 | 单篇精读 + 深聊 | API | Mock |
 | **E2E-settings** | §5.9 | Ollama 状态 + 三 Profile | API | Mock |
 | **E2E-summary-tier** | §5.3 | 正常/高级模型选择、默认正常、空高级模型回退、切档覆盖 | unit + API + 双端契约 | Mock |
-| **E2E-boundary-move** | §5.3 | 手动拖动相邻段分界；原文拼接不变；只重摘要这两段 | unit + API | Mock |
+| **E2E-boundary-move** | §5.3 | 点击相邻两段拼接原文设分界；原文拼接不变；只重摘要这两段 | unit + API | Mock |
 
 ### 6.3 非功能（PRD §7）
 
@@ -204,10 +204,10 @@ Lumina/
 | **E2E-BOOT-02** | `test_sidecar_startup` · `test_e2e_boot_02d_health_responds_immediately` · `test_shutdown_sets_uvicorn_should_exit` · `test_macos_stop_kills_port_listener` · `test_e2e_priv_01_settings_default_localhost` | `SidecarReadinessTests` |
 | **E2E-CHUNK-LIVE** | `test_chunker_chapter_boundary` · `test_chunker_max_segment_size` · `test_chunker_no_overlap_offsets` · `test_short_book_single_segment` · `test_summary_json_schema` | — |
 | **B1 导入** | `test_detect_format` · `test_extract_metadata_epub` · `test_copy_to_app_support` · `test_file_hash_dedup` · `test_processing_book_is_segmenting_state` · `test_library_facet_filters` | `LibraryViewModelMergeTests.testSegmentingCollectionIncludesProcessingBooks` · `apps/windows/Lumina.Tests/ModelJsonTests.cs` |
-| **B2 段列表** | `test_summary_json_parse` · `test_label_max_20_chars` · `test_summary_quality`（0/1/2 问题边界、误报、复核降级、带反馈重试） | `SegmentListGroupingTests` · Snapshot |
-| **E2E-boundary-move** | `test_boundary_move` · `test_boundary_api` | `CoreClientDecodingTests.testSegmentBoundaryPreview_decodesCandidates` |
+| **B2 段列表** | `test_heading_path_at` · `test_heading_path_from_legacy_chapter_label` · `test_list_catalog_heading_path_and_legacy_chapter_fallback` · `test_summary_json_parse` · `test_label_max_20_chars` · `test_summary_quality`（0/1/2 问题边界、误报、复核降级、带反馈重试） | `SegmentListGroupingTests`（2 层标题 + 折叠 + 无章平铺）· `SegmentCatalog_nests_part_and_chapter` · Snapshot |
+| **E2E-boundary-move** | `test_boundary_move` · `test_boundary_api` | `CoreClientDecodingTests.testSegmentBoundaryPreview_decodesCandidates` · `SegmentBoundaryOffsetTests` · `apps/windows/Lumina.Tests/SegmentBoundaryOffsetTests.cs` |
 | **B11 prefetch** | `test_same_book_summaries_are_strictly_ordered` · `test_different_books_still_summarize_in_parallel` · `test_final_failure_does_not_block_later_segments` · `test_chat_pauses_prefetch` · `test_job_persist_on_restart` | `ReaderViewModel_SSEHandler` |
-| **B12 听文本** | `test_listen_script` · `test_listen_speech_api`（listen-script 路由） | `ListenScriptTests` · `ListenSessionTests` · `apps/windows/Lumina.Tests/ListenScriptTests.cs` |
+| **B12 听文本** | `test_listen_script` · `test_listen_speech_api`（listen-script 路由） | `ListenScriptTests` · `ListenChromePolicyTests` · `ListenSessionTests` · `ReaderChromeClickArchitectureTests.testListenChevronSplitPlaysBriefOnIconClick` · `apps/windows/Lumina.Tests/ListenScriptTests.cs` |
 | **B4/B5 深聊** | `test_evidence_sufficiency_router` · `test_chat_dca` · `test_chat_evidence` · `test_web_search` · `test_rollup` · `test_book_scope_chat_after_index` | `CoreClientDecodingTests.testChatResponse_fromSSEDone_parsesMetrics` |
 | **B8 笔记/搜索** | `test_fts5_trigger_on_note_insert` · `test_search_group_by_kind` | `SearchViewModel_jumpToSegment` · Snapshot |
 | **B13 原文搜索** | `test_original_search` · `test_original_search_api` | `ReaderOriginalSearchTests` · `apps/windows/Lumina.Tests/ModelJsonTests.cs` |

@@ -2,6 +2,13 @@ import SwiftUI
 
 enum ListenMiniBarMetrics {
     static let height: CGFloat = 44
+    /// Skip / status caption above the controls (11pt line + top padding).
+    static let noticeHeight: CGFloat = 20
+
+    static func clearance(isActive: Bool, hasNotice: Bool) -> CGFloat {
+        guard isActive else { return 0 }
+        return height + (hasNotice ? noticeHeight : 0)
+    }
 }
 
 struct ListenMiniBar: View {
@@ -15,9 +22,9 @@ struct ListenMiniBar: View {
                     .font(.system(size: 11))
                     .foregroundStyle(LuminaTheme.textSecondary)
                     .lineLimit(1)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
                     .padding(.horizontal, 12)
-                    .padding(.top, 4)
+                    .frame(height: ListenMiniBarMetrics.noticeHeight)
             }
             HStack(spacing: 10) {
                 Button(action: { session.skipBack() }) {

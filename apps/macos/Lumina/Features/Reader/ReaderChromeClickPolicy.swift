@@ -24,6 +24,22 @@ enum ReaderChromeBarMetrics {
     static let labelWeight: Font.Weight = .regular
     static let labelFont: Font = .system(size: labelSize, weight: labelWeight)
     static let modePickerWidth: CGFloat = 140
+    /// Center book title; long names truncate. Keeps side icon clusters usable.
+    static let titleMaxWidth: CGFloat = 220
+}
+
+/// Bottom overlays share one stack from the window edge: function bar, then
+/// the listen mini-bar. Chat / notes / catalog sit on top of that stack so the
+/// mini-bar cannot cover the deep-chat field.
+enum ReaderBottomStackPolicy {
+    static func overlayBottomPadding(listenActive: Bool, listenHasNotice: Bool) -> CGFloat {
+        ReaderChromeBarMetrics.height
+            + ListenMiniBarMetrics.clearance(isActive: listenActive, hasNotice: listenHasNotice)
+    }
+
+    static func miniBarBottomPadding(barsVisible: Bool) -> CGFloat {
+        barsVisible ? ReaderChromeBarMetrics.height : 0
+    }
 }
 
 enum ReaderChromeTextActionRole: Equatable {
@@ -88,8 +104,10 @@ struct ReaderChromeIconButtonStyle: ButtonStyle {
 enum ReaderChromeClickPolicy {
     static func outcome(
         overlayOpen: Bool,
-        chromeHidden: Bool
+        chromeHidden: Bool,
+        tourLocksChrome: Bool = false
     ) -> ReaderChromeClickOutcome {
+        if tourLocksChrome { return chromeHidden ? .reveal : .ignore }
         if overlayOpen { return .ignore }
         return chromeHidden ? .reveal : .collapse
     }

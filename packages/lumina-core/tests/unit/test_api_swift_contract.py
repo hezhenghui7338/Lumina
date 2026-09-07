@@ -573,3 +573,21 @@ def test_drop_stored_document_trees_strips_legacy_blob(client):
     listed = next(b for b in client.get("/books").json()["books"] if b["id"] == book_id)
     assert "metadata_json" not in listed
     assert "document_tree" not in json.loads(repo.get(book_id)["metadata_json"])
+
+
+def test_segment_detail_bullet_labels_is_json_array(client):
+    """GET .../segments/{idx} must emit bullet_labels as array for Swift SegmentRow."""
+    book_id = import_sample_book(client)
+    conn = client.app.state.lumina.conn  # type: ignore[attr-defined]
+    seg = SegmentRepo(conn).get_by_index(book_id, 0)
+    assert seg is not None
+    # Simulate legacy/cached TEXT column (JSON array stored as a string).
+    with conn:
+        conn.execute(
+            "UPDATE segments SET bullet_labels = ?, summary_preview = ? WHERE id = ?",
+            ('["邻里"]', "本段交代邻里。", seg["id"]),
+        )
+    detail = client.get(f"/books/{book_id}/segments/0").json()
+    assert isinstance(detail.get("raw_text"), str)
+    assert detail["bullet_labels"] == ["邻里"]
+    assert not isinstance(detail["bullet_labels"], str)

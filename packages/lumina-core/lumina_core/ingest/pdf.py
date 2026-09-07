@@ -270,6 +270,13 @@ def _extract_pdf_pages(
     settings: Settings | None,
     cancel_event: threading.Event | None,
 ) -> tuple[str, dict]:
+    report_progress(
+        on_progress,
+        0,
+        page_count,
+        f"正在解析 PDF（共 {page_count} 页）…",
+        cancel_event,
+    )
     yield_ui()
     parts: list[str | None] = [None] * page_count
     pages_with_text = 0

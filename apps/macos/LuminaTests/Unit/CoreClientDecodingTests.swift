@@ -409,6 +409,19 @@ final class CoreClientDecodingTests: XCTestCase {
         XCTAssertNil(segment.summary_json)
     }
 
+    func testSegmentRow_decodesHeadingPath() throws {
+        let json = """
+        {
+          "id": "s1",
+          "idx": 0,
+          "summary_status": "ready",
+          "heading_path": ["第一部分", "第一章"]
+        }
+        """
+        let segment = try JSONDecoder().decode(SegmentRow.self, from: json.data(using: .utf8)!)
+        XCTAssertEqual(segment.heading_path, ["第一部分", "第一章"])
+    }
+
     func testSegmentRow_decodesBulletLabels() throws {
         let json = """
         {
@@ -421,6 +434,23 @@ final class CoreClientDecodingTests: XCTestCase {
         """
         let segment = try JSONDecoder().decode(SegmentRow.self, from: json.data(using: .utf8)!)
         XCTAssertEqual(segment.bullet_labels, ["邻里", "赴考"])
+    }
+
+    func testSegmentRow_rejectsBulletLabelsAsJSONString() {
+        // API contract: GET .../segments/{idx} must emit an array, never DB TEXT.
+        // A string here makes getSegment decode fail → UI「原文加载失败」.
+        let json = """
+        {
+          "id": "s1",
+          "idx": 0,
+          "summary_status": "ready",
+          "raw_text": "hello",
+          "bullet_labels": "[\\"邻里\\"]"
+        }
+        """
+        XCTAssertThrowsError(
+            try JSONDecoder().decode(SegmentRow.self, from: json.data(using: .utf8)!)
+        )
     }
 
     func testSegmentRow_decodesSummaryMetrics() throws {

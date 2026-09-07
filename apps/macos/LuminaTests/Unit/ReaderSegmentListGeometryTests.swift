@@ -87,8 +87,8 @@ final class ReaderCoverPageArchitectureTests: XCTestCase {
             "the catalog must not slide in from the top"
         )
         XCTAssertTrue(
-            coverBlock.contains(".padding(.bottom, ReaderChromeBarMetrics.height)"),
-            "the catalog must sit above the bottom bar"
+            coverBlock.contains(".padding(.bottom, overlayBottomPadding)"),
+            "the catalog must sit above the bottom bar and the listen mini-bar"
         )
         XCTAssertFalse(
             coverBlock.contains("zIndex(1)"),
