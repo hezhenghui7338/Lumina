@@ -3,14 +3,22 @@
 from __future__ import annotations
 
 import re
+import threading
 from html.parser import HTMLParser
 from pathlib import Path
+from posixpath import dirname, join, normpath
 from urllib.parse import unquote
 from xml.etree import ElementTree
 
 from lumina_core.chunker.markers import heading_marker
 from lumina_core.chunker.roles import DocumentRole, classify_heading, landmark_role
+from lumina_core.config import Settings
 from lumina_core.ingest.html import parse_html_document
+from lumina_core.ingest.ocr import (
+    OcrProgressCallback,
+    ocr_images,
+    ocr_metadata_from_result,
+)
 
 
 class _NavTocParser(HTMLParser):
@@ -74,6 +82,22 @@ class _NavTocParser(HTMLParser):
     def handle_data(self, data: str) -> None:
         if self._in_a and not self._skip_nav:
             self._text.append(data)
+
+
+class _PageImageParser(HTMLParser):
+    """Collect image references in DOM order from one spine document."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.sources: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag.lower() not in {"img", "image"}:
+            return
+        attr = {key.lower(): (value or "") for key, value in attrs}
+        source = attr.get("src") or attr.get("href") or attr.get("xlink:href") or ""
+        if source and not source.startswith(("data:", "http://", "https://")):
+            self.sources.append(unquote(source.split("#", 1)[0]))
 
 
 def _epub_nested_toc(book) -> dict[str, tuple[str, int, str | None]]:
@@ -163,6 +187,36 @@ def _html_to_text(html: str) -> str:
         return text
     except ValueError:
         return ""
+
+
+def _page_image_items(book, documents: list[tuple[str, str]]) -> list:
+    """Resolve page images referenced by spine documents, preserving DOM order."""
+    by_href = {
+        _normalize_href(item.get_name() or ""): item
+        for item in book.get_items()
+        if item.get_name()
+    }
+    pages: list = []
+    seen: set[str] = set()
+    for document_href, raw_html in documents:
+        parser = _PageImageParser()
+        try:
+            parser.feed(raw_html)
+            parser.close()
+        except Exception:
+            continue
+        base = dirname((document_href or "").replace("\\", "/"))
+        for source in parser.sources:
+            resolved = normpath(join(base, source)).lstrip("./")
+            item = book.get_item_with_href(resolved) or by_href.get(_normalize_href(resolved))
+            if item is None:
+                continue
+            key = item.get_id() or item.get_name()
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            pages.append(item)
+    return pages
 
 
 def _chapter_title(
@@ -305,7 +359,13 @@ def _epub_landmark_roles(book) -> dict[str, tuple[DocumentRole, str]]:
     return lookup
 
 
-def load_epub(path: Path) -> tuple[str, dict]:
+def load_epub(
+    path: Path,
+    *,
+    on_progress: OcrProgressCallback | None = None,
+    settings: Settings | None = None,
+    cancel_event: threading.Event | None = None,
+) -> tuple[str, dict]:
     try:
         import ebooklib
         from ebooklib import epub
@@ -316,26 +376,58 @@ def load_epub(path: Path) -> tuple[str, dict]:
     title = (book.get_metadata("DC", "title") or [[None]])[0][0]
     author = (book.get_metadata("DC", "creator") or [[None]])[0][0]
 
-    parts: list[str] = []
     skipped_chapters = 0
     landmark_lookup = _epub_landmark_roles(book)
     toc_lookup = _epub_nested_toc(book)
-    structure_roles: list[dict] = []
-    emitted_parents: set[str] = set()
+    documents: list[tuple[object, str, str, str]] = []
 
     for item in _iter_document_items(book, ebooklib):
         if _is_nav_item(item):
             skipped_chapters += 1
             continue
-
         href = item.get_name() or item.get_id() or ""
         try:
             raw_html = item.get_content().decode("utf-8", errors="replace")
         except Exception:
             skipped_chapters += 1
             continue
+        documents.append((item, href, raw_html, _html_to_text(raw_html)))
 
-        body = _html_to_text(raw_html)
+    metadata: dict = {"title": title, "author": author}
+    if skipped_chapters:
+        metadata["skipped_chapters"] = skipped_chapters
+
+    page_items = _page_image_items(
+        book,
+        [(href, raw_html) for _item, href, raw_html, _body in documents],
+    )
+    extracted_chars = sum(len(body.strip()) for _item, _href, _raw, body in documents)
+    image_ocr_threshold = max(500, len(page_items) * 5)
+    if page_items and extracted_chars < image_ocr_threshold:
+        images = (
+            (page_num, item.get_content())
+            for page_num, item in enumerate(page_items, start=1)
+        )
+        result = ocr_images(
+            images,
+            total=len(page_items),
+            settings=settings,
+            on_progress=on_progress,
+            cancel_event=cancel_event,
+        )
+        if not result.text.strip():
+            raise RuntimeError("图片型 EPUB OCR 失败或内容为空")
+        metadata.update(ocr_metadata_from_result(result))
+        metadata["ocr"] = True
+        metadata["ocr_source"] = "epub_images"
+        metadata["epub_image_pages"] = len(page_items)
+        return result.text, metadata
+
+    parts: list[str] = []
+    structure_roles: list[dict] = []
+    emitted_parents: set[str] = set()
+
+    for item, href, raw_html, body in documents:
         if not body:
             skipped_chapters += 1
             continue
@@ -371,7 +463,6 @@ def load_epub(path: Path) -> tuple[str, dict]:
         role = (landmark[0] if landmark else None) or classify_heading(chapter_title)
         structure_roles.append({"title": chapter_title, "role": role.value})
 
-    metadata: dict = {"title": title, "author": author}
     if skipped_chapters:
         metadata["skipped_chapters"] = skipped_chapters
     if structure_roles:

@@ -58,6 +58,17 @@ macOS 主界面（Windows 功能对等，交互为 WinUI 惯用导航）。
 
 ## 最近更新
 
+### v1.1 — 阅读进度门闩、摘要衔接与打开方式
+
+相对 v1.0.2 的主要变化：
+
+- **阅读进度门闩**：搜索 / 段列表 / citation / 笔记 / ⌘K 跳转不写进度；非阻塞条可返回上次进度或留在此处；不操作则再连续经过 3 个不同段后落库
+- **摘要衔接与字数门**：总结句承接最近前文（不串事实）；总结合计约 50–200 字，明显偏离自动重生
+- **macOS 打开方式**：Finder「打开方式」/ 双击导入支持格式；不支持格式立即提示；已运行时再开文件有响应（ad-hoc 签名便于设为默认）
+- **图片型 EPUB OCR**：扫描页 EPUB 按 spine 逐图 OCR，不再只导入目录后误报成功
+- **分段硬地板**：不足 200 字的空壳/短段可向后合并；目标段长打包仍不得跨章硬凑
+- **永不卡住**：摘要续跑与段摘要预取不得饿死 `/health`；大库 catalog 走缓存路径
+
 ### v1.0.2 — 启动不卡死、原文契约与顶栏书名
 
 相对 v1.0.1 的主要变化：
@@ -319,7 +330,7 @@ just test-release  # 发布门禁：纯 mock 并行（~20s，与 PR 等价）
 **推荐：GitHub Actions（无需本机 Xcode）**
 
 1. 打开仓库 **Actions → Release → Run workflow**
-2. 输入版本号（如 `1.0.2`）运行
+2. 输入版本号（如 `1.1.0`）运行
 3. 在 Artifacts 或 tag Release 中下载 DMG
 
 **本机构建（需与 macOS 版本匹配的 Xcode）**
@@ -329,13 +340,13 @@ macOS 15 用户：**不要**从 App Store 装最新 Xcode（可能要求 macOS 2
 ```bash
 ./scripts/build-release.sh
 # 会先跑 just test-release 等价测试，通过后才打包
-# 产出：dist/Lumina-1.0.2-macOS.dmg 与 .zip
+# 产出：dist/Lumina-1.1.0-macOS.dmg 与 .zip
 ```
 
 打 tag 推送后会自动构建并上传到 Release：
 
 ```bash
-git tag v1.0.2 && git push origin v1.0.2
+git tag v1.1.0 && git push origin v1.1.0
 ```
 
 ### 文档

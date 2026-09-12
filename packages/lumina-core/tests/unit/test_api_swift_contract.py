@@ -32,7 +32,7 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setenv("LUMINA_DATA_DIR", str(tmp_path))
     router = MockModelRouter(
         responses={
-            "summarize": {"category": "文学"},
+            "summarize": load_json_fixture(LLM_FIXTURES / "summary_segment0.json"),
             "chat": load_json_fixture(LLM_FIXTURES / "chat_with_citation.json"),
             "translate": "示例译文。",
         }
@@ -358,6 +358,10 @@ def test_summarize_batch_start_stop(client):
     )
     assert missing.status_code == 200
     assert "nonexistent-id" in missing.json()["skipped"]
+
+    # Drain work before TestClient lifespan shutdown so teardown cannot hang.
+    drained = client.post("/books/summarize/stop", json={"book_ids": [book_id]})
+    assert drained.status_code == 200
 
 
 def test_summarize_overview_exposes_indexing_and_stall_reason(client):

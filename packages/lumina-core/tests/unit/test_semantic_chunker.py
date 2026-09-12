@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 import pytest
 
 from lumina_core.chunker.chunker import chunk_text
@@ -119,7 +121,7 @@ def test_synthetic_and_bare_chapter_title_pack_with_body():
     )
 
 
-def test_title_only_chapter_does_not_swallow_next_chapter():
+def test_title_only_chapter_merges_forward_until_hard_min():
     sequel = "第二章展开完整的人物地点与事件。" * 30
     text = f"## [§第一章]\n\n第一章 缘起\n\n## [§第二章]\n\n{sequel}"
     segments = chunk_text(
@@ -127,11 +129,50 @@ def test_title_only_chapter_does_not_swallow_next_chapter():
         budget=ChunkBudget(target_chars=600, max_chars=900, min_chars=500),
         scorer=FixedScorer(0.0),
     )
-    assert len(segments) >= 2
-    assert "第一章 缘起" in segments[0].raw_text
-    assert "第二章展开" not in segments[0].raw_text
-    assert "第二章展开" in segments[1].raw_text
-    assert len(segments[0].raw_text) < 200
+    assert segments
+    first = segments[0].raw_text
+    assert "第一章 缘起" in first
+    assert "第二章展开" in first
+    assert len(first) >= 200
+    assert all(
+        segment.raw_text.strip() not in {"## [§第一章]", "第一章 缘起", "## [§第二章]"}
+        for segment in segments
+    )
+
+
+def test_toc_chapter_list_without_toc_word_has_no_title_only_segments():
+    toc = "\n\n".join(f"## [§第{i}章]\n第{i}章 标题{i}" for i in range(1, 21))
+    body = "正文从这里开始讲述完整的故事情节与人物命运。" * 40
+    text = toc + "\n\n## [§正文]\n\n" + body
+    segments = chunk_text(
+        text,
+        budget=ChunkBudget(target_chars=600, max_chars=900, min_chars=500),
+        scorer=FixedScorer(0.0),
+    )
+    assert segments
+    assert all(len(segment.raw_text) >= 200 for segment in segments[:-1])
+    assert all(
+        not re.fullmatch(r"(?:## \[§[^\]]+\]\n*)?(?:第\d+章[^\n]*)?", segment.raw_text.strip())
+        for segment in segments
+    )
+    assert any("正文从这里开始" in segment.raw_text for segment in segments)
+    assert "".join(segment.raw_text for segment in segments) == text
+
+
+def test_target_pack_does_not_swallow_next_chapter_for_length():
+    """Soft/target floor must not pull the next chapter to fill ~target chars."""
+    first = ("第一章正文补足人物地点与事件背景。" * 25)
+    second = ("第二章正文补足人物地点与事件背景。" * 25)
+    text = (
+        f"## [§第一章]\n\n第一章 山中\n\n{first}\n\n"
+        f"## [§第二章]\n\n第二章 海上\n\n{second}"
+    )
+    # first chapter body alone is already above soft floor (~500) and below max
+    budget = ChunkBudget(target_chars=2000, max_chars=3000, min_chars=1200)
+    segments = chunk_text(text, budget=budget, scorer=FixedScorer(0.0))
+    chapter_one = next(seg for seg in segments if "第一章 山中" in seg.raw_text)
+    assert "第二章 海上" not in chapter_one.raw_text
+    assert "第二章正文" not in chapter_one.raw_text
 
 
 def test_each_chapter_heading_packs_with_its_own_body():
@@ -213,16 +254,17 @@ def test_page_markers_are_anchors_not_hard_cuts():
     assert segments[0].page_range == "p.1-2"
 
 
-def test_short_body_chapter_does_not_swallow_next_chapter():
+def test_short_body_chapter_merges_forward_until_hard_min():
     first = "第一章只有很短的内容。" * 8
     second = "第二章展开完整的人物地点与事件。" * 30
     text = f"## [§第一章]\n\n{first}\n\n## [§第二章]\n\n{second}"
     budget = ChunkBudget(target_chars=600, max_chars=900, min_chars=500)
     segments = chunk_text(text, budget=budget, scorer=FixedScorer(0.0))
-    assert len(segments) >= 2
-    assert "第一章只有很短" in segments[0].raw_text
-    assert "第二章展开" not in segments[0].raw_text
-    assert "第二章展开" in segments[1].raw_text
+    assert segments
+    first_seg = segments[0].raw_text
+    assert "第一章只有很短" in first_seg
+    assert "第二章展开" in first_seg
+    assert len(first_seg) >= 200
 
 
 _PREVIOUS_CHAPTER_TAIL = (

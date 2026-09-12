@@ -19,6 +19,7 @@ from lumina_core.classify.book import BOOK_CATEGORIES
 from lumina_core.db.connection import db_lock, db_transaction
 from lumina_core.search.fts import delete_note_from_fts
 from lumina_core.summarize.preview import segment_list_fields
+from lumina_core.summarize.schema import normalize_summary_data, resolve_segment_label
 
 
 def _now() -> str:
@@ -375,7 +376,8 @@ class BookRepo:
 _SEGMENT_LIST_COLUMNS = (
     "id, book_id, idx, chapter, heading_path, page_range, anchor_label, char_count, "
     "label, summary_status, retry_count, "
-    "summary_provider, summary_model, summary_tier, summary_duration_s, summary_llm_attempts"
+    "summary_provider, summary_model, summary_tier, summary_duration_s, summary_llm_attempts, "
+    "summary_preview, bullet_labels"
 )
 
 # Optional include_summary=1 on list API (export/debug).
@@ -500,29 +502,123 @@ class SegmentRepo:
         return [_segment_public(r) for r in rows]
 
     def list_catalog(self, book_id: str) -> list[dict[str, Any]]:
-        """Slim list plus summary_preview and bullet_labels. Never returns summary_json."""
-        cols = (
-            f"{_SEGMENT_LIST_COLUMNS}, "
-            "CASE WHEN summary_status = 'ready' THEN summary_json ELSE NULL END "
-            "AS summary_json"
-        )
+        """Slim cached catalog. The open-book hot path never parses summary_json."""
         with db_lock(self.conn):
             rows = self.conn.execute(
-                f"SELECT {cols} FROM segments WHERE book_id = ? ORDER BY idx",
+                f"SELECT {_SEGMENT_LIST_COLUMNS} FROM segments "
+                "WHERE book_id = ? ORDER BY idx",
                 (book_id,),
             ).fetchall()
         catalog: list[dict[str, Any]] = []
-        for index, row in enumerate(rows):
+        for row in rows:
             item = _segment_public(row)
-            preview, labels = segment_list_fields(item.pop("summary_json", None))
-            if preview:
-                item["summary_preview"] = preview
-            if labels:
-                item["bullet_labels"] = labels
+            if item.get("summary_status") != "ready":
+                item.pop("summary_preview", None)
+                item.pop("bullet_labels", None)
+            elif not item.get("summary_preview"):
+                item.pop("summary_preview", None)
+            if not item.get("bullet_labels"):
+                item.pop("bullet_labels", None)
             catalog.append(item)
-            if index % 64 == 63:
-                time.sleep(0.001)
         return catalog
+
+    def backfill_catalog_cache(self, *, batch_size: int = 64) -> int:
+        """Populate legacy ready rows in bounded transactions.
+
+        This runs from a worker thread during startup recovery. Parsing happens
+        outside the shared connection lock, and each write transaction is small.
+        """
+        updated = 0
+        while True:
+            with db_lock(self.conn):
+                rows = self.conn.execute(
+                    """
+                    SELECT id, summary_json
+                    FROM segments
+                    WHERE summary_status = 'ready'
+                      AND summary_json IS NOT NULL
+                      AND (summary_preview IS NULL OR bullet_labels IS NULL)
+                    ORDER BY book_id, idx
+                    LIMIT ?
+                    """,
+                    (batch_size,),
+                ).fetchall()
+            if not rows:
+                return updated
+            values: list[tuple[str, str, str]] = []
+            for row in rows:
+                preview, labels = segment_list_fields(row["summary_json"])
+                values.append(
+                    (
+                        preview or "",
+                        json.dumps(labels, ensure_ascii=False),
+                        row["id"],
+                    )
+                )
+            with db_transaction(self.conn):
+                self.conn.executemany(
+                    """
+                    UPDATE segments
+                    SET summary_preview = ?, bullet_labels = ?
+                    WHERE id = ?
+                    """,
+                    values,
+                )
+            updated += len(values)
+            time.sleep(0.001)
+
+    def backfill_prefix_labels(self, *, batch_size: int = 64) -> int:
+        """Fill empty labels from the first summary sentence head.
+
+        Only touches ready rows with a blank label. Existing labels (including
+        short sentence heads) are left alone. Runs from a worker thread during
+        startup recovery.
+        """
+        updated = 0
+        after_id = ""
+        while True:
+            with db_lock(self.conn):
+                rows = self.conn.execute(
+                    """
+                    SELECT id, label, summary_json, anchor_label
+                    FROM segments
+                    WHERE summary_status = 'ready'
+                      AND summary_json IS NOT NULL
+                      AND (label IS NULL OR TRIM(label) = '')
+                      AND id > ?
+                    ORDER BY id
+                    LIMIT ?
+                    """,
+                    (after_id, batch_size),
+                ).fetchall()
+            if not rows:
+                return updated
+            values: list[tuple[str, str]] = []
+            for row in rows:
+                after_id = row["id"]
+                raw = row["summary_json"]
+                try:
+                    parsed = json.loads(raw) if isinstance(raw, str) else raw
+                except (json.JSONDecodeError, TypeError):
+                    continue
+                if not isinstance(parsed, dict):
+                    continue
+                normalized = normalize_summary_data(parsed)
+                new_label = resolve_segment_label(
+                    None,
+                    sentences=normalized.get("sentences"),
+                    fallback_anchor=row["anchor_label"] or "要点",
+                )
+                if new_label:
+                    values.append((new_label, row["id"]))
+            if values:
+                with db_transaction(self.conn):
+                    self.conn.executemany(
+                        "UPDATE segments SET label = ? WHERE id = ?",
+                        values,
+                    )
+                updated += len(values)
+            time.sleep(0.001)
 
     def list_for_export(self, book_id: str) -> list[dict[str, Any]]:
         with db_lock(self.conn):
@@ -907,18 +1003,32 @@ class SegmentRepo:
         summary_duration_s: float | None = None,
         summary_llm_attempts: int | None = None,
     ) -> None:
+        summary_preview, bullet_labels = segment_list_fields(summary_json)
+        try:
+            parsed = json.loads(summary_json) if isinstance(summary_json, str) else summary_json
+        except (json.JSONDecodeError, TypeError):
+            parsed = None
+        stored_label = label
+        if isinstance(parsed, dict):
+            normalized = normalize_summary_data(parsed)
+            stored_label = resolve_segment_label(
+                label,
+                sentences=normalized.get("sentences"),
+                fallback_anchor=anchor_label or label or "要点",
+            )
         with db_transaction(self.conn):
             self.conn.execute(
                 """
                 UPDATE segments SET summary_json = ?, label = ?, anchor_label = COALESCE(?, anchor_label),
                 summary_status = ?, retry_count = 0,
                 summary_provider = ?, summary_model = ?, summary_tier = ?,
-                summary_duration_s = ?, summary_llm_attempts = ?
+                summary_duration_s = ?, summary_llm_attempts = ?,
+                summary_preview = ?, bullet_labels = ?
                 WHERE id = ?
                 """,
                 (
                     summary_json,
-                    label,
+                    stored_label,
                     anchor_label,
                     status,
                     summary_provider,
@@ -926,6 +1036,8 @@ class SegmentRepo:
                     summary_tier,
                     summary_duration_s,
                     summary_llm_attempts,
+                    summary_preview or "",
+                    json.dumps(bullet_labels, ensure_ascii=False),
                     segment_id,
                 ),
             )
@@ -940,7 +1052,8 @@ class SegmentRepo:
                     summary_status = 'pending', retry_count = 0,
                     summary_provider = NULL, summary_model = NULL,
                     summary_tier = ?, summary_duration_s = NULL,
-                    summary_llm_attempts = NULL
+                    summary_llm_attempts = NULL, summary_preview = NULL,
+                    bullet_labels = NULL
                 WHERE id = ?
                 """,
                 (summary_tier, segment_id),
@@ -1027,7 +1140,8 @@ class SegmentRepo:
                 anchor_label = ?, summary_json = NULL, label = NULL,
                 translation = NULL, summary_status = 'pending', retry_count = 0,
                 summary_provider = NULL, summary_model = NULL, summary_tier = ?,
-                summary_duration_s = NULL, summary_llm_attempts = NULL
+                summary_duration_s = NULL, summary_llm_attempts = NULL,
+                summary_preview = NULL, bullet_labels = NULL
             WHERE id = ?
             """,
             (

@@ -133,6 +133,24 @@ def test_release_smoke_isolates_data_dir():
     ), "smoke sidecar must set LUMINA_DATA_DIR; bare launch opens the live library"
 
 
+def test_release_resigns_after_sidecar_embed():
+    """Unsigned post-embed bundles make Finder reject 'Set as default' (error 13)."""
+    script = (REPO_ROOT / "scripts" / "build-release.sh").read_text(encoding="utf-8")
+    marker = "==> Ad-hoc codesign (post-sidecar; Finder default handler)"
+    start = script.find(marker)
+    assert start != -1, "missing post-sidecar codesign step"
+    # Sign after embed smoke, before staging ZIP/DMG.
+    smoke_at = script.find("==> Sidecar startup smoke (embedded binary)")
+    stage_at = script.find("==> Staging release artifacts")
+    assert smoke_at != -1 and stage_at != -1 and smoke_at < start < stage_at
+    block = script[start:stage_at]
+    assert "codesign --force --deep --options runtime --sign" in block
+    assert 'codesign --verify --deep --strict "$APP"' in block
+    # ditto to dist must still verify (signature must survive staging).
+    staged = script[stage_at : stage_at + 800]
+    assert 'codesign --verify --deep --strict "$RELEASE_APP"' in staged
+
+
 def test_release_smoke_asserts_health_chunker_version():
     """build-release.sh must compare /health JSON to CHUNKER_VERSION, not HTTP 200 only."""
     script = (REPO_ROOT / "scripts" / "build-release.sh").read_text(encoding="utf-8")

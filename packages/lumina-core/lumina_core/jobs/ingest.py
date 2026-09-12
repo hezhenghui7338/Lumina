@@ -278,6 +278,7 @@ async def run_ingest_job(
                         getattr(settings, "default_segment_tier", "normal")
                     ),
                     "settings": settings_for_cpu_job(settings),
+                    "_ocr_cloud_api_key": settings.ocr_cloud_api_key,
                     "models": models_for_cpu_job(models),
                 },
                 cancel_event,

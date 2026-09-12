@@ -402,21 +402,6 @@ class ProfileModelRouter:
                     profile=profile,
                     on_slot_acquired=_notify_slot,
                 )
-                from lumina_core.debug_agent_log import agent_log
-
-                agent_log(
-                    hypothesis_id="C",
-                    location="router.py:_complete_with_fallback:ok",
-                    message="resource complete ok",
-                    data={
-                        "profile": profile,
-                        "resource_id": resource.id,
-                        "provider": resource.provider,
-                        "duration_s": round(time.time() - resource_started, 2),
-                        "prompt_chars": len(prompt),
-                        "fallback_index": index,
-                    },
-                )
                 self._record_success(resource, profile=profile)
                 self._record_call(
                     resource_id=resource.id,
@@ -426,36 +411,11 @@ class ProfileModelRouter:
                 )
                 return text
             except ResourceBusyError as exc:
-                from lumina_core.debug_agent_log import agent_log
-
-                agent_log(
-                    hypothesis_id="C",
-                    location="router.py:_complete_with_fallback:busy",
-                    message="resource busy, trying fallback",
-                    data={
-                        "profile": profile,
-                        "resource_id": resource.id,
-                        "wait_s": round(time.time() - resource_started, 2),
-                    },
-                )
                 if resource.provider == "ollama":
                     ollama_skipped = True
                 last_error = exc
                 logger.warning("resource %s busy: %s", resource.id, exc)
             except (httpx.TimeoutException, TimeoutError) as exc:
-                from lumina_core.debug_agent_log import agent_log
-
-                agent_log(
-                    hypothesis_id="C",
-                    location="router.py:_complete_with_fallback:timeout",
-                    message="resource timed out, trying fallback",
-                    data={
-                        "profile": profile,
-                        "resource_id": resource.id,
-                        "duration_s": round(time.time() - resource_started, 2),
-                        "fast_ollama": fast_ollama_timeout,
-                    },
-                )
                 if resource.provider == "ollama":
                     ollama_skipped = True
                 if fast_ollama_timeout:
@@ -463,20 +423,6 @@ class ProfileModelRouter:
                 last_error = exc
                 logger.warning("resource %s timed out: %s", resource.id, exc)
             except Exception as exc:
-                from lumina_core.debug_agent_log import agent_log
-
-                agent_log(
-                    hypothesis_id="C",
-                    location="router.py:_complete_with_fallback:error",
-                    message="resource failed, trying fallback",
-                    data={
-                        "profile": profile,
-                        "resource_id": resource.id,
-                        "duration_s": round(time.time() - resource_started, 2),
-                        "error_type": type(exc).__name__,
-                        "error": str(exc)[:300],
-                    },
-                )
                 last_error = exc
                 logger.warning("resource %s failed: %s", resource.id, exc)
 

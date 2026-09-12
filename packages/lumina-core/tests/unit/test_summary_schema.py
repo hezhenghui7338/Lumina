@@ -134,10 +134,40 @@ def test_parse_segment_summary_minimal_fills_label_and_anchor():
     }
     summary = parse_segment_summary_minimal(raw, fallback_anchor="§第一章 · 段 1")
     assert summary.anchor == "§第一章 · 段 1"
-    assert summary.label.startswith("本段")
+    # Missing label → short head of the first sentence, not bullet-title mashup.
+    assert summary.label == "本段交代主角寒门"
+    assert " · " not in summary.label
     assert len(summary.label) <= 20
     assert summary.notes == []
     assert summary.follow_ups == []
+
+
+def test_parse_segment_summary_minimal_keeps_provided_prefix_label():
+    raw = {
+        "sentences": ["邻里虽敬其向学，却无力资助书卷。"],
+        "bullets": [
+            {"label": "寒门出身", "body": "主角生于贫苦农家。"},
+            {"label": "赴考之志", "body": "段末誓要金榜题名。"},
+            {"label": "邻里关系", "body": "邻里敬其向学。"},
+        ],
+        "label": "邻里虽敬",
+    }
+    summary = parse_segment_summary_minimal(raw, fallback_anchor="§段 1")
+    assert summary.label == "邻里虽敬"
+
+
+def test_parse_segment_summary_minimal_preserves_theme_label():
+    raw = {
+        "sentences": ["寒门少年立志赴考，邻里敬学却无力资助。"],
+        "bullets": [
+            {"label": "寒门出身", "body": "主角生于贫苦农家。"},
+            {"label": "赴考之志", "body": "段末誓要金榜题名。"},
+            {"label": "邻里关系", "body": "邻里敬其向学。"},
+        ],
+        "label": "引子：寒门赴考",
+    }
+    summary = parse_segment_summary_minimal(raw, fallback_anchor="§段 1")
+    assert summary.label == "引子：寒门赴考"
 
 
 def test_parse_segment_summary_minimal_preserves_follow_ups():

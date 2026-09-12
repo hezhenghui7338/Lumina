@@ -42,6 +42,12 @@ def test_utf16_offset_emoji_and_cjk():
     assert utf16_offset(text, len(text)) == len(text.encode("utf-16-le")) // 2
 
 
+def test_utf16_offset_does_not_require_codec_missing_from_release_sidecar():
+    source = inspect.getsource(utf16_offset)
+    assert ".encode(" not in source
+    assert utf16_offset("甲😊乙", 99) == 4
+
+
 def test_snippet_marks_match_and_strips_newlines():
     text = "子曰：\n学而时习之"
     start = text.index("学而")

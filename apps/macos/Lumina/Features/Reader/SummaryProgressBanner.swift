@@ -136,3 +136,41 @@ struct SummaryProgressBanner: View {
             .frame(height: lineHeight, alignment: .leading)
     }
 }
+
+enum ProgressReturnBannerMetrics {
+    static let height: CGFloat = 36
+}
+
+/// Non-blocking offer to return to the pre-jump reading position after an
+/// intentional seek. Must not use a modal alert — the user can keep reading.
+struct ProgressReturnBanner: View {
+    let savedIndex: Int
+    var onReturn: () -> Void
+    var onStay: () -> Void
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Text("是否返回上次进度（第 \(savedIndex + 1) 段）？")
+                .font(.caption)
+                .foregroundStyle(LuminaTheme.textPrimary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.85)
+            Spacer(minLength: 8)
+            Button("留在此处", action: onStay)
+                .buttonStyle(.plain)
+                .font(.caption)
+                .foregroundStyle(LuminaTheme.textSecondary)
+            Button("返回", action: onReturn)
+                .buttonStyle(.plain)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(LuminaTheme.accent)
+        }
+        .padding(.horizontal, 12)
+        .frame(maxWidth: .infinity)
+        .frame(height: ProgressReturnBannerMetrics.height)
+        .background(LuminaTheme.surface.opacity(0.96))
+        .overlay(alignment: .bottom) {
+            Divider()
+        }
+    }
+}

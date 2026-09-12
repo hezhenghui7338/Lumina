@@ -800,6 +800,85 @@ def test_load_epub_falls_back_when_spine_empty(tmp_path, monkeypatch):
     assert "正文段落甲乙丙" in text
 
 
+def test_load_epub_ocrs_page_images_instead_of_importing_only_outline(
+    tmp_path, monkeypatch
+):
+    pytest.importorskip("ebooklib")
+    from ebooklib import epub
+
+    from lumina_core.ingest.ocr import OcrDocumentResult, OcrPageResult
+
+    book = epub.EpubBook()
+    book.set_identifier("lumina-image-epub")
+    book.set_title("扫描书")
+    chapter = epub.EpubHtml(
+        title="正文",
+        file_name="pages.xhtml",
+        uid="pages",
+        lang="zh",
+    )
+    chapter.set_content(
+        '<html><body><p>Document Outline 正文</p>'
+        '<img src="images/p1.png"/><img src="images/p2.png"/>'
+        "</body></html>"
+    )
+    book.add_item(chapter)
+    book.add_item(
+        epub.EpubItem(
+            uid="p1",
+            file_name="images/p1.png",
+            media_type="image/png",
+            content=b"page-one",
+        )
+    )
+    book.add_item(
+        epub.EpubItem(
+            uid="p2",
+            file_name="images/p2.png",
+            media_type="image/png",
+            content=b"page-two",
+        )
+    )
+    book.add_item(epub.EpubNcx())
+    book.add_item(epub.EpubNav())
+    book.spine = [chapter]
+    path = tmp_path / "scanned.epub"
+    epub.write_epub(str(path), book)
+
+    captured: dict[str, object] = {}
+
+    def fake_ocr(images, *, total, settings, on_progress, cancel_event):
+        captured["images"] = list(images)
+        captured["total"] = total
+        if on_progress:
+            on_progress(1, total, f"图片型 EPUB · 本地 OCR 1/{total} 页…")
+        return OcrDocumentResult(
+            text="## [p.1]\n第一页面正文\n\n## [p.2]\n第二页面正文",
+            pages=[
+                OcrPageResult(1, "第一页面正文", 0.9, False),
+                OcrPageResult(2, "第二页面正文", 0.9, False),
+            ],
+            avg_confidence=0.9,
+        )
+
+    monkeypatch.setattr("lumina_core.ingest.epub.ocr_images", fake_ocr)
+    progress: list[tuple[int, int, str]] = []
+    text, meta = load_document(
+        path,
+        "epub",
+        on_progress=lambda page, total, message: progress.append((page, total, message)),
+    )
+
+    assert captured["images"] == [(1, b"page-one"), (2, b"page-two")]
+    assert captured["total"] == 2
+    assert "第一页面正文" in text
+    assert "第二页面正文" in text
+    assert "Document Outline" not in text
+    assert meta["ocr_source"] == "epub_images"
+    assert meta["epub_image_pages"] == 2
+    assert progress == [(1, 2, "图片型 EPUB · 本地 OCR 1/2 页…")]
+
+
 def test_load_epub_landmarks_set_structure_roles_not_raw_text(tmp_path):
     ebooklib = pytest.importorskip("ebooklib")
     from ebooklib import epub

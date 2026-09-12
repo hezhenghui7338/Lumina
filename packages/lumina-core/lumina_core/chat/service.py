@@ -222,17 +222,19 @@ def assemble_book_context(
     segment_repo: SegmentRepo,
     current_segment_idx: int | None = None,
 ) -> str:
+    """Book-scope DCA: L0 + all L1 clusters; FTS only from the user message.
+
+    ``current_segment_idx`` is accepted for call-site compatibility but must not
+    bias recall: mixing the reading-position label into FTS (e.g. shared bullet
+    titles like「要点」) would pin every segment—and the last page—into L2.
+    """
+    _ = current_segment_idx  # reading position must not bias book-scope recall
     root = node_repo.get_root(book["id"])
     root_text = _node_body(root) if root else "（全书总摘要尚未生成）"
     nodes = node_repo.list_for_book(book["id"])
-    label = ""
-    if current_segment_idx is not None:
-        current_body = segment_repo.get_bodies_by_indices(book["id"], [current_segment_idx]).get(
-            current_segment_idx
-        )
-        label = str((current_body or {}).get("label") or "")
+    # Message only — never OR current-segment label into book-scope FTS.
     hits = search_book_segments(
-        conn, book["id"], _fts_query(message, label), limit=MAX_HIT_SEGMENTS
+        conn, book["id"], _fts_query(message, None), limit=MAX_HIT_SEGMENTS
     )
     hit_indices = [
         int(h["segment_index"])
@@ -263,13 +265,8 @@ def assemble_book_context(
         if formatted:
             segment_summaries.append((idx, str(row.get("label") or ""), formatted))
         raw = row.get("raw_text") or ""
-        cap = (
-            CURRENT_ORIGINAL_CHARS
-            if current_segment_idx is not None and idx == current_segment_idx
-            else NEARBY_ORIGINAL_CHARS
-        )
         if raw:
-            originals.append((idx, raw[:cap]))
+            originals.append((idx, raw[:NEARBY_ORIGINAL_CHARS]))
     return build_book_dca_context(
         book,
         root_text=root_text,

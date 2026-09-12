@@ -40,11 +40,13 @@ ProviderKind = Literal["ollama", "cloud", "full"]
 SUMMARY_CONTEXT_MAX_CHARS = 1600
 SUMMARY_CONTEXT_QUERY_LIMIT = 32
 
-_CONTEXT_GUIDANCE = """以下是当前段之前的摘要背景，仅用于消解人物、代词、时间线和因果关系：
+_CONTEXT_GUIDANCE = """以下是当前段之前的摘要背景，用于消解人物、代词、时间线和因果关系，并让总结句顺接前文阅读感：
 {context}
 
 背景使用规则：
-- 只总结当前待摘要段落，不能把背景中的事件当作当前段内容
+- 只总结当前待摘要段落；不能把背景中的事件当作当前段新发生的内容
+- sentences 应承接最近前文的叙事线程（语气、未决线索、情节走向），使相邻段摘要连读更顺；有背景时避免机械起笔「本段交代…」
+- bullets / notes / follow_ups 仍只写本段新信息，不得用背景凑条数
 - 不得仅因段首出现某个人名，就把后文的“我”或其他代词认定为此人
 - 第一人称「我」须用「我」转述，禁止写成「叙述者」「阅读助手」或任何系统身份
 - 只有原文或背景明确支持时才能确定人物身份；无法确认时保留不确定性
@@ -55,12 +57,14 @@ _CONTEXT_GUIDANCE = """以下是当前段之前的摘要背景，仅用于消解
 
 _OLLAMA_RETRY_SUFFIX = (
     '\n\n上次输出不是合法 JSON。请只输出 '
-    '{{"sentences":["…"],"bullets":[{{"label":"…","body":"…"}}],"follow_ups":["…"]}}，不要其他文字。'
+    '{{"sentences":["…"],"bullets":[{{"label":"…","body":"…"}}],'
+    '"follow_ups":["…"],"label":"…"}}，不要其他文字。'
 )
 
 _CLOUD_RETRY_SUFFIX = (
     '\n\n上次输出不是合法 JSON。请只输出 '
-    '{{"sentences":["…"],"bullets":[{{"label":"…","body":"…"}}],"follow_ups":["…"]}}，不要其他文字。'
+    '{{"sentences":["…"],"bullets":[{{"label":"…","body":"…"}}],'
+    '"follow_ups":["…"],"label":"…"}}，不要其他文字。'
 )
 
 
@@ -274,7 +278,6 @@ async def summarize_segment(
     for attempt in range(retries):
         import time
 
-        from lumina_core.debug_agent_log import agent_log
 
         llm_attempt = attempt + 1
         await _emit_progress(phase="start", llm_attempt=llm_attempt)
@@ -283,17 +286,6 @@ async def summarize_segment(
         async def _on_slot_acquired(current_attempt: int = llm_attempt) -> None:
             await _emit_progress(phase="llm_start", llm_attempt=current_attempt)
 
-        agent_log(
-            hypothesis_id="B",
-            location="segment.py:summarize_segment:attempt",
-            message="LLM attempt start",
-            data={
-                "attempt": llm_attempt,
-                "max_attempts": retries,
-                "prompt_chars": len(prompt),
-                "text_limit": text_limit,
-            },
-        )
         complete_kwargs: dict[str, Any] = {
             "profile": "summarize",
             "json_mode": True,
@@ -325,12 +317,6 @@ async def summarize_segment(
                 total_llm_duration += quality.review_duration_s
             if quality_should_reject(quality.issues):
                 raise SummaryQualityError(quality.issues)
-            agent_log(
-                hypothesis_id="B",
-                location="segment.py:summarize_segment:success",
-                message="LLM attempt succeeded",
-                data={"attempt": llm_attempt, "llm_duration_s": llm_duration},
-            )
             return SummarizeResult(
                 summary=summary,
                 llm_attempts=llm_attempt,
@@ -338,18 +324,6 @@ async def summarize_segment(
             )
         except (ValidationError, json.JSONDecodeError, ValueError) as exc:
             last_err = exc
-            agent_log(
-                hypothesis_id="B",
-                location="segment.py:summarize_segment:validation_fail",
-                message="LLM output validation failed, will retry",
-                data={
-                    "attempt": llm_attempt,
-                    "llm_duration_s": llm_duration,
-                    "error_type": type(exc).__name__,
-                    "error": str(exc)[:300],
-                    "raw_len": len(last_raw or ""),
-                },
-            )
             await _emit_progress(
                 phase="fail",
                 llm_attempt=llm_attempt,

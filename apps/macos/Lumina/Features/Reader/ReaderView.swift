@@ -50,8 +50,9 @@ struct ReaderView: View {
     @State private var expandedSummarySegments: Set<Int> = []
     @State private var contentMode: ReaderContentMode = .summary
     /// The segment pinned to the top of the viewport. Single source of truth for
-    /// reading progress: SwiftUI writes it while scrolling, and every jump is
-    /// performed by assigning to it. Nothing else may move the scroll view.
+    /// reading progress while the seek gate is armed: SwiftUI writes it while
+    /// scrolling; intentional jumps freeze commits until three further pins.
+    /// Every jump still assigns here — nothing else may move the scroll view.
     @State private var topSegmentIdx: Int?
     @State private var readerGlobalFrame: CGRect = .null
     @State private var overlay: ReaderOverlay = .none
@@ -525,7 +526,7 @@ struct ReaderView: View {
         )
         listenSession.onHighlightSegment = { idx in
             highlightSegment = idx
-            navigateToSegment(idx)
+            navigateToSegment(idx, suspendProgress: false)
         }
         listenSession.start(mode: mode, from: listenStartIdx)
     }
@@ -821,17 +822,44 @@ struct ReaderView: View {
             .padding(.bottom, overlayBottomPadding)
             .allowsHitTesting(overlay == .chat)
 
-            if barsVisible {
-                readerChromeBarOverlay
-                    .transition(.move(edge: .top).combined(with: .opacity))
-            }
-
             if coverPage == .segments {
                 ReaderCoverPageShell {
                     segmentCoverPanel
                 }
                 .padding(.bottom, overlayBottomPadding)
                 .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+
+            // Above the segment cover so a catalog jump still shows the offer
+            // while the cover is dismissing. Hugs banner height under the chrome
+            // spacer; chrome is drawn after this so top-bar clicks stay live.
+            if let offer = viewModel.progressReturnOffer {
+                VStack(spacing: 0) {
+                    Color.clear
+                        .frame(height: ReaderChromeBarMetrics.height)
+                        .allowsHitTesting(false)
+                    ProgressReturnBanner(
+                        savedIndex: offer.savedIndex,
+                        onReturn: { confirmProgressReturn() },
+                        onStay: {
+                            let idx = topSegmentIdx
+                                ?? viewModel.selectedIdx
+                                ?? offer.savedIndex
+                            viewModel.dismissProgressReturnOffer(at: idx)
+                        }
+                    )
+                    .readingColumn()
+                    .padding(.horizontal, LuminaTheme.summaryPadding)
+                    Spacer(minLength: 0)
+                        .allowsHitTesting(false)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                .transition(.opacity)
+            }
+
+            if barsVisible {
+                readerChromeBarOverlay
+                    .transition(.move(edge: .top).combined(with: .opacity))
             }
 
             if barsVisible {
@@ -1334,16 +1362,25 @@ struct ReaderView: View {
         guard let target = SegmentTurnNavigation.targetIdx(
             current: idx, delta: delta, sortedIdxs: sorted
         ) else { return }
-        navigateToSegment(target)
+        navigateToSegment(target, suspendProgress: false)
     }
 
-    private func navigateToSegment(_ idx: Int) {
+    private func navigateToSegment(_ idx: Int, suspendProgress: Bool = true) {
+        if suspendProgress {
+            viewModel.beginProgressSeek(at: idx)
+        }
         viewModel.selectedIdx = idx
         readerContentFocused = true
         jump(to: idx)
     }
 
+    private func confirmProgressReturn() {
+        guard let target = viewModel.confirmProgressReturn() else { return }
+        navigateToSegment(target, suspendProgress: false)
+    }
+
     private func selectSidebarSegment(_ idx: Int) {
+        viewModel.beginProgressSeek(at: idx)
         viewModel.selectedIdx = idx
         jump(to: idx)
         closeCoverPage()
@@ -2454,8 +2491,12 @@ final class ReaderViewModel: ObservableObject {
     @Published var loadError: String?
     @Published var ingestProgress: IngestProgress?
     /// `restoring` until the feed settles on the resumed segment; `reading`
-    /// afterwards, when the pinned segment is the progress.
+    /// afterwards, when the pinned segment is the progress (subject to the
+    /// seek gate after intentional jumps).
     @Published private(set) var progressPhase: ReaderProgressPhase = .reading
+    /// Non-blocking "return to last progress" offer while seeking after a jump.
+    @Published private(set) var progressReturnOffer: ProgressReturnOffer?
+    private var progressCommitGate = ReadingProgressCommitGate()
     private(set) var restoreTarget: Int?
     private var restoreSettleTask: Task<Void, Never>?
     private var bookLanguage: String?
@@ -2466,6 +2507,8 @@ final class ReaderViewModel: ObservableObject {
     private var eventTask: Task<Void, Never>?
     private var detailTasks: [Int: Task<Void, Never>] = [:]
     private var summaryHydrateTasks: [Int: Task<Void, Never>] = [:]
+    private var summaryPrefetchTask: Task<Void, Never>?
+    private var summaryPrefetchGeneration = 0
     private var summaryParseTasks: [Int: Task<Void, Never>] = [:]
     private var chatTask: Task<Void, Never>?
     private var hydratingSummaryIndices: Set<Int> = []
@@ -2614,6 +2657,9 @@ final class ReaderViewModel: ObservableObject {
             task.cancel()
         }
         summaryHydrateTasks.removeAll()
+        summaryPrefetchTask?.cancel()
+        summaryPrefetchTask = nil
+        summaryPrefetchGeneration += 1
         clearSummaryCache()
         hydratingSummaryIndices.removeAll()
         chatTask?.cancel()
@@ -2664,6 +2710,8 @@ final class ReaderViewModel: ObservableObject {
         loadError = nil
         ingestProgress = nil
         progressPhase = .restoring
+        progressCommitGate.reset()
+        progressReturnOffer = nil
         restoreTarget = nil
         self.bookId = bookId
         ReadingProgressStore.shared.attach(core: core)
@@ -2705,6 +2753,7 @@ final class ReaderViewModel: ObservableObject {
                 serverIndex: open.current_segment_index,
                 segmentCount: list.count
             )
+            let jumpedIn = initialSegmentIndex != nil
             let idx = initialSegmentIndex
                 ?? list.first(where: { $0.idx == saved })?.idx
                 ?? list.first?.idx
@@ -2722,11 +2771,17 @@ final class ReaderViewModel: ObservableObject {
             bookLanguage = book.language
             bookTargetLanguage = book.target_language
             if let idx {
+                // ⌘K / note / citation open: keep the pre-jump progress on the
+                // bookshelf; only the feed scrolls to the jump target.
+                let progressIdx = jumpedIn ? saved : idx
                 ReadingProgressStore.shared.hydrate(
                     bookId: bookId,
-                    index: idx,
+                    index: progressIdx,
                     total: list.count
                 )
+                if jumpedIn {
+                    beginProgressSeek(at: idx)
+                }
                 topSegmentSelection = idx
                 selectedIdx = idx
                 selectSegment(idx)
@@ -2778,18 +2833,63 @@ final class ReaderViewModel: ObservableObject {
     }
 
     /// Record the segment pinned to the top of the viewport. This is the only
-    /// place reading progress is written.
+    /// place reading progress is written — and only when the seek gate allows.
     func noteTopSegment(_ idx: Int) {
         guard progressPhase.recordsProgress else { return }
         guard !bookId.isEmpty, !segments.isEmpty else { return }
+        if selectedIdx != idx {
+            topSegmentSelection = idx
+            selectedIdx = idx
+        }
+        guard progressCommitGate.shouldCommit(pinned: idx) else { return }
+        progressReturnOffer = nil
         ReadingProgressStore.shared.record(
             bookId: bookId,
             index: idx,
             total: segments.count
         )
-        if selectedIdx != idx {
-            topSegmentSelection = idx
-            selectedIdx = idx
+    }
+
+    /// Intentional jump (search / catalog / citation / notes). Freezes progress
+    /// commits until three further distinct pins have been read through, and
+    /// may show the return-progress offer when leaving the saved position.
+    func beginProgressSeek(at landing: Int) {
+        let saved = ReadingProgressStore.shared.position(for: bookId)?.index
+            ?? selectedIdx
+            ?? landing
+        _ = progressCommitGate.beginSeek(at: landing, savedIndex: saved)
+        syncProgressReturnOffer()
+    }
+
+    /// User chose "返回": clear seek and report the saved index to scroll to.
+    func confirmProgressReturn() -> Int? {
+        guard let target = progressCommitGate.acceptReturn() else { return nil }
+        progressReturnOffer = nil
+        return target
+    }
+
+    /// User chose "留在此处": adopt the current pin as progress and resume
+    /// normal recording.
+    func dismissProgressReturnOffer(at currentIdx: Int) {
+        progressCommitGate.adoptHere()
+        progressReturnOffer = nil
+        guard !bookId.isEmpty, !segments.isEmpty else { return }
+        ReadingProgressStore.shared.record(
+            bookId: bookId,
+            index: currentIdx,
+            total: segments.count
+        )
+        if selectedIdx != currentIdx {
+            topSegmentSelection = currentIdx
+            selectedIdx = currentIdx
+        }
+    }
+
+    private func syncProgressReturnOffer() {
+        if progressCommitGate.offerVisible, let saved = progressCommitGate.savedIndex {
+            progressReturnOffer = ProgressReturnOffer(savedIndex: saved)
+        } else {
+            progressReturnOffer = nil
         }
     }
 
@@ -2812,8 +2912,57 @@ final class ReaderViewModel: ObservableObject {
         guard let pos = sorted.firstIndex(of: idx) else { return }
         let start = max(0, pos - radius)
         let end = min(sorted.count - 1, pos + radius)
-        for i in start...end {
-            hydrateSummary(idx: sorted[i], core: core)
+        let window = Array(sorted[start...end])
+        let desired = Set(window)
+
+        let obsoleteTaskIndices = summaryHydrateTasks.keys.filter { $0 != idx }
+        for taskIdx in obsoleteTaskIndices {
+            summaryHydrateTasks.removeValue(forKey: taskIdx)?.cancel()
+            hydratingSummaryIndices.remove(taskIdx)
+        }
+        let obsoleteLoadingIndices = hydratingSummaryIndices.filter {
+            !desired.contains($0)
+        }
+        for taskIdx in obsoleteLoadingIndices {
+            hydratingSummaryIndices.remove(taskIdx)
+        }
+
+        // The visible segment wins the only eager request. Neighbours hydrate
+        // serially at utility priority so a far jump cannot fan out seven DB reads.
+        hydrateSummary(idx: idx, core: core)
+        summaryPrefetchTask?.cancel()
+        summaryPrefetchGeneration += 1
+        let generation = summaryPrefetchGeneration
+        let bookId = self.bookId
+        let neighbours = window
+            .filter { $0 != idx }
+            .sorted { abs($0 - idx) < abs($1 - idx) }
+        summaryPrefetchTask = Task(priority: .utility) { @MainActor [weak self] in
+            guard let self else { return }
+            for neighbour in neighbours {
+                guard !Task.isCancelled else { return }
+                guard self.summaryPrefetchGeneration == generation,
+                      self.bookId == bookId,
+                      let segment = self.segments.first(where: { $0.idx == neighbour }),
+                      self.needsSummaryHydration(segment)
+                else { continue }
+                self.hydratingSummaryIndices.insert(neighbour)
+                let detail = try? await core.fetchSegmentSummary(
+                    bookId: bookId,
+                    idx: neighbour
+                )
+                guard !Task.isCancelled,
+                      self.summaryPrefetchGeneration == generation,
+                      self.bookId == bookId
+                else { return }
+                self.hydratingSummaryIndices.remove(neighbour)
+                if let detail {
+                    self.mergeSummaryDetail(detail, at: neighbour)
+                }
+            }
+            if self.summaryPrefetchGeneration == generation {
+                self.summaryPrefetchTask = nil
+            }
         }
     }
 

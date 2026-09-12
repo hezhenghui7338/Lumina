@@ -82,12 +82,109 @@ enum ReadingProgress {
 
 /// The reader has two states and no more. While `restoring`, the pinned segment
 /// is whatever SwiftUI has managed to scroll to so far and must not be recorded;
-/// once `reading`, the pinned segment is the progress.
+/// once `reading`, the pinned segment is the progress — unless a seek gate is
+/// holding commits after an intentional jump.
 enum ReaderProgressPhase: Equatable {
     case restoring
     case reading
 
     var recordsProgress: Bool { self == .reading }
+}
+
+/// After search / catalog / citation / note / ⌘K jumps, do not overwrite the
+/// saved reading position until the reader has moved through
+/// `requiredDistinctSegments` *additional* distinct pins (the landing segment
+/// itself does not count). Optionally shows a non-blocking "return to saved
+/// progress" offer while seeking.
+///
+/// Jump animations / LazyVStack materialization can briefly pin intermediate
+/// segments before the landing. Those must not count toward the three-pin
+/// gate or the offer disappears before the user sees it.
+struct ReadingProgressCommitGate: Equatable {
+    static let requiredDistinctSegments = 3
+
+    private(set) var isSeeking = false
+    /// When true, the reader should show the return-progress banner.
+    private(set) var offerVisible = false
+    /// Saved index at the moment of the jump; used by the return offer.
+    private(set) var savedIndex: Int?
+    private var landing: Int?
+    /// False until the jump target has been pinned at least once.
+    private var landingConfirmed = false
+    private var distinctAfterLanding: [Int] = []
+
+    mutating func reset() {
+        isSeeking = false
+        offerVisible = false
+        savedIndex = nil
+        landing = nil
+        landingConfirmed = false
+        distinctAfterLanding = []
+    }
+
+    /// Enter seek mode at an intentional jump target. When landing equals the
+    /// already-saved progress, clears any prior seek (no offer) and stays armed.
+    /// Re-entering elsewhere resets the distinct-segment counter and re-shows
+    /// the offer.
+    @discardableResult
+    mutating func beginSeek(at landing: Int, savedIndex: Int) -> Bool {
+        if landing == savedIndex {
+            reset()
+            return false
+        }
+        isSeeking = true
+        offerVisible = true
+        self.savedIndex = savedIndex
+        self.landing = landing
+        landingConfirmed = false
+        distinctAfterLanding = []
+        return true
+    }
+
+    /// User chose "stay here": clear seek/offer so the caller can commit the
+    /// current pin immediately and resume normal recording.
+    mutating func adoptHere() {
+        reset()
+    }
+
+    /// User accepted "return to last progress". Returns the index to jump to
+    /// and clears seek state.
+    mutating func acceptReturn() -> Int? {
+        guard isSeeking, let saved = savedIndex else { return nil }
+        let target = saved
+        reset()
+        return target
+    }
+
+    /// Whether this pin should be written as reading progress. Committing
+    /// clears seek state and the offer.
+    mutating func shouldCommit(pinned idx: Int) -> Bool {
+        guard isSeeking else { return true }
+        if !landingConfirmed {
+            if idx == landing {
+                landingConfirmed = true
+            }
+            // Ignore pre-landing flash pins from the jump scroll.
+            return false
+        }
+        if idx == landing {
+            // Still on (or back on) the jump landing — not "reading through".
+            return false
+        }
+        if !distinctAfterLanding.contains(idx) {
+            distinctAfterLanding.append(idx)
+        }
+        if distinctAfterLanding.count >= Self.requiredDistinctSegments {
+            reset()
+            return true
+        }
+        return false
+    }
+}
+
+/// Payload for the non-blocking return-progress banner.
+struct ProgressReturnOffer: Equatable {
+    let savedIndex: Int
 }
 
 enum ReaderKeyboardScroll {

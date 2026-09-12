@@ -78,7 +78,12 @@ def load_document(
             cancel_event=cancel_event,
         )
     if fmt == "epub":
-        return load_epub(path)
+        return load_epub(
+            path,
+            on_progress=on_progress,
+            settings=settings,
+            cancel_event=cancel_event,
+        )
     if fmt == "mobi":
         from lumina_core.ingest.mobi import load_mobi
 

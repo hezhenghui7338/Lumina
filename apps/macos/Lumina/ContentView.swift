@@ -143,6 +143,10 @@ struct ContentView: View {
             tab = .library
             importBook()
         }
+        .onReceive(NotificationCenter.default.publisher(for: .luminaOpenFiles)) { note in
+            let paths = (note.userInfo?[AppDelegate.openFilesPathsKey] as? [String]) ?? []
+            handleExternalOpen(paths: paths)
+        }
         .onChange(of: tour.step) { _, _ in
             applyTourTab()
         }
@@ -157,6 +161,7 @@ struct ContentView: View {
             }
         }
         .onAppear {
+            AppDelegate.markUIReadyForOpenFiles()
             if !onboardingDone {
                 tour.start()
             }
@@ -227,18 +232,25 @@ struct ContentView: View {
     private func importBook() {
         Task {
             let panel = NSOpenPanel()
-            let importExtensions = [
-                "txt", "text", "md", "markdown", "mdown", "mkd", "log",
-                "pdf", "epub", "mobi", "azw", "azw3",
-                "html", "htm", "xhtml", "rtf", "docx", "odt", "fb2",
-            ]
-            panel.allowedContentTypes = importExtensions.compactMap {
+            panel.allowedContentTypes = LibraryImportPolicy.supportedExtensions.compactMap {
                 UTType(filenameExtension: $0)
             }
             panel.allowsMultipleSelection = true
             guard panel.runModal() == .OK else { return }
             enqueueImports(paths: panel.urls.map(\.path))
         }
+    }
+
+    private func handleExternalOpen(paths: [String]) {
+        tab = .library
+        selectedBookId = nil
+        let classified = LibraryImportPolicy.classify(paths: paths)
+        if !classified.unsupportedNames.isEmpty {
+            alertError = LibraryImportPolicy.unsupportedMessage(
+                names: classified.unsupportedNames
+            )
+        }
+        enqueueImports(paths: classified.supportedPaths)
     }
 
     private func enqueueImports(paths: [String]) {
@@ -553,6 +565,7 @@ extension Notification.Name {
     static let luminaOpenSearch = Notification.Name("luminaOpenSearch")
     static let luminaOpenUsageGuide = Notification.Name("luminaOpenUsageGuide")
     static let luminaImportBook = Notification.Name("luminaImportBook")
+    static let luminaOpenFiles = Notification.Name("luminaOpenFiles")
     static let luminaLibraryRefresh = Notification.Name("luminaLibraryRefresh")
     static let luminaReadingProgressDidChange = Notification.Name("luminaReadingProgressDidChange")
 }

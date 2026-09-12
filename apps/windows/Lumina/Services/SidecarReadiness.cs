@@ -13,7 +13,7 @@ public sealed class SidecarHealth
 /// Decisions for replacing a leftover lumina-core process on the fixed sidecar port.
 public static class SidecarReadiness
 {
-    public const string ExpectedChunkerVersion = "15";
+    public const string ExpectedChunkerVersion = "16";
 
     public static string NormalizeVersion(string? version)
     {

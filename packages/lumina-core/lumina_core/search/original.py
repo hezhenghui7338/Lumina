@@ -17,9 +17,12 @@ def utf16_offset(text: str, index: int) -> int:
     """UTF-16 code unit index for NSRange / WinUI (Python str index → UTF-16)."""
     if index <= 0:
         return 0
-    if index >= len(text):
-        return len(text.encode("utf-16-le")) // 2
-    return len(text[:index].encode("utf-16-le")) // 2
+    # Compute this without a codec: the pruned PyInstaller sidecar does not
+    # bundle the optional UTF-16 codec, while desktop clients still need these
+    # offsets. BMP code points occupy one code unit; astral code points occupy
+    # a surrogate pair.
+    stop = min(index, len(text))
+    return sum(2 if ord(char) > 0xFFFF else 1 for char in text[:stop])
 
 
 def make_snippet(text: str, start: int, end: int, *, radius: int = SNIPPET_RADIUS) -> str:

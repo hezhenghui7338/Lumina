@@ -74,6 +74,9 @@ def test_ollama_minimal_prompt_includes_follow_ups():
     assert "anchor" not in SUMMARY_PROMPT_OLLAMA
     assert "sentences" in SUMMARY_PROMPT_OLLAMA
     assert "bullets" in SUMMARY_PROMPT_OLLAMA
+    assert "50～200" in SUMMARY_PROMPT
+    assert "50～200" in SUMMARY_PROMPT_OLLAMA
+    assert "50～200" in SUMMARY_PROMPT_CLOUD
 
 
 def test_segment_prompt_settings_cloud_primary_openai():
@@ -106,6 +109,17 @@ def test_segment_prompts_forbid_assistant_as_narrator():
     assert "改写成「叙述者」" in (prompts.segment_quality or "")
 
 
+def test_segment_prompts_require_narrative_continuity_with_background():
+    from lumina_core.summarize.segment import _CONTEXT_GUIDANCE
+
+    for template in (SUMMARY_PROMPT, SUMMARY_PROMPT_OLLAMA, SUMMARY_PROMPT_CLOUD):
+        assert "前文摘要背景" in template
+        assert "本段交代…" in template or "本段交代" in template
+    assert "让总结句顺接前文阅读感" in _CONTEXT_GUIDANCE
+    assert "承接最近前文的叙事线程" in _CONTEXT_GUIDANCE
+    assert "不能把背景中的事件当作当前段新发生的内容" in _CONTEXT_GUIDANCE
+
+
 def test_segment_prompts_require_output_language():
     from lumina_core.summarize.segment import _CONTEXT_GUIDANCE
 
@@ -122,6 +136,22 @@ def test_segment_prompts_require_output_language():
     assert "{target_language}" in _CONTEXT_GUIDANCE
     prompts = load_prompts_config()
     assert "{target_language}" in (prompts.segment_quality or "")
+
+
+def test_segment_ollama_cloud_prompts_require_theme_label():
+    for template in (SUMMARY_PROMPT_OLLAMA, SUMMARY_PROMPT_CLOUD):
+        assert "label: ≤20 字的段列表导航标签" in template
+        assert "禁止照搬总结句前几个字" in template
+        assert '"label":"引子：寒门赴考"' in template
+    from lumina_core.summarize.segment import _CLOUD_RETRY_SUFFIX, _OLLAMA_RETRY_SUFFIX
+
+    assert '"label":"…"' in _OLLAMA_RETRY_SUFFIX
+    assert '"label":"…"' in _CLOUD_RETRY_SUFFIX
+    prompts = load_prompts_config()
+    for field in (prompts.segment_ollama, prompts.segment_cloud):
+        assert field is not None
+        assert "禁止照搬总结句前几个字" in field
+        assert '"label":"引子：寒门赴考"' in field
 
 
 def test_format_base_prompt_injects_display_language():

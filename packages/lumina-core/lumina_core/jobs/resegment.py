@@ -292,6 +292,7 @@ async def run_resegment_job(
                     "old_metadata": old_metadata,
                     "final_status": final_status,
                     "settings": settings_for_cpu_job(settings),
+                    "_ocr_cloud_api_key": settings.ocr_cloud_api_key,
                 },
                 cancel_event,
                 on_progress,

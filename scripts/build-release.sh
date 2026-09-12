@@ -144,12 +144,24 @@ printf '%s' "$HEALTH_JSON" | python3 "$ROOT/scripts/assert-health-chunker-versio
 cleanup_smoke
 trap - EXIT
 
+# --- 3b. Ad-hoc re-sign after sidecar embed ---
+# xcodebuild uses CODE_SIGNING_ALLOWED=NO; embedding lumina-core then leaves an
+# unsigned/broken bundle. Launch Services rejects that for "Set as default"
+# (Finder error 13). Ad-hoc deep sign restores a valid Designated Requirement.
+# Optional: CODESIGN_IDENTITY="Developer ID Application: …" for real distribution
+# (still needs notarytool; see docs/RELEASE.md).
+echo "==> Ad-hoc codesign (post-sidecar; Finder default handler)…"
+CODESIGN_IDENTITY="${CODESIGN_IDENTITY:--}"
+codesign --force --deep --options runtime --sign "$CODESIGN_IDENTITY" "$APP"
+codesign --verify --deep --strict "$APP"
+
 # --- 4. Stage release artifacts ---
 echo "==> Staging release artifacts…"
 mkdir -p "$DIST"
 RELEASE_APP="$DIST/Lumina.app"
 rm -rf "$RELEASE_APP"
 ditto "$APP" "$RELEASE_APP"
+codesign --verify --deep --strict "$RELEASE_APP"
 
 ZIP="$DIST/Lumina-${VERSION}-macOS.zip"
 rm -f "$ZIP"

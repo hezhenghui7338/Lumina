@@ -69,6 +69,28 @@ final class ReaderCoverPageArchitectureTests: XCTestCase {
         XCTAssertFalse(reader.contains("sidebar.left"))
     }
 
+    func testSegmentJumpBoundsAndCancelsSummaryPrefetch() throws {
+        let reader = try source("Lumina/Features/Reader/ReaderView.swift")
+        guard
+            let start = reader.range(of: "func prefetchSummaries("),
+            let end = reader.range(
+                of: "\n    func hydrateSummary(",
+                range: start.lowerBound..<reader.endIndex
+            )
+        else {
+            return XCTFail("missing summary prefetch implementation")
+        }
+        let prefetch = String(reader[start.lowerBound..<end.lowerBound])
+        XCTAssertTrue(prefetch.contains("summaryPrefetchTask?.cancel()"))
+        XCTAssertTrue(prefetch.contains("hydrateSummary(idx: idx"))
+        XCTAssertTrue(prefetch.contains("Task(priority: .utility)"))
+        XCTAssertTrue(prefetch.contains("for neighbour in neighbours"))
+        XCTAssertFalse(
+            prefetch.contains("for i in start...end"),
+            "a segment jump must not fan out every summary request at once"
+        )
+    }
+
     func testSegmentCoverSlidesFromBottomAboveTheBottomBar() throws {
         let reader = try source("Lumina/Features/Reader/ReaderView.swift")
         let layout = readerLayoutSource(reader)
@@ -341,6 +363,115 @@ final class ReadingProgressTests: XCTestCase {
     func testProgressPhase_onlyReadingRecords() {
         XCTAssertFalse(ReaderProgressPhase.restoring.recordsProgress)
         XCTAssertTrue(ReaderProgressPhase.reading.recordsProgress)
+    }
+
+    func testCommitGate_armedCommitsImmediately() {
+        var gate = ReadingProgressCommitGate()
+        XCTAssertTrue(gate.shouldCommit(pinned: 4))
+        XCTAssertFalse(gate.isSeeking)
+        XCTAssertFalse(gate.offerVisible)
+    }
+
+    /// Search / catalog / citation jumps must keep the pre-jump bookshelf
+    /// position until three further distinct segments have been read through.
+    func testCommitGate_seekIgnoresLandingUntilThreeDistinctPins() {
+        var gate = ReadingProgressCommitGate()
+        XCTAssertTrue(gate.beginSeek(at: 50, savedIndex: 10))
+        XCTAssertTrue(gate.offerVisible)
+        XCTAssertEqual(gate.savedIndex, 10)
+
+        // Jump scroll may flash intermediate pins before the landing.
+        XCTAssertFalse(gate.shouldCommit(pinned: 11))
+        XCTAssertFalse(gate.shouldCommit(pinned: 12))
+        XCTAssertFalse(gate.shouldCommit(pinned: 13))
+        XCTAssertTrue(gate.offerVisible, "pre-landing flash must not clear the offer")
+
+        XCTAssertFalse(gate.shouldCommit(pinned: 50), "landing itself does not count")
+        XCTAssertFalse(gate.shouldCommit(pinned: 51))
+        XCTAssertFalse(gate.shouldCommit(pinned: 52))
+        XCTAssertFalse(gate.shouldCommit(pinned: 51), "duplicates do not advance the count")
+        XCTAssertTrue(gate.shouldCommit(pinned: 53), "third distinct pin after landing arms")
+        XCTAssertFalse(gate.isSeeking)
+        XCTAssertFalse(gate.offerVisible, "auto-commit clears the offer")
+        XCTAssertTrue(gate.shouldCommit(pinned: 54), "subsequent pins commit again")
+    }
+
+    func testCommitGate_reseekResetsDistinctCounter() {
+        var gate = ReadingProgressCommitGate()
+        XCTAssertTrue(gate.beginSeek(at: 10, savedIndex: 2))
+        XCTAssertFalse(gate.shouldCommit(pinned: 10), "confirm landing first")
+        XCTAssertFalse(gate.shouldCommit(pinned: 11))
+        XCTAssertFalse(gate.shouldCommit(pinned: 12))
+
+        XCTAssertTrue(gate.beginSeek(at: 40, savedIndex: 2))
+        XCTAssertTrue(gate.offerVisible)
+        XCTAssertFalse(gate.shouldCommit(pinned: 40))
+        XCTAssertFalse(gate.shouldCommit(pinned: 41))
+        XCTAssertFalse(gate.shouldCommit(pinned: 42))
+        XCTAssertTrue(gate.shouldCommit(pinned: 43))
+    }
+
+    func testCommitGate_returningToLandingDoesNotCount() {
+        var gate = ReadingProgressCommitGate()
+        XCTAssertTrue(gate.beginSeek(at: 7, savedIndex: 1))
+        XCTAssertFalse(gate.shouldCommit(pinned: 7), "confirm landing")
+        XCTAssertFalse(gate.shouldCommit(pinned: 8))
+        XCTAssertFalse(gate.shouldCommit(pinned: 7), "back on landing still ignored")
+        XCTAssertFalse(gate.shouldCommit(pinned: 9))
+        XCTAssertTrue(gate.shouldCommit(pinned: 10))
+    }
+
+    func testCommitGate_sameSegmentAsSavedDoesNotSeek() {
+        var gate = ReadingProgressCommitGate()
+        XCTAssertFalse(gate.beginSeek(at: 5, savedIndex: 5))
+        XCTAssertFalse(gate.isSeeking)
+        XCTAssertFalse(gate.offerVisible)
+        XCTAssertTrue(gate.shouldCommit(pinned: 5))
+    }
+
+    func testCommitGate_adoptHereClearsSeekSoCurrentCanCommit() {
+        var gate = ReadingProgressCommitGate()
+        XCTAssertTrue(gate.beginSeek(at: 20, savedIndex: 3))
+        XCTAssertTrue(gate.offerVisible)
+        gate.adoptHere()
+        XCTAssertFalse(gate.isSeeking)
+        XCTAssertFalse(gate.offerVisible)
+        XCTAssertTrue(gate.shouldCommit(pinned: 20), "after adopt, current pin commits immediately")
+    }
+
+    func testCommitGate_acceptReturnClearsSeekAndReturnsSaved() {
+        var gate = ReadingProgressCommitGate()
+        XCTAssertTrue(gate.beginSeek(at: 40, savedIndex: 8))
+        XCTAssertEqual(gate.acceptReturn(), 8)
+        XCTAssertFalse(gate.isSeeking)
+        XCTAssertFalse(gate.offerVisible)
+        XCTAssertNil(gate.savedIndex)
+        XCTAssertTrue(gate.shouldCommit(pinned: 8))
+    }
+
+    func testCommitGate_jumpToSavedWhileSeekingResets() {
+        var gate = ReadingProgressCommitGate()
+        XCTAssertTrue(gate.beginSeek(at: 40, savedIndex: 8))
+        XCTAssertFalse(gate.beginSeek(at: 8, savedIndex: 8))
+        XCTAssertFalse(gate.isSeeking)
+        XCTAssertFalse(gate.offerVisible)
+    }
+
+    /// Animated jumps within the scroll threshold pin many intermediate
+    /// segments; those must not satisfy the three-pin gate or dismiss the offer.
+    func testCommitGate_intermediateJumpPinsDoNotArmOrClearOffer() {
+        var gate = ReadingProgressCommitGate()
+        XCTAssertTrue(gate.beginSeek(at: 20, savedIndex: 5))
+        for idx in 6..<20 {
+            XCTAssertFalse(
+                gate.shouldCommit(pinned: idx),
+                "flash pin \(idx) before landing must not commit"
+            )
+        }
+        XCTAssertTrue(gate.offerVisible)
+        XCTAssertTrue(gate.isSeeking)
+        XCTAssertFalse(gate.shouldCommit(pinned: 20))
+        XCTAssertTrue(gate.offerVisible)
     }
 }
 
