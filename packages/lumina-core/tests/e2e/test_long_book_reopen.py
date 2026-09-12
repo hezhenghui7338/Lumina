@@ -74,8 +74,9 @@ def _insert_long_book(client: TestClient, *, segment_count: int = 500) -> str:
             """
             INSERT INTO segments (
               id, book_id, idx, anchor_label, raw_text, char_count,
-              summary_json, label, summary_status, retry_count
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+              summary_json, label, summary_status, retry_count,
+              summary_preview, bullet_labels
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 f"{book_id}-s{idx}",
@@ -88,6 +89,8 @@ def _insert_long_book(client: TestClient, *, segment_count: int = 500) -> str:
                 f"段 {idx + 1} 摘要",
                 "ready",
                 0,
+                "本段交代了主要情节。" * 5,
+                '["要点一", "要点二", "要点三"]',
             ),
         )
     conn.commit()

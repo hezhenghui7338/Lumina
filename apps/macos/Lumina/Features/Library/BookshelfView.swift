@@ -40,12 +40,6 @@ struct BookshelfView: View {
     @State private var showSummarizePopover = false
     @State private var dropTargeted = false
 
-    private static let importExtensions: Set<String> = [
-        "txt", "text", "md", "markdown", "mdown", "mkd", "log",
-        "pdf", "epub", "mobi", "azw", "azw3",
-        "html", "htm", "xhtml", "rtf", "docx", "odt", "fb2",
-    ]
-
     var body: some View {
         VStack(spacing: 0) {
             bookshelfControls
@@ -695,7 +689,7 @@ struct BookshelfView: View {
                 } else {
                     url = item as? URL
                 }
-                guard let url, Self.importExtensions.contains(url.pathExtension.lowercased()) else {
+                guard let url, LibraryImportPolicy.isSupported(pathExtension: url.pathExtension) else {
                     return
                 }
                 DispatchQueue.main.async {

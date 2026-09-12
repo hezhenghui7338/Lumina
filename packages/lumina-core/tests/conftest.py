@@ -98,17 +98,19 @@ def _reset_router_between_tests(request):
 
 
 # Eigen/ORT thread pools can deadlock xdist session teardown. Only force-exit
-# workers that actually imported those native modules — mock workers that
-# os._exit anyway look "Not properly terminated" and xdist restarts them,
-# killing in-flight tests on other nodes.
-_XDIST_FORCE_EXIT_MODULES = ("onnxruntime", "rapidocr")
+# workers that actually imported onnxruntime — mock workers that os._exit
+# anyway look "Not properly terminated" and (with restarts) kill in-flight
+# tests on other nodes. Importing the `rapidocr` package alone does NOT load
+# ORT; treating it as force-exit bait made release workers exit early and
+# flake as "crashed while running test_summarize_batch_start_stop".
+_XDIST_FORCE_EXIT_MODULES = ("onnxruntime",)
 
 
 def xdist_worker_should_force_exit(
     environ: Mapping[str, str],
     loaded_modules: Container[str] | None = None,
 ) -> bool:
-    """Force-exit an xdist worker only if it loaded ORT/RapidOCR."""
+    """Force-exit an xdist worker only if it loaded onnxruntime."""
     if not environ.get("PYTEST_XDIST_WORKER"):
         return False
     loaded = sys.modules if loaded_modules is None else loaded_modules

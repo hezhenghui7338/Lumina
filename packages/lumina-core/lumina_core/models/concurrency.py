@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
@@ -62,30 +61,11 @@ class ResourceConcurrencyGate:
         if skip_if_busy:
             async with cond:
                 if self._in_use.get(rid, 0) >= limit:
-                    from lumina_core.debug_agent_log import agent_log
-
-                    agent_log(
-                        hypothesis_id="D",
-                        location="concurrency.py:use:busy",
-                        message="semaphore busy skip_if_busy",
-                        data={"resource_id": resource_id},
-                    )
                     raise ResourceBusyError(f"{resource_id} busy")
-        wait_started = time.time()
         async with cond:
             while self._in_use.get(rid, 0) >= self._limits.get(rid, limit):
                 await cond.wait()
             self._in_use[rid] = self._in_use.get(rid, 0) + 1
-        waited_s = round(time.time() - wait_started, 2)
-        if waited_s > 0.5:
-            from lumina_core.debug_agent_log import agent_log
-
-            agent_log(
-                hypothesis_id="D",
-                location="concurrency.py:use:acquired",
-                message="semaphore acquired after wait",
-                data={"resource_id": resource_id, "wait_s": waited_s},
-            )
         try:
             yield
         finally:

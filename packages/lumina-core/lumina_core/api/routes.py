@@ -261,11 +261,18 @@ async def _queue_segment_retry(
     summary_tier: str | None = None,
 ) -> None:
     if seg is None:
-        seg = SegmentRepo(state.conn).get_by_index(book_id, idx)
+        seg = await asyncio.to_thread(
+            SegmentRepo(state.conn).get_by_index, book_id, idx
+        )
         if not seg:
             raise HTTPException(404, "Segment not found")
-    state.job_queue.unpause_book(book_id)
-    SegmentRepo(state.conn).set_status(seg["id"], "pending", retry_count=0)
+    await state.job_queue.unpause_book_async(book_id)
+    await asyncio.to_thread(
+        SegmentRepo(state.conn).set_status,
+        seg["id"],
+        "pending",
+        retry_count=0,
+    )
     await state.job_queue.enqueue_summarize(
         book_id,
         seg["id"],
@@ -1307,7 +1314,7 @@ async def update_reading_progress(
 async def summarize_overview(request: Request) -> dict[str, Any]:
     state = _state(request)
     await state.job_queue.resume_orphaned_active()
-    return state.job_queue.summarize_overview()
+    return await asyncio.to_thread(state.job_queue.summarize_overview)
 
 
 @router.post("/books/summarize/start")
@@ -1332,7 +1339,7 @@ async def start_summarize_batch(
     affected: list[str] = []
     skipped: list[str] = []
     for book_id in book_ids:
-        if not repo.get(book_id):
+        if not await asyncio.to_thread(repo.get, book_id):
             skipped.append(book_id)
             continue
         await state.job_queue.start_book(book_id, summary_tier=summary_tier)
@@ -1362,7 +1369,7 @@ async def stop_summarize_batch(
     affected: list[str] = []
     skipped: list[str] = []
     for book_id in book_ids:
-        if not repo.get(book_id):
+        if not await asyncio.to_thread(repo.get, book_id):
             skipped.append(book_id)
             continue
         await state.job_queue.stop_book(book_id)
@@ -1382,7 +1389,7 @@ async def start_summarize_book(
 ) -> dict[str, str]:
     """Resume incomplete summaries. Ready segments are kept even if the tier changes."""
     state = _state(request)
-    book = BookRepo(state.conn).get(book_id)
+    book = await asyncio.to_thread(BookRepo(state.conn).get, book_id)
     if not book:
         raise HTTPException(404, "Book not found")
     _wire_job_events(state)
@@ -1404,17 +1411,18 @@ async def build_book_index(book_id: str, request: Request) -> dict[str, Any]:
     library full of summarized books never floods the queue on startup.
     """
     state = _state(request)
-    book = BookRepo(state.conn).get(book_id)
+    repo = BookRepo(state.conn)
+    book = await asyncio.to_thread(repo.get, book_id)
     if not book:
         raise HTTPException(404, "Book not found")
     _wire_job_events(state)
-    progress = BookRepo(state.conn).summary_progress(book_id)
+    progress = await asyncio.to_thread(repo.summary_progress, book_id)
     ready = int(progress["summary_ready_count"] or 0)
     total = int(progress["summary_total_count"] or 0)
     if total <= 0 or ready < total:
         raise HTTPException(409, f"摘要未完成（{ready}/{total}），无法建全书索引")
     await state.job_queue.enqueue_rollup(book_id)
-    refreshed = BookRepo(state.conn).get(book_id) or book
+    refreshed = await asyncio.to_thread(repo.get, book_id) or book
     return {
         "status": "queued",
         "book_id": book_id,
@@ -1425,7 +1433,7 @@ async def build_book_index(book_id: str, request: Request) -> dict[str, Any]:
 @router.post("/books/{book_id}/summarize/stop")
 async def stop_summarize_book(book_id: str, request: Request) -> dict[str, str]:
     state = _state(request)
-    book = BookRepo(state.conn).get(book_id)
+    book = await asyncio.to_thread(BookRepo(state.conn).get, book_id)
     if not book:
         raise HTTPException(404, "Book not found")
     _wire_job_events(state)
@@ -1455,19 +1463,23 @@ async def retry_segments(
     book_id: str, body: RetrySegmentsRequest, request: Request
 ) -> dict[str, int | str]:
     state = _state(request)
-    book = BookRepo(state.conn).get(book_id)
+    book = await asyncio.to_thread(BookRepo(state.conn).get, book_id)
     if not book:
         raise HTTPException(404, "Book not found")
     indices = sorted(set(body.indices))
     if not indices:
         raise HTTPException(400, "indices must not be empty")
-    seg_repo = SegmentRepo(state.conn)
-    segments: list[tuple[int, dict[str, Any]]] = []
-    for idx in indices:
-        seg = seg_repo.get_by_index(book_id, idx)
-        if not seg:
-            raise HTTPException(400, f"Segment not found: {idx}")
-        segments.append((idx, seg))
+    def _load_segments() -> list[tuple[int, dict[str, Any]]]:
+        seg_repo = SegmentRepo(state.conn)
+        loaded: list[tuple[int, dict[str, Any]]] = []
+        for idx in indices:
+            seg = seg_repo.get_by_index(book_id, idx)
+            if not seg:
+                raise HTTPException(400, f"Segment not found: {idx}")
+            loaded.append((idx, seg))
+        return loaded
+
+    segments = await asyncio.to_thread(_load_segments)
     _wire_job_events(state)
     for idx, seg in segments:
         await _queue_segment_retry(
@@ -1486,12 +1498,13 @@ async def regenerate_book_summaries(
 ) -> dict[str, int | str]:
     """Overwrite every segment summary. Clients must confirm with the user first."""
     state = _state(request)
-    book = BookRepo(state.conn).get(book_id)
+    repo = BookRepo(state.conn)
+    book = await asyncio.to_thread(repo.get, book_id)
     if not book:
         raise HTTPException(404, "Book not found")
     _wire_job_events(state)
     if book.get("status") == "summarized":
-        BookRepo(state.conn).update(book_id, status="reading")
+        await asyncio.to_thread(repo.update, book_id, status="reading")
     summary_tier = body.summary_tier if body else "normal"
     count = await state.job_queue.enqueue_book_regenerate(
         book_id, summary_tier=summary_tier

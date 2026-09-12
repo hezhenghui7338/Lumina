@@ -102,8 +102,15 @@ AI 模型体积约 3 GB+，不适合打进主安装包。App 内引导用户安�
 
 **Sidecar 未嵌入**：检查 `Lumina.app/Contents/Resources/lumina-core/lumina-core` 是否存在且可执行
 
-## 代码签名与公证（后续）
+## 代码签名与公证
 
-当前 CI 使用 `CODE_SIGNING_ALLOWED=NO`，用户首次打开需右键「打开」。正式对外分发需 Apple Developer Program + `notarytool` 公证。
+`scripts/build-release.sh` 在嵌入 sidecar 后会对 `Lumina.app` 做 **ad-hoc** `codesign --force --deep --options runtime`，并 `codesign --verify --deep --strict`。这样 Launch Services 才能接受「设为默认打开程序」；未签名包在较新 macOS 上常报 **错误代码 13**（文案像「锁定 / 损坏 / 无权限」）。
+
+仍无 Apple Developer ID / 公证时：
+
+- 首次打开仍需右键「打开」（Gatekeeper）
+- ad-hoc 包在部分机器上仍可能无法「全部更改」为默认；可单次「打开方式」，或本机再执行：
+  `codesign --force --deep --options runtime --sign - /Applications/Lumina.app`
+- 有证书时设 `CODESIGN_IDENTITY="Developer ID Application: …"` 再跑发布脚本；正式对外还需 `notarytool` 公证（后续）
 
 Windows 首发 ZIP **未做 Authenticode 签名**；SmartScreen 可能提示「仍要运行」。签名与 MSIX/安装器列为后续。

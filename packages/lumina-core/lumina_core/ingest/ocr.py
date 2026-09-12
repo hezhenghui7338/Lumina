@@ -6,7 +6,7 @@ import base64
 import logging
 import sys
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -295,8 +295,19 @@ def _cloud_text(payload: dict) -> str:
     return stripped
 
 
+def _image_media_type(image_bytes: bytes) -> str:
+    if image_bytes.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if image_bytes.startswith((b"GIF87a", b"GIF89a")):
+        return "image/gif"
+    if image_bytes.startswith(b"RIFF") and image_bytes[8:12] == b"WEBP":
+        return "image/webp"
+    return "image/jpeg"
+
+
 def _cloud_request(client: httpx.Client, *, model: str, image_bytes: bytes) -> str:
     image_data = base64.b64encode(image_bytes).decode("ascii")
+    media_type = _image_media_type(image_bytes)
     response = client.post(
         openai_compat_completions_url(str(client.base_url)),
         json={
@@ -309,7 +320,7 @@ def _cloud_request(client: httpx.Client, *, model: str, image_bytes: bytes) -> s
                         {"type": "text", "text": _CLOUD_OCR_PROMPT},
                         {
                             "type": "image_url",
-                            "image_url": {"url": f"data:image/jpeg;base64,{image_data}"},
+                            "image_url": {"url": f"data:{media_type};base64,{image_data}"},
                         },
                     ],
                 }
@@ -327,6 +338,132 @@ def _cloud_request(client: httpx.Client, *, model: str, image_bytes: bytes) -> s
     except ValueError as exc:
         raise RuntimeError("云端 OCR 返回了无效 JSON") from exc
     return _cloud_text(payload)
+
+
+def _ocr_images_local(
+    images: Iterable[tuple[int, bytes]],
+    *,
+    total: int,
+    on_progress: OcrProgressCallback | None,
+    cancel_event: threading.Event | None,
+) -> OcrDocumentResult:
+    try:
+        import cv2
+        import numpy as np
+    except ImportError as exc:
+        raise RuntimeError(f"OCR image dependencies missing ({exc}). {ocr_install_hint()}") from exc
+
+    report_progress(on_progress, 0, total, "正在加载 OCR 引擎…", cancel_event)
+    engine = _ensure_engine()
+    pages: list[OcrPageResult] = []
+    sections: list[str] = []
+    confidences: list[float] = []
+    warnings: list[str] = []
+    for progress_idx, (page_num, image_bytes) in enumerate(images, start=1):
+        report_progress(
+            on_progress,
+            progress_idx,
+            total,
+            f"图片型 EPUB · 本地 OCR {progress_idx}/{total} 页…",
+            cancel_event,
+        )
+        encoded = np.frombuffer(image_bytes, dtype=np.uint8)
+        image = cv2.imdecode(encoded, cv2.IMREAD_COLOR)
+        if image is None:
+            warnings.append(f"p.{page_num} 图片无法解码，已跳过")
+            pages.append(OcrPageResult(page_num, "", 0.0, False))
+            continue
+        text, avg = _run_image_ocr(engine, image)
+        del image
+        yield_ui()
+        confidences.append(avg)
+        low = avg < config.OCR_MIN_CONF and bool(text)
+        if low:
+            warnings.append(f"p.{page_num} OCR 置信度偏低 ({avg:.2f})，建议人工核对原文")
+        pages.append(OcrPageResult(page_num, text, avg, low))
+        section = _format_page_section(page_num, text)
+        if section:
+            sections.append(section)
+    return OcrDocumentResult(
+        text="\n\n".join(sections),
+        pages=pages,
+        avg_confidence=sum(confidences) / len(confidences) if confidences else 0.0,
+        engine="rapidocr/pp-ocrv6",
+        warnings=warnings,
+    )
+
+
+def _ocr_images_cloud(
+    images: Iterable[tuple[int, bytes]],
+    *,
+    total: int,
+    settings: Settings,
+    on_progress: OcrProgressCallback | None,
+    cancel_event: threading.Event | None,
+) -> OcrDocumentResult:
+    base_url = settings.ocr_cloud_base_url.strip()
+    model = settings.ocr_cloud_model.strip()
+    headers = {"Authorization": f"Bearer {(settings.ocr_cloud_api_key or '').strip()}"}
+    pages: list[OcrPageResult] = []
+    sections: list[str] = []
+    try:
+        with httpx.Client(
+            base_url=base_url.rstrip("/") + "/",
+            headers=headers,
+            timeout=settings.ocr_cloud_timeout_seconds,
+        ) as client:
+            for progress_idx, (page_num, image_bytes) in enumerate(images, start=1):
+                report_progress(
+                    on_progress,
+                    progress_idx,
+                    total,
+                    f"图片型 EPUB · 云端 OCR {progress_idx}/{total} 页…",
+                    cancel_event,
+                )
+                text = _cloud_request(client, model=model, image_bytes=image_bytes)
+                pages.append(OcrPageResult(page_num, text, 1.0 if text else 0.0, False))
+                section = _format_page_section(page_num, text)
+                if section:
+                    sections.append(section)
+    except httpx.TimeoutException as exc:
+        raise RuntimeError("云端 OCR 请求超时") from exc
+    except httpx.ConnectError as exc:
+        raise RuntimeError(f"无法连接云端 OCR：{base_url}") from exc
+    except httpx.HTTPError as exc:
+        raise RuntimeError(f"云端 OCR 网络请求失败：{type(exc).__name__}") from exc
+    nonempty = [page.avg_confidence for page in pages if page.text]
+    return OcrDocumentResult(
+        text="\n\n".join(sections),
+        pages=pages,
+        avg_confidence=sum(nonempty) / len(nonempty) if nonempty else 0.0,
+        engine=f"openai-compatible/{model}",
+    )
+
+
+def ocr_images(
+    images: Iterable[tuple[int, bytes]],
+    *,
+    total: int,
+    settings: Settings | None = None,
+    on_progress: OcrProgressCallback | None = None,
+    cancel_event: threading.Event | None = None,
+) -> OcrDocumentResult:
+    """OCR encoded page images without retaining the whole book in memory."""
+    runtime_settings = settings or Settings()
+    if ocr_cloud_configured(runtime_settings):
+        return _ocr_images_cloud(
+            images,
+            total=total,
+            settings=runtime_settings,
+            on_progress=on_progress,
+            cancel_event=cancel_event,
+        )
+    return _ocr_images_local(
+        images,
+        total=total,
+        on_progress=on_progress,
+        cancel_event=cancel_event,
+    )
 
 
 def _ocr_pdf_cloud(

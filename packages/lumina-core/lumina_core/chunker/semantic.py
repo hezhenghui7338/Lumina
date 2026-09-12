@@ -151,12 +151,18 @@ def atomize_text(
         style = detect_style(value)
         stripped_first = value.strip().splitlines()[0] if value.strip() else ""
         parsed = parse_heading_line(stripped_first)
-        if parsed is not None and "目录" in parsed[1]:
+        if parsed is not None and (
+            "目录" in parsed[1]
+            or "tableofcontents" in parsed[1].lower().replace(" ", "")
+            or parsed[1].lower().strip() in {"contents", "content"}
+        ):
             in_toc = True
         elif (
             parsed is not None
             and parsed[0] <= 1
             and "目录" not in parsed[1]
+            and "tableofcontents" not in parsed[1].lower().replace(" ", "")
+            and parsed[1].lower().strip() not in {"contents", "content"}
             and is_hash_heading_line(stripped_first)
         ):
             # Bare 第N章 lines inside an EPUB TOC are entries, not the next chapter.
@@ -213,7 +219,7 @@ def atomize_text(
             style=first.style,
             boundary_before=BoundaryStrength.HARD,
         )
-    return atoms
+    return _soften_heading_shell_runs(atoms)
 
 
 def adaptive_merge(
@@ -279,6 +285,13 @@ def adaptive_merge(
             and incoming_key == group_chapter_key
         )
         new_chapter = (chapter_hard or chapter_like) and not same_chapter_heading
+        # TOC-like / title-page crumb runs must pack together; hard min merges later.
+        if (
+            new_chapter
+            and _is_heading_shell(atoms[i - 1])
+            and _is_heading_shell(atom)
+        ):
+            new_chapter = False
         role_hard = role_families_differ(atoms[i - 1].role, atom.role)
         must_cut = new_chapter or role_hard or next_length > max_chars
         group_chars = group_end - group_start
@@ -372,6 +385,72 @@ def _role_hard_starts(atoms: list[TextAtom]) -> set[int]:
         if role_families_differ(atoms[index - 1].role, atoms[index].role):
             starts.add(atoms[index].start)
     return starts
+
+
+_HEADING_SHELL_MAX_CHARS = 80
+_SEPARATOR_ONLY = re.compile(r"^[\s\-—_=＊※\*]+$")
+
+
+def _is_heading_shell(atom: TextAtom) -> bool:
+    """True for marker / 第N章 title crumbs with no substantial prose body."""
+    stripped = atom.text.strip()
+    if not stripped:
+        return True
+    compact = re.sub(r"\s+", "", stripped)
+    if _SEPARATOR_ONLY.match(compact):
+        return False
+    lines = [line.strip() for line in stripped.splitlines() if line.strip()]
+    if not lines:
+        return True
+    if atom.content_chars > _HEADING_SHELL_MAX_CHARS:
+        return False
+    if atom.role is DocumentRole.TOC:
+        return True
+    if all(
+        is_hard_heading_line(line)
+        or match_structure_line(line) is not None
+        or (
+            _looks_like_heading(line)
+            and not _SEPARATOR_ONLY.match(re.sub(r"\s+", "", line))
+        )
+        for line in lines
+    ):
+        return True
+    first = lines[0]
+    return bool(
+        (is_hard_heading_line(first) or match_structure_line(first) is not None)
+        and atom.content_chars <= _HEADING_SHELL_MAX_CHARS
+    )
+
+
+def _span_is_heading_shell_only(atoms: list[TextAtom], start: int, end: int) -> bool:
+    span_atoms = [atom for atom in atoms if start <= atom.start < end]
+    return bool(span_atoms) and all(_is_heading_shell(atom) for atom in span_atoms)
+
+
+def _soften_heading_shell_runs(atoms: list[TextAtom]) -> list[TextAtom]:
+    """Downgrade HARD→STRONG inside consecutive title-only runs (TOC-like lists)."""
+    if len(atoms) < 2:
+        return atoms
+    out = list(atoms)
+    index = 0
+    while index < len(out):
+        if not _is_heading_shell(out[index]):
+            index += 1
+            continue
+        run_end = index + 1
+        while run_end < len(out) and _is_heading_shell(out[run_end]):
+            run_end += 1
+        if run_end - index >= 2:
+            for offset in range(index + 1, run_end):
+                atom = out[offset]
+                if atom.boundary_before is BoundaryStrength.HARD:
+                    out[offset] = replace(
+                        atom,
+                        boundary_before=BoundaryStrength.STRONG,
+                    )
+        index = run_end
+    return out
 
 
 def _atom_first_line(atom: TextAtom) -> str:
@@ -725,7 +804,15 @@ def _pick_rebalance_split(
 
 
 def _span_has_toc(atoms: list[TextAtom], start: int, end: int) -> bool:
-    return any("§目录" in atom.text for atom in atoms if start <= atom.start < end)
+    span_atoms = [atom for atom in atoms if start <= atom.start < end]
+    if not span_atoms:
+        return False
+    if any(
+        "§目录" in atom.text or atom.role is DocumentRole.TOC for atom in span_atoms
+    ):
+        return True
+    # Heading-only crumb spans (directory lists without the word 目录).
+    return len(span_atoms) >= 2 and all(_is_heading_shell(atom) for atom in span_atoms)
 
 
 def _merge_noise_fragments(
@@ -774,11 +861,16 @@ def _pack_synthetic_fragments(
             if start <= atom.start < end
         )
         follows_toc = bool(out) and _span_has_toc(atoms, out[-1][0], out[-1][1])
+        prev_shell = bool(out) and _span_is_heading_shell_only(
+            atoms, out[-1][0], out[-1][1]
+        )
+        crosses_chapter = start in hard_starts
         if (
             out
             and (out[-1][1] - out[-1][0]) < SEGMENT_HARD_MIN_CHARS
             and end - out[-1][0] <= max_chars
-            and not _blocks_same_chapter_merge(atoms, role_hard, start, out[-1])
+            and start not in role_hard
+            and (not crosses_chapter or prev_shell)
         ):
             previous_start, _ = out[-1]
             out[-1] = (previous_start, end)
@@ -788,6 +880,17 @@ def _pack_synthetic_fragments(
             or (_span_has_toc(atoms, start, end) and length < min_chars)
             or (follows_toc and length < tiny_limit)
         )
+        # Title-only crumbs may sit on a chapter hard_start; still pack with prior TOC/shells.
+        if (
+            not packable
+            and out
+            and crosses_chapter
+            and start not in role_hard
+            and _is_heading_shell(_atom_at_offset(atoms, start) or atoms[0])
+            and (prev_shell or follows_toc)
+            and end - out[-1][0] <= max_chars
+        ):
+            packable = True
         if packable and out and end - out[-1][0] <= max_chars:
             previous_start, _ = out[-1]
             out[-1] = (previous_start, end)
@@ -841,7 +944,7 @@ def _enforce_minimum_spans(
     max_chars: int,
     min_chars: int,
 ) -> list[tuple[int, int]]:
-    """Merge heading shells to ≥200 chars and rebalance tails below the fragment floor."""
+    """Merge short spans to ≥200 (forward, may cross chapter) and rebalance crumbs."""
     packer_floor = _segment_floor(min_chars, max_chars)
     fragment_floor = _fragment_floor(min_chars, max_chars)
     hard_min = min(SEGMENT_HARD_MIN_CHARS, max_chars)
@@ -865,12 +968,25 @@ def _enforce_minimum_spans(
 
         opens_chapter = _span_opens_body_chapter(atoms, start)
         neighbor: int | None = None
-        if needs_hard and opens_chapter:
+        if needs_hard:
+            # Hard floor: chapter-opening / title shells take 下文 (may cross chapter).
+            # Mid-chapter crumbs before the next HARD prefer 上文 so they stay put.
             nxt = i + 1
-            if nxt < len(out) and not _blocks_same_chapter_merge(
-                atoms, role_hard, out[nxt][0], (start, end)
+            crosses_next = nxt < len(out) and out[nxt][0] in hard_starts
+            shell_only = _span_is_heading_shell_only(atoms, start, end)
+            opens = opens_chapter or shell_only
+            if (
+                nxt < len(out)
+                and out[nxt][0] not in role_hard
+                and (not crosses_next or opens)
             ):
                 neighbor = nxt
+            elif i > 0 and start not in role_hard and not opens:
+                neighbor = i - 1
+            elif nxt < len(out) and out[nxt][0] not in role_hard:
+                neighbor = nxt
+            elif i > 0 and start not in role_hard:
+                neighbor = i - 1
             else:
                 i += 1
                 continue
@@ -897,9 +1013,16 @@ def _enforce_minimum_spans(
 
         left_index, right_index = sorted((i, neighbor))
         later_start = out[right_index][0]
-        if later_start in hard_starts and _blocks_same_chapter_merge(
-            atoms, role_hard, later_start, out[left_index]
+        if (
+            not needs_hard
+            and later_start in hard_starts
+            and _blocks_same_chapter_merge(
+                atoms, role_hard, later_start, out[left_index]
+            )
         ):
+            i += 1
+            continue
+        if needs_hard and later_start in role_hard:
             i += 1
             continue
         combined_start = out[left_index][0]
@@ -913,17 +1036,19 @@ def _enforce_minimum_spans(
         original_boundary = out[right_index][0]
         paragraph_starts = _complete_paragraph_starts(atoms)
         if (
-            original_boundary in paragraph_starts
+            not needs_hard
+            and original_boundary in paragraph_starts
             and not _span_has_toc(atoms, combined_start, combined_end)
-            and not (needs_hard and opens_chapter)
+            and not (opens_chapter)
         ):
             # A whole natural paragraph that does not fit beside its neighbor
-            # stays whole, even if one side is below the floor.
+            # stays whole, even if one side is below the soft floor.
             i += 1
             continue
 
-        lower = max(combined_start + floor, combined_end - max_chars)
-        upper = min(combined_start + max_chars, combined_end - floor)
+        rebalance_floor = hard_min if needs_hard else floor
+        lower = max(combined_start + rebalance_floor, combined_end - max_chars)
+        upper = min(combined_start + max_chars, combined_end - rebalance_floor)
         if lower <= upper:
             split_at = _pick_rebalance_split(
                 text,
@@ -936,6 +1061,19 @@ def _enforce_minimum_spans(
                 atom_starts=atom_starts,
             )
             if combined_start < split_at < combined_end:
+                # Never re-cut a hard-min merge into a title-only left shell.
+                if needs_hard and (split_at - combined_start) < hard_min:
+                    i += 1
+                    continue
+                left_atom = _atom_at_offset(atoms, combined_start)
+                if (
+                    needs_hard
+                    and left_atom is not None
+                    and _is_heading_shell(left_atom)
+                    and split_at <= left_atom.end
+                ):
+                    i += 1
+                    continue
                 replacement = [
                     (combined_start, split_at),
                     (split_at, combined_end),
@@ -953,30 +1091,43 @@ def _enforce_minimum_spans(
         # rather than collapsing the whole document into one span.
         expanded_left = left_index
         expanded_right = right_index
+        expand_floor = rebalance_floor
         while True:
             expanded_start = out[expanded_left][0]
             expanded_end = out[expanded_right][1]
             expanded_length = expanded_end - expanded_start
             part_count = (expanded_length + max_chars - 1) // max_chars
-            if part_count <= expanded_length // floor:
+            if part_count <= expanded_length // expand_floor:
                 break
             next_right = expanded_right + 1
-            can_expand_left = (
-                expanded_left > 0
-                and not _blocks_same_chapter_merge(
-                    atoms,
-                    role_hard,
-                    out[expanded_left][0],
-                    out[expanded_left - 1],
+            can_expand_left = expanded_left > 0 and (
+                (
+                    needs_hard
+                    and out[expanded_left][0] not in role_hard
+                )
+                or (
+                    not needs_hard
+                    and not _blocks_same_chapter_merge(
+                        atoms,
+                        role_hard,
+                        out[expanded_left][0],
+                        out[expanded_left - 1],
+                    )
                 )
             )
-            can_expand_right = (
-                next_right < len(out)
-                and not _blocks_same_chapter_merge(
-                    atoms,
-                    role_hard,
-                    out[next_right][0],
-                    (out[expanded_left][0], out[expanded_right][1]),
+            can_expand_right = next_right < len(out) and (
+                (
+                    needs_hard
+                    and out[next_right][0] not in role_hard
+                )
+                or (
+                    not needs_hard
+                    and not _blocks_same_chapter_merge(
+                        atoms,
+                        role_hard,
+                        out[next_right][0],
+                        (out[expanded_left][0], out[expanded_right][1]),
+                    )
                 )
             )
             if can_expand_left:
@@ -991,9 +1142,9 @@ def _enforce_minimum_spans(
             out[expanded_right][1],
             part_count=part_count,
             atoms=atoms,
-            floor=floor,
+            floor=expand_floor,
             max_chars=max_chars,
-            hard_starts=hard_starts,
+            hard_starts=None if needs_hard else hard_starts,
         )
         current = out[expanded_left : expanded_right + 1]
         if replacement == current:

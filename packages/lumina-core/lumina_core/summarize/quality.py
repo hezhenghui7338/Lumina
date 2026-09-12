@@ -35,7 +35,18 @@ _ASSISTANT_IDENTITY = "阅读助手"
 _NARRATOR_LABEL = "叙述者"
 _FIRST_PERSON_WO = re.compile(r"我(?!国)")
 _FIRST_PERSON_I = re.compile(r"\bI\b")
-_ALWAYS_REJECT_CODES = frozenset({"wrong_language", "first_person_as_narrator"})
+SENTENCES_TARGET_MIN = 50
+SENTENCES_TARGET_MAX = 200
+SENTENCES_REJECT_MIN = 40
+SENTENCES_REJECT_MAX = 250
+_ALWAYS_REJECT_CODES = frozenset(
+    {
+        "wrong_language",
+        "first_person_as_narrator",
+        "summary_too_short",
+        "summary_too_long",
+    }
+)
 
 
 def _source_uses_first_person(raw_text: str) -> bool:
@@ -76,10 +87,15 @@ class SummaryQualityError(ValueError):
 
 
 def quality_should_reject(issues: tuple[ClarityIssue, ...] | list[ClarityIssue]) -> bool:
-    """Language leaks fail even as a single issue; other defects still need more than one."""
+    """Always-reject codes fail alone; other defects still need more than one."""
     if any(issue.code in _ALWAYS_REJECT_CODES for issue in issues):
         return True
     return len(issues) > 1
+
+
+def sentences_char_count(summary: SegmentSummary) -> int:
+    """Unicode length of joined summary sentences (the on-screen 总结)."""
+    return len("".join(summary.sentences))
 
 
 def _summary_fields(summary: SegmentSummary) -> dict[str, str]:
@@ -232,6 +248,34 @@ def scan_summary_clarity(
                     0,
                 )
             )
+
+    total = sentences_char_count(summary)
+    joined = "".join(summary.sentences)
+    source_len = len(raw_text.strip()) if raw_text is not None else None
+    if total > SENTENCES_REJECT_MAX:
+        issues.append(
+            ClarityIssue(
+                "sentences",
+                "summary_too_long",
+                f"总结合计约 {total} 字，明显超过目标上限 {SENTENCES_TARGET_MAX} 字",
+                joined[:60],
+                "hard",
+                0,
+            )
+        )
+    elif total < SENTENCES_REJECT_MIN and (
+        source_len is None or source_len >= SENTENCES_TARGET_MIN
+    ):
+        issues.append(
+            ClarityIssue(
+                "sentences",
+                "summary_too_short",
+                f"总结合计约 {total} 字，明显短于目标下限 {SENTENCES_TARGET_MIN} 字",
+                joined[:60] if joined else "（空）",
+                "hard",
+                0,
+            )
+        )
     return _dedupe_exact(issues)
 
 

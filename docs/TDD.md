@@ -97,7 +97,7 @@ flowchart TB
 
 | 层 | 职责 | 不做 |
 |----|------|------|
-| **SwiftUI App** | 书库/阅读器/深聊 UI、Sidecar 生命周期、文件导入 UX | LLM prompt、分段算法、OCR |
+| **SwiftUI App** | 书库/阅读器/深聊 UI、Sidecar 生命周期、文件导入 UX；macOS 注册文档类型并以 `application(_:open:)` / 单实例转发接入导入队列 | LLM prompt、分段算法、OCR |
 | **lumina-core** | 摄入、分段、摘要、翻译、深聊、联网、资讯 sync、SQLite 写入 | 原生 UI |
 | **SQLite + 文件** | 结构化元数据、段缓存、笔记、对话、FTS/向量索引 | 云端同步 |
 
@@ -296,8 +296,8 @@ sequenceDiagram
 
   App->>API: POST /books/import {paths[]}
   API->>Ingest: detect format + extract text
-  alt 扫描 PDF 文本层不足
-    Ingest->>OCR: PyMuPDF 渲染页 → ocr_pdf
+  alt 扫描 PDF 文本层不足或 EPUB 正文以页面图片为主
+    Ingest->>OCR: PDF 渲染页 / EPUB 解码页图 → OCR
     OCR-->>Ingest: ## [p.N] 标注文本
   end
   Ingest->>API: annotated text + metadata
@@ -316,6 +316,7 @@ sequenceDiagram
 | 批量导入 | 10+ 本可同时提交；每本独立 job |
 | 分段时机 | **导入完成即开始**分段（不等打开书） |
 | OCR/分段并发 | 默认 **1**（内部常量，用户不可配） |
+| macOS 打开方式 | Info.plist 注册支持格式 UTI（`LSHandlerRank=Alternate`）；`application(_:open:)` 与单实例 `DistributedNotification` 转发路径 → App 扩展名分流后入现有导入队列（不改 Core API） |
 
 **格式解析（Core）**
 
@@ -323,7 +324,7 @@ sequenceDiagram
 |------|-----|------|
 | PDF（文本层） | **PyMuPDF 优先**，`pypdf` 回退 | 页码锚点；Identity-H/CID 无 ToUnicode 时 pypdf 会乱码 |
 | PDF（扫描 / 乱码层） | **PyMuPDF + OpenAI 兼容视觉 API / RapidOCR PP-OCRv6** | 覆盖率 < 15% 或文本层判定为 CID 乱码时触发；云端配置完整时优先 |
-| EPUB | **`ebooklib` 为核心**，自建解析 Pipeline（spine → 章节 → 纯文本 + § 锚点） | 不用 epub2txt |
+| EPUB | **`ebooklib` 为核心**，自建解析 Pipeline（spine → 章节 → 纯文本 + § 锚点）；正文以页面图片为主且文字不足时按 spine/DOM 图片顺序 OCR | 不用 epub2txt；图片页复用 PDF OCR provider 路由与页级进度 |
 | MOBI | `mobi` | 同 LA |
 | TXT/Markdown | 内置 | `.txt/.text/.md/.markdown/.mdown/.mkd/.log`。**字节抽样**识别编码（BOM → UTF-8 合法且非乱码 → GB18030/Big5 → replace 评分汉字+中文标点 → charset-normalizer）。抽样用 IncrementalDecoder（`final=False`），64KiB 截在多字节中间不得判失败。抽样中段遇非法字节（电子书残留二进制，如 `0xd0 0x14`）不得整书报「无法识别文本编码」：用 `errors=replace` 按汉字与 `。，、` 密度认 UTF-8/GB18030/Big5。UTF-8 能解开不算数：Latin-1 误解的 GBK 再存成 UTF-8 须恢复为汉字。latin-1 不得作为中文成功路径；认不出则导入失败。锁定 codec 后 **IncrementalDecoder 滑窗**解码（`replace`，去掉 NUL），禁止 `read_bytes()` 全书。 |
 | HTML/XHTML | 内置 `HTMLParser` | 去除脚本/样式，保留标题锚点与元数据 |
@@ -357,6 +358,7 @@ RapidOCR(params={
     "Det.lang_type": config.OCR_LANG,  # ch / en / …
 })
 # ocr_pdf: PyMuPDF 逐页渲染 → OCR → ## [p.N] 段落
+# ocr_images: EPUB 按 spine/DOM 顺序解码页面图片 → OCR → ## [p.N] 段落
 ```
 
 **依赖**（`lumina-core[ocr]` extra）：
@@ -381,7 +383,7 @@ RapidOCR(params={
 
 **配置与探活 API**：`GET/PUT /settings` 管理非敏感配置与掩码 Key；`GET /settings/ocr/status` 检查本地依赖或云端 `/models` 连通性。macOS 与 Windows 设置页均提示“扫描页会上传云端”。
 
-**进度 UX**：OCR 经 SSE 推送 `{book_id, page, total, message}`，消息区分本地/云端；App 显示局部进度，不 blocking 全屏。PDF 渲染和云端同步 HTTP 均位于 ingest 的 `asyncio.to_thread` 工作线程。TXT / 非 OCR 导入同样走 `ingest_progress`：`page/total` 为已处理字数（或文件字节）与总量；结构扫描不得等整步结束才发第一帧。CPU 队列占用时先发「排队等待分段…」。`--cpu-worker` 父进程看门狗：无进度 180s 杀子进程；单本墙钟 `max(1800s, pages×60s, MiB×30s)` 硬顶 8h（PDF 打开后按页数，否则按文件体积；TXT 字数进度不得当页数）。`ingest_error` 写清阶段与实际上限。
+**进度 UX**：OCR 经 SSE 推送 `{book_id, page, total, message}`，消息区分本地/云端；App 显示局部进度，不 blocking 全屏。PDF 渲染、EPUB 图片解码和云端同步 HTTP 均位于 ingest 的 CPU worker / 工作线程。TXT / 非 OCR 导入同样走 `ingest_progress`：`page/total` 为已处理字数（或文件字节）与总量；结构扫描不得等整步结束才发第一帧。CPU 队列占用时先发「排队等待分段…」。`--cpu-worker` 父进程看门狗：无进度 180s 杀子进程；单本墙钟 `max(1800s, pages×60s, MiB×30s)` 硬顶 8h（PDF 或图片型 EPUB 探测到页数后按页数，否则按文件体积；TXT 字数进度不得当页数）。`ingest_error` 写清阶段与实际上限。
 
 ### 4.2 智能分段（Chunker）
 
@@ -398,7 +400,7 @@ load_document
   → DocumentSegment[] + chapter / heading_path / page 元数据
 ```
 
-角色只存在于结构元数据，**不得**写入 `raw_text` / 读者可见锚点。同一章内每段不少于 `SEGMENT_HARD_MIN_CHARS = 200` 字；HARD 章标题空壳（含 `## [§…]` 与紧随的「第N章」行）必须并入**本章**后续正文至 ≥200。`SEGMENT_MIN_CHARS = 500` 仍约束同一角色内 TOC 碎屑与话题切碎片。角色变化与**跨章** HARD 不受 200/500 地板限制（短章不得吞下一章；整章或全书不足 200 字时允许短段）。用户 budget 的 `min_chars < 500`（目标约 200–416）时 500 碎屑地板让位于该 budget，但不得低于 200，除非整章不足。章内二次切分按 **章 > 自然段 > 句号 > 语义** 的硬阶梯：未超过 `max_chars` 的自然段不得劈开；句号只用于单段超长；embedding / 规则 novelty 只在段界上提前停。完整自然段优先于 0.6T 地板；章末或下一段整段放不进 max 时允许短块。有句末标点时禁止按字数在句中硬切。重平衡无法同时满足地板与 `max_chars` 时，优先遵守 `max_chars` 与段完整性，不得把全书并成一段。
+角色只存在于结构元数据，**不得**写入 `raw_text` / 读者可见锚点。每段不少于 `SEGMENT_HARD_MIN_CHARS = 200` 字；HARD 章标题空壳（含 `## [§…]` 与紧随的「第N章」行）及目录碎屑必须并入**下文**至 ≥200，不足时可**跨章**向后合并。仅全书剩余不足 200 字时允许短段。`SEGMENT_MIN_CHARS = 500` 仍约束同一角色内 TOC 碎屑与话题切碎片。**目标段长 / soft floor** 打包不得跨章或跨角色填长度（短章不得为凑 target 吞下一章）；硬地板 200 不受该限制。用户 budget 的 `min_chars < 500`（目标约 200–416）时 500 碎屑地板让位于该 budget，但不得低于 200，除非全书尾不足。章内二次切分按 **章 > 自然段 > 句号 > 语义** 的硬阶梯：未超过 `max_chars` 的自然段不得劈开；句号只用于单段超长；embedding / 规则 novelty 只在段界上提前停。完整自然段优先于 0.6T 地板；章末或下一段整段放不进 max 时允许短块。有句末标点时禁止按字数在句中硬切。重平衡无法同时满足地板与 `max_chars` 时，优先遵守 `max_chars` 与段完整性，不得把全书并成一段。目录页连续短标题（即使无字面「目录」）在遇到实质正文前边界降为 STRONG，避免章名各自成段。
 
 **Lumina 参数（v1.0 默认）**
 
@@ -443,19 +445,19 @@ load_document
 }
 ```
 
-Prompt 约束：label ≤20 字；sentences ≤3；bullets 3–7 条（每条 label ≤8 字、body ≥20 字）；notes 0–3 条（可选）；follow_ups 0–3 条。
+Prompt 约束：label ≤20 字；sentences ≤3，合计目标 50–200 字；bullets 3–7 条（每条 label ≤8 字、body ≥20 字）；notes 0–3 条（可选）；follow_ups 0–3 条。
 
 **连续上下文**：
 - `SegmentRepo` 仅查询当前段之前已 ready 的 `idx/chapter/summary_json`，不读取 `raw_text`。
 - JobQueue 将上一章和本章前文摘要压缩为最多 1600 字符的背景包；章节元数据缺失时降级为最近前序摘要。
-- 背景只用于人物、代词、时间线和因果消歧，prompt 明确禁止把背景事件写成当前段事实，身份不明确时保留不确定性。
+- 背景用于人物、代词、时间线和因果消歧，并让 `sentences` 在叙事上承接最近前文；prompt 禁止把背景事件写成当前段事实，身份不明确时保留不确定性；bullets / notes / follow_ups 仍只覆盖本段。仅新生成、重试或用户主动重新摘要生效。
 
 **质量监督（仅书籍段摘要）**
 
-1. schema/richness 通过后，`summarize/quality.py` 扫描所有用户可见摘要字段，按字段位置记录乱码替换字符、控制字符、模板泄漏、占位文本、正文等于标签、异常符号、机械重复及疑似截断。
+1. schema/richness 通过后，`summarize/quality.py` 扫描所有用户可见摘要字段，按字段位置记录乱码替换字符、控制字符、模板泄漏、占位文本、正文等于标签、异常符号、机械重复及疑似截断；并对 `sentences` 拼接总字数做长度门（目标 50–200；硬拒 <40 或 >250；`raw_text` 不足 50 字时不判过短）。
 2. 超过 1 个本地硬问题时直接拒绝候选摘要；恰有 1 个问题或软可疑信号时，使用 `summarize` profile 发起独立 JSON 质检调用，并用原文短片与候选摘要复核。质检调用失败时退回本地硬问题结果，不能让队列额外失败。
-3. 本地与模型问题按字段和片段去重；合计问题数 `> 1` 时抛出质量错误，进入当前段内的 LLM 重试循环。下一轮 prompt 明确携带上轮问题字段、原因与短片段。
-4. 质量门位于 `SegmentRepo.update_summary` 和 `segment_ready` 之前；未通过的候选摘要不会入库或短暂显示。调用共享现有 Router Semaphore，仍在 JobQueue 后台执行。
+3. 本地与模型问题按字段和片段去重；合计问题数 `> 1` 时抛出质量错误，进入当前段内的 LLM 重试循环。下一轮 prompt 明确携带上轮问题字段、原因与短片段。`wrong_language`、`first_person_as_narrator`、`summary_too_short`、`summary_too_long` 单处即拒，不等第二个缺陷。
+4. 质量门位于 `SegmentRepo.update_summary` 和 `segment_ready` 之前；未通过的候选摘要不会入库或短暂显示。调用共享现有 Router Semaphore，仍在 JobQueue 后台执行。仅新生成 / 重试 / 用户主动重新摘要生效，不回扫存量。
 5. `summary_llm_attempts` 只记录摘要生成轮次；质检耗时计入摘要 LLM 总耗时。资讯/文档 Markdown 摘要不在本阶段范围。
 
 **Prefetch 与失败策略（v1.0）**

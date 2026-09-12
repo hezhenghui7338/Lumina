@@ -101,7 +101,7 @@ def test_repo_previous_summary_query_is_slim_and_ordered(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_prompt_injects_context_as_disambiguation_only() -> None:
+async def test_prompt_injects_context_for_disambiguation_and_narrative_continuity() -> None:
     response = {
         "sentences": ["我想起了小时候的往事。"],
         "bullets": [
@@ -122,8 +122,9 @@ async def test_prompt_injects_context_as_disambiguation_only() -> None:
     )
 
     prompt = router.calls[0]["prompt"]
-    assert "仅用于消解人物、代词、时间线和因果关系" in prompt
-    assert "不能把背景中的事件当作当前段内容" in prompt
+    assert "让总结句顺接前文阅读感" in prompt
+    assert "承接最近前文的叙事线程" in prompt
+    assert "不能把背景中的事件当作当前段新发生的内容" in prompt
     assert "不得仅因段首出现某个人名" in prompt
     assert "阅读助手" in prompt
     assert "禁止写成「叙述者」" in prompt

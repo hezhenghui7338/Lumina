@@ -27,7 +27,9 @@ from lumina_core.summarize.segment import (
 
 def _summary(**overrides) -> SegmentSummary:
     data = {
-        "sentences": ["本段交代主角离乡赴考，并说明家人对他的期望。"],
+        "sentences": [
+            "本段交代主角离乡赴考启程上路，并说明家人对他的期望与族人看重功名，以及途中陌生来信留下的冲突伏笔线索。"
+        ],
         "bullets": [
             {
                 "label": "离乡赴考",
@@ -51,12 +53,55 @@ def _summary(**overrides) -> SegmentSummary:
     return SegmentSummary.model_validate(data)
 
 
+def _len_text(n: int) -> str:
+    """Build n unique CJK chars so length tests do not trip mechanical_repeat."""
+    return "".join(chr(0x4E00 + i) for i in range(n))
+
+
 def test_clarity_scan_passes_readable_summary():
     assert scan_summary_clarity(_summary()) == []
 
 
+def test_clarity_scan_rejects_summary_shorter_than_buffer():
+    summary = _summary(sentences=[_len_text(39)])
+    issues = scan_summary_clarity(summary, raw_text=_len_text(80))
+    assert len(issues) == 1
+    assert issues[0].code == "summary_too_short"
+    assert issues[0].field == "sentences"
+    assert quality_should_reject(issues)
+
+
+def test_clarity_scan_allows_summary_at_reject_min_buffer():
+    summary = _summary(sentences=[_len_text(40)])
+    assert scan_summary_clarity(summary, raw_text=_len_text(80)) == []
+
+
+def test_clarity_scan_allows_summary_at_target_max():
+    summary = _summary(sentences=[_len_text(200)])
+    assert scan_summary_clarity(summary, raw_text=_len_text(80)) == []
+
+
+def test_clarity_scan_rejects_summary_longer_than_buffer():
+    summary = _summary(sentences=[_len_text(251)])
+    issues = scan_summary_clarity(summary, raw_text=_len_text(80))
+    assert len(issues) == 1
+    assert issues[0].code == "summary_too_long"
+    assert quality_should_reject(issues)
+
+
+def test_clarity_scan_skips_too_short_when_source_under_target_min():
+    summary = _summary(sentences=[_len_text(20)])
+    assert scan_summary_clarity(summary, raw_text=_len_text(49)) == []
+    # Over-long still rejected even for short sources.
+    long = _summary(sentences=[_len_text(251)])
+    issues = scan_summary_clarity(long, raw_text=_len_text(20))
+    assert any(issue.code == "summary_too_long" for issue in issues)
+
+
 def test_clarity_scan_allows_exactly_one_issue():
-    summary = _summary(sentences=["本段交代主角离乡�赴考。"])
+    summary = _summary(
+        sentences=["本段交代主角离乡�赴考启程上路，并说明家人期望与途中陌生来信留下的冲突伏笔线索。"]
+    )
     issues = scan_summary_clarity(summary)
     assert len(issues) == 1
     assert issues[0].code == "replacement_char"
@@ -64,7 +109,7 @@ def test_clarity_scan_allows_exactly_one_issue():
 
 def test_clarity_scan_counts_two_distinct_locations():
     summary = _summary(
-        sentences=["本段交代主角离乡�赴考。"],
+        sentences=["本段交代主角离乡�赴考启程上路，并说明家人期望与途中陌生来信留下的冲突伏笔线索。"],
         notes=["来信内容出现�，暂时无法辨认。"],
     )
     issues = scan_summary_clarity(summary)
@@ -86,7 +131,7 @@ def test_clarity_scan_detects_label_used_as_body():
 
 def test_clarity_scan_does_not_flag_classical_text_or_names():
     summary = _summary(
-        sentences=["子曰：学而时习之，不亦说乎？"],
+        sentences=["子曰：学而时习之，不亦说乎？本段借此开篇说明为学之乐与进德修业之方，并引出后文讨论。"],
         notes=["人物名为让-巴蒂斯特·贝尔纳，号东篱。"],
     )
     assert scan_summary_clarity(summary) == []
@@ -102,7 +147,7 @@ _FACELESS_RAW = (
 
 def test_clarity_scan_flags_assistant_identity_leak():
     summary = _summary(
-        sentences=["段落讲述阅读助手遭遇名为无面人的男子要求画肖像。"],
+        sentences=["段落讲述阅读助手遭遇名为无面人的男子要求画肖像，并交代交换条件与肖像困境的线索。"],
         bullets=[
             {
                 "label": "遭遇无面人",
@@ -131,7 +176,7 @@ def test_clarity_scan_flags_assistant_identity_leak():
 
 def test_clarity_scan_flags_narrator_rewrite_for_first_person():
     summary = _summary(
-        sentences=["本段讲述叙述者遭遇名为无面人的男子要求画肖像。"],
+        sentences=["本段讲述叙述者遭遇名为无面人的男子要求画肖像，并交代交换条件与肖像困境的全部线索。"],
         bullets=[
             {
                 "label": "遭遇无面人",
@@ -161,7 +206,7 @@ def test_clarity_scan_flags_narrator_rewrite_for_first_person():
 
 def test_clarity_scan_allows_first_person_restatement():
     summary = _summary(
-        sentences=["我醒来时，对面沙发上坐着一位自称无面人的男子，要我为他画肖像。"],
+        sentences=["我醒来时，对面沙发上坐着一位自称无面人的男子，要我为他画肖像并交还护身符作为交换。"],
         bullets=[
             {
                 "label": "遭遇无面人",
@@ -182,7 +227,7 @@ def test_clarity_scan_allows_first_person_restatement():
 
 def test_clarity_scan_allows_narrator_when_in_source():
     summary = _summary(
-        sentences=["本段说明叙述者这一角色在开篇醒来。"],
+        sentences=["本段说明叙述者这一角色在开篇醒来，并交代其对面人物的出场与对话。"],
     )
     issues = scan_summary_clarity(
         summary,
@@ -193,7 +238,7 @@ def test_clarity_scan_allows_narrator_when_in_source():
 
 def test_clarity_scan_allows_narrator_for_third_person():
     summary = _summary(
-        sentences=["本段讲述叙述者与科举制度的关系。"],
+        sentences=["本段讲述叙述者与科举制度的关系，以及他立志赴考的缘起与乡邻反应。"],
     )
     issues = scan_summary_clarity(
         summary,
@@ -204,7 +249,7 @@ def test_clarity_scan_allows_narrator_for_third_person():
 
 def test_clarity_scan_flags_english_i_rewritten_as_narrator():
     summary = _summary(
-        sentences=["叙述者醒来后看见无面人坐在对面。"],
+        sentences=["叙述者醒来后看见无面人坐在对面，并要求为其画一幅肖像作为交换。"],
     )
     issues = scan_summary_clarity(
         summary,
@@ -215,7 +260,7 @@ def test_clarity_scan_flags_english_i_rewritten_as_narrator():
 
 def test_clarity_scan_allows_assistant_when_in_source():
     summary = _summary(
-        sentences=["阅读助手是书中出现的角色，并在本段醒来。"],
+        sentences=["阅读助手是书中出现的角色，并在本段醒来后面对来客与请求。"],
     )
     issues = scan_summary_clarity(
         summary,
@@ -334,8 +379,11 @@ async def test_quality_review_failure_falls_back_to_local_result():
 
 
 def test_merge_does_not_count_same_location_twice():
-    summary = _summary(sentences=["本段交代主角离乡�赴考。"])
+    summary = _summary(
+        sentences=["本段交代主角离乡�赴考启程上路，并说明家人期望与途中陌生来信留下的冲突伏笔线索。"]
+    )
     local = scan_summary_clarity(summary)
+    assert len(local) == 1
     model = [
         type(local[0])(
             field="sentences[0]",
@@ -449,13 +497,13 @@ def test_clarity_scan_flags_language_mix():
 
 
 def test_clarity_scan_allows_latin_terms_classical_and_source_kana():
-    terms = _summary(sentences=["本段说明主角使用 ChatGPT 与 API 辅助赴考准备。"])
+    terms = _summary(sentences=["本段说明主角使用 ChatGPT 与 API 辅助赴考准备，并交代备考节奏。"])
     assert not any(
         issue.code == "wrong_language"
         for issue in scan_summary_clarity(terms, target_language="zh-CN")
     )
     classical = _summary(
-        sentences=["子曰：学而时习之，不亦说乎？"],
+        sentences=["子曰：学而时习之，不亦说乎？本段借此开篇说明为学之乐与进德修业之方，并引出后文讨论。"],
         notes=["人物名为让-巴蒂斯特·贝尔纳，号东篱。"],
     )
     assert scan_summary_clarity(classical, target_language="zh-CN") == []
@@ -532,7 +580,7 @@ async def test_narrator_rewrite_skips_model_review():
 async def test_first_person_narrator_rewrite_retries_without_quality_llm():
     bad = _summary(sentences=["叙述者醒来后看见无面人坐在对面。"]).model_dump()
     good = _summary(
-        sentences=["我醒来时，对面沙发上坐着一位自称无面人的男子，要我为他画肖像。"],
+        sentences=["我醒来时，对面沙发上坐着一位自称无面人的男子，要我为他画肖像并交还护身符作为交换。"],
         bullets=[
             {
                 "label": "遭遇无面人",

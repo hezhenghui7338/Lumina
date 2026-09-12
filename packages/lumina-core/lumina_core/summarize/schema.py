@@ -128,6 +128,37 @@ def _infer_label(text: str) -> str:
     return text[:8] if text else "要点"
 
 
+SEGMENT_LABEL_MAX_CHARS = 20
+
+
+def _first_sentence(sentences: object) -> str:
+    if not isinstance(sentences, list) or not sentences:
+        return ""
+    return str(sentences[0]).strip()
+
+
+def resolve_segment_label(
+    label: object,
+    *,
+    sentences: object,
+    bullets: object = None,
+    fallback_anchor: str = "",
+) -> str:
+    """Keep a provided theme label; if missing, take a short head of the first sentence."""
+    if isinstance(label, str):
+        cleaned = label.strip()
+        if cleaned:
+            return cleaned[:SEGMENT_LABEL_MAX_CHARS]
+    first = _first_sentence(sentences)
+    if first:
+        return _infer_label(first)[:SEGMENT_LABEL_MAX_CHARS]
+    anchor = (fallback_anchor or "").strip()
+    if anchor:
+        cleaned = anchor.lstrip("〔§").rstrip("〕")
+        return (cleaned or anchor)[:SEGMENT_LABEL_MAX_CHARS]
+    return "要点"
+
+
 def parse_segment_summary(raw: str | dict) -> SegmentSummary:
     data = parse_json_response(raw) if isinstance(raw, str) else raw
     normalized = normalize_summary_data(data)
@@ -140,11 +171,11 @@ def finalize_minimal_summary(data: dict, *, fallback_anchor: str) -> dict:
     anchor = out.get("anchor")
     if not isinstance(anchor, str) or not anchor.strip():
         out["anchor"] = fallback_anchor
-    label = out.get("label")
-    if not isinstance(label, str) or not label.strip():
-        sentences = out.get("sentences") or []
-        first = str(sentences[0]) if sentences else fallback_anchor
-        out["label"] = _infer_label(first)[:20]
+    out["label"] = resolve_segment_label(
+        out.get("label"),
+        sentences=out.get("sentences"),
+        fallback_anchor=fallback_anchor,
+    )
     out.setdefault("notes", [])
     out.setdefault("follow_ups", [])
     return out

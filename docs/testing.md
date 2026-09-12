@@ -140,6 +140,7 @@ Lumina/
 |----|-----|------|------|-----|-----|
 | **E2E-CHUNK-LIVE** | §5.3 | 长文切割 + 摘要段 0/1 | 段长区间、无 overlap、schema、人工 report | live | **真实 Ollama** |
 | **E2E-B1** | §5.1 B1 | 批量导入混合格式 | 无 crash；复制到 App Support；元数据 ≥90%；大 TXT 结构扫描有字数进度，无进度超时进导入失败 | API | Mock |
+| **E2E-B1-open-with** | §5.1 B1 | macOS Finder 打开方式 | 支持扩展入队导入；不支持立即「格式不支持」；单实例转发路径 | Swift unit | Mock |
 | **E2E-B1-formats** | §5.2 | Markdown/HTML/RTF/DOCX/ODT/FB2 导入 | 立即返回 processing；后台 ready；正文可读 | API | Mock |
 | **E2E-B1-dup** | TDD §14 | 同 hash 二次导入 | 409 + overwrite 重建 | API | Mock |
 | **E2E-B1-dup-skip-rest** | §5.1 | 批量冲突跳过剩下所有 | 后续重复不再弹窗；新书仍导入；与取消剩余导入区分 | Swift/Win unit | Mock |
@@ -203,7 +204,7 @@ Lumina/
 | **E2E-BOOT-01** | `test_api_swift_contract` · `test_books_list_is_favorite_is_json_bool` | `CoreClientDecodingTests` |
 | **E2E-BOOT-02** | `test_sidecar_startup` · `test_e2e_boot_02d_health_responds_immediately` · `test_shutdown_sets_uvicorn_should_exit` · `test_macos_stop_kills_port_listener` · `test_e2e_priv_01_settings_default_localhost` | `SidecarReadinessTests` |
 | **E2E-CHUNK-LIVE** | `test_chunker_chapter_boundary` · `test_chunker_max_segment_size` · `test_chunker_no_overlap_offsets` · `test_short_book_single_segment` · `test_summary_json_schema` | — |
-| **B1 导入** | `test_detect_format` · `test_extract_metadata_epub` · `test_copy_to_app_support` · `test_file_hash_dedup` · `test_processing_book_is_segmenting_state` · `test_library_facet_filters` | `LibraryViewModelMergeTests.testSegmentingCollectionIncludesProcessingBooks` · `apps/windows/Lumina.Tests/ModelJsonTests.cs` |
+| **B1 导入** | `test_detect_format` · `test_extract_metadata_epub` · `test_copy_to_app_support` · `test_file_hash_dedup` · `test_processing_book_is_segmenting_state` · `test_library_facet_filters` | `LibraryImportPolicyTests` · `LibraryViewModelMergeTests.testSegmentingCollectionIncludesProcessingBooks` · `apps/windows/Lumina.Tests/ModelJsonTests.cs` |
 | **B2 段列表** | `test_heading_path_at` · `test_heading_path_from_legacy_chapter_label` · `test_list_catalog_heading_path_and_legacy_chapter_fallback` · `test_summary_json_parse` · `test_label_max_20_chars` · `test_summary_quality`（0/1/2 问题边界、误报、复核降级、带反馈重试） | `SegmentListGroupingTests`（2 层标题 + 折叠 + 无章平铺）· `SegmentCatalog_nests_part_and_chapter` · Snapshot |
 | **E2E-boundary-move** | `test_boundary_move` · `test_boundary_api` | `CoreClientDecodingTests.testSegmentBoundaryPreview_decodesCandidates` · `SegmentBoundaryOffsetTests` · `apps/windows/Lumina.Tests/SegmentBoundaryOffsetTests.cs` |
 | **B11 prefetch** | `test_same_book_summaries_are_strictly_ordered` · `test_different_books_still_summarize_in_parallel` · `test_final_failure_does_not_block_later_segments` · `test_chat_pauses_prefetch` · `test_job_persist_on_restart` | `ReaderViewModel_SSEHandler` |
@@ -224,7 +225,7 @@ Lumina/
 **摘要质量 Mock 边界**：
 - PR 必须确定性覆盖黄金摘要、恰好 1 处允许、2 处触发、同位置去重、古文/专名误报边界，以及质检模型不可用时的本地降级。
 - 重试测试必须断言下一轮生成 prompt 含上轮具体字段、问题原因和短片段，并覆盖 full 与 Ollama minimal prompt。
-- 连续上下文必须覆盖上一章/本章前文选择、无章节降级、字符预算截断、prompt 消歧规则，以及同书顺序/跨书并行/前段最终失败后继续。
+- 连续上下文必须覆盖上一章/本章前文选择、无章节降级、字符预算截断、prompt 消歧与叙事衔接措辞（仍禁止把背景当成本段事实），以及同书顺序/跨书并行/前段最终失败后继续；不断言旧摘要被自动重写。
 - Mock 只验证可解释规则、调用编排和状态机；更广泛的事实准确性与语义质量仍由 `@live_chunk` report 人工 sign-off，不以不稳定的 live 输出阻塞 PR。
 
 ---

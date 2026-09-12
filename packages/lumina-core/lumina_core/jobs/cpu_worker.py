@@ -34,8 +34,9 @@ CPU_JOB_MAX_CEILING_SECONDS = 8 * 3600.0
 CPU_JOB_SECONDS_PER_PAGE = 60.0
 CPU_JOB_SECONDS_PER_MIB = 30.0
 CPU_JOB_MAX_PLAUSIBLE_PAGES = 20_000
-PAGE_PROGRESS_FORMATS = frozenset({"pdf"})
+PAGE_PROGRESS_FORMATS = frozenset({"pdf", "epub"})
 CPU_WORKER_ENV = "LUMINA_CPU_WORKER"
+CPU_OCR_KEY_ENV = "LUMINA_CPU_OCR_CLOUD_API_KEY"
 _MIB = 1024 * 1024
 
 ProgressFn = Callable[[int, int, str], None]
@@ -103,7 +104,7 @@ def cpu_job_max_seconds(*, file_bytes: int = 0, page_count: int | None = None) -
 
 
 def page_count_from_progress(fmt: str, total: int, message: str) -> int | None:
-    """PDF/OCR progress totals are pages; TXT char/byte totals must not count."""
+    """PDF/EPUB OCR progress totals are pages; TXT char/byte totals must not count."""
     if str(fmt or "").lower() not in PAGE_PROGRESS_FORMATS:
         return None
     if total < 1 or total > CPU_JOB_MAX_PLAUSIBLE_PAGES:
@@ -196,7 +197,9 @@ def run_cpu_worker_sync(
     work_dir = Path(data_dir) / "cpu-jobs"
     work_dir.mkdir(parents=True, exist_ok=True)
     job_path = work_dir / f"{job.get('book_id', 'job')}-{job.get('kind', 'cpu')}.json"
-    job_path.write_text(json.dumps(job, ensure_ascii=False), encoding="utf-8")
+    job_payload = dict(job)
+    ocr_cloud_api_key = str(job_payload.pop("_ocr_cloud_api_key", "") or "")
+    job_path.write_text(json.dumps(job_payload, ensure_ascii=False), encoding="utf-8")
     try:
         os.chmod(job_path, 0o600)
     except OSError:
@@ -204,6 +207,8 @@ def run_cpu_worker_sync(
     env = os.environ.copy()
     env["PYTHONUNBUFFERED"] = "1"
     env[CPU_WORKER_ENV] = "1"
+    if ocr_cloud_api_key:
+        env[CPU_OCR_KEY_ENV] = ocr_cloud_api_key
     root = str(_package_root())
     existing = env.get("PYTHONPATH", "")
     env["PYTHONPATH"] = os.pathsep.join(p for p in (root, existing) if p)
@@ -342,6 +347,9 @@ def execute_ingest_cpu(job: dict[str, Any]) -> None:
     )
 
     settings = Settings.model_validate(job["settings"])
+    env_ocr_key = os.environ.get(CPU_OCR_KEY_ENV, "")
+    if env_ocr_key:
+        settings.ocr_cloud_api_key = env_ocr_key
     models = ModelsConfig.model_validate(job["models"])
     cancel_event = threading.Event()
 
@@ -431,6 +439,9 @@ def execute_resegment_cpu(job: dict[str, Any]) -> None:
     )
 
     settings = Settings.model_validate(job["settings"])
+    env_ocr_key = os.environ.get(CPU_OCR_KEY_ENV, "")
+    if env_ocr_key:
+        settings.ocr_cloud_api_key = env_ocr_key
     cancel_event = threading.Event()
 
     def on_progress(page: int, total: int, message: str) -> None:

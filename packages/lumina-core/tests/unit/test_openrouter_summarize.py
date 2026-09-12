@@ -13,7 +13,9 @@ from lumina_core.models.router import ProfileModelRouter
 from lumina_core.summarize.segment import summarize_segment
 
 _VALID_SUMMARY = {
-    "sentences": ["本段交代主角寒门出身与赴考之志。"],
+    "sentences": [
+        "本段交代主角寒门出身与赴考之志，并说明邻里对其向学的态度，以及科举之路如何牵动全家生计。"
+    ],
     "bullets": [
         {"label": "寒门出身", "body": "主角生于贫苦农家，父亲早逝，母亲靠纺织维生。"},
         {"label": "赴考之志", "body": "段末以誓要金榜题名收束，将个人命运与科举制度绑定。"},
