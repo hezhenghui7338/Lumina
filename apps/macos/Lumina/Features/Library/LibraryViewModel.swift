@@ -43,6 +43,35 @@ enum BookDisplayTitle {
     }
 }
 
+enum BookshelfPaging {
+    static let defaultPageSize = 10
+    static let allowedPageSizes = [10, 20, 50, 100]
+
+    static func normalizedPageSize(_ value: Int) -> Int {
+        allowedPageSizes.contains(value) ? value : defaultPageSize
+    }
+
+    static func pageCount(total: Int, pageSize: Int) -> Int {
+        guard pageSize > 0, total > 0 else { return 0 }
+        return (total + pageSize - 1) / pageSize
+    }
+
+    static func clampedPageIndex(_ index: Int, pageCount: Int) -> Int {
+        guard pageCount > 0 else { return 0 }
+        return min(max(0, index), pageCount - 1)
+    }
+
+    static func slice<T>(_ items: [T], pageIndex: Int, pageSize: Int) -> [T] {
+        guard pageSize > 0, !items.isEmpty else { return [] }
+        let count = pageCount(total: items.count, pageSize: pageSize)
+        let page = clampedPageIndex(pageIndex, pageCount: count)
+        let start = page * pageSize
+        guard start < items.count else { return [] }
+        let end = min(start + pageSize, items.count)
+        return Array(items[start..<end])
+    }
+}
+
 @MainActor
 final class LibraryViewModel: ObservableObject {
     @Published var books: [BookSummary] = []
@@ -55,6 +84,10 @@ final class LibraryViewModel: ObservableObject {
     @Published var classifyingIds: Set<String> = []
     @Published var ingestProgress: [String: IngestProgress] = [:]
     @Published var summarizeOverview: SummarizeOverview?
+    /// Zero-based page into `matchedBooks`. Reset when facets / title / sort / page size change.
+    @Published var pageIndex: Int = 0
+    /// Allowed values: 10 / 20 / 50 / 100. Persisted; tests may override.
+    @Published var pageSize: Int = BookshelfPaging.defaultPageSize
 
     private var ingestEventTasks: [String: Task<Void, Never>] = [:]
 
@@ -62,7 +95,8 @@ final class LibraryViewModel: ObservableObject {
         LibraryCollection.sidebarItems(categories: categories, selectedCategory: query.category)
     }
 
-    var displayedBooks: [BookSummary] {
+    /// Filtered + sorted shelf (full match set; used for counts and paging).
+    var matchedBooks: [BookSummary] {
         var result = books.filter { query.matches($0) }
         let trimmedTitle = titleQuery.trimmingCharacters(in: .whitespacesAndNewlines)
         if !trimmedTitle.isEmpty {
@@ -74,6 +108,20 @@ final class LibraryViewModel: ObservableObject {
         }
         return result
     }
+
+    var pageCount: Int {
+        BookshelfPaging.pageCount(total: matchedBooks.count, pageSize: pageSize)
+    }
+
+    var showsPagination: Bool { !matchedBooks.isEmpty }
+
+    /// Current page slice — what the grid/list should bind.
+    var pagedBooks: [BookSummary] {
+        BookshelfPaging.slice(matchedBooks, pageIndex: pageIndex, pageSize: pageSize)
+    }
+
+    /// Alias for the visible page (keeps older call sites / small-fixture tests working).
+    var displayedBooks: [BookSummary] { pagedBooks }
 
     func count(for item: LibraryCollection) -> Int {
         let projected = query.projecting(item)
@@ -107,6 +155,13 @@ final class LibraryViewModel: ObservableObject {
            let value = BookshelfViewMode(rawValue: raw) {
             viewMode = value
         }
+        if UserDefaults.standard.object(forKey: Self.pageSizeKey) != nil {
+            pageSize = BookshelfPaging.normalizedPageSize(
+                UserDefaults.standard.integer(forKey: Self.pageSizeKey)
+            )
+        } else {
+            pageSize = BookshelfPaging.defaultPageSize
+        }
     }
 
     func persistPreferences() {
@@ -116,6 +171,7 @@ final class LibraryViewModel: ObservableObject {
         UserDefaults.standard.set(sort.rawValue, forKey: Self.sortKey)
         UserDefaults.standard.set(sortOrder.rawValue, forKey: Self.sortOrderKey)
         UserDefaults.standard.set(viewMode.rawValue, forKey: Self.viewModeKey)
+        UserDefaults.standard.set(pageSize, forKey: Self.pageSizeKey)
     }
 
     func loadCategories(using core: CoreClient) async {
@@ -131,6 +187,7 @@ final class LibraryViewModel: ObservableObject {
             ? Self.mergePreservingOrder(existing: books, fetched: fetched)
             : fetched
         books = Self.overlayLocalProgress(books) { ReadingProgressStore.shared.position(for: $0) }
+        clampPageIndexIfNeeded()
         syncIngestSubscriptions(using: core)
     }
 
@@ -304,26 +361,52 @@ final class LibraryViewModel: ObservableObject {
         return resolved == sort.defaultOrder ? base : Array(base.reversed())
     }
 
+    func resetPage() {
+        pageIndex = 0
+    }
+
+    func setPage(_ index: Int) {
+        pageIndex = BookshelfPaging.clampedPageIndex(index, pageCount: pageCount)
+    }
+
+    func clampPageIndexIfNeeded() {
+        let clamped = BookshelfPaging.clampedPageIndex(pageIndex, pageCount: pageCount)
+        if clamped != pageIndex {
+            pageIndex = clamped
+        }
+    }
+
     func selectFacet(_ item: LibraryCollection) {
         var next = query
         next.apply(item)
         query = next
+        resetPage()
         persistPreferences()
     }
 
     func setSort(_ value: LibrarySort) {
         sort = value
         sortOrder = value.defaultOrder
+        resetPage()
         persistPreferences()
     }
 
     func setSortOrder(_ value: LibrarySortOrder) {
         sortOrder = value
+        resetPage()
         persistPreferences()
     }
 
     func setViewMode(_ value: BookshelfViewMode) {
         viewMode = value
+        persistPreferences()
+    }
+
+    func setPageSize(_ value: Int) {
+        let next = BookshelfPaging.normalizedPageSize(value)
+        guard next != pageSize else { return }
+        pageSize = next
+        resetPage()
         persistPreferences()
     }
 
@@ -344,6 +427,7 @@ final class LibraryViewModel: ObservableObject {
         ingestProgress.removeValue(forKey: id)
         try await core.deleteBook(id: id)
         books.removeAll { $0.id == id }
+        clampPageIndexIfNeeded()
     }
 
     func deleteBooks(ids: [String], using core: CoreClient) async throws {
@@ -355,6 +439,7 @@ final class LibraryViewModel: ObservableObject {
         }
         try await core.deleteBooks(ids: ids)
         books.removeAll { ids.contains($0.id) }
+        clampPageIndexIfNeeded()
     }
 
     func setFavorite(ids: [String], isFavorite: Bool, using core: CoreClient) async throws {
@@ -428,4 +513,5 @@ final class LibraryViewModel: ObservableObject {
     private static let sortKey = "lumina.library.sort"
     private static let sortOrderKey = "lumina.library.sortOrder"
     private static let viewModeKey = "lumina.library.viewMode"
+    private static let pageSizeKey = "lumina.library.pageSize"
 }

@@ -128,11 +128,11 @@ Lumina/
 | ID | PRD | 场景 | 断言 | 层 | LLM |
 |----|-----|------|------|-----|-----|
 | **E2E-BOOT-01** | §3.4 | 启动时书库/设置/资讯三接口 JSON 契约 | `is_favorite` 为 JSON bool；Swift `BookSummary`/`AppSettings`/`NewsBrief` 可解码 | API unit + XCTest | Mock |
-| **E2E-BOOT-02** | §3.4 / §5.9 | Sidecar 启动就绪、退出必停、设置可停/重启 | `/health` 即时响应；`POST /shutdown` 结束 uvicorn；卡死/复用孤儿退出时仍杀端口监听；Swift 连接错误中文 fallback；Release sidecar 冒烟 | API unit + XCTest + release smoke | Mock |
+| **E2E-BOOT-02** | §3.4 / §3.5 / §5.9 | Sidecar 启动就绪、冷启动门闩、退出必停、设置可停/重启 | `/health` 即时响应；`GET /startup/status` 阶段至 product-ready；资讯 boot sync 失败/超时放行；`POST /shutdown` 结束 uvicorn；卡死/复用孤儿退出时仍杀端口监听；Swift 连接错误中文 fallback；Release sidecar 冒烟 | API unit + XCTest + release smoke | Mock |
 
 实现：`tests/unit/test_api_swift_contract.py` · `LuminaTests/Unit/CoreClientDecodingTests.swift`
 
-实现（E2E-BOOT-02）：`tests/unit/test_sidecar_startup.py`（含跨栈 `CHUNKER_VERSION` 契约、`POST /shutdown`）· `LuminaTests/Unit/SidecarReadinessTests.swift`（本地 XCTest）· `scripts/build-release.sh` sidecar smoke（断言 `/health` JSON `chunker_version`）
+实现（E2E-BOOT-02）：`tests/unit/test_sidecar_startup.py`（含跨栈 `CHUNKER_VERSION` 契约、`POST /shutdown`）· `tests/unit/test_startup_status.py`（`/startup/status` 阶段）· `LuminaTests/Unit/SidecarReadinessTests.swift` · `ColdStartReadinessTests.swift`（本地 XCTest）· `scripts/build-release.sh` sidecar smoke（断言 `/health` JSON `chunker_version`）
 
 ### 6.1 Wave 1 — 书库阅读核心（P0）
 
@@ -202,7 +202,7 @@ Lumina/
 | E2E | lumina-core unit | Swift unit / Snapshot |
 |-----|------------------|---------------------|
 | **E2E-BOOT-01** | `test_api_swift_contract` · `test_books_list_is_favorite_is_json_bool` | `CoreClientDecodingTests` |
-| **E2E-BOOT-02** | `test_sidecar_startup` · `test_e2e_boot_02d_health_responds_immediately` · `test_shutdown_sets_uvicorn_should_exit` · `test_macos_stop_kills_port_listener` · `test_e2e_priv_01_settings_default_localhost` | `SidecarReadinessTests` |
+| **E2E-BOOT-02** | `test_sidecar_startup` · `test_e2e_boot_02d_health_responds_immediately` · `test_startup_status` · `test_shutdown_sets_uvicorn_should_exit` · `test_macos_stop_kills_port_listener` · `test_e2e_priv_01_settings_default_localhost` | `SidecarReadinessTests` · `ColdStartReadinessTests` |
 | **E2E-CHUNK-LIVE** | `test_chunker_chapter_boundary` · `test_chunker_max_segment_size` · `test_chunker_no_overlap_offsets` · `test_short_book_single_segment` · `test_summary_json_schema` | — |
 | **B1 导入** | `test_detect_format` · `test_extract_metadata_epub` · `test_copy_to_app_support` · `test_file_hash_dedup` · `test_processing_book_is_segmenting_state` · `test_library_facet_filters` | `LibraryImportPolicyTests` · `LibraryViewModelMergeTests.testSegmentingCollectionIncludesProcessingBooks` · `apps/windows/Lumina.Tests/ModelJsonTests.cs` |
 | **B2 段列表** | `test_heading_path_at` · `test_heading_path_from_legacy_chapter_label` · `test_list_catalog_heading_path_and_legacy_chapter_fallback` · `test_summary_json_parse` · `test_label_max_20_chars` · `test_summary_quality`（0/1/2 问题边界、误报、复核降级、带反馈重试） | `SegmentListGroupingTests`（2 层标题 + 折叠 + 无章平铺）· `SegmentCatalog_nests_part_and_chapter` · Snapshot |

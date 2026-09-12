@@ -873,7 +873,7 @@ async def test_overview_reports_indexing_instead_of_zero_running(conn, monkeypat
             segment_idx=0,
             kind=JobKind.SUMMARIZE,
         )
-        q._queued_keys.add(_job_key(queued_job))
+        q._add_queued_key(_job_key(queued_job))
 
         overview = q.summarize_overview()
         assert overview["counts"]["indexing"] == 1
@@ -941,6 +941,9 @@ async def test_startup_does_not_flood_rollup(conn):
         _seed_summarized_book(conn, book_id=f"done-{i}", n_segments=2)
 
     await q.recover_on_startup()
+    deferred = q._startup_deferred_task or q._catalog_backfill_task
+    if deferred is not None:
+        await deferred
 
     assert q._rollup_queue.qsize() == 0
     assert q._active_rollup_count() == 0
@@ -957,6 +960,9 @@ async def test_startup_resets_orphan_building_index(conn):
     )
 
     await q.recover_on_startup()
+    deferred = q._startup_deferred_task or q._catalog_backfill_task
+    if deferred is not None:
+        await deferred
 
     assert BookRepo(conn).get(ghost)["index_status"] == "idle"
     # And the reset must not have queued a rebuild either.
@@ -1065,7 +1071,7 @@ def test_dequeued_summarize_counts_as_running_not_zero_queued(conn):
         kind=JobKind.SUMMARIZE,
     )
     q._active[_job_key(running_job)] = running_job
-    q._queued_keys.add(_job_key(queued_job))
+    q._add_queued_key(_job_key(queued_job))
 
     assert q.summarize_state_for_book(running_id, ready=0, total=2) == "running"
     assert q.summarize_state_for_book(queued_id, ready=0, total=2) == "queued"
@@ -1376,6 +1382,9 @@ async def test_started_incomplete_books_resume_after_queue_restart(conn):
     fast = MockModelRouter(responses={"summarize": SUMMARY, "translate": "译文"})
     q2 = JobQueue(conn, fast, auto_start_summary=False)
     await q2.recover_on_startup()
+    deferred = q2._startup_deferred_task or q2._catalog_backfill_task
+    if deferred is not None:
+        await deferred
     try:
         assert _state(q2, a) in ("queued", "running")
         assert _state(q2, b) in ("queued", "running")
@@ -1415,5 +1424,55 @@ async def test_resume_orphaned_active_reenqueues_lost_job(conn):
             await asyncio.sleep(0.05)
         else:
             pytest.fail("orphaned active book was not requeued")
+    finally:
+        await q.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_start_book_avoids_full_list_for_book(conn, monkeypatch):
+    """Resume/start must use point queries — not O(n) list_for_book."""
+    router = MockModelRouter(responses={"summarize": SUMMARY, "translate": "译文"})
+    q = JobQueue(conn, router, auto_start_summary=False)
+    book_id = _seed_book(conn, book_id="point-start", n_segments=500)
+    BookRepo(conn).update(book_id, status="unread", summarize_intent="active")
+
+    calls = {"n": 0}
+    original = SegmentRepo.list_for_book
+
+    def counting(self, *args, **kwargs):
+        calls["n"] += 1
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(SegmentRepo, "list_for_book", counting)
+    try:
+        await q.start_book(book_id)
+        assert calls["n"] == 0
+        assert q._has_scheduled_summarize_job(book_id)
+    finally:
+        await q.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_recover_start_book_avoids_full_list_for_book(conn, monkeypatch):
+    """Startup recover must not scan every segment of active books."""
+    router = MockModelRouter(responses={"summarize": SUMMARY, "translate": "译文"})
+    q = JobQueue(conn, router, auto_start_summary=False)
+    book_id = _seed_book(conn, book_id="recover-big", n_segments=800)
+    BookRepo(conn).update(book_id, status="unread", summarize_intent="active")
+
+    calls = {"n": 0}
+    original = SegmentRepo.list_for_book
+
+    def counting(self, *args, **kwargs):
+        calls["n"] += 1
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(SegmentRepo, "list_for_book", counting)
+    try:
+        await q.recover_on_startup()
+        deferred = q._startup_deferred_task or q._catalog_backfill_task
+        if deferred is not None:
+            await deferred
+        assert calls["n"] == 0
     finally:
         await q.shutdown()

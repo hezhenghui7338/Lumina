@@ -646,14 +646,14 @@ def test_health_responds_while_next_summary_waits_for_database(client, monkeypat
     queue = client.app.state.lumina.job_queue  # type: ignore[attr-defined]
     entered = threading.Event()
     release = threading.Event()
-    original = queue._segments_repo.list_for_book
+    original = queue._segments_repo.next_incomplete_segment
 
-    def blocked_list(*args, **kwargs):
+    def blocked_next(*args, **kwargs):
         entered.set()
         assert release.wait(timeout=5)
         return original(*args, **kwargs)
 
-    monkeypatch.setattr(queue._segments_repo, "list_for_book", blocked_list)
+    monkeypatch.setattr(queue._segments_repo, "next_incomplete_segment", blocked_next)
     worker = threading.Thread(
         target=lambda: asyncio.run(queue._enqueue_next_book_summary("missing-book"))
     )
@@ -1186,3 +1186,85 @@ def test_list_books_does_not_call_summarize_state_by_book(client):
 
     queue.summarize_state_by_book = boom  # type: ignore[method-assign]
     assert client.get("/books").status_code == 200
+
+
+def test_open_book_does_not_await_prefetch(client, monkeypatch):
+    """POST /open must return before auto-start prefetch finishes."""
+    import asyncio
+    import time
+
+    book_id = import_sample_book(client)
+    queue = client.app.state.lumina.job_queue
+    queue.auto_start_summary = True
+    entered = threading.Event()
+    release = threading.Event()
+    original = queue.enqueue_book_prefetch
+
+    async def slow_prefetch(bid, **kwargs):
+        entered.set()
+        assert await asyncio.to_thread(release.wait, 5)
+        return await original(bid, **kwargs)
+
+    monkeypatch.setattr(queue, "enqueue_book_prefetch", slow_prefetch)
+    started = time.monotonic()
+    resp = client.post(f"/books/{book_id}/open")
+    elapsed = time.monotonic() - started
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "opened"
+    # Prefetch is intentionally blocked for up to 5s; open must not wait.
+    assert elapsed < 0.75
+    assert entered.wait(timeout=2)
+    release.set()
+
+
+def test_segment_repo_point_queries_skip_full_scan(tmp_path):
+    """Hot-path helpers must not require loading every segment."""
+    conn = init_db(tmp_path / "point.db")
+    book_id = "big-book"
+    BookRepo(conn).insert(
+        id=book_id,
+        title="Big",
+        format="txt",
+        file_path="/tmp/b.txt",
+        segment_count=3000,
+        status="unread",
+    )
+    segs = [
+        {
+            "id": f"s-{i}",
+            "book_id": book_id,
+            "idx": i,
+            "anchor_label": f"段 {i + 1}",
+            "raw_text": f"正文 {i}",
+            "summary_status": "ready" if i < 2990 else "pending",
+            "retry_count": 0,
+            "summary_tier": "normal",
+        }
+        for i in range(3000)
+    ]
+    segs[10]["summary_status"] = "running"
+    segs[11]["summary_status"] = "error"
+    SegmentRepo(conn).insert_many(segs)
+    repo = SegmentRepo(conn)
+
+    nxt = repo.next_incomplete_segment(book_id)
+    assert nxt is not None
+    assert nxt["idx"] == 11  # error before later pending
+
+    running = repo.list_running_segments(book_id)
+    assert [r["idx"] for r in running] == [10]
+
+    reset = repo.reset_running_segments(book_id)
+    assert [r["idx"] for r in reset] == [10]
+    assert repo.get("s-10")["summary_status"] == "pending"
+
+    failed = repo.reset_failed_segments(book_id)
+    assert any(s["idx"] == 11 for s in failed)
+    assert repo.get("s-11")["summary_status"] == "pending"
+
+    n = repo.apply_summary_tier_to_incomplete(book_id, "advanced")
+    assert n >= 1
+    assert repo.get("s-2990")["summary_tier"] == "advanced"
+    # Ready rows keep their tier.
+    assert (repo.get("s-0").get("summary_tier") or "normal") == "normal"
+    conn.close()

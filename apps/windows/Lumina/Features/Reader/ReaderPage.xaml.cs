@@ -28,6 +28,11 @@ public sealed partial class ReaderPage : Page
 {
     private string _bookId = "";
     private List<SegmentRow> _segments = [];
+    private bool _catalogHasMoreBefore;
+    private bool _catalogHasMoreAfter;
+    private CancellationTokenSource? _catalogFillCts;
+    private const int OpenCatalogWindowLimit = 64;
+    private const int CatalogFillPageLimit = 200;
     private SegmentRow? _selected;
     private bool _showRaw;
     private List<OriginalSearchHit> _originalHits = [];
@@ -223,6 +228,7 @@ public sealed partial class ReaderPage : Page
         PersistCollapsedChapters();
         PersistReadingProgress(patchServer: true);
         _progressTimer?.Stop();
+        _catalogFillCts?.Cancel();
         _pageCts?.Cancel();
         _eventsCts?.Cancel();
         _chatCts?.Cancel();
@@ -323,30 +329,48 @@ public sealed partial class ReaderPage : Page
             _isProcessing = false;
             CancelProcessingBtn.Visibility = Visibility.Collapsed;
             var open = await App.Core.OpenBookAsync(args.BookId, _pageCts.Token);
-            var segments = await App.Core.ListSegmentsAsync(args.BookId, _pageCts.Token);
-            _segments = segments.ToList();
+            var preferredIdx = _pendingJump
+                ?? open.CurrentSegmentIndex;
+            var page = await App.Core.ListSegmentsAsync(
+                args.BookId,
+                _pageCts.Token,
+                around: preferredIdx,
+                limit: OpenCatalogWindowLimit);
+            _segments = page.Segments.OrderBy(s => s.Idx).ToList();
             foreach (var s in _segments) s.RawText = null;
-            _totalCount = _segments.Count;
-            _readyCount = _segments.Count(s => s.SummaryStatus is "ready" or "done");
+            _totalCount = page.Total
+                ?? book.SegmentCount
+                ?? book.SummaryTotalCount
+                ?? _segments.Count;
+            _catalogHasMoreBefore = page.HasMoreBefore ?? false;
+            _catalogHasMoreAfter = page.HasMoreAfter ?? false;
+            _readyCount = book.SummaryReadyCount
+                ?? _segments.Count(s => s.SummaryStatus is "ready" or "done");
             UpdateProgressBanner();
             UpdateChatScopeUi();
 
-            var local = LocalPrefs.GetReadingProgress(_bookId, _segments.Count);
+            var local = LocalPrefs.GetReadingProgress(_bookId, _totalCount);
             var idx = _pendingJump ?? ReadingProgressIndex.Restore(
                 open.CurrentSegmentIndex,
                 local,
-                local is null ? null : _segments.Count,
-                _segments.Count);
-            idx = Math.Clamp(idx, 0, Math.Max(0, _segments.Count - 1));
+                local is null ? null : _totalCount,
+                _totalCount);
+            idx = Math.Clamp(idx, 0, Math.Max(0, _totalCount - 1));
+            // If resume idx is outside the first window (should be rare), clamp to loaded.
+            if (_segments.Count > 0 && _segments.All(s => s.Idx != idx))
+            {
+                idx = _segments.MinBy(s => Math.Abs(s.Idx - idx))!.Idx;
+            }
             _pendingOffsetY = ReadingProgressIndex.RestoreOffset(
-                LocalPrefs.GetReadingProgressOffset(_bookId, _segments.Count),
-                local is null ? null : _segments.Count,
-                _segments.Count);
+                LocalPrefs.GetReadingProgressOffset(_bookId, _totalCount),
+                local is null ? null : _totalCount,
+                _totalCount);
             BindSegmentCatalog(idx);
             UpdateSegmentTurnButtons();
             StartEvents();
             await ReloadNotesAsync();
-            _listen.UpdateSegmentCount(_segments.Count);
+            _listen.UpdateSegmentCount(_totalCount);
+            _ = FillCatalogInBackgroundAsync(_pageCts.Token);
             try
             {
                 var settings = await App.Core.FetchSettingsAsync(_pageCts.Token);
@@ -365,6 +389,65 @@ public sealed partial class ReaderPage : Page
         {
             SegmentLoading.IsActive = false;
         }
+    }
+
+    private async Task FillCatalogInBackgroundAsync(CancellationToken outer)
+    {
+        _catalogFillCts?.Cancel();
+        _catalogFillCts = CancellationTokenSource.CreateLinkedTokenSource(outer);
+        var ct = _catalogFillCts.Token;
+        try
+        {
+            while (!ct.IsCancellationRequested && _catalogHasMoreAfter)
+            {
+                if (_segments.Count == 0) break;
+                var maxIdx = _segments.Max(s => s.Idx);
+                var page = await App.Core.ListSegmentsAsync(
+                    _bookId, ct, afterIdx: maxIdx, limit: CatalogFillPageLimit);
+                MergeCatalogPage(page);
+                _catalogHasMoreAfter = page.HasMoreAfter ?? false;
+                await Task.Yield();
+            }
+            while (!ct.IsCancellationRequested && _catalogHasMoreBefore)
+            {
+                if (_segments.Count == 0) break;
+                var minIdx = _segments.Min(s => s.Idx);
+                var page = await App.Core.ListSegmentsAsync(
+                    _bookId, ct, beforeIdx: minIdx, limit: CatalogFillPageLimit);
+                MergeCatalogPage(page);
+                _catalogHasMoreBefore = page.HasMoreBefore ?? false;
+                await Task.Yield();
+            }
+        }
+        catch (OperationCanceledException) { }
+    }
+
+    private void MergeCatalogPage(SegmentCatalogPage page)
+    {
+        if (page.Total is int total && total > 0)
+            _totalCount = total;
+        if (page.Segments.Count == 0) return;
+        var byIdx = _segments.ToDictionary(s => s.Idx);
+        foreach (var incoming in page.Segments)
+        {
+            incoming.RawText = null;
+            if (byIdx.TryGetValue(incoming.Idx, out var existing))
+            {
+                existing.SummaryPreview ??= incoming.SummaryPreview;
+                existing.BulletLabels ??= incoming.BulletLabels;
+                existing.Label ??= incoming.Label;
+                existing.HeadingPath ??= incoming.HeadingPath;
+            }
+            else
+            {
+                byIdx[incoming.Idx] = incoming;
+            }
+        }
+        _segments = byIdx.Values.OrderBy(s => s.Idx).ToList();
+        var keepIdx = _selected?.Idx;
+        BindSegmentCatalog(keepIdx);
+        UpdateSegmentTurnButtons();
+        _listen.UpdateSegmentCount(_totalCount);
     }
 
     private void StartEvents()
@@ -750,8 +833,8 @@ public sealed partial class ReaderPage : Page
 
     private void SaveLocalProgress(int index)
     {
-        var percent = ReadingProgressIndex.Percent(index, _segments.Count);
-        LocalPrefs.SetReadingProgress(_bookId, index, _segments.Count, ContentScroll.VerticalOffset, percent);
+        var percent = ReadingProgressIndex.Percent(index, _totalCount);
+        LocalPrefs.SetReadingProgress(_bookId, index, _totalCount, ContentScroll.VerticalOffset, percent);
     }
 
     private async Task HydrateSelectedAsync()
@@ -1874,6 +1957,7 @@ public sealed partial class ReaderPage : Page
     {
         _listen.Stop();
         PersistReadingProgress(patchServer: true);
+        _catalogFillCts?.Cancel();
         _pageCts?.Cancel();
         MainWindowLocator.Current?.NavigateToLibrary();
     }

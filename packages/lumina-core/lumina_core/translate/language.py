@@ -15,6 +15,18 @@ _CJK_RUN = re.compile(r"[\u4e00-\u9fff]{4,}")
 _LATIN_WORD_RUN = re.compile(
     r"[A-Za-z]{2,}(?:['’][A-Za-z]+)?(?:[\s,;:\"“”‘’()-]+[A-Za-z]{2,}(?:['’][A-Za-z]+)?)+"
 )
+# CJK glued to ≥4 ASCII letters (海BuilderInterface / 未知lendary世界).
+_CJK_LATIN_GLUE = re.compile(
+    r"(?:[\u4e00-\u9fff][A-Za-z]{4,})|(?:[A-Za-z]{4,}[\u4e00-\u9fff])"
+)
+# Programming-style CamelCase (BuilderInterface); ChatGPT does not match.
+_CAMEL_IDENT = re.compile(r"\b[A-Z][a-z]+(?:[A-Z][a-z]+){1,}\b")
+# Lowercase English token ≥6 in mixed CJK context (failed / lendary).
+_LOWER_LATIN_WORD = re.compile(r"(?<![A-Za-z])[a-z]{6,}(?![A-Za-z])")
+# Latin Extended / Vietnamese tone letters (ộ, ạ, …).
+_EXTENDED_LATIN_WORD = re.compile(
+    r"[A-Za-z]*[\u00c0-\u024f\u1e00-\u1eff][A-Za-z\u00c0-\u024f\u1e00-\u1eff]*"
+)
 _SHORT_PROPER_MAX = 12
 _EN_FUNCTION_WORDS = frozenset(
     {
@@ -59,6 +71,14 @@ _EN_FUNCTION_WORDS = frozenset(
         "before",
         "into",
         "about",
+        "along",
+        "across",
+        "over",
+        "under",
+        "out",
+        "up",
+        "down",
+        "off",
     }
 )
 
@@ -155,13 +175,61 @@ def _allow_short_source_term(span: str, source_text: str | None) -> bool:
     return span in source_text
 
 
+def _latin_core(span: str) -> str:
+    """Extract the longest ASCII-letter run from a mixed glue span."""
+    runs = re.findall(r"[A-Za-z]+", span)
+    return max(runs, key=len) if runs else span
+
+
+def _allow_latin_in_source(span: str, source_text: str | None) -> bool:
+    """Allow short proper names that appear in the source (full span or Latin core)."""
+    if _allow_short_source_term(span, source_text):
+        return True
+    core = _latin_core(span)
+    if core != span and _allow_short_source_term(core, source_text):
+        return True
+    return False
+
+
 def _english_clause_span(text: str) -> tuple[int, str] | None:
     for match in _LATIN_WORD_RUN.finditer(text):
         tokens = re.findall(r"[A-Za-z]{2,}", match.group())
-        if len(tokens) >= 6 or (
-            len(tokens) >= 4 and any(token.lower() in _EN_FUNCTION_WORDS for token in tokens)
+        # ≥3 Latin words, or ≥2 with a function word (along the line).
+        if len(tokens) >= 3 or (
+            len(tokens) >= 2 and any(token.lower() in _EN_FUNCTION_WORDS for token in tokens)
         ):
             return match.start(), match.group().strip()[:60]
+    return None
+
+
+def _cjk_latin_mix_span(
+    text: str, *, source_text: str | None
+) -> tuple[int, str, str] | None:
+    """Flag CJK↔Latin glue, CamelCase ids, extended Latin, and stray lowercase tokens."""
+    for match in _CJK_LATIN_GLUE.finditer(text):
+        span = match.group()
+        if _allow_latin_in_source(span, source_text):
+            continue
+        return match.start(), span[:40], "汉字与拉丁词粘连"
+
+    for match in _CAMEL_IDENT.finditer(text):
+        span = match.group()
+        if _allow_latin_in_source(span, source_text):
+            continue
+        return match.start(), span[:40], "夹杂程序标识符式英文"
+
+    for match in _EXTENDED_LATIN_WORD.finditer(text):
+        span = match.group()
+        if _allow_latin_in_source(span, source_text):
+            continue
+        return match.start(), span[:40], "夹杂带调拉丁字母"
+
+    if _CJK_RE.search(text):
+        for match in _LOWER_LATIN_WORD.finditer(text):
+            span = match.group()
+            if _allow_latin_in_source(span, source_text):
+                continue
+            return match.start(), span[:40], "夹杂英语碎片"
     return None
 
 
@@ -203,10 +271,13 @@ def unexpected_language_span(
         return None
 
     if family in {"zh", "ja", "ko"}:
+        mix = _cjk_latin_mix_span(text, source_text=source_text)
+        if mix is not None:
+            return mix
         clause = _english_clause_span(text)
         if clause is not None:
             start, snippet = clause
-            if not _allow_short_source_term(snippet, source_text):
+            if not _allow_latin_in_source(snippet, source_text):
                 return start, snippet, "夹杂英语整句"
         latin = len(_LATIN_RE.findall(text))
         cjk = len(_CJK_RE.findall(text))

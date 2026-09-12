@@ -21,9 +21,14 @@ xcuserdata/
 !.cursor/skills/**
 !.cursor/rules/
 !.cursor/rules/**
+!.cursor/hooks.json
+!.cursor/hooks/
+!.cursor/hooks/**
+.cursor/hooks/state/
 .derivedData/
 apps/macos/.build/
 apps/macos/.derivedData/
 apps/windows/**/bin/
 apps/windows/**/obj/
 *.userlog
+.derived-data-sidecar/

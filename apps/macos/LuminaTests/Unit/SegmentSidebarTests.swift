@@ -54,6 +54,44 @@ final class SegmentSidebarTests: XCTestCase {
         XCTAssertEqual(SegmentRenderWindow.segmentIndexDelta(from: nil, to: 10, in: segments), Int.max)
     }
 
+    func testReadingWindow_farJump100_staysBoundedAndContainsTarget() {
+        let segments = (0..<250).map { i in
+            SegmentRow(
+                id: "s\(i)", idx: i, label: nil, chapter: nil, summary_status: "ready",
+                summary_json: nil, raw_text: nil, translation: nil, anchor_label: nil,
+                summary_provider: nil, summary_model: nil, summary_tier: nil, char_count: nil, retry_count: nil,
+                summary_duration_s: nil, summary_llm_attempts: nil
+            )
+        }
+        let from = 20
+        let to = from + 100
+        XCTAssertEqual(
+            SegmentRenderWindow.segmentIndexDelta(from: from, to: to, in: segments),
+            100
+        )
+        XCTAssertGreaterThan(
+            SegmentRenderWindow.segmentIndexDelta(from: from, to: to, in: segments),
+            SegmentRenderWindow.scrollAnimateThreshold
+        )
+
+        let window = SegmentRenderWindow.readingWindow(segments: segments, pinnedIdx: to)
+        let maxItems = 2 * SegmentRenderWindow.readRenderBuffer + 1
+        XCTAssertLessThanOrEqual(window.items.count, maxItems)
+        XCTAssertTrue(window.items.contains(where: { $0.idx == to }))
+        XCTAssertEqual(window.aboveCount + window.items.count + window.belowCount, segments.count)
+        // Pin cost must not grow with jump distance: same bound as a nearby pin.
+        let nearby = SegmentRenderWindow.readingWindow(segments: segments, pinnedIdx: from + 1)
+        XCTAssertEqual(window.items.count, nearby.items.count)
+    }
+
+    func testOffscreenSpacerHeight_scalesWithCount() {
+        XCTAssertEqual(SegmentRenderWindow.offscreenSpacerHeight(count: 0), 0)
+        XCTAssertEqual(
+            SegmentRenderWindow.offscreenSpacerHeight(count: 100),
+            100 * SegmentRenderWindow.offscreenSegmentEstimate
+        )
+    }
+
     func testSidebarSegmentItem_prefersChapterTitleOverLabel() {
         let segment = SegmentRow(
             id: "s1", idx: 0, label: "引子", chapter: "第一章", summary_status: "ready",

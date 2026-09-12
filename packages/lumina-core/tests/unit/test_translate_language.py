@@ -112,3 +112,58 @@ def test_unexpected_language_span_allows_terms_classical_and_source_names():
         )
         is None
     )
+    assert (
+        unexpected_language_span(
+            "姐姐玛莉拉同意让她去海边。",
+            target_language="zh-CN",
+            source_text="Marilla said Anne might go to the shore.",
+        )
+        is None
+    )
+
+
+def test_unexpected_language_span_flags_cjk_latin_glue_and_fragments():
+    glue = unexpected_language_span(
+        "自家上进心强的姐姐玛莉拉同意让她去海BuilderInterface",
+        target_language="zh-CN",
+    )
+    assert glue is not None
+    assert glue[2] == "汉字与拉丁词粘连"
+
+    fragment = unexpected_language_span(
+        "我沉思于城市之外的未知lendary世界",
+        target_language="zh-CN",
+    )
+    assert fragment is not None
+    assert fragment[2] == "汉字与拉丁词粘连"
+
+    # User sample glues CJK to Latin; spaced phrase still hits the English-clause gate.
+    glued_phrase = unexpected_language_span(
+        "随后邀请黛西去舞会转而又阻止她along the line",
+        target_language="zh-CN",
+    )
+    assert glued_phrase is not None
+    assert glued_phrase[2] == "汉字与拉丁词粘连"
+
+    phrase = unexpected_language_span(
+        "随后邀请黛西去舞会转而又阻止她 along the line",
+        target_language="zh-CN",
+    )
+    assert phrase is not None
+    assert phrase[2] == "夹杂英语整句"
+
+    vietnamese = unexpected_language_span(
+        "我尝试联系梅耶·沃尔夫海姆但未果， bộ lạc failed 苦寻其信息",
+        target_language="zh-CN",
+    )
+    assert vietnamese is not None
+    assert vietnamese[2] in {"夹杂带调拉丁字母", "夹杂英语碎片"}
+
+    assert (
+        unexpected_language_span(
+            "本段说明专名 Marilla 出现在信封上。",
+            target_language="zh-CN",
+            source_text="信封上写着 Marilla。",
+        )
+        is None
+    )

@@ -262,6 +262,58 @@ enum SegmentTurnNavigation {
     }
 }
 
+/// Fast-scroll feed: keep progress live, debounce hydrate/prefetch, and pause
+/// catalog merges so LazyVStack is not rebuilt mid-fling.
+enum ReaderScrollFeedPolicy {
+    static let scrollIdleNanoseconds: UInt64 = 180_000_000
+    static let prefetchDebounceNanoseconds: UInt64 = 90_000_000
+    static let sourceFetchConcurrency = 2
+    /// Prefer the direction of travel so the next turn is already warm.
+    static let forwardPrefetchRadius = 4
+    static let backwardPrefetchRadius = 2
+
+    static func directionalRadii(from previous: Int?, to current: Int) -> (back: Int, forward: Int) {
+        guard let previous else {
+            return (backwardPrefetchRadius, forwardPrefetchRadius)
+        }
+        if current > previous {
+            return (backwardPrefetchRadius, forwardPrefetchRadius)
+        }
+        if current < previous {
+            return (forwardPrefetchRadius, backwardPrefetchRadius)
+        }
+        return (backwardPrefetchRadius, forwardPrefetchRadius)
+    }
+
+    static func prefetchWindow(
+        sorted: [Int],
+        center: Int,
+        back: Int,
+        forward: Int
+    ) -> [Int] {
+        guard let pos = sorted.firstIndex(of: center) else { return [] }
+        let start = max(0, pos - back)
+        let end = min(sorted.count - 1, pos + forward)
+        guard start <= end else { return [] }
+        return Array(sorted[start...end])
+    }
+}
+
+/// Progressive catalog pages should append/prepend without a full dictionary rebuild.
+enum ReaderCatalogMergePolicy {
+    static func canAppendAfter(existingMaxIdx: Int?, incomingIdxs: [Int]) -> Bool {
+        guard let maxIdx = existingMaxIdx, !incomingIdxs.isEmpty else { return false }
+        guard incomingIdxs.allSatisfy({ $0 > maxIdx }) else { return false }
+        return zip(incomingIdxs, incomingIdxs.dropFirst()).allSatisfy { $0 < $1 }
+    }
+
+    static func canPrependBefore(existingMinIdx: Int?, incomingIdxs: [Int]) -> Bool {
+        guard let minIdx = existingMinIdx, !incomingIdxs.isEmpty else { return false }
+        guard incomingIdxs.allSatisfy({ $0 < minIdx }) else { return false }
+        return zip(incomingIdxs, incomingIdxs.dropFirst()).allSatisfy { $0 < $1 }
+    }
+}
+
 /// Hardware `[` / `]` (keyCode 33 / 30). Chinese IME types 【】 on the same keys.
 /// Character `onKeyPress` only fires while the SwiftUI reader view is first
 /// responder; after a turn, selectable body text steals focus and the second

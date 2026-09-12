@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
@@ -33,9 +34,6 @@ from lumina_core.translate.language import book_needs_translation, infer_languag
 from lumina_core.translate.translator import translate_segment
 
 logger = logging.getLogger(__name__)
-
-# start_book must not wipe these; only regenerate/retry may overwrite ready summaries.
-_KEEP_SUMMARY_STATUSES = frozenset({"ready", "done"})
 
 # Book index rollup is a slow serial LLM grind that only "chat with whole book"
 # needs. It runs on its own single-slot channel so it can never take the workers
@@ -112,6 +110,8 @@ class JobQueue:
         self._active: dict[str, JobItem] = {}
         self._cancelled: set[str] = set()
         self._queued_keys: set[str] = set()
+        # O(1) summarize queued counts for GET /books (avoids O(N×Q) key scans).
+        self._summarize_queued_by_book: dict[str, int] = {}
         self._paused_backlog: dict[str, JobItem] = {}
         self._active_summarize: dict[tuple[str, int], dict[str, Any]] = {}
         self._book_summarize_locks: dict[str, asyncio.Lock] = {}
@@ -120,6 +120,21 @@ class JobQueue:
         self._intent_cache: dict[str, str] = {}
         self._shutting_down = False
         self._resume_lock = asyncio.Lock()
+        # Fast recover path holds this so GET /books skips resume_orphaned_active.
+        self._startup_recovering = False
+        # Cold-start gate phases for GET /startup/status (not /health).
+        self._startup_data_phase = "pending"  # pending|running|done
+        self._startup_cache_phase = "pending"  # pending|running|done
+        # Drop trees + catalog backfill + summarize resume (must not block open/read).
+        self._startup_deferred_task: asyncio.Task[None] | None = None
+        # Backward-compatible alias used by older tests / call sites.
+        self._catalog_backfill_task: asyncio.Task[None] | None = None
+
+    def startup_data_phase(self) -> str:
+        return self._startup_data_phase
+
+    def startup_cache_phase(self) -> str:
+        return self._startup_cache_phase
 
     def summarize_active_for_book(self, book_id: str) -> dict[str, Any] | None:
         for (bid, idx), state in self._active_summarize.items():
@@ -152,17 +167,42 @@ class JobQueue:
             }
         return out
 
-    def _key_is_summarize_for_book(self, key: str, book_id: str) -> bool:
-        prefix = f"{book_id}:"
-        marker = f":{JobKind.SUMMARIZE.value}:"
-        return key.startswith(prefix) and marker in key
+    def _is_summarize_queued_key(self, key: str) -> bool:
+        return f":{JobKind.SUMMARIZE.value}:" in key
+
+    def _book_id_from_job_key(self, key: str) -> str:
+        return key.split(":", 1)[0]
+
+    def _add_queued_key(self, key: str) -> bool:
+        if key in self._queued_keys:
+            return False
+        self._queued_keys.add(key)
+        if self._is_summarize_queued_key(key):
+            book_id = self._book_id_from_job_key(key)
+            self._summarize_queued_by_book[book_id] = (
+                self._summarize_queued_by_book.get(book_id, 0) + 1
+            )
+        return True
+
+    def _discard_queued_key(self, key: str) -> bool:
+        if key not in self._queued_keys:
+            return False
+        self._queued_keys.discard(key)
+        if self._is_summarize_queued_key(key):
+            book_id = self._book_id_from_job_key(key)
+            next_count = self._summarize_queued_by_book.get(book_id, 0) - 1
+            if next_count <= 0:
+                self._summarize_queued_by_book.pop(book_id, None)
+            else:
+                self._summarize_queued_by_book[book_id] = next_count
+        return True
+
+    def _clear_queued_keys(self) -> None:
+        self._queued_keys.clear()
+        self._summarize_queued_by_book.clear()
 
     def _summarize_queued_count_for_book(self, book_id: str) -> int:
-        return sum(
-            1
-            for key in self._queued_keys
-            if self._key_is_summarize_for_book(key, book_id)
-        )
+        return int(self._summarize_queued_by_book.get(book_id, 0))
 
     def _has_queued_summarize_jobs(self, book_id: str) -> bool:
         return self._summarize_queued_count_for_book(book_id) > 0
@@ -182,6 +222,8 @@ class JobQueue:
         return self._has_active_summarize_job(book_id) or self._has_queued_summarize_jobs(book_id)
 
     def has_book_work(self, book_id: str) -> bool:
+        # Resegment-only path: still scans _queued_keys. List/polling uses
+        # _summarize_queued_by_book (O(1)), not this helper.
         prefix = f"{book_id}:"
         return any(item.book_id == book_id for item in self._active.values()) or any(
             key.startswith(prefix) for key in self._queued_keys
@@ -239,9 +281,20 @@ class JobQueue:
         for book in self._books_repo.list_books():
             book_id = book["id"]
             self._intent_cache[book_id] = book.get("summarize_intent") or "idle"
-            progress = self._books_repo.summary_progress(book_id)
-            ready = int(progress["summary_ready_count"])
-            total = int(progress["summary_total_count"])
+            ready = book.get("summary_ready_count")
+            total = book.get("summary_total_count")
+            segment_count = int(book.get("segment_count") or 0)
+            if (
+                ready is None
+                or total is None
+                or int(total) != segment_count
+            ):
+                progress = self._books_repo.refresh_summary_progress(book_id)
+                ready = int(progress["summary_ready_count"])
+                total = int(progress["summary_total_count"])
+            else:
+                ready = int(ready or 0)
+                total = int(total or 0)
             out[book_id] = {
                 "summarize_state": self.summarize_state_for_book(
                     book_id, ready=ready, total=total
@@ -269,9 +322,20 @@ class JobQueue:
             if book.get("status") == "error":
                 continue
             book_id = book["id"]
-            progress = self._books_repo.summary_progress(book_id)
-            ready = int(progress["summary_ready_count"])
-            total = int(progress["summary_total_count"])
+            ready = book.get("summary_ready_count")
+            total = book.get("summary_total_count")
+            segment_count = int(book.get("segment_count") or 0)
+            if (
+                ready is None
+                or total is None
+                or int(total) != segment_count
+            ):
+                progress = self._books_repo.refresh_summary_progress(book_id)
+                ready = progress["summary_ready_count"]
+                total = progress["summary_total_count"]
+            else:
+                ready = int(ready or 0)
+                total = int(total or 0)
             state = self.summarize_state_for_book(book_id, ready=ready, total=total)
             if state in counts:
                 counts[state] += 1
@@ -574,16 +638,13 @@ class JobQueue:
         if self._has_scheduled_summarize_job(book_id):
             return
         await self._set_intent_async(book_id, "active")
-        candidates = await self._run_db(
-            lambda: self._segments_repo.list_for_book(book_id, include_body=False)
+        # Prefer the earliest incomplete segment without scanning the whole book.
+        earliest = await self._run_db(
+            lambda: self._segments_repo.next_incomplete_segment(book_id)
         )
-        for candidate in candidates:
-            if candidate["summary_status"] not in ("pending", "error"):
-                continue
-            if int(candidate["idx"]) < segment_idx:
-                segment_id = candidate["id"]
-                segment_idx = int(candidate["idx"])
-            break
+        if earliest is not None and int(earliest["idx"]) < segment_idx:
+            segment_id = earliest["id"]
+            segment_idx = int(earliest["idx"])
         priority = 0 if high else segment_idx + 1
         job = JobItem(
             priority=priority,
@@ -604,7 +665,7 @@ class JobQueue:
             self._cancelled.discard(key)
         await self._register_job_task(job)
         await self._queue.put(job)
-        self._queued_keys.add(key)
+        self._add_queued_key(key)
         self.ensure_workers()
 
     def _book_needs_translation(self, book_id: str) -> bool:
@@ -642,7 +703,7 @@ class JobQueue:
             return
         await self._register_job_task(job)
         await self._queue.put(job)
-        self._queued_keys.add(key)
+        self._add_queued_key(key)
         self.ensure_workers()
 
     async def clear_book_index(self, book_id: str) -> None:
@@ -689,7 +750,7 @@ class JobQueue:
             return
         await self._register_job_task(job)
         await self._rollup_queue.put(job)
-        self._queued_keys.add(key)
+        self._add_queued_key(key)
         self.ensure_workers()
 
     async def enqueue_book_prefetch(
@@ -712,42 +773,99 @@ class JobQueue:
             return
         await self._recover_stale_running(book_id)
         tier = summary_tier or self._desired_summary_tier.get(book_id, "normal")
-        segments = await self._run_db(
-            lambda: self._segments_repo.list_for_book(book_id, include_body=False)
+        seg = await self._run_db(
+            lambda: self._segments_repo.next_incomplete_segment(book_id)
         )
-        for seg in segments:
-            if seg["summary_status"] in ("pending", "error"):
-                await self.enqueue_summarize(
-                    book_id,
-                    seg["id"],
-                    seg["idx"],
-                    high=(seg["idx"] == 0),
-                    summary_tier=tier,
-                )
-                return
+        if seg is not None:
+            await self.enqueue_summarize(
+                book_id,
+                seg["id"],
+                seg["idx"],
+                high=(seg["idx"] == 0),
+                summary_tier=tier,
+            )
+            return
         await self._set_intent_async(book_id, "idle")
 
     async def recover_on_startup(self) -> None:
-        """Reset orphan running segments; resume books the user already started.
+        """Fast path for time-to-read; defer cleanup and summarize resume.
 
-        `auto_start_summary` still starts every incomplete book. Without it,
-        only persisted `summarize_intent=active` books rejoin the queue —
-        otherwise a sidecar restart dumps the whole library back to 未摘要.
+        Product goal: after /health is green the user can open any ready book
+        and paint text without waiting on document_tree cleanup, catalog
+        backfill, or re-enqueueing every active summarize intent.
 
-        Startup deliberately does not enqueue any rollup. Rebuilding every book
-        index here used to flood the queue with dozens of slow serial LLM jobs
-        and starve segment summarization for hours.
+        Fast path (must stay short, then clear `_startup_recovering`):
+          1. ensure_workers
+          2. repair_stale_imports (orphan processing / 0-segment → 导入失败)
 
-        Ingest/resegment tasks do not survive a process restart, so any
-        processing or 0-segment row here is an orphan.
+        Deferred (`_startup_deferred_task`):
+          drop_stored_document_trees → catalog/label backfill → intent resume
+          (maybe_mark_summarized / start_book / stale index+running repair).
+
+        Startup deliberately does not enqueue any rollup. Ingest/resegment
+        tasks do not survive a process restart, so any processing or 0-segment
+        row here is an orphan.
         """
-        await self._run_db(
-            lambda: self._books_repo.repair_stale_imports(
-                restore_orphaned_resegment=True
+        from lumina_core.perf import record as perf_record
+
+        t0 = time.perf_counter()
+        perf_record(kind="op", name="recover_on_startup.begin", ms=0.0)
+        self._startup_recovering = True
+        self._startup_data_phase = "running"
+        try:
+            self.ensure_workers()
+            await self._run_db(
+                lambda: self._books_repo.repair_stale_imports(
+                    restore_orphaned_resegment=True
+                )
             )
+        finally:
+            self._startup_recovering = False
+            self._startup_data_phase = "done"
+            self.ensure_workers()
+            perf_record(
+                kind="op",
+                name="recover_on_startup.fast_path",
+                ms=(time.perf_counter() - t0) * 1000.0,
+            )
+        if self._shutting_down:
+            return
+        self._startup_cache_phase = "running"
+        self._startup_deferred_task = asyncio.create_task(
+            self._deferred_startup_work(),
+            name="lumina-startup-deferred",
         )
-        await self._run_db(self._segments_repo.backfill_catalog_cache)
-        await self._run_db(self._segments_repo.backfill_prefix_labels)
+        self._catalog_backfill_task = self._startup_deferred_task
+
+    async def _deferred_startup_work(self) -> None:
+        """Background startup work that must not starve open / segment reads."""
+        try:
+            await self._run_db(self._books_repo.drop_stored_document_trees)
+            await asyncio.sleep(0)
+            if self._shutting_down:
+                return
+            await self._run_db(self._segments_repo.backfill_catalog_cache)
+            await asyncio.sleep(0)
+            if self._shutting_down:
+                return
+            await self._run_db(self._segments_repo.backfill_prefix_labels)
+            await asyncio.sleep(0)
+            if self._shutting_down:
+                return
+            await self._resume_summarize_after_startup()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("deferred startup work failed")
+        finally:
+            if self._startup_cache_phase != "done":
+                self._startup_cache_phase = "done"
+
+    async def _resume_summarize_after_startup(self) -> None:
+        """Rehydrate intent cache and re-enqueue active summarize books.
+
+        Runs only from `_deferred_startup_work` so open/read is not blocked.
+        """
         books = await self._run_db(self._books_repo.list_books)
         for book in books:
             if self._shutting_down:
@@ -759,6 +877,7 @@ class JobQueue:
             if promoted:
                 self._intent_cache[book_id] = "idle"
                 await self._recover_stale_index(book)
+                await asyncio.sleep(0)
                 continue
             await self._recover_stale_running(book_id)
             await self._recover_stale_index(book)
@@ -766,20 +885,28 @@ class JobQueue:
             self._intent_cache[book_id] = intent
             if intent == "paused":
                 self._user_paused_books.add(book_id)
+                await asyncio.sleep(0)
                 continue
             if intent == "active" or self.auto_start_summary:
                 tier = await self._run_db(
-                    lambda bid=book_id: self._segments_repo.summary_tier_for_book(bid)
+                    lambda bid=book_id: self._segments_repo.summary_tier_for_book(
+                        bid
+                    )
                 )
                 await self.start_book(
                     book_id,
                     summary_tier=tier,
                 )
+            await asyncio.sleep(0)
         self.ensure_workers()
 
     async def resume_orphaned_active(self) -> None:
         """Re-enqueue started books that have no in-memory job (lost worker/job)."""
-        if self._shutting_down or self._resume_lock.locked():
+        if (
+            self._shutting_down
+            or self._startup_recovering
+            or self._resume_lock.locked()
+        ):
             return
         async with self._resume_lock:
             books = await asyncio.to_thread(self._books_repo.list_books)
@@ -913,7 +1040,7 @@ class JobQueue:
             except asyncio.QueueEmpty:
                 break
             queue.task_done()
-            self._queued_keys.discard(_job_key(item))
+            self._discard_queued_key(_job_key(item))
 
     async def shutdown(self) -> None:
         """Cancel in-flight workers without recording a user pause.
@@ -923,6 +1050,15 @@ class JobQueue:
         can put them back in the queue.
         """
         self._shutting_down = True
+        deferred = self._startup_deferred_task or self._catalog_backfill_task
+        if deferred is not None and not deferred.done():
+            deferred.cancel()
+            try:
+                await deferred
+            except asyncio.CancelledError:
+                pass
+            self._startup_deferred_task = None
+            self._catalog_backfill_task = None
         tasks = [
             task
             for task in (*self._workers, *self._rollup_workers)
@@ -937,7 +1073,7 @@ class JobQueue:
         self._worker_count = 0
         self._clear_all_active_summarize()
         self._active.clear()
-        self._queued_keys.clear()
+        self._clear_queued_keys()
         self._paused_backlog.clear()
         self._cancelled.clear()
         self._discard_queue(self._queue)
@@ -1011,7 +1147,7 @@ class JobQueue:
                 break
             queue.task_done()
             key = _job_key(item)
-            self._queued_keys.discard(key)
+            self._discard_queued_key(key)
             if match(item):
                 self._paused_backlog[key] = item
                 if self._task_registry:
@@ -1020,7 +1156,7 @@ class JobQueue:
                 kept.append(item)
         for item in kept:
             await queue.put(item)
-            self._queued_keys.add(_job_key(item))
+            self._add_queued_key(_job_key(item))
 
     async def _suspend_jobs(self, match: Callable[[JobItem], bool]) -> None:
         await self._drain_queue(self._queue, match)
@@ -1043,7 +1179,7 @@ class JobQueue:
             del self._paused_backlog[key]
             self._cancelled.discard(key)
             await self._queue_for(item).put(item)
-            self._queued_keys.add(key)
+            self._add_queued_key(key)
             if self._task_registry:
                 self._task_registry.requeue_by_job_key(key)
         if to_restore:
@@ -1051,35 +1187,24 @@ class JobQueue:
 
     async def _reset_running_segments(self, book_id: str) -> None:
         segments = await self._run_db(
-            lambda: self._segments_repo.list_for_book(book_id, include_body=False)
+            lambda: self._segments_repo.reset_running_segments(book_id)
         )
         for seg in segments:
-            if seg["summary_status"] == "running":
-                await self._run_db(
-                    lambda sid=seg["id"]: self._segments_repo.set_status(sid, "pending")
-                )
-                await self._emit_segment_event(
-                    book_id,
-                    {
-                        "type": "segment_status",
-                        "idx": seg["idx"],
-                        "status": "pending",
-                    },
-                )
+            await self._emit_segment_event(
+                book_id,
+                {
+                    "type": "segment_status",
+                    "idx": seg["idx"],
+                    "status": "pending",
+                },
+            )
 
     async def _reset_segments_for_user_resume(self, book_id: str) -> None:
         """Reset failed/error segments so start_summarize gets a fresh retry budget."""
         segments = await self._run_db(
-            lambda: self._segments_repo.list_for_book(book_id, include_body=False)
+            lambda: self._segments_repo.reset_failed_segments(book_id)
         )
         for seg in segments:
-            if seg["summary_status"] not in ("failed", "error"):
-                continue
-            await self._run_db(
-                lambda sid=seg["id"]: self._segments_repo.set_status(
-                    sid, "pending", retry_count=0
-                )
-            )
             await self._emit_segment_event(
                 book_id,
                 {
@@ -1093,29 +1218,18 @@ class JobQueue:
         self, book_id: str, summary_tier: str
     ) -> None:
         """Stamp a new tier onto pending/error/running segments; keep ready summaries."""
-        def _apply() -> None:
-            segments = self._segments_repo.list_for_book(
-                book_id, include_body=False
+        await self._run_db(
+            lambda: self._segments_repo.apply_summary_tier_to_incomplete(
+                book_id, summary_tier
             )
-            for seg in segments:
-                if seg["summary_status"] in _KEEP_SUMMARY_STATUSES:
-                    continue
-                existing_tier = seg.get("summary_tier") or "normal"
-                if existing_tier != summary_tier:
-                    self._segments_repo.reset_summary(
-                        seg["id"], summary_tier=summary_tier
-                    )
-
-        await self._run_db(_apply)
+        )
 
     async def _recover_stale_running(self, book_id: str) -> None:
         """Reset running segments with no active worker (crash/restart orphans)."""
         segments = await self._run_db(
-            lambda: self._segments_repo.list_for_book(book_id, include_body=False)
+            lambda: self._segments_repo.list_running_segments(book_id)
         )
         for seg in segments:
-            if seg["summary_status"] != "running":
-                continue
             if any(
                 item.book_id == book_id
                 and item.segment_id == seg["id"]
@@ -1152,14 +1266,14 @@ class JobQueue:
             key = _job_key(item)
             try:
                 if self._shutting_down:
-                    self._queued_keys.discard(key)
+                    self._discard_queued_key(key)
                     continue
                 if self.is_user_paused(item.book_id):
-                    self._queued_keys.discard(key)
+                    self._discard_queued_key(key)
                     self._suspend_single(item)
                     continue
                 self._active[key] = item
-                self._queued_keys.discard(key)
+                self._discard_queued_key(key)
                 if self._task_registry:
                     self._task_registry.mark_running_by_job_key(key)
                 try:

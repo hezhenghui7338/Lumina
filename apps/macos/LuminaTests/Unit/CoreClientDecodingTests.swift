@@ -631,4 +631,32 @@ final class CoreClientDecodingTests: XCTestCase {
         XCTAssertEqual(detail.label, "段 1")
         XCTAssertNotNil(detail.summary_json)
     }
+
+    func testSegmentCatalogPage_decodesWindowMetadata() throws {
+        let json = """
+        {
+          "segments": [
+            {
+              "id": "s1",
+              "idx": 10,
+              "summary_status": "ready",
+              "label": "段 11",
+              "summary_preview": "首句。"
+            }
+          ],
+          "total": 5000,
+          "has_more_before": true,
+          "has_more_after": true
+        }
+        """.data(using: .utf8)!
+        let page = try JSONDecoder().decode(SegmentCatalogPage.self, from: json)
+        XCTAssertEqual(page.total, 5000)
+        XCTAssertEqual(page.segments.count, 1)
+        XCTAssertEqual(page.segments[0].idx, 10)
+        XCTAssertEqual(page.has_more_before, true)
+        XCTAssertEqual(page.has_more_after, true)
+        XCTAssertNil(page.segments[0].raw_text)
+        XCTAssertEqual(ReaderViewModel.openCatalogWindowLimit, 64)
+        XCTAssertEqual(ReaderViewModel.catalogFillPageLimit, 200)
+    }
 }

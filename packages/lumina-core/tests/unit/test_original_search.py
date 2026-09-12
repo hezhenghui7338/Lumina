@@ -181,10 +181,9 @@ def test_search_original_does_not_cross_books(tmp_path):
 
 def test_original_search_api_never_returns_raw_text(client):
     conn = client.app.state.lumina.conn  # type: ignore[attr-defined]
-    conn.execute(
-        "INSERT INTO books (id, title, format, file_path, created_at, updated_at) "
-        "VALUES ('ob', 't', 'txt', '/x', 'now', 'now')"
-    )
+    # Commit before API calls: lifespan recover_on_startup shares this conn and
+    # can roll back an open implicit transaction, making the book vanish (404 flake).
+    _seed_book(conn, "ob")
     SegmentRepo(conn).insert_many(
         [
             {

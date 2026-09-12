@@ -759,6 +759,13 @@ struct OpenBookResponse: Codable {
     let current_segment_index: Int
 }
 
+struct SegmentCatalogPage: Codable {
+    let segments: [SegmentRow]
+    let total: Int?
+    let has_more_before: Bool?
+    let has_more_after: Bool?
+}
+
 struct SegmentRow: Codable, Identifiable, Hashable {
     let id: String
     let idx: Int
@@ -1416,10 +1423,31 @@ final class CoreClient: ObservableObject {
         _ = try await patch(path: "/books/\(bookId)/reading-progress", body: body)
     }
 
-    func listSegments(bookId: String) async throws -> [SegmentRow] {
-        let data = try await getLongRunning(path: "/books/\(bookId)/segments")
-        struct Resp: Codable { let segments: [SegmentRow] }
-        return try await Self.decode(Resp.self, from: data).segments
+    func listSegments(
+        bookId: String,
+        around: Int? = nil,
+        afterIdx: Int? = nil,
+        beforeIdx: Int? = nil,
+        limit: Int? = nil
+    ) async throws -> SegmentCatalogPage {
+        var items: [URLQueryItem] = []
+        if let around {
+            items.append(URLQueryItem(name: "around", value: String(around)))
+        }
+        if let afterIdx {
+            items.append(URLQueryItem(name: "after_idx", value: String(afterIdx)))
+        }
+        if let beforeIdx {
+            items.append(URLQueryItem(name: "before_idx", value: String(beforeIdx)))
+        }
+        if let limit {
+            items.append(URLQueryItem(name: "limit", value: String(limit)))
+        }
+        let data = try await getLongRunning(
+            path: "/books/\(bookId)/segments",
+            queryItems: items.isEmpty ? nil : items
+        )
+        return try await Self.decode(SegmentCatalogPage.self, from: data)
     }
 
     func getSegment(bookId: String, idx: Int) async throws -> SegmentRow {

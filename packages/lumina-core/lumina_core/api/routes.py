@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import shutil
 import sqlite3
@@ -46,6 +47,8 @@ from lumina_core.config import (
 from lumina_core.classify.book import BOOK_CATEGORIES
 from lumina_core.classify.tasks import run_classify_book, validate_manual_category
 from lumina_core.db.repos import (
+    CATALOG_PAGE_DEFAULT,
+    CATALOG_WINDOW_DEFAULT,
     BookRepo,
     ChatRepo,
     NewsChatRepo,
@@ -94,6 +97,7 @@ from lumina_core.settings_store import (
 )
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 SUPPORTED_FORMATS = {
     "txt",
@@ -680,6 +684,7 @@ def _schedule_context_probe(state: AppState, resource) -> None:
     task.add_done_callback(_cleanup)
 
 
+_PROCESS_START_MONO = time.perf_counter()
 _PROCESS_STARTED_AT = int(time.time())
 
 
@@ -698,7 +703,14 @@ async def health() -> dict[str, str | int]:
         "core_version": CORE_VERSION,
         "executable": _sidecar_executable(),
         "started_at": _PROCESS_STARTED_AT,
+        "uptime_ms": int((time.perf_counter() - _PROCESS_START_MONO) * 1000),
     }
+
+
+@router.get("/startup/status")
+async def startup_status(request: Request) -> dict[str, Any]:
+    """Cold-start product-ready phases (engine/data/cache/news). Not liveness."""
+    return _state(request).startup_status()
 
 
 @router.post("/books/import")
@@ -792,12 +804,24 @@ async def list_books(
         def _load_rows() -> list[dict[str, Any]]:
             repo = BookRepo(conn)
             repo.repair_stale_imports(live_ids)
-            repo.drop_stored_document_trees()
+            # document_tree strip runs once in deferred startup work — not every list.
             books = repo.list_books(filter=filter, sort=sort)
             rows: list[dict[str, Any]] = []
             for book in books:
                 row = dict(book)
-                row.update(repo.summary_progress(book["id"]))
+                ready = row.get("summary_ready_count")
+                total = row.get("summary_total_count")
+                segment_count = int(row.get("segment_count") or 0)
+                # Prefer denormalized columns; repair only when they drifted.
+                if (
+                    ready is None
+                    or total is None
+                    or int(total) != segment_count
+                ):
+                    row.update(repo.refresh_summary_progress(book["id"]))
+                else:
+                    row["summary_ready_count"] = int(ready or 0)
+                    row["summary_total_count"] = int(total or 0)
                 rows.append(row)
             return rows
 
@@ -857,10 +881,14 @@ async def patch_book(
     if not updates:
         return _book_public_with_queue(state, book)
 
-    repo.update(book_id, **updates)
-    updated = repo.get(book_id)
-    if updated and "title" in updates:
-        index_book(state.conn, updated)
+    def _persist() -> dict[str, Any] | None:
+        repo.update(book_id, **updates)
+        updated = repo.get(book_id)
+        if updated and "title" in updates:
+            index_book(state.conn, updated)
+        return updated
+
+    updated = await asyncio.to_thread(_persist)
     return _book_public_with_queue(state, updated)  # type: ignore[arg-type]
 
 
@@ -994,24 +1022,55 @@ async def list_segments(
     book_id: str,
     request: Request,
     include_summary: bool = Query(False),
+    around: int | None = Query(None),
+    after_idx: int | None = Query(None),
+    before_idx: int | None = Query(None),
+    limit: int | None = Query(None),
 ) -> dict[str, Any]:
     # Slim meta — raw_text/translation/summary_json via GET .../segments/{idx} (never-freeze).
-    # Default list may include summary_preview (first sentence) and bullet_labels, never the JSON blob.
+    # Reader open must use around/after_idx/before_idx (O(limit)); full list is export/compat only.
     repo = SegmentRepo(_state(request).conn)
+    windowed = around is not None or after_idx is not None or before_idx is not None
 
-    def _list_meta() -> list[dict[str, Any]]:
+    def _list_meta() -> dict[str, Any]:
         try:
-            if include_summary:
-                return repo.list_for_book(
+            if include_summary and not windowed:
+                segments = repo.list_for_book(
                     book_id, include_body=False, include_summary=True
                 )
-            return repo.list_catalog(book_id)
+                return {
+                    "segments": segments,
+                    "total": len(segments),
+                    "has_more_before": False,
+                    "has_more_after": False,
+                }
+            if windowed or limit is not None:
+                page_limit = (
+                    CATALOG_WINDOW_DEFAULT
+                    if around is not None and limit is None
+                    else CATALOG_PAGE_DEFAULT
+                    if limit is None
+                    else limit
+                )
+                return repo.list_catalog_page(
+                    book_id,
+                    around=around,
+                    after_idx=after_idx,
+                    before_idx=before_idx,
+                    limit=page_limit,
+                )
+            segments = repo.list_catalog(book_id)
+            return {
+                "segments": segments,
+                "total": len(segments),
+                "has_more_before": False,
+                "has_more_after": False,
+            }
         except sqlite3.OperationalError as e:
             _raise_on_db_schema_error(e)
             raise  # pragma: no cover
 
-    segments = await asyncio.to_thread(_list_meta)
-    return {"segments": segments}
+    return await asyncio.to_thread(_list_meta)
 
 
 @router.get("/books/{book_id}/original-search")
@@ -1278,7 +1337,22 @@ async def open_book(book_id: str, request: Request) -> dict[str, Any]:
         raise HTTPException(404, "Book not found")
     _wire_job_events(state)
     if state.job_queue.auto_start_summary:
-        await state.job_queue.enqueue_book_prefetch(book_id)
+        # Never block first paint on O(n) prefetch / recover scans.
+        task = asyncio.create_task(
+            state.job_queue.enqueue_book_prefetch(book_id),
+            name=f"open-prefetch-{book_id[:8]}",
+        )
+
+        def _log_prefetch_error(done: asyncio.Task[None]) -> None:
+            if done.cancelled():
+                return
+            exc = done.exception()
+            if exc is not None:
+                logger.error(
+                    "open prefetch failed book_id=%s", book_id, exc_info=exc
+                )
+
+        task.add_done_callback(_log_prefetch_error)
     return {
         "status": "opened",
         "current_segment_index": book.get("current_segment_index") or 0,
@@ -1520,12 +1594,22 @@ async def book_events(book_id: str, request: Request) -> StreamingResponse:
 
     async def stream():
         try:
-            segments = await asyncio.to_thread(
-                SegmentRepo(state.conn).list_for_book,
-                book_id,
-                include_body=False,
+            # Progress-only snapshot — never dump O(n) segment rows on connect.
+            progress = await asyncio.to_thread(
+                BookRepo(state.conn).summary_progress, book_id
             )
-            yield f"data: {json.dumps({'type': 'snapshot', 'segments': [{'idx': s['idx'], 'summary_status': s['summary_status'], 'label': s.get('label')} for s in segments]}, ensure_ascii=False)}\n\n"
+            yield (
+                "data: "
+                + json.dumps(
+                    {
+                        "type": "snapshot",
+                        "summary_ready_count": progress["summary_ready_count"],
+                        "summary_total_count": progress["summary_total_count"],
+                    },
+                    ensure_ascii=False,
+                )
+                + "\n\n"
+            )
             while True:
                 try:
                     payload = await asyncio.wait_for(queue.get(), timeout=30.0)
@@ -1862,15 +1946,19 @@ async def create_note(body: NoteCreate, request: Request) -> dict[str, Any]:
     segment = SegmentRepo(state.conn).get(body.segment_id)
     if not segment or segment["book_id"] != body.book_id:
         raise HTTPException(400, "segment_id must belong to the book")
-    note = NoteRepo(state.conn).create(
-        book_id=body.book_id,
-        content=body.content,
-        note_type=body.type,
-        segment_id=body.segment_id,
-        quote=body.quote,
-    )
-    index_note(state.conn, book, note)
-    return note
+
+    def _persist() -> dict[str, Any]:
+        note = NoteRepo(state.conn).create(
+            book_id=body.book_id,
+            content=body.content,
+            note_type=body.type,
+            segment_id=body.segment_id,
+            quote=body.quote,
+        )
+        index_note(state.conn, book, note)
+        return note
+
+    return await asyncio.to_thread(_persist)
 
 
 @router.get("/notes")

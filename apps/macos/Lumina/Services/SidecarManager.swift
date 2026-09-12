@@ -8,14 +8,17 @@ final class SidecarManager: ObservableObject {
     @Published var isBootstrapping = false
     @Published var userStopped = false
     @Published var launchError: String?
+    /// Product-ready after cold-start gate phases (PRD §3.5).
+    @Published var productReady = false
+    @Published var coldStartPhases = ColdStartPhaseSnapshot.initial
+    @Published var coldStartStartedAt = Date()
     private var process: Process?
     private var lastKnownPID: Int32?
+    private var coldStartPollTask: Task<Void, Never>?
 
     private let host = "127.0.0.1"
     private let port = 17432
     private let maxLaunchAttempts = 5
-    private let healthPollAttempts = 120
-    private let healthPollDelayNs: UInt64 = 250_000_000
 
     private lazy var probeSession: URLSession = {
         let config = URLSessionConfiguration.ephemeral
@@ -37,6 +40,7 @@ final class SidecarManager: ObservableObject {
         let coreVersion: String?
         let executable: String?
         let startedAt: Int?
+        let uptimeMs: Int?
 
         enum CodingKeys: String, CodingKey {
             case status
@@ -45,6 +49,20 @@ final class SidecarManager: ObservableObject {
             case coreVersion = "core_version"
             case executable
             case startedAt = "started_at"
+            case uptimeMs = "uptime_ms"
+        }
+    }
+
+    private struct StartupStatusDTO: Decodable {
+        let engine: String?
+        let data: String?
+        let cache: String?
+        let news: String?
+        let newsDetail: String?
+
+        enum CodingKeys: String, CodingKey {
+            case engine, data, cache, news
+            case newsDetail = "news_detail"
         }
     }
 
@@ -132,25 +150,33 @@ final class SidecarManager: ObservableObject {
 
         var lastError: String?
         for attempt in 1...maxLaunchAttempts {
+            let spawnAt = Date()
             let outcome = launchSidecar()
             switch outcome {
             case .fatalError(let message):
                 isRunning = false
                 launchError = message
+                appendHostLog("launch fatal: \(message)")
                 return
             case .retryableError(let message):
                 lastError = message
+                appendHostLog("launch retryable: \(message)")
             case .started:
-                for _ in 0..<healthPollAttempts {
-                    try? await Task.sleep(nanoseconds: healthPollDelayNs)
-                    if await isHealthy() {
-                        isRunning = true
-                        launchError = nil
+                let poll = await pollUntilReady(spawnAt: spawnAt)
+                switch poll {
+                case .ready:
+                    isRunning = true
+                    launchError = nil
+                    return
+                case .failed(let message, let retryable):
+                    lastError = message
+                    await terminateListener(reportedPID: process.flatMap { Int32($0.processIdentifier) })
+                    if !retryable {
+                        isRunning = false
+                        launchError = message
                         return
                     }
                 }
-                lastError = "AI 引擎启动超时，请重试或退出。"
-                await terminateListener(reportedPID: process.flatMap { Int32($0.processIdentifier) })
             }
 
             if attempt < maxLaunchAttempts {
@@ -159,7 +185,90 @@ final class SidecarManager: ObservableObject {
         }
 
         isRunning = false
-        launchError = lastError ?? "AI 引擎启动超时，请重试或退出。"
+        launchError = lastError ?? SidecarReadiness.messageTimeout
+    }
+
+    private enum PollResult {
+        case ready
+        /// retryable=false for identity mismatch (relaunching the same binary cannot help).
+        case failed(String, retryable: Bool)
+    }
+
+    /// Probe immediately, then back off. Incompatible health / exited process fail-fast.
+    private func pollUntilReady(spawnAt: Date) async -> PollResult {
+        let budget = SidecarReadiness.healthPollBudgetSeconds
+        var probeIndex = 0
+        var firstHealthMs: Int?
+        while Date().timeIntervalSince(spawnAt) < budget {
+            let health = await healthStatus()
+            if health != nil, firstHealthMs == nil {
+                firstHealthMs = Int(Date().timeIntervalSince(spawnAt) * 1000)
+            }
+            let compatible = health.map {
+                SidecarReadiness.isCompatible(
+                    chunkerVersion: $0.chunkerVersion,
+                    coreVersion: $0.coreVersion,
+                    expectedCoreVersion: expectedCoreVersion
+                )
+            } ?? false
+            if let health, let pid = health.pid { lastKnownPID = pid }
+            let processRunning = process.map(\.isRunning)
+            let decision = SidecarReadiness.evaluateHealthPoll(
+                healthResponded: health != nil,
+                compatible: compatible,
+                processStillRunning: processRunning
+            )
+            switch decision {
+            case .ready:
+                let readyMs = Int(Date().timeIntervalSince(spawnAt) * 1000)
+                appendHostLog(
+                    "ready spawn_to_first_health_ms=\(firstHealthMs ?? readyMs) spawn_to_ready_ms=\(readyMs) uptime_ms=\(health?.uptimeMs.map(String.init) ?? "?")"
+                )
+                return .ready
+            case .incompatible:
+                let detail = SidecarReadiness.incompatibleDetailMessage(
+                    chunkerVersion: health?.chunkerVersion,
+                    coreVersion: health?.coreVersion,
+                    expectedCoreVersion: expectedCoreVersion
+                )
+                appendHostLog(
+                    "incompatible after \(Int(Date().timeIntervalSince(spawnAt) * 1000))ms: \(detail)"
+                )
+                return .failed(detail, retryable: false)
+            case .processExited:
+                let msg = SidecarReadiness.messageProcessExited
+                appendHostLog("process exited after \(Int(Date().timeIntervalSince(spawnAt) * 1000))ms")
+                return .failed(msg, retryable: true)
+            case .keepWaiting:
+                let delay = SidecarReadiness.healthPollDelayNanoseconds(afterProbeIndex: probeIndex)
+                probeIndex += 1
+                try? await Task.sleep(nanoseconds: delay)
+            }
+        }
+        appendHostLog(
+            "timeout after \(Int(Date().timeIntervalSince(spawnAt) * 1000))ms first_health_ms=\(firstHealthMs.map(String.init) ?? "none")"
+        )
+        return .failed(SidecarReadiness.messageTimeout, retryable: true)
+    }
+
+    private func appendHostLog(_ message: String) {
+        let logsDir = FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask).first!
+            .appendingPathComponent("Logs/Lumina", isDirectory: true)
+        let logURL = logsDir.appendingPathComponent("sidecar.log")
+        let line = "[sidecar-host] \(ISO8601DateFormatter().string(from: Date())) \(message)\n"
+        guard let data = line.data(using: .utf8) else { return }
+        do {
+            try FileManager.default.createDirectory(at: logsDir, withIntermediateDirectories: true)
+            if !FileManager.default.fileExists(atPath: logURL.path) {
+                FileManager.default.createFile(atPath: logURL.path, contents: nil)
+            }
+            let handle = try FileHandle(forWritingTo: logURL)
+            defer { try? handle.close() }
+            try handle.seekToEnd()
+            try handle.write(contentsOf: data)
+        } catch {
+            // Best-effort diagnostics only.
+        }
     }
 
     /// Wait for ensureRunning to finish; true when healthy, false on failure.
@@ -202,6 +311,13 @@ final class SidecarManager: ObservableObject {
         if userInitiated {
             userStopped = true
         }
+        coldStartPollTask?.cancel()
+        coldStartPollTask = nil
+        // Keep productReady on user stop so Settings stays reachable to restart.
+        if !userInitiated {
+            productReady = false
+            coldStartPhases = .initial
+        }
         await requestShutdown()
         let ownedPID = process.flatMap { $0.isRunning ? Int32($0.processIdentifier) : nil }
         let listenerPID = await legacyListenerPID()
@@ -220,11 +336,79 @@ final class SidecarManager: ObservableObject {
         userStopped = false
         launchError = nil
         await stop(userInitiated: false)
+        await ensureRunningAndProductReady()
+    }
+
+    /// Spawn / reuse sidecar, then wait until data/cache/news phases are terminal.
+    func ensureRunningAndProductReady() async {
+        coldStartStartedAt = Date()
+        productReady = false
+        coldStartPhases = ColdStartReadiness.merge(
+            engineDone: false,
+            data: "pending",
+            cache: "pending",
+            news: "pending",
+            newsDetail: nil
+        )
         await ensureRunning()
+        guard isRunning else {
+            coldStartPhases.engine = .pending
+            return
+        }
+        coldStartPhases = ColdStartReadiness.merge(
+            engineDone: true,
+            data: "running",
+            cache: "pending",
+            news: "pending",
+            newsDetail: nil
+        )
+        await pollUntilProductReady()
+    }
+
+    private func pollUntilProductReady() async {
+        coldStartPollTask?.cancel()
+        let task = Task { @MainActor in
+            while !Task.isCancelled {
+                if let dto = await startupStatus() {
+                    let snap = ColdStartReadiness.merge(
+                        engineDone: true,
+                        data: dto.data,
+                        cache: dto.cache,
+                        news: dto.news,
+                        newsDetail: dto.newsDetail
+                    )
+                    coldStartPhases = snap
+                    if ColdStartReadiness.isProductReady(snap) {
+                        productReady = true
+                        return
+                    }
+                }
+                try? await Task.sleep(
+                    nanoseconds: ColdStartReadiness.statusPollIntervalNanoseconds
+                )
+            }
+        }
+        coldStartPollTask = task
+        await task.value
+    }
+
+    private func startupStatus() async -> StartupStatusDTO? {
+        var request = URLRequest(url: baseURL.appendingPathComponent("startup/status"))
+        request.timeoutInterval = SidecarReadiness.probeTimeoutSeconds
+        do {
+            let (data, response) = try await probeSession.data(for: request)
+            guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
+                return nil
+            }
+            return try JSONDecoder().decode(StartupStatusDTO.self, from: data)
+        } catch {
+            return nil
+        }
     }
 
     private var expectedCoreVersion: String {
-        (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String) ?? ""
+        let raw = (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String) ?? ""
+        return SidecarReadiness.normalizeVersion(raw)
     }
 
     private func bundledSidecarModifiedAt() -> Date? {

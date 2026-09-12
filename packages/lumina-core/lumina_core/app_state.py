@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import sqlite3
+import sys
 import threading
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -72,6 +74,10 @@ def default_rss_sources(target_language: str = "zh-CN") -> list[tuple[str, str]]
 DEFAULT_RSS = default_rss_sources("zh-CN")
 
 
+# Cold-start news sync wall clock (PRD §3.5 / §5.8).
+BOOT_NEWS_SYNC_TIMEOUT_S = 60.0
+
+
 @dataclass
 class AppState:
     settings: Settings
@@ -90,6 +96,10 @@ class AppState:
     context_probe_cancel: dict[str, asyncio.Event] = field(default_factory=dict)
     context_probe_status: dict[str, Any] = field(default_factory=dict)
     cpu_job_lock: asyncio.Semaphore = field(default_factory=lambda: asyncio.Semaphore(1))
+    # Cold-start gate: pending|running|done|failed
+    startup_news_phase: str = "pending"
+    startup_news_detail: str | None = None
+    _boot_news_task: asyncio.Task[None] | None = field(default=None, repr=False)
 
     @property
     def db_path(self) -> Path:
@@ -99,13 +109,103 @@ class AppState:
     def books_dir(self) -> Path:
         return self.settings.data_dir / "books"
 
+    def startup_status(self) -> dict[str, Any]:
+        """Product-ready phases for the cold-start gate (not process liveness)."""
+        return {
+            "engine": "ready",
+            "data": self.job_queue.startup_data_phase(),
+            "cache": self.job_queue.startup_cache_phase(),
+            "news": self.startup_news_phase,
+            "news_detail": self.startup_news_detail,
+        }
+
+    async def run_boot_news_sync(self) -> None:
+        """One-shot RSS sync after cache phase; never blocks /health.
+
+        Uses a daemon thread (not asyncio.to_thread): cancelling / shutting down
+        must not leave a non-daemon pool worker in httpx.get holding the process
+        open after POST /shutdown.
+        """
+        if self.startup_news_phase in ("done", "failed", "running"):
+            return
+        self.startup_news_phase = "running"
+        self.startup_news_detail = None
+        from lumina_core.news.sync import sync_all
+
+        loop = asyncio.get_running_loop()
+        result_fut: asyncio.Future[Any] = loop.create_future()
+
+        def _run() -> None:
+            try:
+                value = sync_all(self.conn)
+            except Exception as exc:  # noqa: BLE001 — delivered via future
+                def _fail(err: BaseException = exc) -> None:
+                    if not result_fut.done():
+                        result_fut.set_exception(err)
+
+                try:
+                    loop.call_soon_threadsafe(_fail)
+                except RuntimeError:
+                    # Loop already closed after cancel/shutdown — abandon result.
+                    return
+            else:
+                def _ok(result: Any = value) -> None:
+                    if not result_fut.done():
+                        result_fut.set_result(result)
+
+                try:
+                    loop.call_soon_threadsafe(_ok)
+                except RuntimeError:
+                    return
+
+        threading.Thread(
+            target=_run, name="lumina-boot-news", daemon=True
+        ).start()
+
+        try:
+            results = await asyncio.wait_for(
+                result_fut, timeout=BOOT_NEWS_SYNC_TIMEOUT_S
+            )
+            errors = [r.error for r in results if r.error]
+            if errors:
+                self.startup_news_phase = "failed"
+                self.startup_news_detail = "; ".join(errors[:3])
+            else:
+                self.startup_news_phase = "done"
+        except asyncio.TimeoutError:
+            if not result_fut.done():
+                result_fut.cancel()
+            self.startup_news_phase = "failed"
+            self.startup_news_detail = "timeout"
+        except asyncio.CancelledError:
+            if not result_fut.done():
+                result_fut.cancel()
+            if self.startup_news_phase == "running":
+                self.startup_news_phase = "failed"
+                self.startup_news_detail = "cancelled"
+            raise
+        except Exception as exc:
+            self.startup_news_phase = "failed"
+            self.startup_news_detail = str(exc)[:200]
+
 
 def create_app_state(settings: Settings | None = None) -> AppState:
+    from lumina_core.perf import record as perf_record
+    from lumina_core.perf import start as perf_start
+
+    t0 = time.perf_counter()
     settings = hydrate_startup_settings(settings)
     settings.data_dir.mkdir(parents=True, exist_ok=True)
+    perf_start(settings.data_dir)
     models = load_models(settings.data_dir)
+    t_hydrate = time.perf_counter()
+    hydrate_ms = (t_hydrate - t0) * 1000.0
+    perf_record(kind="op", name="startup.hydrate", ms=hydrate_ms)
     conn = init_db(settings.data_dir / "lumina.db")
     NewsSourceRepo(conn).ensure_defaults(default_rss_sources(settings.target_language))
+    t_db = time.perf_counter()
+    init_db_ms = (t_db - t_hydrate) * 1000.0
+    perf_record(kind="op", name="startup.init_db", ms=init_db_ms)
     concurrency_gate = ResourceConcurrencyGate(models.resources)
     router = ProfileModelRouter(models, gate=concurrency_gate)
     task_registry = TaskRegistry()
@@ -116,6 +216,20 @@ def create_app_state(settings: Settings | None = None) -> AppState:
         auto_start_summary=settings.auto_start_summary,
         task_registry=task_registry,
         prompts=settings.prompts,
+    )
+    t_done = time.perf_counter()
+    assemble_ms = (t_done - t_db) * 1000.0
+    total_ms = (t_done - t0) * 1000.0
+    perf_record(kind="op", name="startup.assemble", ms=assemble_ms)
+    perf_record(kind="op", name="startup.total", ms=total_ms)
+    print(
+        "lumina-core startup:"
+        f" hydrate_ms={int(hydrate_ms)}"
+        f" init_db_ms={int(init_db_ms)}"
+        f" assemble_ms={int(assemble_ms)}"
+        f" total_ms={int(total_ms)}",
+        flush=True,
+        file=sys.stderr,
     )
     return AppState(
         settings=settings,

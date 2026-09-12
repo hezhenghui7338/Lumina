@@ -606,4 +606,89 @@ final class LibraryViewModelMergeTests: XCTestCase {
         let spinning = IngestProgress(page: 0, total: 0, message: "排队等待分段…")
         XCTAssertEqual(spinning.label, "排队等待分段…")
     }
+
+    func testBookshelfPaging_pageCountAndSlice() {
+        XCTAssertEqual(BookshelfPaging.defaultPageSize, 10)
+        XCTAssertEqual(BookshelfPaging.allowedPageSizes, [10, 20, 50, 100])
+        XCTAssertEqual(BookshelfPaging.normalizedPageSize(10), 10)
+        XCTAssertEqual(BookshelfPaging.normalizedPageSize(48), 10)
+        XCTAssertEqual(BookshelfPaging.pageCount(total: 0, pageSize: 10), 0)
+        XCTAssertEqual(BookshelfPaging.pageCount(total: 10, pageSize: 10), 1)
+        XCTAssertEqual(BookshelfPaging.pageCount(total: 11, pageSize: 10), 2)
+        XCTAssertEqual(BookshelfPaging.pageCount(total: 100, pageSize: 50), 2)
+
+        let items = Array(0..<100)
+        XCTAssertEqual(BookshelfPaging.slice(items, pageIndex: 0, pageSize: 10), Array(0..<10))
+        XCTAssertEqual(BookshelfPaging.slice(items, pageIndex: 1, pageSize: 10), Array(10..<20))
+        XCTAssertEqual(BookshelfPaging.slice(items, pageIndex: 9, pageSize: 10), Array(90..<100))
+        XCTAssertEqual(
+            BookshelfPaging.slice(items, pageIndex: 99, pageSize: 10),
+            Array(90..<100),
+            "out-of-range page clamps to last"
+        )
+        XCTAssertEqual(BookshelfPaging.clampedPageIndex(-1, pageCount: 3), 0)
+        XCTAssertEqual(BookshelfPaging.clampedPageIndex(3, pageCount: 3), 2)
+        XCTAssertEqual(BookshelfPaging.clampedPageIndex(0, pageCount: 0), 0)
+    }
+
+    func testPagedBooks_slicesMatchedAndResetsOnFacetChange() {
+        let viewModel = LibraryViewModel()
+        viewModel.pageSize = 10
+        viewModel.sort = .title
+        viewModel.sortOrder = .ascending
+        viewModel.books = (0..<25).map { index in
+            book(id: String(format: "%02d", index), title: String(format: "Book %02d", index))
+        }
+
+        XCTAssertEqual(viewModel.matchedBooks.count, 25)
+        XCTAssertEqual(viewModel.pageCount, 3)
+        XCTAssertTrue(viewModel.showsPagination)
+        XCTAssertEqual(viewModel.pagedBooks.map(\.id), (0..<10).map { String(format: "%02d", $0) })
+
+        viewModel.setPage(2)
+        XCTAssertEqual(viewModel.pageIndex, 2)
+        XCTAssertEqual(viewModel.pagedBooks.map(\.id), ["20", "21", "22", "23", "24"])
+
+        viewModel.setPage(99)
+        XCTAssertEqual(viewModel.pageIndex, 2)
+
+        viewModel.selectFacet(.unread)
+        XCTAssertEqual(viewModel.pageIndex, 0)
+    }
+
+    func testSetSortResetsPageIndex() {
+        let viewModel = LibraryViewModel()
+        viewModel.pageSize = 5
+        viewModel.books = (0..<12).map { book(id: "\($0)", title: "T\($0)") }
+        viewModel.setPage(1)
+        XCTAssertEqual(viewModel.pageIndex, 1)
+        viewModel.setSort(.title)
+        XCTAssertEqual(viewModel.pageIndex, 0)
+    }
+
+    func testSetPageSize_resetsPageAndNormalizes() {
+        let viewModel = LibraryViewModel()
+        viewModel.books = (0..<30).map { book(id: "\($0)", title: "T\($0)") }
+        viewModel.setPageSize(10)
+        viewModel.setPage(2)
+        XCTAssertEqual(viewModel.pageIndex, 2)
+
+        viewModel.setPageSize(20)
+        XCTAssertEqual(viewModel.pageSize, 20)
+        XCTAssertEqual(viewModel.pageIndex, 0)
+        XCTAssertEqual(viewModel.pageCount, 2)
+
+        viewModel.setPageSize(48)
+        XCTAssertEqual(viewModel.pageSize, 10)
+        XCTAssertEqual(viewModel.pageIndex, 0)
+    }
+
+    func testShowsPagination_whenMatchedBooksExistEvenIfSinglePage() {
+        let viewModel = LibraryViewModel()
+        viewModel.pageSize = 100
+        viewModel.books = [book(id: "1", title: "Only")]
+        XCTAssertTrue(viewModel.showsPagination)
+        viewModel.books = []
+        XCTAssertFalse(viewModel.showsPagination)
+    }
 }

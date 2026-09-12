@@ -640,6 +640,14 @@ public sealed class OpenBookResponse
     public int CurrentSegmentIndex { get; set; }
 }
 
+public sealed class SegmentCatalogPage
+{
+    public List<SegmentRow> Segments { get; set; } = [];
+    public int? Total { get; set; }
+    public bool? HasMoreBefore { get; set; }
+    public bool? HasMoreAfter { get; set; }
+}
+
 public sealed class SegmentRow
 {
     public string Id { get; set; } = "";

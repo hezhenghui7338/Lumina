@@ -258,16 +258,11 @@ def test_list_books_sort_by_reading_progress_desc(db_conn):
 
 
 def test_delete_removes_fts(db_conn):
+    from lumina_core.search.fts import index_book
+
     repo = BookRepo(db_conn)
     book = _insert_book(db_conn, title="Delete Me")
-    db_conn.execute(
-        """
-        INSERT INTO search_fts (book_id, segment_id, note_id, kind, title, body)
-        VALUES (?, NULL, NULL, 'book', ?, ?)
-        """,
-        (book["id"], book["title"], ""),
-    )
-    db_conn.commit()
+    index_book(db_conn, book)
 
     repo.delete(book["id"])
     row = db_conn.execute(
@@ -275,6 +270,13 @@ def test_delete_removes_fts(db_conn):
         (book["id"],),
     ).fetchone()
     assert row["c"] == 0
+    assert (
+        db_conn.execute(
+            "SELECT COUNT(*) AS c FROM search_fts_map WHERE book_id = ?",
+            (book["id"],),
+        ).fetchone()["c"]
+        == 0
+    )
 
 
 def test_delete_removes_segments_and_notes(db_conn):

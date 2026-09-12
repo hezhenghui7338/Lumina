@@ -10,6 +10,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from lumina_core.config import Settings
+from lumina_core.db.connection import db_transaction
 from lumina_core.main import create_app
 from lumina_core.models.router import set_router
 from tests.support.mock_router import MockModelRouter, load_json_fixture
@@ -38,6 +39,9 @@ def client(tmp_path, monkeypatch):
 
 
 def _insert_long_book(client: TestClient, *, segment_count: int = 500) -> str:
+    # Shared app conn is also used by JobQueue / recover threads. Hold
+    # db_transaction for the whole plant so parallel release runs cannot
+    # interleave BEGIN and hit "cannot start a transaction within a transaction".
     conn = client.app.state.lumina.conn  # type: ignore[attr-defined]
     book_id = str(uuid.uuid4())
     now = datetime.now(timezone.utc).isoformat()
@@ -49,28 +53,51 @@ def _insert_long_book(client: TestClient, *, segment_count: int = 500) -> str:
         },
         ensure_ascii=False,
     )
-    conn.execute(
-        """
-        INSERT INTO books (
-          id, title, format, file_path, segment_count, status,
-          file_hash, current_segment_index, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
+    preview = "本段交代了主要情节。" * 5
+    bullets = '["要点一", "要点二", "要点三"]'
+    segment_rows = [
         (
+            f"{book_id}-s{idx}",
             book_id,
-            "Long Novel",
-            "txt",
-            f"/tmp/{book_id}.txt",
-            segment_count,
-            "reading",
-            book_id,
+            idx,
+            f"段 {idx + 1}",
+            f"正文内容 {idx} " * 200,
+            1600,
+            summary_blob,
+            f"段 {idx + 1} 摘要",
+            "ready",
             0,
-            now,
-            now,
-        ),
-    )
-    for idx in range(segment_count):
+            preview,
+            bullets,
+        )
+        for idx in range(segment_count)
+    ]
+    with db_transaction(conn):
         conn.execute(
+            """
+            INSERT INTO books (
+              id, title, format, file_path, segment_count, status,
+              file_hash, current_segment_index,
+              summary_ready_count, summary_total_count,
+              created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                book_id,
+                "Long Novel",
+                "txt",
+                f"/tmp/{book_id}.txt",
+                segment_count,
+                "reading",
+                book_id,
+                0,
+                segment_count,
+                segment_count,
+                now,
+                now,
+            ),
+        )
+        conn.executemany(
             """
             INSERT INTO segments (
               id, book_id, idx, anchor_label, raw_text, char_count,
@@ -78,22 +105,8 @@ def _insert_long_book(client: TestClient, *, segment_count: int = 500) -> str:
               summary_preview, bullet_labels
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (
-                f"{book_id}-s{idx}",
-                book_id,
-                idx,
-                f"段 {idx + 1}",
-                f"正文内容 {idx} " * 200,
-                1600,
-                summary_blob,
-                f"段 {idx + 1} 摘要",
-                "ready",
-                0,
-                "本段交代了主要情节。" * 5,
-                '["要点一", "要点二", "要点三"]',
-            ),
+            segment_rows,
         )
-    conn.commit()
     return book_id
 
 

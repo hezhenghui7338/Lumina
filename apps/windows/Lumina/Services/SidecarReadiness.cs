@@ -8,12 +8,27 @@ public sealed class SidecarHealth
     public string? CoreVersion { get; set; }
     public string? Executable { get; set; }
     public long? StartedAt { get; set; }
+    public int? UptimeMs { get; set; }
+}
+
+public enum HealthPollDecision
+{
+    Ready,
+    KeepWaiting,
+    /// `/health` answered but chunker/core identity does not match this app.
+    Incompatible,
+    /// Owned process exited before becoming healthy.
+    ProcessExited,
 }
 
 /// Decisions for replacing a leftover lumina-core process on the fixed sidecar port.
 public static class SidecarReadiness
 {
     public const string ExpectedChunkerVersion = "16";
+    public const double HealthPollBudgetSeconds = 30;
+    public const string MessageTimeout = "AI 引擎启动超时，请重试或退出。";
+    public const string MessageProcessExited = "AI 引擎进程已退出，请重试。";
+    public const string MessageIncompatible = "AI 引擎版本与应用不匹配，请更新应用或重启引擎。";
 
     public static string NormalizeVersion(string? version)
     {
@@ -27,6 +42,45 @@ public static class SidecarReadiness
         return !string.IsNullOrEmpty(expectedCoreVersion)
             && chunkerVersion == ExpectedChunkerVersion
             && NormalizeVersion(coreVersion) == NormalizeVersion(expectedCoreVersion);
+    }
+
+    /// Decide whether to keep polling, succeed, or fail-fast for this launch attempt.
+    /// A responding but incompatible health must not burn the full 30s poll budget.
+    public static HealthPollDecision EvaluateHealthPoll(
+        bool healthResponded,
+        bool compatible,
+        bool? processStillRunning)
+    {
+        if (healthResponded)
+            return compatible ? HealthPollDecision.Ready : HealthPollDecision.Incompatible;
+        if (processStillRunning == false)
+            return HealthPollDecision.ProcessExited;
+        return HealthPollDecision.KeepWaiting;
+    }
+
+    /// Delay after probe `afterProbeIndex` (0 = first probe was immediate).
+    public static int HealthPollDelayMilliseconds(int afterProbeIndex)
+    {
+        if (afterProbeIndex < 20) return 50;
+        if (afterProbeIndex < 40) return 100;
+        return 250;
+    }
+
+    public static string LaunchFailureMessage(HealthPollDecision decision) => decision switch
+    {
+        HealthPollDecision.Incompatible => MessageIncompatible,
+        HealthPollDecision.ProcessExited => MessageProcessExited,
+        _ => MessageTimeout,
+    };
+
+    public static string IncompatibleDetailMessage(
+        string? chunkerVersion,
+        string? coreVersion,
+        string expectedCoreVersion)
+    {
+        var engine = $"{NormalizeVersion(coreVersion)}/chunker {chunkerVersion ?? "?"}";
+        var expected = $"{NormalizeVersion(expectedCoreVersion)}/chunker {ExpectedChunkerVersion}";
+        return $"AI 引擎版本与应用不匹配（引擎 {engine}，应用期望 {expected}）。请更新应用或重启引擎。";
     }
 
     public static bool ShouldReplaceOrphan(

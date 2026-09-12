@@ -37,9 +37,18 @@ def test_macos_bookshelf_facets_have_all_and_combine():
         encoding="utf-8"
     )
     assert "query.matches" in vm
+    assert "matchedBooks" in vm
+    assert "pagedBooks" in vm
+    assert "BookshelfPaging" in vm
     assert "lumina.library.facets" in vm
     assert "setCollection" not in vm
     assert "hasProcessingBooks" in vm
+    bookshelf = (
+        ROOT / "apps/macos/Lumina/Features/Library/BookshelfView.swift"
+    ).read_text(encoding="utf-8")
+    assert "paginationBar" in bookshelf
+    assert "viewModel.pagedBooks" in bookshelf
+    assert "matchedBooks.count" in bookshelf
     row = (ROOT / "apps/macos/Lumina/Features/Library/BookRow.swift").read_text(
         encoding="utf-8"
     )
