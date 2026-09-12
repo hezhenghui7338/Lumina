@@ -170,6 +170,8 @@ Lumina/
 │   └── segments/{book_id}/         # 段摘要 JSON 备份（可选，主存 DB）
 ├── news/
 │   └── articles.sqlite             # 资讯独立库（或合并 lumina.db）
+├── perf/
+│   └── session-{UTC}-{pid}.jsonl   # 本机性能排查（每次进程启动新文件）
 ├── config.json                     # 非敏感 Settings（语言、联网 provider 等）
 ├── models.json                     # 模型资源池与路由（不含 API Key）
 └── secrets.json                    # API Key / Tavily Key（0600，仅本机 core 读写）
@@ -262,10 +264,21 @@ CREATE TABLE chat_messages (
 );
 
 -- FTS5 跨书搜索（笔记 + 段摘要 + 书名）
-CREATE VIRTUAL TABLE search_fts USING fts5(
-  book_id, segment_id, note_id, kind, title, body,
-  tokenize='unicode61'
+-- title/body 进倒排；book_id/segment_id/note_id/kind 为 UNINDEXED 元数据。
+-- 更新/删除必须经 search_fts_map 按 FTS rowid 操作，禁止
+-- DELETE FROM search_fts WHERE segment_id/book_id/note_id = ?（全表扫 + trigram 去词）。
+CREATE VIRTUAL TABLE IF NOT EXISTS search_fts USING fts5(
+  book_id UNINDEXED, segment_id UNINDEXED, note_id UNINDEXED, kind UNINDEXED, title, body,
+  tokenize='trigram'
 );
+
+CREATE TABLE search_fts_map (
+  doc_key   TEXT PRIMARY KEY,   -- book:|segment:|note: + id
+  book_id   TEXT NOT NULL,
+  kind      TEXT NOT NULL,
+  fts_rowid INTEGER NOT NULL UNIQUE
+);
+CREATE INDEX idx_search_fts_map_book ON search_fts_map(book_id);
 
 -- sqlite-vec 段向量（可选 v1.0 spike 后启用）
 -- CREATE VIRTUAL TABLE segment_embeddings USING vec0(...);
@@ -594,7 +607,7 @@ LLM **JSON mode** 强制结构：
 
 v1.0 实现路径：
 
-1. **FTS5** 索引：`books.title`、`segments.summary_json`、`notes.content`
+1. **FTS5** 索引：`books.title`、`segments.summary_json`、`notes.content`（`search_fts` + `search_fts_map` 按 rowid 更新）
 2. 搜索：`search_fts MATCH ?` + 按 kind 分组
 3. v1.1 增强：sqlite-vec 语义召回
 

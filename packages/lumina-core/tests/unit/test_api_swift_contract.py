@@ -574,6 +574,8 @@ def test_drop_stored_document_trees_strips_legacy_blob(client):
     meta["document_tree"] = {"kind": "book", "children": [{"title": "x"} for _ in range(50)]}
     repo.update(book_id, metadata_json=meta)
     assert "document_tree" in json.loads(repo.get(book_id)["metadata_json"])
+    # Strip is recover-time / explicit — not every GET /books (never-freeze).
+    assert repo.drop_stored_document_trees() == 1
     listed = next(b for b in client.get("/books").json()["books"] if b["id"] == book_id)
     assert "metadata_json" not in listed
     assert "document_tree" not in json.loads(repo.get(book_id)["metadata_json"])

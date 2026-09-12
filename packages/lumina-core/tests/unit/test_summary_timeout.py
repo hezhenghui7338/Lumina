@@ -171,6 +171,9 @@ async def test_recover_on_startup_resumes_incomplete_books(conn):
     SegmentRepo(conn).set_status(segs[0]["id"], "running")
 
     await q.recover_on_startup()
+    deferred = q._startup_deferred_task or q._catalog_backfill_task
+    if deferred is not None:
+        await deferred
 
     for _ in range(50):
         updated = SegmentRepo(conn).get_by_index(book_id, 0)
@@ -192,6 +195,9 @@ async def test_recover_on_startup_clears_orphan_without_auto_start(conn):
     SegmentRepo(conn).set_status(segs[0]["id"], "running")
 
     await q.recover_on_startup()
+    deferred = q._startup_deferred_task or q._catalog_backfill_task
+    if deferred is not None:
+        await deferred
 
     updated = SegmentRepo(conn).get_by_index(book_id, 0)
     assert updated["summary_status"] == "pending"

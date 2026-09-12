@@ -10,18 +10,21 @@ public sealed class SidecarHost : IDisposable
     private const string Host = "127.0.0.1";
     private const int Port = 17432;
     private const int MaxLaunchAttempts = 5;
-    private const int HealthPollAttempts = 120;
 
     private readonly HttpClient _http = new() { Timeout = TimeSpan.FromSeconds(2) };
     private Process? _process;
     private int? _lastKnownPid;
     private readonly object _gate = new();
+    private CancellationTokenSource? _coldStartPollCts;
 
     public Uri BaseUrl { get; } = new($"http://{Host}:{Port}");
     public bool IsRunning { get; private set; }
     public bool IsBootstrapping { get; private set; }
     public bool UserStopped { get; private set; }
     public string? LaunchError { get; private set; }
+    public bool ProductReady { get; private set; }
+    public ColdStartPhaseSnapshot ColdStartPhases { get; private set; } = ColdStartPhaseSnapshot.Initial;
+    public DateTime ColdStartStartedAt { get; private set; } = DateTime.UtcNow;
 
     public void ClearUserStopped()
     {
@@ -115,30 +118,39 @@ public sealed class SidecarHost : IDisposable
             for (var attempt = 1; attempt <= MaxLaunchAttempts; attempt++)
             {
                 ct.ThrowIfCancellationRequested();
+                var spawnAt = DateTime.UtcNow;
                 var outcome = LaunchSidecar();
                 if (outcome.Fatal)
                 {
                     IsRunning = false;
                     LaunchError = outcome.Error;
+                    AppendHostLog($"launch fatal: {outcome.Error}");
                     return;
                 }
                 if (outcome.Started)
                 {
-                    for (var i = 0; i < HealthPollAttempts; i++)
+                    var poll = await PollUntilReadyAsync(spawnAt, ct).ConfigureAwait(false);
+                    if (poll.Ready)
                     {
-                        await Task.Delay(250, ct).ConfigureAwait(false);
-                        if (await MatchesThisAppAsync(ct).ConfigureAwait(false))
-                        {
-                            IsRunning = true;
-                            LaunchError = null;
-                            return;
-                        }
+                        IsRunning = true;
+                        LaunchError = null;
+                        return;
                     }
-                    lastError = "AI 引擎启动超时，请重试或退出。";
+                    lastError = poll.Error ?? SidecarReadiness.MessageTimeout;
+                    await TerminatePidsAsync(
+                        new[] { CurrentOwnedPid(), _lastKnownPid, ListenerPid() },
+                        ct).ConfigureAwait(false);
+                    if (!poll.Retryable)
+                    {
+                        IsRunning = false;
+                        LaunchError = lastError;
+                        return;
+                    }
                 }
                 else
                 {
                     lastError = outcome.Error;
+                    AppendHostLog($"launch retryable: {outcome.Error}");
                 }
 
                 if (attempt < MaxLaunchAttempts)
@@ -146,7 +158,7 @@ public sealed class SidecarHost : IDisposable
             }
 
             IsRunning = false;
-            LaunchError = lastError ?? "AI 引擎启动超时，请重试或退出。";
+            LaunchError = lastError ?? SidecarReadiness.MessageTimeout;
         }
         catch (OperationCanceledException)
         {
@@ -165,13 +177,92 @@ public sealed class SidecarHost : IDisposable
         UserStopped = false;
         LaunchError = null;
         await StopAsync(userInitiated: false, ct).ConfigureAwait(false);
+        await EnsureRunningAndProductReadyAsync(ct).ConfigureAwait(false);
+    }
+
+    public async Task EnsureRunningAndProductReadyAsync(CancellationToken ct = default)
+    {
+        ColdStartStartedAt = DateTime.UtcNow;
+        ProductReady = false;
+        ColdStartPhases = ColdStartReadiness.Merge(false, "pending", "pending", "pending", null);
+        Notify();
         await EnsureRunningAsync(ct).ConfigureAwait(false);
+        if (!IsRunning)
+        {
+            ColdStartPhases = ColdStartReadiness.Merge(false, "pending", "pending", "pending", null);
+            Notify();
+            return;
+        }
+        ColdStartPhases = ColdStartReadiness.Merge(true, "running", "pending", "pending", null);
+        Notify();
+        await PollUntilProductReadyAsync(ct).ConfigureAwait(false);
+    }
+
+    private async Task PollUntilProductReadyAsync(CancellationToken ct)
+    {
+        _coldStartPollCts?.Cancel();
+        _coldStartPollCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        var pollCt = _coldStartPollCts.Token;
+        while (!pollCt.IsCancellationRequested)
+        {
+            var dto = await FetchStartupStatusAsync(pollCt).ConfigureAwait(false);
+            if (dto is not null)
+            {
+                ColdStartPhases = ColdStartReadiness.Merge(
+                    true, dto.Data, dto.Cache, dto.News, dto.NewsDetail);
+                Notify();
+                if (ColdStartReadiness.IsProductReady(ColdStartPhases))
+                {
+                    ProductReady = true;
+                    Notify();
+                    return;
+                }
+            }
+            try
+            {
+                await Task.Delay(ColdStartReadiness.StatusPollInterval, pollCt).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                return;
+            }
+        }
+    }
+
+    private async Task<StartupStatusDto?> FetchStartupStatusAsync(CancellationToken ct)
+    {
+        try
+        {
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            timeout.CancelAfter(TimeSpan.FromSeconds(2));
+            await using var stream = await _http
+                .GetStreamAsync(new Uri(BaseUrl, "/startup/status"), timeout.Token)
+                .ConfigureAwait(false);
+            return await JsonSerializer
+                .DeserializeAsync<StartupStatusDto>(
+                    stream,
+                    CoreClient.JsonOptions,
+                    timeout.Token)
+                .ConfigureAwait(false);
+        }
+        catch
+        {
+            return null;
+        }
     }
 
     public async Task StopAsync(bool userInitiated = false, CancellationToken ct = default)
     {
         if (userInitiated)
             UserStopped = true;
+
+        _coldStartPollCts?.Cancel();
+        _coldStartPollCts = null;
+        if (!userInitiated)
+        {
+            ProductReady = false;
+            ColdStartPhases = ColdStartPhaseSnapshot.Initial;
+        }
 
         try
         {
@@ -227,6 +318,110 @@ public sealed class SidecarHost : IDisposable
     {
         var version = typeof(SidecarHost).Assembly.GetName().Version;
         return version is null ? "" : SidecarReadiness.NormalizeVersion(version.ToString());
+    }
+
+    private readonly record struct PollResult(bool Ready, string? Error, bool Retryable = true);
+
+    private async Task<PollResult> PollUntilReadyAsync(DateTime spawnAt, CancellationToken ct)
+    {
+        var budget = TimeSpan.FromSeconds(SidecarReadiness.HealthPollBudgetSeconds);
+        var probeIndex = 0;
+        int? firstHealthMs = null;
+        while (DateTime.UtcNow - spawnAt < budget)
+        {
+            ct.ThrowIfCancellationRequested();
+            var health = await FetchHealthAsync(ct).ConfigureAwait(false);
+            if (health is not null && firstHealthMs is null)
+                firstHealthMs = (int)(DateTime.UtcNow - spawnAt).TotalMilliseconds;
+
+            var compatible = health is not null
+                && SidecarReadiness.IsCompatible(
+                    health.ChunkerVersion,
+                    health.CoreVersion,
+                    ExpectedCoreVersion());
+            bool? processRunning = null;
+            lock (_gate)
+            {
+                try
+                {
+                    if (_process is not null)
+                        processRunning = !_process.HasExited;
+                }
+                catch
+                {
+                    processRunning = false;
+                }
+            }
+
+            var decision = SidecarReadiness.EvaluateHealthPoll(
+                health is not null,
+                compatible,
+                processRunning);
+            switch (decision)
+            {
+                case HealthPollDecision.Ready:
+                {
+                    var readyMs = (int)(DateTime.UtcNow - spawnAt).TotalMilliseconds;
+                    AppendHostLog(
+                        $"ready spawn_to_first_health_ms={firstHealthMs ?? readyMs} spawn_to_ready_ms={readyMs} uptime_ms={health?.UptimeMs?.ToString() ?? "?"}");
+                    return new PollResult(true, null);
+                }
+                case HealthPollDecision.Incompatible:
+                {
+                    var detail = SidecarReadiness.IncompatibleDetailMessage(
+                        health?.ChunkerVersion,
+                        health?.CoreVersion,
+                        ExpectedCoreVersion());
+                    AppendHostLog(
+                        $"incompatible after {(int)(DateTime.UtcNow - spawnAt).TotalMilliseconds}ms: {detail}");
+                    return new PollResult(false, detail, Retryable: false);
+                }
+                case HealthPollDecision.ProcessExited:
+                    AppendHostLog(
+                        $"process exited after {(int)(DateTime.UtcNow - spawnAt).TotalMilliseconds}ms");
+                    return new PollResult(false, SidecarReadiness.MessageProcessExited);
+                default:
+                    var delay = SidecarReadiness.HealthPollDelayMilliseconds(probeIndex);
+                    probeIndex++;
+                    await Task.Delay(delay, ct).ConfigureAwait(false);
+                    break;
+            }
+        }
+
+        AppendHostLog(
+            $"timeout after {(int)(DateTime.UtcNow - spawnAt).TotalMilliseconds}ms first_health_ms={firstHealthMs?.ToString() ?? "none"}");
+        return new PollResult(false, SidecarReadiness.MessageTimeout);
+    }
+
+    private int? CurrentOwnedPid()
+    {
+        lock (_gate)
+        {
+            try
+            {
+                if (_process is { HasExited: false })
+                    return _process.Id;
+            }
+            catch
+            {
+                /* ignore */
+            }
+        }
+        return null;
+    }
+
+    private void AppendHostLog(string message)
+    {
+        try
+        {
+            var path = OpenSidecarLogPath();
+            if (path is null) return;
+            AppendLog(path, $"[sidecar-host] {DateTimeOffset.Now:o} {message}");
+        }
+        catch
+        {
+            /* best-effort diagnostics */
+        }
     }
 
     private async Task<bool> MatchesThisAppAsync(CancellationToken ct)

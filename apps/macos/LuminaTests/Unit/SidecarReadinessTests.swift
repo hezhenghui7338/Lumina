@@ -86,6 +86,14 @@ final class SidecarReadinessTests: XCTestCase {
                 expectedCoreVersion: "0.8.1"
             )
         )
+        XCTAssertTrue(
+            SidecarReadiness.isCompatible(
+                chunkerVersion: SidecarReadiness.expectedChunkerVersion,
+                coreVersion: "0.8.1.0",
+                expectedCoreVersion: "0.8.1"
+            ),
+            "macOS must normalize 4-part versions like Windows"
+        )
         XCTAssertFalse(
             SidecarReadiness.isCompatible(
                 chunkerVersion: "7",
@@ -107,6 +115,90 @@ final class SidecarReadinessTests: XCTestCase {
                 expectedCoreVersion: "0.8.1"
             )
         )
+    }
+
+    func testNormalizeVersion_trimsFourthComponent() {
+        XCTAssertEqual(SidecarReadiness.normalizeVersion("1.1.0.0"), "1.1.0")
+        XCTAssertEqual(SidecarReadiness.normalizeVersion("1.1.0"), "1.1.0")
+        XCTAssertEqual(SidecarReadiness.normalizeVersion(nil), "")
+    }
+
+    func testEvaluateHealthPoll_incompatibleFailsFast() {
+        XCTAssertEqual(
+            SidecarReadiness.evaluateHealthPoll(
+                healthResponded: true,
+                compatible: false,
+                processStillRunning: true
+            ),
+            .incompatible
+        )
+        XCTAssertEqual(
+            SidecarReadiness.launchFailureMessage(for: .incompatible),
+            SidecarReadiness.messageIncompatible
+        )
+    }
+
+    func testEvaluateHealthPoll_readyWhenCompatible() {
+        XCTAssertEqual(
+            SidecarReadiness.evaluateHealthPoll(
+                healthResponded: true,
+                compatible: true,
+                processStillRunning: true
+            ),
+            .ready
+        )
+    }
+
+    func testEvaluateHealthPoll_processExitedFailsFast() {
+        XCTAssertEqual(
+            SidecarReadiness.evaluateHealthPoll(
+                healthResponded: false,
+                compatible: false,
+                processStillRunning: false
+            ),
+            .processExited
+        )
+        XCTAssertEqual(
+            SidecarReadiness.launchFailureMessage(for: .processExited),
+            SidecarReadiness.messageProcessExited
+        )
+    }
+
+    func testEvaluateHealthPoll_keepWaitingWhenNoHealthYet() {
+        XCTAssertEqual(
+            SidecarReadiness.evaluateHealthPoll(
+                healthResponded: false,
+                compatible: false,
+                processStillRunning: true
+            ),
+            .keepWaiting
+        )
+        XCTAssertEqual(
+            SidecarReadiness.evaluateHealthPoll(
+                healthResponded: false,
+                compatible: false,
+                processStillRunning: nil
+            ),
+            .keepWaiting
+        )
+    }
+
+    func testHealthPollDelay_fastEarlyThenSettles() {
+        XCTAssertEqual(SidecarReadiness.healthPollDelayNanoseconds(afterProbeIndex: 0), 50_000_000)
+        XCTAssertEqual(SidecarReadiness.healthPollDelayNanoseconds(afterProbeIndex: 19), 50_000_000)
+        XCTAssertEqual(SidecarReadiness.healthPollDelayNanoseconds(afterProbeIndex: 20), 100_000_000)
+        XCTAssertEqual(SidecarReadiness.healthPollDelayNanoseconds(afterProbeIndex: 40), 250_000_000)
+    }
+
+    func testIncompatibleDetailMessage_includesVersions() {
+        let msg = SidecarReadiness.incompatibleDetailMessage(
+            chunkerVersion: "15",
+            coreVersion: "1.0.0",
+            expectedCoreVersion: "1.1.0"
+        )
+        XCTAssertTrue(msg.contains("1.0.0"))
+        XCTAssertTrue(msg.contains("1.1.0"))
+        XCTAssertTrue(msg.contains("chunker"))
     }
 
     func testShouldReplaceOrphan_whenCoreVersionDiffers() {

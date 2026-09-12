@@ -131,6 +131,10 @@ enum SegmentRenderWindow {
     static let scrollAnimateThreshold = 15
     /// 主阅读区摘要/原文 prefetch 半径（段数）
     static let readBuffer = 4
+    /// 主阅读区实际物化的段数半径；远跳只重建此窗口，不跨中间段 layout。
+    static let readRenderBuffer = 20
+    /// 窗口外 spacer 的单段估高（pt）；只影响滚动条比例，不参与钉位。
+    static let offscreenSegmentEstimate: CGFloat = 280
 
     static func slice<Item>(
         _ all: [Item],
@@ -156,6 +160,22 @@ enum SegmentRenderWindow {
             startIndex: start,
             totalCount: all.count
         )
+    }
+
+    /// Reading feed around the pinned segment. Cost is O(buffer), not O(jump distance).
+    static func readingWindow(
+        segments: [SegmentRow],
+        pinnedIdx: Int?,
+        buffer: Int = readRenderBuffer
+    ) -> IndexedWindow<SegmentRow> {
+        let pin = pinnedIdx ?? segments.first?.idx ?? 0
+        let center = centerIndex(forSegmentIdx: pin, in: segments)
+        return slice(segments, centerIndex: center, buffer: buffer)
+    }
+
+    static func offscreenSpacerHeight(count: Int) -> CGFloat {
+        guard count > 0 else { return 0 }
+        return CGFloat(count) * offscreenSegmentEstimate
     }
 
     static func centerIndex(forSegmentIdx idx: Int, in segments: [SegmentRow]) -> Int {

@@ -17,7 +17,11 @@ from lumina_core.chunker.tree import (
 )
 from lumina_core.classify.book import BOOK_CATEGORIES
 from lumina_core.db.connection import db_lock, db_transaction
-from lumina_core.search.fts import delete_note_from_fts
+from lumina_core.search.fts import (
+    delete_book_from_fts,
+    delete_book_segments_from_fts,
+    delete_note_from_fts,
+)
 from lumina_core.summarize.preview import segment_list_fields
 from lumina_core.summarize.schema import normalize_summary_data, resolve_segment_label
 
@@ -319,6 +323,7 @@ class BookRepo:
         return cursor.rowcount == 1
 
     def delete(self, book_id: str) -> None:
+        delete_book_from_fts(self.conn, book_id)
         with db_transaction(self.conn):
             self.conn.execute("DELETE FROM notes WHERE book_id = ?", (book_id,))
             self.conn.execute(
@@ -334,28 +339,21 @@ class BookRepo:
             self.conn.execute("DELETE FROM summary_nodes WHERE book_id = ?", (book_id,))
             self.conn.execute("DELETE FROM segments WHERE book_id = ?", (book_id,))
             self.conn.execute("DELETE FROM jobs WHERE book_id = ?", (book_id,))
-            self.conn.execute("DELETE FROM search_fts WHERE book_id = ?", (book_id,))
             self.conn.execute("DELETE FROM books WHERE id = ?", (book_id,))
 
     def maybe_mark_summarized(self, book_id: str) -> bool:
         """If every segment is ready, promote book status to summarized."""
-        with db_lock(self.conn):
-            row = self.conn.execute(
-                """
-                SELECT COUNT(*) AS total,
-                       SUM(CASE WHEN summary_status = 'ready' THEN 1 ELSE 0 END) AS ready
-                FROM segments WHERE book_id = ?
-                """,
-                (book_id,),
-            ).fetchone()
-        if not row or row["total"] == 0 or row["ready"] != row["total"]:
+        progress = self.summary_progress(book_id)
+        ready = int(progress["summary_ready_count"])
+        total = int(progress["summary_total_count"])
+        if total <= 0 or ready != total:
             return False
         self.update(book_id, status="summarized", summarize_intent="idle")
         return True
 
-    def summary_progress(self, book_id: str) -> dict[str, int]:
-        """Return ready/total segment counts for summary progress UI."""
-        with db_lock(self.conn):
+    def refresh_summary_progress(self, book_id: str) -> dict[str, int]:
+        """Recount segments into books.summary_* (write-path / repair)."""
+        with db_transaction(self.conn):
             row = self.conn.execute(
                 """
                 SELECT COUNT(*) AS total,
@@ -364,11 +362,42 @@ class BookRepo:
                 """,
                 (book_id,),
             ).fetchone()
-        if not row:
+            ready = int((row["ready"] if row else 0) or 0)
+            total = int((row["total"] if row else 0) or 0)
+            self.conn.execute(
+                """
+                UPDATE books
+                SET summary_ready_count = ?, summary_total_count = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (ready, total, _now(), book_id),
+            )
+        return {"summary_ready_count": ready, "summary_total_count": total}
+
+    def summary_progress(self, book_id: str) -> dict[str, int]:
+        """Return ready/total from denormalized books columns.
+
+        Falls back to a recount when columns look stale vs segment_count
+        (tests / legacy writers that only touch segments).
+        """
+        with db_lock(self.conn):
+            book = self.conn.execute(
+                """
+                SELECT segment_count, summary_ready_count, summary_total_count
+                FROM books WHERE id = ?
+                """,
+                (book_id,),
+            ).fetchone()
+        if not book:
             return {"summary_ready_count": 0, "summary_total_count": 0}
+        ready = book["summary_ready_count"]
+        total = book["summary_total_count"]
+        segment_count = int(book["segment_count"] or 0)
+        if ready is None or total is None or int(total) != segment_count:
+            return self.refresh_summary_progress(book_id)
         return {
-            "summary_ready_count": int(row["ready"] or 0),
-            "summary_total_count": int(row["total"] or 0),
+            "summary_ready_count": int(ready or 0),
+            "summary_total_count": int(total or 0),
         }
 
 
@@ -465,6 +494,25 @@ def _segment_public(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
     return item
 
 
+def _slim_catalog_item(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
+    """Catalog row without empty preview/labels; never includes summary_json."""
+    item = _segment_public(row)
+    if item.get("summary_status") != "ready":
+        item.pop("summary_preview", None)
+        item.pop("bullet_labels", None)
+    elif not item.get("summary_preview"):
+        item.pop("summary_preview", None)
+    if not item.get("bullet_labels"):
+        item.pop("bullet_labels", None)
+    return item
+
+
+# Open-book window and background pages stay O(limit), not O(segment_count).
+CATALOG_WINDOW_DEFAULT = 64
+CATALOG_PAGE_DEFAULT = 200
+CATALOG_LIMIT_MAX = 500
+
+
 def _insert_segments_batched(conn: sqlite3.Connection, segments: list[dict[str, Any]]) -> None:
     """Commit inserts in chunks so a huge book does not hold one WAL write for minutes."""
     for offset in range(0, len(segments), _SEGMENT_INSERT_BATCH):
@@ -502,25 +550,189 @@ class SegmentRepo:
         return [_segment_public(r) for r in rows]
 
     def list_catalog(self, book_id: str) -> list[dict[str, Any]]:
-        """Slim cached catalog. The open-book hot path never parses summary_json."""
+        """Full slim catalog. Prefer list_catalog_page for the reader open path."""
         with db_lock(self.conn):
             rows = self.conn.execute(
                 f"SELECT {_SEGMENT_LIST_COLUMNS} FROM segments "
                 "WHERE book_id = ? ORDER BY idx",
                 (book_id,),
             ).fetchall()
-        catalog: list[dict[str, Any]] = []
-        for row in rows:
-            item = _segment_public(row)
-            if item.get("summary_status") != "ready":
-                item.pop("summary_preview", None)
-                item.pop("bullet_labels", None)
-            elif not item.get("summary_preview"):
-                item.pop("summary_preview", None)
-            if not item.get("bullet_labels"):
-                item.pop("bullet_labels", None)
-            catalog.append(item)
-        return catalog
+        return [_slim_catalog_item(r) for r in rows]
+
+    def count_for_book(self, book_id: str) -> int:
+        with db_lock(self.conn):
+            row = self.conn.execute(
+                "SELECT COUNT(*) AS n FROM segments WHERE book_id = ?",
+                (book_id,),
+            ).fetchone()
+        return int(row["n"] if row else 0)
+
+    def next_incomplete_segment(self, book_id: str) -> dict[str, Any] | None:
+        """Earliest pending/error segment — O(1) hold, not O(n) list_for_book."""
+        with db_lock(self.conn):
+            row = self.conn.execute(
+                f"SELECT {_SEGMENT_LIST_COLUMNS} FROM segments "
+                "WHERE book_id = ? AND summary_status IN ('pending', 'error') "
+                "ORDER BY idx LIMIT 1",
+                (book_id,),
+            ).fetchone()
+        return _segment_public(row) if row else None
+
+    def list_running_segments(self, book_id: str) -> list[dict[str, Any]]:
+        """Running rows only (crash orphans); never the full book catalog."""
+        with db_lock(self.conn):
+            rows = self.conn.execute(
+                f"SELECT {_SEGMENT_LIST_COLUMNS} FROM segments "
+                "WHERE book_id = ? AND summary_status = 'running' "
+                "ORDER BY idx",
+                (book_id,),
+            ).fetchall()
+        return [_segment_public(r) for r in rows]
+
+    def reset_running_segments(self, book_id: str) -> list[dict[str, Any]]:
+        """Set all running → pending; return affected rows for SSE."""
+        with db_transaction(self.conn):
+            rows = self.conn.execute(
+                f"SELECT {_SEGMENT_LIST_COLUMNS} FROM segments "
+                "WHERE book_id = ? AND summary_status = 'running' "
+                "ORDER BY idx",
+                (book_id,),
+            ).fetchall()
+            if not rows:
+                return []
+            self.conn.execute(
+                "UPDATE segments SET summary_status = 'pending' "
+                "WHERE book_id = ? AND summary_status = 'running'",
+                (book_id,),
+            )
+        return [_segment_public(r) for r in rows]
+
+    def reset_failed_segments(self, book_id: str) -> list[dict[str, Any]]:
+        """failed/error → pending with fresh retry budget; return affected for SSE."""
+        with db_transaction(self.conn):
+            rows = self.conn.execute(
+                f"SELECT {_SEGMENT_LIST_COLUMNS} FROM segments "
+                "WHERE book_id = ? AND summary_status IN ('failed', 'error') "
+                "ORDER BY idx",
+                (book_id,),
+            ).fetchall()
+            if not rows:
+                return []
+            self.conn.execute(
+                """
+                UPDATE segments
+                SET summary_status = 'pending', retry_count = 0
+                WHERE book_id = ? AND summary_status IN ('failed', 'error')
+                """,
+                (book_id,),
+            )
+        return [_segment_public(r) for r in rows]
+
+    def apply_summary_tier_to_incomplete(
+        self, book_id: str, summary_tier: str
+    ) -> int:
+        """Stamp a new tier onto non-ready segments without loading the book."""
+        with db_transaction(self.conn):
+            cur = self.conn.execute(
+                """
+                UPDATE segments
+                SET summary_json = NULL, label = NULL, translation = NULL,
+                    summary_status = 'pending', retry_count = 0,
+                    summary_provider = NULL, summary_model = NULL,
+                    summary_tier = ?, summary_duration_s = NULL,
+                    summary_llm_attempts = NULL, summary_preview = NULL,
+                    bullet_labels = NULL
+                WHERE book_id = ?
+                  AND summary_status NOT IN ('ready', 'done')
+                  AND COALESCE(summary_tier, 'normal') != ?
+                """,
+                (summary_tier, book_id, summary_tier),
+            )
+            return int(cur.rowcount or 0)
+
+    def list_catalog_page(
+        self,
+        book_id: str,
+        *,
+        around: int | None = None,
+        after_idx: int | None = None,
+        before_idx: int | None = None,
+        limit: int = CATALOG_WINDOW_DEFAULT,
+    ) -> dict[str, Any]:
+        """Bounded catalog page for progressive open (O(limit), not O(n))."""
+        limit = max(1, min(int(limit), CATALOG_LIMIT_MAX))
+        with db_lock(self.conn):
+            total_row = self.conn.execute(
+                "SELECT COUNT(*) AS n FROM segments WHERE book_id = ?",
+                (book_id,),
+            ).fetchone()
+            total = int(total_row["n"] if total_row else 0)
+            if total <= 0:
+                return {
+                    "segments": [],
+                    "total": 0,
+                    "has_more_before": False,
+                    "has_more_after": False,
+                }
+
+            if after_idx is not None:
+                rows = self.conn.execute(
+                    f"SELECT {_SEGMENT_LIST_COLUMNS} FROM segments "
+                    "WHERE book_id = ? AND idx > ? ORDER BY idx ASC LIMIT ?",
+                    (book_id, int(after_idx), limit),
+                ).fetchall()
+            elif before_idx is not None:
+                rows = self.conn.execute(
+                    f"SELECT {_SEGMENT_LIST_COLUMNS} FROM segments "
+                    "WHERE book_id = ? AND idx < ? ORDER BY idx DESC LIMIT ?",
+                    (book_id, int(before_idx), limit),
+                ).fetchall()
+                rows = list(reversed(rows))
+            else:
+                center = 0 if around is None else int(around)
+                before_row = self.conn.execute(
+                    "SELECT COUNT(*) AS n FROM segments "
+                    "WHERE book_id = ? AND idx < ?",
+                    (book_id, center),
+                ).fetchone()
+                before_count = int(before_row["n"] if before_row else 0)
+                # Prefer centering on `around`; clamp so the page stays full near ends.
+                offset = max(0, before_count - (limit - 1) // 2)
+                if offset + limit > total:
+                    offset = max(0, total - limit)
+                rows = self.conn.execute(
+                    f"SELECT {_SEGMENT_LIST_COLUMNS} FROM segments "
+                    "WHERE book_id = ? ORDER BY idx LIMIT ? OFFSET ?",
+                    (book_id, limit, offset),
+                ).fetchall()
+
+            min_idx = rows[0]["idx"] if rows else None
+            max_idx = rows[-1]["idx"] if rows else None
+            has_more_before = False
+            has_more_after = False
+            if min_idx is not None:
+                has_more_before = (
+                    self.conn.execute(
+                        "SELECT 1 FROM segments WHERE book_id = ? AND idx < ? LIMIT 1",
+                        (book_id, min_idx),
+                    ).fetchone()
+                    is not None
+                )
+            if max_idx is not None:
+                has_more_after = (
+                    self.conn.execute(
+                        "SELECT 1 FROM segments WHERE book_id = ? AND idx > ? LIMIT 1",
+                        (book_id, max_idx),
+                    ).fetchone()
+                    is not None
+                )
+
+        return {
+            "segments": [_slim_catalog_item(r) for r in rows],
+            "total": total,
+            "has_more_before": has_more_before,
+            "has_more_after": has_more_after,
+        }
 
     def backfill_catalog_cache(self, *, batch_size: int = 64) -> int:
         """Populate legacy ready rows in bounded transactions.
@@ -769,6 +981,11 @@ class SegmentRepo:
                 _SEGMENT_INSERT_SQL,
                 [_segment_insert_row(seg) for seg in segments],
             )
+        # Recount denormalized progress for affected books (tests often insert
+        # segments without going through finalize_ingest).
+        books = BookRepo(self.conn)
+        for book_id in {str(seg["book_id"]) for seg in segments if seg.get("book_id")}:
+            books.refresh_summary_progress(book_id)
 
     def finalize_ingest(
         self,
@@ -795,7 +1012,8 @@ class SegmentRepo:
                 """
                 UPDATE books
                 SET title = ?, author = ?, language = ?, target_language = ?,
-                    segment_count = ?, status = 'unread', metadata_json = ?,
+                    segment_count = ?, summary_ready_count = 0, summary_total_count = ?,
+                    status = 'unread', metadata_json = ?,
                     updated_at = ?
                 WHERE id = ?
                 """,
@@ -804,6 +1022,7 @@ class SegmentRepo:
                     author,
                     language,
                     target_language,
+                    len(segments),
                     len(segments),
                     json.dumps(metadata_json, ensure_ascii=False),
                     now,
@@ -831,7 +1050,8 @@ class SegmentRepo:
                 """
                 UPDATE books
                 SET title = ?, author = ?, language = ?, target_language = ?,
-                    segment_count = ?, status = 'unread', metadata_json = ?,
+                    segment_count = ?, summary_ready_count = 0, summary_total_count = ?,
+                    status = 'unread', metadata_json = ?,
                     updated_at = ?
                 WHERE id = ?
                 """,
@@ -840,6 +1060,7 @@ class SegmentRepo:
                     author,
                     language,
                     target_language,
+                    segment_count,
                     segment_count,
                     json.dumps(metadata_json, ensure_ascii=False),
                     now,
@@ -893,6 +1114,7 @@ class SegmentRepo:
         if segment_count <= 0:
             raise RuntimeError("分段结果为空")
         now = _now()
+        delete_book_segments_from_fts(self.conn, book_id)
         with db_transaction(self.conn):
             self.conn.execute("DELETE FROM notes WHERE book_id = ?", (book_id,))
             self.conn.execute(
@@ -907,10 +1129,6 @@ class SegmentRepo:
             self.conn.execute("DELETE FROM chat_sessions WHERE book_id = ?", (book_id,))
             self.conn.execute("DELETE FROM jobs WHERE book_id = ?", (book_id,))
             self.conn.execute("DELETE FROM summary_nodes WHERE book_id = ?", (book_id,))
-            self.conn.execute(
-                "DELETE FROM search_fts WHERE book_id = ? AND kind != 'book'",
-                (book_id,),
-            )
             self.conn.execute("DELETE FROM segments WHERE book_id = ?", (book_id,))
             self.conn.execute(
                 """
@@ -928,11 +1146,13 @@ class SegmentRepo:
             self.conn.execute(
                 """
                 UPDATE books
-                SET segment_count = ?, current_segment_index = 0, status = ?,
+                SET segment_count = ?, summary_ready_count = 0, summary_total_count = ?,
+                    current_segment_index = 0, status = ?,
                     metadata_json = ?, index_status = 'idle', updated_at = ?
                 WHERE id = ?
                 """,
                 (
+                    segment_count,
                     segment_count,
                     status,
                     json.dumps(metadata_json, ensure_ascii=False),
@@ -952,6 +1172,7 @@ class SegmentRepo:
     ) -> None:
         """Atomically replace segment-bound data after a successful rechunk."""
         now = _now()
+        delete_book_segments_from_fts(self.conn, book_id)
         with db_transaction(self.conn):
             self.conn.execute("DELETE FROM notes WHERE book_id = ?", (book_id,))
             self.conn.execute(
@@ -966,21 +1187,19 @@ class SegmentRepo:
             self.conn.execute("DELETE FROM chat_sessions WHERE book_id = ?", (book_id,))
             self.conn.execute("DELETE FROM jobs WHERE book_id = ?", (book_id,))
             self.conn.execute("DELETE FROM summary_nodes WHERE book_id = ?", (book_id,))
-            self.conn.execute(
-                "DELETE FROM search_fts WHERE book_id = ? AND kind != 'book'",
-                (book_id,),
-            )
             self.conn.execute("DELETE FROM segments WHERE book_id = ?", (book_id,))
         _insert_segments_batched(self.conn, segments)
         with db_transaction(self.conn):
             self.conn.execute(
                 """
                 UPDATE books
-                SET segment_count = ?, current_segment_index = 0, status = ?,
+                SET segment_count = ?, summary_ready_count = 0, summary_total_count = ?,
+                    current_segment_index = 0, status = ?,
                     metadata_json = ?, index_status = 'idle', updated_at = ?
                 WHERE id = ?
                 """,
                 (
+                    len(segments),
                     len(segments),
                     status,
                     json.dumps(metadata_json, ensure_ascii=False),
@@ -1017,6 +1236,10 @@ class SegmentRepo:
                 fallback_anchor=anchor_label or label or "要点",
             )
         with db_transaction(self.conn):
+            prev = self.conn.execute(
+                "SELECT book_id, summary_status FROM segments WHERE id = ?",
+                (segment_id,),
+            ).fetchone()
             self.conn.execute(
                 """
                 UPDATE segments SET summary_json = ?, label = ?, anchor_label = COALESCE(?, anchor_label),
@@ -1041,10 +1264,30 @@ class SegmentRepo:
                     segment_id,
                 ),
             )
+            if prev is not None:
+                was_ready = (prev["summary_status"] or "") == "ready"
+                now_ready = status == "ready"
+                if was_ready != now_ready:
+                    delta = 1 if now_ready else -1
+                    self.conn.execute(
+                        """
+                        UPDATE books
+                        SET summary_ready_count = MAX(
+                              0, COALESCE(summary_ready_count, 0) + ?
+                            ),
+                            updated_at = ?
+                        WHERE id = ?
+                        """,
+                        (delta, _now(), prev["book_id"]),
+                    )
 
     def reset_summary(self, segment_id: str, *, summary_tier: str) -> None:
         """Invalidate one summary while retaining source text and segment identity."""
         with db_transaction(self.conn):
+            prev = self.conn.execute(
+                "SELECT book_id, summary_status FROM segments WHERE id = ?",
+                (segment_id,),
+            ).fetchone()
             self.conn.execute(
                 """
                 UPDATE segments
@@ -1058,6 +1301,18 @@ class SegmentRepo:
                 """,
                 (summary_tier, segment_id),
             )
+            if prev is not None and (prev["summary_status"] or "") == "ready":
+                self.conn.execute(
+                    """
+                    UPDATE books
+                    SET summary_ready_count = MAX(
+                          0, COALESCE(summary_ready_count, 0) - 1
+                        ),
+                        updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (_now(), prev["book_id"]),
+                )
 
     def apply_boundary_move(
         self,
@@ -1121,6 +1376,7 @@ class SegmentRepo:
         updated_right = self.get(right_id)
         if updated_left is None or updated_right is None:
             raise RuntimeError("Boundary move lost a segment")
+        BookRepo(self.conn).refresh_summary_progress(left["book_id"])
         return updated_left, updated_right
 
     def _write_boundary_side(
@@ -1158,6 +1414,10 @@ class SegmentRepo:
 
     def set_status(self, segment_id: str, status: str, retry_count: int | None = None) -> None:
         with db_transaction(self.conn):
+            prev = self.conn.execute(
+                "SELECT book_id, summary_status FROM segments WHERE id = ?",
+                (segment_id,),
+            ).fetchone()
             if retry_count is None:
                 self.conn.execute(
                     "UPDATE segments SET summary_status = ? WHERE id = ?",
@@ -1168,6 +1428,22 @@ class SegmentRepo:
                     "UPDATE segments SET summary_status = ?, retry_count = ? WHERE id = ?",
                     (status, retry_count, segment_id),
                 )
+            if prev is not None:
+                was_ready = (prev["summary_status"] or "") == "ready"
+                now_ready = status == "ready"
+                if was_ready != now_ready:
+                    delta = 1 if now_ready else -1
+                    self.conn.execute(
+                        """
+                        UPDATE books
+                        SET summary_ready_count = MAX(
+                              0, COALESCE(summary_ready_count, 0) + ?
+                            ),
+                            updated_at = ?
+                        WHERE id = ?
+                        """,
+                        (delta, _now(), prev["book_id"]),
+                    )
 
 
 class SummaryNodeRepo:

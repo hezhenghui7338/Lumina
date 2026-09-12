@@ -27,7 +27,10 @@ def db_lock(conn: sqlite3.Connection) -> threading.RLock:
 
 def detach_db_lock(conn: sqlite3.Connection) -> None:
     """Forget a short-lived connection after its users have stopped."""
+    from lumina_core.perf import forget_instrumented_connection
+
     _CONN_LOCKS.pop(id(conn), None)
+    forget_instrumented_connection(conn)
 
 
 @contextmanager

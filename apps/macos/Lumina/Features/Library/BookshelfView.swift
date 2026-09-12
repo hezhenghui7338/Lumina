@@ -48,7 +48,7 @@ struct BookshelfView: View {
                 Divider()
             }
             Group {
-                if viewModel.displayedBooks.isEmpty {
+                if viewModel.matchedBooks.isEmpty {
                     emptyState
                 } else if viewModel.viewMode == .grid {
                     bookGrid
@@ -58,11 +58,17 @@ struct BookshelfView: View {
             }
             .tourAnchor(.bookshelf)
             .background(dropTargeted ? LuminaTheme.accentMuted.opacity(0.45) : Color.clear)
+            if viewModel.showsPagination {
+                paginationBar
+            }
         }
         .navigationTitle(viewModel.query.title)
         .toolbar { toolbarContent }
-        .onChange(of: viewModel.displayedBooks.map(\.id)) { _, _ in
+        .onChange(of: viewModel.pagedBooks.map(\.id)) { _, _ in
             syncCheckedBooks()
+        }
+        .onChange(of: viewModel.titleQuery) { _, _ in
+            viewModel.resetPage()
         }
         .confirmationDialog(
             "确定删除这本书？",
@@ -211,7 +217,7 @@ struct BookshelfView: View {
                 .disabled(summarizeActionInFlight)
             }
 
-            if !viewModel.displayedBooks.isEmpty {
+            if !viewModel.matchedBooks.isEmpty {
                 Button { toggleSelectionMode() } label: {
                     Image(systemName: isSelectionMode ? "checklist.checked" : "checklist")
                 }
@@ -285,7 +291,7 @@ struct BookshelfView: View {
             .pickerStyle(.segmented)
             .frame(maxWidth: 140)
             Spacer()
-            Text("\(viewModel.displayedBooks.count) 本")
+            Text("\(viewModel.matchedBooks.count) 本")
                 .font(.caption)
                 .foregroundStyle(LuminaTheme.textSecondary)
         }
@@ -311,6 +317,56 @@ struct BookshelfView: View {
         Binding(
             get: { viewModel.viewMode },
             set: { viewModel.setViewMode($0) }
+        )
+    }
+
+    private var paginationBar: some View {
+        HStack(spacing: 12) {
+            Button {
+                viewModel.setPage(viewModel.pageIndex - 1)
+            } label: {
+                Label("上一页", systemImage: "chevron.left")
+            }
+            .disabled(viewModel.pageIndex <= 0 || viewModel.pageCount <= 1)
+
+            Text("第 \(viewModel.pageIndex + 1) / \(max(viewModel.pageCount, 1)) 页")
+                .font(.caption)
+                .foregroundStyle(LuminaTheme.textSecondary)
+                .monospacedDigit()
+
+            Button {
+                viewModel.setPage(viewModel.pageIndex + 1)
+            } label: {
+                Label("下一页", systemImage: "chevron.right")
+            }
+            .disabled(viewModel.pageIndex >= viewModel.pageCount - 1 || viewModel.pageCount <= 1)
+
+            Spacer(minLength: 8)
+
+            Picker("每页", selection: pageSizeBinding) {
+                ForEach(BookshelfPaging.allowedPageSizes, id: \.self) { size in
+                    Text("\(size)").tag(size)
+                }
+            }
+            .pickerStyle(.menu)
+            .labelsHidden()
+            .frame(maxWidth: 72)
+            .help("每页显示数量")
+            Text("本/页")
+                .font(.caption)
+                .foregroundStyle(LuminaTheme.textSecondary)
+        }
+        .buttonStyle(.borderless)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 8)
+        .frame(maxWidth: .infinity)
+        .background(.bar)
+    }
+
+    private var pageSizeBinding: Binding<Int> {
+        Binding(
+            get: { viewModel.pageSize },
+            set: { viewModel.setPageSize($0) }
         )
     }
 
@@ -341,7 +397,7 @@ struct BookshelfView: View {
                 columns: [GridItem(.adaptive(minimum: 148), spacing: 16)],
                 spacing: 20
             ) {
-                ForEach(viewModel.displayedBooks) { book in
+                ForEach(viewModel.pagedBooks) { book in
                     BookCard(
                         book: book,
                         isClassifying: viewModel.classifyingIds.contains(book.id),
@@ -372,7 +428,7 @@ struct BookshelfView: View {
     @ViewBuilder
     private var bookList: some View {
         List {
-            ForEach(viewModel.displayedBooks) { book in
+            ForEach(viewModel.pagedBooks) { book in
                 listRow(book)
             }
         }
@@ -432,7 +488,7 @@ struct BookshelfView: View {
             onUnfavorite: { Task { await batchSetFavorite(isFavorite: false) } },
             onSelectActive: { selectActiveSummarizeBooks() },
             onSelectStartable: { selectStartableBooks() },
-            onSelectAll: { checkedBookIds = Set(viewModel.displayedBooks.map(\.id)) },
+            onSelectAll: { checkedBookIds = Set(viewModel.pagedBooks.map(\.id)) },
             onDone: { exitSelectionMode() }
         )
     }
@@ -515,9 +571,9 @@ struct BookshelfView: View {
     }
 
     private func syncCheckedBooks() {
-        let validIds = Set(viewModel.displayedBooks.map(\.id))
+        let validIds = Set(viewModel.matchedBooks.map(\.id))
         checkedBookIds = checkedBookIds.intersection(validIds)
-        if viewModel.displayedBooks.isEmpty {
+        if viewModel.matchedBooks.isEmpty {
             exitSelectionMode()
         }
     }
@@ -526,13 +582,13 @@ struct BookshelfView: View {
     private var stoppableCheckedCount: Int { checkedStoppableBookIds.count }
 
     private var checkedStartableBookIds: [String] {
-        viewModel.displayedBooks
+        viewModel.matchedBooks
             .filter { checkedBookIds.contains($0.id) && $0.canStartSummarize }
             .map(\.id)
     }
 
     private var checkedStoppableBookIds: [String] {
-        viewModel.displayedBooks
+        viewModel.matchedBooks
             .filter { checkedBookIds.contains($0.id) && $0.canStopSummarize }
             .map(\.id)
     }
@@ -588,11 +644,11 @@ struct BookshelfView: View {
     }
 
     private func selectActiveSummarizeBooks() {
-        checkedBookIds.formUnion(viewModel.displayedBooks.filter(\.canStopSummarize).map(\.id))
+        checkedBookIds.formUnion(viewModel.pagedBooks.filter(\.canStopSummarize).map(\.id))
     }
 
     private func selectStartableBooks() {
-        checkedBookIds.formUnion(viewModel.displayedBooks.filter(\.canStartSummarize).map(\.id))
+        checkedBookIds.formUnion(viewModel.pagedBooks.filter(\.canStartSummarize).map(\.id))
     }
 
     private func confirmDelete(_ book: BookSummary) async {

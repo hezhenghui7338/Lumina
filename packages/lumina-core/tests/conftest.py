@@ -97,6 +97,21 @@ def _reset_router_between_tests(request):
     set_router(None)
 
 
+@pytest.fixture(autouse=True)
+def _fast_boot_news_sync(monkeypatch):
+    """Cold-start pipeline must not hit live RSS during TestClient lifespan."""
+    from lumina_core.news.store import NewsSourceRepo
+    from lumina_core.news.sync import SyncResult
+
+    def _noop_sync(conn):
+        return [
+            SyncResult(source_url=s["url"], fetched=0, inserted=0)
+            for s in NewsSourceRepo(conn).list_sources()
+        ]
+
+    monkeypatch.setattr("lumina_core.news.sync.sync_all", _noop_sync)
+
+
 # Eigen/ORT thread pools can deadlock xdist session teardown. Only force-exit
 # workers that actually imported onnxruntime — mock workers that os._exit
 # anyway look "Not properly terminated" and (with restarts) kill in-flight

@@ -44,25 +44,22 @@ struct ContentView: View {
     @State private var skipRemainingImportDuplicates = false
 
     var body: some View {
-        TabView(selection: $tab) {
-            libraryTab
-                .tabItem { Label(AppTab.library.title, systemImage: AppTab.library.icon) }
-                .tag(AppTab.library)
-
-            NewsView()
-            .tabItem { Label(AppTab.news.title, systemImage: AppTab.news.icon) }
-            .tag(AppTab.news)
-
-            NavigationStack {
-                SettingsView()
+        Group {
+            if sidecar.productReady {
+                mainTabs
+            } else {
+                ColdStartGateView(
+                    phases: sidecar.coldStartPhases,
+                    startedAt: sidecar.coldStartStartedAt
+                )
             }
-            .tabItem { Label(AppTab.settings.title, systemImage: AppTab.settings.icon) }
-            .tag(AppTab.settings)
         }
         .background(LuminaTheme.background)
         .environmentObject(tour)
         .overlayPreferenceValue(TourAnchorPreferenceKey.self) { anchors in
-            tourOverlay(anchors: anchors)
+            if sidecar.productReady {
+                tourOverlay(anchors: anchors)
+            }
         }
         .alert("出错了", isPresented: .constant(alertError != nil)) {
             Button("好") { alertError = nil }
@@ -72,10 +69,7 @@ struct ContentView: View {
         .alert("无法连接服务", isPresented: .constant(connectionError != nil)) {
             Button("重试") {
                 connectionError = nil
-                Task {
-                    await sidecar.ensureRunning()
-                    await finishBootstrap()
-                }
+                Task { await finishBootstrap() }
             }
             Button("退出", role: .destructive) {
                 NSApplication.shared.terminate(nil)
@@ -133,13 +127,15 @@ struct ContentView: View {
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: .luminaOpenSearch)) { _ in
+            guard sidecar.productReady else { return }
             showSearch = true
         }
         .onReceive(NotificationCenter.default.publisher(for: .luminaOpenUsageGuide)) { _ in
-            guard !tour.isActive else { return }
+            guard sidecar.productReady, !tour.isActive else { return }
             showUsageGuide = true
         }
         .onReceive(NotificationCenter.default.publisher(for: .luminaImportBook)) { _ in
+            guard sidecar.productReady else { return }
             tab = .library
             importBook()
         }
@@ -160,13 +156,41 @@ struct ContentView: View {
                 }
             }
         }
+        .onChange(of: sidecar.productReady) { _, ready in
+            if ready {
+                AppDelegate.markUIReadyForOpenFiles()
+                if !onboardingDone {
+                    tour.start()
+                }
+            }
+        }
         .onAppear {
-            AppDelegate.markUIReadyForOpenFiles()
-            if !onboardingDone {
-                tour.start()
+            if sidecar.productReady {
+                AppDelegate.markUIReadyForOpenFiles()
+                if !onboardingDone {
+                    tour.start()
+                }
             }
         }
         .task { await finishBootstrap() }
+    }
+
+    private var mainTabs: some View {
+        TabView(selection: $tab) {
+            libraryTab
+                .tabItem { Label(AppTab.library.title, systemImage: AppTab.library.icon) }
+                .tag(AppTab.library)
+
+            NewsView()
+                .tabItem { Label(AppTab.news.title, systemImage: AppTab.news.icon) }
+                .tag(AppTab.news)
+
+            NavigationStack {
+                SettingsView()
+            }
+            .tabItem { Label(AppTab.settings.title, systemImage: AppTab.settings.icon) }
+            .tag(AppTab.settings)
+        }
     }
 
     @ViewBuilder
@@ -220,12 +244,13 @@ struct ContentView: View {
     }
 
     private func finishBootstrap() async {
-        await sidecar.ensureRunning()
+        await sidecar.ensureRunningAndProductReady()
         guard sidecar.isRunning else {
             if sidecar.userStopped { return }
             connectionError = sidecar.launchError ?? "无法连接到 AI 引擎，请重试或退出。"
             return
         }
+        guard sidecar.productReady else { return }
         NotificationCenter.default.post(name: .luminaLibraryRefresh, object: nil)
     }
 

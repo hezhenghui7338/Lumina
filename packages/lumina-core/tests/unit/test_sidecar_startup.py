@@ -62,6 +62,8 @@ def test_e2e_boot_02d_health_responds_immediately(client):
     assert health["started_at"] > 1
     assert isinstance(health["executable"], str)
     assert health["executable"]
+    assert isinstance(health["uptime_ms"], int)
+    assert health["uptime_ms"] >= 0
 
 
 def test_macos_sidecar_expected_chunker_version_matches_core():
@@ -231,6 +233,182 @@ def test_e2e_boot_02e_health_during_recover_on_startup(tmp_path, monkeypatch):
     assert thread.is_alive() is False
     assert errors == []
     assert statuses == [200]
+
+
+def test_books_list_responsive_during_startup_catalog_backfill(tmp_path, monkeypatch):
+    """Deferred catalog backfill must not starve the first GET /books after /health."""
+    from lumina_core.db.repos import BookRepo, SegmentRepo
+    from lumina_core.db.schema import init_db
+
+    monkeypatch.setenv("LUMINA_DATA_DIR", str(tmp_path))
+    release = threading.Event()
+    backfill_started = threading.Event()
+
+    def slow_catalog_backfill(self, *, batch_size: int = 64) -> int:
+        backfill_started.set()
+        # Parse/work between batches is outside db_lock; list must not wait for it.
+        deadline = time.time() + 5
+        while not release.is_set() and time.time() < deadline:
+            time.sleep(0.05)
+        return 0
+
+    monkeypatch.setattr(SegmentRepo, "backfill_catalog_cache", slow_catalog_backfill)
+    monkeypatch.setattr(
+        SegmentRepo, "backfill_prefix_labels", lambda self, *, batch_size=64: 0
+    )
+
+    db_path = tmp_path / "lumina.db"
+    conn = init_db(db_path)
+    BookRepo(conn).insert(
+        id="boot-book",
+        title="Boot Book",
+        format="txt",
+        file_path="/tmp/boot.txt",
+        segment_count=0,
+        status="unread",
+    )
+    conn.close()
+
+    router = MockModelRouter(responses={})
+    app = create_app(Settings(data_dir=tmp_path))
+    app.state.lumina.router = router
+    app.state.lumina.job_queue.router = router
+    set_router(router)
+
+    with TestClient(app) as client:
+        health = client.get("/health")
+        assert health.status_code == 200
+        assert backfill_started.wait(timeout=3), "deferred catalog backfill never started"
+        t0 = time.perf_counter()
+        resp = client.get("/books?filter=all&sort=recent")
+        elapsed = time.perf_counter() - t0
+        release.set()
+        assert resp.status_code == 200
+        assert elapsed < 1.0, f"GET /books blocked on catalog backfill ({elapsed:.2f}s)"
+        books = resp.json()["books"]
+        assert any(b["id"] == "boot-book" for b in books)
+
+
+@pytest.mark.asyncio
+async def test_recover_defers_non_read_work_after_fast_path(tmp_path, monkeypatch):
+    """TTR: drop trees / catalog / labels run only after recover fast path returns."""
+    from lumina_core.db.repos import BookRepo, SegmentRepo
+    from lumina_core.db.schema import init_db
+    from lumina_core.jobs.queue import JobQueue
+
+    conn = init_db(tmp_path / "order.db")
+    BookRepo(conn).insert(
+        id="order-book",
+        title="Order",
+        format="txt",
+        file_path="/tmp/order.txt",
+        segment_count=1,
+        status="unread",
+    )
+    order: list[str] = []
+    real_catalog = SegmentRepo.backfill_catalog_cache
+    real_labels = SegmentRepo.backfill_prefix_labels
+    real_drop = BookRepo.drop_stored_document_trees
+
+    def tracking_catalog(self, *, batch_size: int = 64) -> int:
+        order.append("catalog")
+        return real_catalog(self, batch_size=batch_size)
+
+    def tracking_labels(self, *, batch_size: int = 64) -> int:
+        order.append("labels")
+        return real_labels(self, batch_size=batch_size)
+
+    def tracking_drop(self) -> int:
+        order.append("drop_trees")
+        return real_drop(self)
+
+    monkeypatch.setattr(SegmentRepo, "backfill_catalog_cache", tracking_catalog)
+    monkeypatch.setattr(SegmentRepo, "backfill_prefix_labels", tracking_labels)
+    monkeypatch.setattr(BookRepo, "drop_stored_document_trees", tracking_drop)
+
+    q = JobQueue(conn, MockModelRouter(responses={}))
+    try:
+        await q.recover_on_startup()
+        assert order == [], "fast path must not run drop/catalog/labels"
+        assert q._worker_count >= 1
+        assert q._startup_recovering is False
+        task = q._startup_deferred_task or q._catalog_backfill_task
+        assert task is not None
+        await task
+        assert order == ["drop_trees", "catalog", "labels"]
+    finally:
+        await q.shutdown()
+        conn.close()
+
+
+def test_open_and_segments_responsive_during_slow_drop_trees(tmp_path, monkeypatch):
+    """TTR: open + segment window must not wait on deferred drop_stored_document_trees."""
+    from lumina_core.db.repos import BookRepo, SegmentRepo
+    from lumina_core.db.schema import init_db
+
+    monkeypatch.setenv("LUMINA_DATA_DIR", str(tmp_path))
+    release = threading.Event()
+    drop_started = threading.Event()
+
+    def slow_drop(self) -> int:
+        drop_started.set()
+        deadline = time.time() + 5
+        while not release.is_set() and time.time() < deadline:
+            time.sleep(0.05)
+        return 0
+
+    monkeypatch.setattr(BookRepo, "drop_stored_document_trees", slow_drop)
+    monkeypatch.setattr(
+        SegmentRepo, "backfill_catalog_cache", lambda self, *, batch_size=64: 0
+    )
+    monkeypatch.setattr(
+        SegmentRepo, "backfill_prefix_labels", lambda self, *, batch_size=64: 0
+    )
+
+    db_path = tmp_path / "lumina.db"
+    conn = init_db(db_path)
+    book_id = "ready-book"
+    BookRepo(conn).insert(
+        id=book_id,
+        title="Ready",
+        format="txt",
+        file_path="/tmp/ready.txt",
+        segment_count=1,
+        status="reading",
+    )
+    SegmentRepo(conn).insert_many(
+        [
+            {
+                "id": "seg-0",
+                "book_id": book_id,
+                "idx": 0,
+                "raw_text": "正文第一段",
+                "summary_status": "pending",
+            }
+        ]
+    )
+    conn.close()
+
+    router = MockModelRouter(responses={})
+    app = create_app(Settings(data_dir=tmp_path))
+    app.state.lumina.router = router
+    app.state.lumina.job_queue.router = router
+    set_router(router)
+
+    with TestClient(app) as client:
+        assert client.get("/health").status_code == 200
+        assert drop_started.wait(timeout=3), "deferred drop_trees never started"
+        t0 = time.perf_counter()
+        opened = client.post(f"/books/{book_id}/open")
+        segs = client.get(f"/books/{book_id}/segments", params={"around": 0, "limit": 32})
+        elapsed = time.perf_counter() - t0
+        release.set()
+        assert opened.status_code == 200, opened.text
+        assert segs.status_code == 200, segs.text
+        assert elapsed < 1.0, f"open/segments blocked on deferred drop ({elapsed:.2f}s)"
+        body = segs.json()["segments"]
+        assert len(body) >= 1
+        assert "raw_text" not in body[0]
 
 
 def test_e2e_priv_01_settings_default_localhost():

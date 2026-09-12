@@ -30,6 +30,8 @@ REQUIRED_BOOK_COLUMNS = frozenset(
         "language",
         "target_language",
         "translation_mode",
+        "summary_ready_count",
+        "summary_total_count",
     }
 )
 REQUIRED_SEGMENT_COLUMNS = frozenset(
@@ -44,6 +46,7 @@ REQUIRED_SEGMENT_COLUMNS = frozenset(
         "summary_model",
         "summary_duration_s",
         "summary_llm_attempts",
+        "summary_tier",
     }
 )
 
@@ -229,3 +232,67 @@ def test_legacy_schema_migrates_all_fresh_book_columns(tmp_path):
     fresh.close()
 
     assert expected <= migrated, f"legacy upgrade missing books columns: {expected - migrated}"
+
+
+def test_migrate_segments_skips_summary_tier_update_when_column_exists(tmp_path):
+    """Cold start must not full-scan segments for summary_tier every launch.
+
+    A multi-GB library with ~180k raw_text rows takes 10–20s for that UPDATE
+    even when 0 rows match. Only backfill when the column was just added.
+    """
+    from lumina_core.db import schema
+
+    db_path = tmp_path / "tier.db"
+    conn = init_db(db_path)
+    # Bulky rows so a mistaken full-table UPDATE would be noticeable in CI.
+    blob = "汉" * 50_000
+    for i in range(40):
+        conn.execute(
+            "INSERT INTO segments (id, book_id, idx, raw_text, summary_status, summary_tier) "
+            "VALUES (?, 'b-skip', ?, ?, 'pending', 'normal')",
+            (f"s{i}", i, blob),
+        )
+    conn.commit()
+    baseline = conn.total_changes
+    schema._migrate_segments(conn)
+    assert conn.total_changes == baseline, "must not UPDATE segments when summary_tier exists"
+    conn.close()
+
+
+def test_migrate_segments_backfills_tier_only_when_column_added(tmp_path):
+    """Adding summary_tier for the first time still backfills NULLs once."""
+    from lumina_core.db import schema
+
+    db_path = tmp_path / "pre_tier.db"
+    conn = sqlite3.connect(db_path)
+    conn.executescript(
+        """
+        CREATE TABLE books (
+          id TEXT PRIMARY KEY,
+          title TEXT NOT NULL,
+          format TEXT NOT NULL,
+          file_path TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+        CREATE TABLE segments (
+          id TEXT PRIMARY KEY,
+          book_id TEXT NOT NULL,
+          idx INTEGER NOT NULL,
+          raw_text TEXT,
+          summary_status TEXT DEFAULT 'pending'
+        );
+        INSERT INTO books VALUES ('b1', 'T', 'txt', '/t', 't', 't');
+        INSERT INTO segments VALUES ('s1', 'b1', 0, 'hello', 'pending');
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    conn = init_db(db_path)
+    row = conn.execute(
+        "SELECT summary_tier FROM segments WHERE id = 's1'"
+    ).fetchone()
+    assert row is not None
+    assert row[0] == "normal"
+    conn.close()

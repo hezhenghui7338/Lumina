@@ -179,7 +179,7 @@ def test_open_book_preserves_summarized(client):
 
 
 def test_reader_bootstrap_flow(client):
-    """ReaderView.load: fetchBook + settings + openBook + listSegments."""
+    """ReaderView.load: fetchBook + settings + openBook + windowed listSegments."""
     book_id = _import_sample(client)
 
     book_resp = client.get(f"/books/{book_id}")
@@ -193,12 +193,19 @@ def test_reader_bootstrap_flow(client):
 
     open_resp = client.post(f"/books/{book_id}/open")
     assert open_resp.status_code == 200
-    assert open_resp.json()["status"] == "opened"
+    opened = open_resp.json()
+    assert opened["status"] == "opened"
+    resume = int(opened.get("current_segment_index") or 0)
 
-    seg_resp = client.get(f"/books/{book_id}/segments")
+    seg_resp = client.get(
+        f"/books/{book_id}/segments",
+        params={"around": resume, "limit": 64},
+    )
     assert seg_resp.status_code == 200
-    segments = seg_resp.json()["segments"]
+    body = seg_resp.json()
+    segments = body["segments"]
     assert segments
+    assert body["total"] >= len(segments)
     first = segments[0]
     assert "raw_text" not in first
     assert "translation" not in first

@@ -59,6 +59,9 @@
 		A1000149 /* WindowToolbarVisibility.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000244 /* WindowToolbarVisibility.swift */; };
 		A1000150 /* ConnectionError.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000245 /* ConnectionError.swift */; };
 		A1000151 /* SidecarReadiness.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000246 /* SidecarReadiness.swift */; };
+		A10005F1 /* ColdStartReadiness.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10005F0 /* ColdStartReadiness.swift */; };
+		A10005F3 /* ColdStartGateView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10005F2 /* ColdStartGateView.swift */; };
+		A10005F5 /* ColdStartReadinessTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10005F4 /* ColdStartReadinessTests.swift */; };
 		A1000152 /* SidecarReadinessTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000247 /* SidecarReadinessTests.swift */; };
 		A1000153 /* LibraryViewModelMergeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000248 /* LibraryViewModelMergeTests.swift */; };
 		A1000154 /* NewsStructuredSummaryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000250 /* NewsStructuredSummaryView.swift */; };
@@ -170,6 +173,9 @@
 		A1000244 /* WindowToolbarVisibility.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WindowToolbarVisibility.swift; sourceTree = "<group>"; };
 		A1000245 /* ConnectionError.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConnectionError.swift; sourceTree = "<group>"; };
 		A1000246 /* SidecarReadiness.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SidecarReadiness.swift; sourceTree = "<group>"; };
+		A10005F0 /* ColdStartReadiness.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ColdStartReadiness.swift; sourceTree = "<group>"; };
+		A10005F2 /* ColdStartGateView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ColdStartGateView.swift; sourceTree = "<group>"; };
+		A10005F4 /* ColdStartReadinessTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ColdStartReadinessTests.swift; sourceTree = "<group>"; };
 		A1000247 /* SidecarReadinessTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SidecarReadinessTests.swift; sourceTree = "<group>"; };
 		A1000248 /* LibraryViewModelMergeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryViewModelMergeTests.swift; sourceTree = "<group>"; };
 		A1000250 /* NewsStructuredSummaryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NewsStructuredSummaryView.swift; sourceTree = "<group>"; };
@@ -298,6 +304,7 @@
 				A1000205 /* SidecarManager.swift */,
 				A1000245 /* ConnectionError.swift */,
 				A1000246 /* SidecarReadiness.swift */,
+				A10005F0 /* ColdStartReadiness.swift */,
 				A1000215 /* OllamaSetupHelper.swift */,
 				A1000252 /* BookMarkdownExporter.swift */,
 			);
@@ -415,6 +422,7 @@
 				A1000582 /* OnboardingTourOverlay.swift */,
 				A10005D0 /* UsageGuideCopy.swift */,
 				A10005D2 /* UsageGuideView.swift */,
+				A10005F2 /* ColdStartGateView.swift */,
 			);
 			path = Onboarding;
 			sourceTree = "<group>";
@@ -483,6 +491,7 @@
 				A1000550 /* MarkdownExportModeTests.swift */,
 				A1000584 /* OnboardingTourPolicyTests.swift */,
 				A10005D4 /* UsageGuideCopyTests.swift */,
+				A10005F4 /* ColdStartReadinessTests.swift */,
 			);
 			path = Unit;
 			sourceTree = "<group>";
@@ -655,6 +664,7 @@
 				A1000105 /* SidecarManager.swift in Sources */,
 				A1000150 /* ConnectionError.swift in Sources */,
 				A1000151 /* SidecarReadiness.swift in Sources */,
+				A10005F1 /* ColdStartReadiness.swift in Sources */,
 				A1000106 /* DesignSystem.swift in Sources */,
 				A1000107 /* ThemeManager.swift in Sources */,
 				A1000124 /* DoubleClickHandler.swift in Sources */,
@@ -695,6 +705,7 @@
 				A1000583 /* OnboardingTourOverlay.swift in Sources */,
 				A10005D1 /* UsageGuideCopy.swift in Sources */,
 				A10005D3 /* UsageGuideView.swift in Sources */,
+				A10005F3 /* ColdStartGateView.swift in Sources */,
 				A1000115 /* OllamaSetupHelper.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -705,6 +716,7 @@
 			files = (
 				A1000130 /* CoreClientDecodingTests.swift in Sources */,
 				A1000152 /* SidecarReadinessTests.swift in Sources */,
+				A10005F5 /* ColdStartReadinessTests.swift in Sources */,
 				A1000135 /* NewsArticleViewModelTests.swift in Sources */,
 				A1000136 /* ThemeManagerTests.swift in Sources */,
 				A1000144 /* NewsSummaryMarkdownTests.swift in Sources */,
@@ -791,7 +803,7 @@
 				CODE_SIGN_IDENTITY = "-";
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 1.1.0;
+				CURRENT_PROJECT_VERSION = 1.2.0;
 				DEVELOPMENT_TEAM = "";
 				ENABLE_APP_SANDBOX = NO;
 				ENABLE_HARDENED_RUNTIME = NO;
@@ -802,7 +814,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 1.1.0;
+				MARKETING_VERSION = 1.2.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.lumina.app;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
@@ -817,7 +829,7 @@
 				CODE_SIGN_IDENTITY = "-";
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 1.1.0;
+				CURRENT_PROJECT_VERSION = 1.2.0;
 				DEVELOPMENT_TEAM = "";
 				ENABLE_APP_SANDBOX = NO;
 				ENABLE_HARDENED_RUNTIME = NO;
@@ -828,7 +840,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 1.1.0;
+				MARKETING_VERSION = 1.2.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.lumina.app;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
@@ -841,11 +853,11 @@
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1.1.0;
+				CURRENT_PROJECT_VERSION = 1.2.0;
 				DEVELOPMENT_TEAM = "";
 				GENERATE_INFOPLIST_FILE = YES;
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
-				MARKETING_VERSION = 1.1.0;
+				MARKETING_VERSION = 1.2.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.lumina.app.tests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = NO;
@@ -859,11 +871,11 @@
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1.1.0;
+				CURRENT_PROJECT_VERSION = 1.2.0;
 				DEVELOPMENT_TEAM = "";
 				GENERATE_INFOPLIST_FILE = YES;
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
-				MARKETING_VERSION = 1.1.0;
+				MARKETING_VERSION = 1.2.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.lumina.app.tests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = NO;

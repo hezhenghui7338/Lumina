@@ -8,6 +8,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from lumina_core.config import Settings
+from lumina_core.db.connection import db_transaction
 from lumina_core.main import create_app
 from lumina_core.models.router import set_router
 from tests.support.import_helpers import import_sample_book
@@ -45,29 +46,56 @@ def _insert_multi_segment_book(client: TestClient, *, segment_count: int = 10) -
     import uuid
     from datetime import datetime, timezone
 
+    # Shared app conn is also used by JobQueue / recover threads. Hold
+    # db_transaction for the whole plant so parallel release runs cannot
+    # interleave BEGIN and lose the insert (404 / missing segment_count).
     conn = client.app.state.lumina.conn  # type: ignore[attr-defined]
     book_id = str(uuid.uuid4())
     now = datetime.now(timezone.utc).isoformat()
-    conn.execute(
-        """
-        INSERT INTO books (
-          id, title, format, file_path, segment_count, status,
-          file_hash, current_segment_index, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (book_id, "Multi", "txt", f"/tmp/{book_id}.txt", segment_count, "reading", book_id, 0, now, now),
-    )
-    for idx in range(segment_count):
+    with db_transaction(conn):
         conn.execute(
             """
-            INSERT INTO segments (
-              id, book_id, idx, anchor_label, raw_text, char_count,
-              summary_status, retry_count
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO books (
+              id, title, format, file_path, segment_count, status,
+              file_hash, current_segment_index,
+              summary_ready_count, summary_total_count,
+              created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (f"{book_id}-s{idx}", book_id, idx, f"段 {idx + 1}", f"text {idx}", 8, "pending", 0),
+            (
+                book_id,
+                "Multi",
+                "txt",
+                f"/tmp/{book_id}.txt",
+                segment_count,
+                "reading",
+                book_id,
+                0,
+                0,
+                segment_count,
+                now,
+                now,
+            ),
         )
-    conn.commit()
+        for idx in range(segment_count):
+            conn.execute(
+                """
+                INSERT INTO segments (
+                  id, book_id, idx, anchor_label, raw_text, char_count,
+                  summary_status, retry_count
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    f"{book_id}-s{idx}",
+                    book_id,
+                    idx,
+                    f"段 {idx + 1}",
+                    f"text {idx}",
+                    8,
+                    "pending",
+                    0,
+                ),
+            )
     return book_id
 
 

@@ -164,10 +164,23 @@ public sealed class CoreClient : IDisposable
         await PatchAsync($"/books/{bookId}/reading-progress", body, ct).ConfigureAwait(false);
     }
 
-    public async Task<IReadOnlyList<SegmentRow>> ListSegmentsAsync(string bookId, CancellationToken ct = default)
+    public async Task<SegmentCatalogPage> ListSegmentsAsync(
+        string bookId,
+        CancellationToken ct = default,
+        int? around = null,
+        int? afterIdx = null,
+        int? beforeIdx = null,
+        int? limit = null)
     {
-        var data = await GetLongAsync($"/books/{bookId}/segments", ct).ConfigureAwait(false);
-        return Deserialize<SegmentsResp>(data)?.Segments ?? [];
+        var query = new List<string>();
+        if (around is int a) query.Add($"around={a}");
+        if (afterIdx is int after) query.Add($"after_idx={after}");
+        if (beforeIdx is int before) query.Add($"before_idx={before}");
+        if (limit is int lim) query.Add($"limit={lim}");
+        var path = $"/books/{bookId}/segments";
+        if (query.Count > 0) path += "?" + string.Join("&", query);
+        var data = await GetLongAsync(path, ct).ConfigureAwait(false);
+        return Deserialize<SegmentCatalogPage>(data) ?? new SegmentCatalogPage();
     }
 
     public async Task<SegmentRow> GetSegmentAsync(string bookId, int idx, CancellationToken ct = default)
@@ -885,7 +898,6 @@ public sealed class CoreClient : IDisposable
 
     private sealed class BooksResp { public List<BookSummary> Books { get; set; } = []; }
     private sealed class CategoriesResp { public List<string> Categories { get; set; } = []; }
-    private sealed class SegmentsResp { public List<SegmentRow> Segments { get; set; } = []; }
     private sealed class NotesResp { public List<NoteRow> Notes { get; set; } = []; }
     private sealed class SearchResp { public List<SearchHit> Results { get; set; } = []; }
     private sealed class NewsSourcesResp { public List<NewsSource> Sources { get; set; } = []; }

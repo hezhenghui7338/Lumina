@@ -17,6 +17,65 @@ public class SidecarReadinessTests
     }
 
     [Fact]
+    public void EvaluateHealthPoll_incompatible_fails_fast()
+    {
+        Assert.Equal(
+            HealthPollDecision.Incompatible,
+            SidecarReadiness.EvaluateHealthPoll(true, false, true));
+        Assert.Equal(
+            SidecarReadiness.MessageIncompatible,
+            SidecarReadiness.LaunchFailureMessage(HealthPollDecision.Incompatible));
+    }
+
+    [Fact]
+    public void EvaluateHealthPoll_ready_when_compatible()
+    {
+        Assert.Equal(
+            HealthPollDecision.Ready,
+            SidecarReadiness.EvaluateHealthPoll(true, true, true));
+    }
+
+    [Fact]
+    public void EvaluateHealthPoll_process_exited_fails_fast()
+    {
+        Assert.Equal(
+            HealthPollDecision.ProcessExited,
+            SidecarReadiness.EvaluateHealthPoll(false, false, false));
+        Assert.Equal(
+            SidecarReadiness.MessageProcessExited,
+            SidecarReadiness.LaunchFailureMessage(HealthPollDecision.ProcessExited));
+    }
+
+    [Fact]
+    public void EvaluateHealthPoll_keep_waiting_when_no_health_yet()
+    {
+        Assert.Equal(
+            HealthPollDecision.KeepWaiting,
+            SidecarReadiness.EvaluateHealthPoll(false, false, true));
+        Assert.Equal(
+            HealthPollDecision.KeepWaiting,
+            SidecarReadiness.EvaluateHealthPoll(false, false, null));
+    }
+
+    [Fact]
+    public void HealthPollDelay_fast_early_then_settles()
+    {
+        Assert.Equal(50, SidecarReadiness.HealthPollDelayMilliseconds(0));
+        Assert.Equal(50, SidecarReadiness.HealthPollDelayMilliseconds(19));
+        Assert.Equal(100, SidecarReadiness.HealthPollDelayMilliseconds(20));
+        Assert.Equal(250, SidecarReadiness.HealthPollDelayMilliseconds(40));
+    }
+
+    [Fact]
+    public void IncompatibleDetailMessage_includes_versions()
+    {
+        var msg = SidecarReadiness.IncompatibleDetailMessage("15", "1.0.0", "1.1.0");
+        Assert.Contains("1.0.0", msg);
+        Assert.Contains("1.1.0", msg);
+        Assert.Contains("chunker", msg);
+    }
+
+    [Fact]
     public void ShouldReplaceOrphan_when_core_version_differs()
     {
         Assert.True(Replace(

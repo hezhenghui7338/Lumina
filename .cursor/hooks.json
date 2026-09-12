@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "hooks": {
+    "postToolUse": [
+      {
+        "command": ".cursor/hooks/build-release-post-shell.py",
+        "matcher": "Shell"
+      }
+    ],
+    "stop": [
+      {
+        "command": ".cursor/hooks/build-release-stop.py",
+        "loop_limit": 3
+      }
+    ]
+  }
+}
