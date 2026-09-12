@@ -516,6 +516,34 @@ def test_clarity_scan_allows_latin_terms_classical_and_source_kana():
     assert not any(issue.code == "wrong_language" for issue in issues)
 
 
+def test_clarity_scan_flags_cjk_latin_glue_phrase_and_vietnamese():
+    cases = [
+        "自家上进心强的姐姐玛莉拉同意让她去海BuilderInterface，并交代后文动身的伏笔。",
+        "我沉思于城市之外的未知lendary世界，并说明对未知之境的向往与不安。",
+        "随后邀请黛西去舞会转而又阻止她along the line，矛盾由此埋下。",
+        "我尝试联系梅耶·沃尔夫海姆但未果， bộ lạc failed 苦寻其信息，线索中断。",
+    ]
+    for sentence in cases:
+        issues = scan_summary_clarity(
+            _summary(sentences=[sentence]),
+            target_language="zh-CN",
+        )
+        assert any(issue.code == "wrong_language" for issue in issues), sentence
+        assert quality_should_reject(issues), sentence
+
+    proper = _summary(
+        sentences=["本段说明专名 Marilla 出现在信封上，并交代后文动身的伏笔线索。"]
+    )
+    assert not any(
+        issue.code == "wrong_language"
+        for issue in scan_summary_clarity(
+            proper,
+            raw_text="信封上写着 Marilla。",
+            target_language="zh-CN",
+        )
+    )
+
+
 @pytest.mark.asyncio
 async def test_language_mix_skips_model_review():
     summary = _summary(sentences=["本段交代主角こんにちは离乡赴考。"])
