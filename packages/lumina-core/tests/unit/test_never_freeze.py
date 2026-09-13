@@ -841,6 +841,38 @@ def test_backfill_prefix_labels_fills_empty_from_sentence(tmp_path):
     conn.close()
 
 
+def test_backfill_queries_use_partial_indexes(tmp_path):
+    conn = init_db(tmp_path / "idx-test.db")
+    cur = conn.cursor()
+    q1 = """
+    EXPLAIN QUERY PLAN
+    SELECT id, summary_json
+    FROM segments
+    WHERE summary_status = 'ready'
+      AND summary_json IS NOT NULL
+      AND (summary_preview IS NULL OR bullet_labels IS NULL)
+    ORDER BY book_id, idx
+    LIMIT 64
+    """
+    plan1 = " ".join(" ".join(str(v) for v in row) for row in cur.execute(q1).fetchall())
+    assert "idx_segments_backfill_catalog" in plan1
+
+    q2 = """
+    EXPLAIN QUERY PLAN
+    SELECT id, label, summary_json, anchor_label
+    FROM segments
+    WHERE summary_status = 'ready'
+      AND summary_json IS NOT NULL
+      AND (label IS NULL OR TRIM(label) = '')
+      AND id > ?
+    ORDER BY id
+    LIMIT 64
+    """
+    plan2 = " ".join(" ".join(str(v) for v in row) for row in cur.execute(q2, ("",)).fetchall())
+    assert "idx_segments_backfill_prefix" in plan2
+    conn.close()
+
+
 def test_health_and_books_respond_during_cpu_bound_ingest(client, monkeypatch):
     """Python CPU in ingest must yield the GIL so /health and GET /books stay live."""
     import time

@@ -39,6 +39,7 @@ public sealed partial class MainWindow : Window
 
         App.Sidecar.StateChanged += OnSidecarStateChanged;
         UpdateEngineStatus();
+        UpdateColdStartOverlay();
 
         NavigationHub.OpenBookRequested += OnOpenBookRequested;
         NavigationHub.OpenAllNotesRequested += () =>
@@ -291,6 +292,7 @@ public sealed partial class MainWindow : Window
 
     private void OnSidecarStateChanged()
     {
+        DispatcherQueue.TryEnqueue(UpdateColdStartOverlay);
         DispatcherQueue.TryEnqueue(UpdateEngineStatus);
         if (_tourActive && App.Sidecar.IsRunning)
         {
@@ -302,6 +304,112 @@ public sealed partial class MainWindow : Window
                     await ShowTourTipAsync();
             });
         }
+    }
+
+    private void UpdateColdStartOverlay()
+    {
+        if (App.Sidecar.ProductReady)
+        {
+            ColdStartOverlay.Visibility = Visibility.Collapsed;
+            return;
+        }
+
+        ColdStartOverlay.Visibility = Visibility.Visible;
+        var elapsed = (int)Math.Max(0, (DateTime.UtcNow - App.Sidecar.ColdStartStartedAt).TotalSeconds);
+        ColdStartElapsedText.Text = $"已用时 {elapsed} 秒";
+
+        ColdStartRowsPanel.Children.Clear();
+        var phases = App.Sidecar.ColdStartPhases;
+        AddColdStartRow("engine", phases.Engine, phases);
+        AddColdStartRow("data", phases.Data, phases);
+        AddColdStartRow("cache", phases.Cache, phases);
+    }
+
+    private void AddColdStartRow(string kind, ColdStartPhaseState state, ColdStartPhaseSnapshot phases)
+    {
+        var done = state == ColdStartPhaseState.Done;
+        var label = ColdStartReadiness.RowLabel(kind, state, phases.CacheDetail);
+
+        var rowContainer = new StackPanel { Spacing = 6, Width = 360 };
+
+        var headerGrid = new Grid();
+        headerGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        headerGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        headerGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+
+        var icon = new FontIcon
+        {
+            Glyph = done ? "\uE73E" : "\uEA3A",
+            FontSize = 14,
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(0, 0, 10, 0),
+        };
+        if (done && Application.Current.Resources.TryGetValue("AccentFillColorDefaultBrush", out var accentBrush) && accentBrush is Microsoft.UI.Xaml.Media.Brush bAccent)
+        {
+            icon.Foreground = bAccent;
+        }
+        else if (Application.Current.Resources.TryGetValue("TextFillColorSecondaryBrush", out var secBrush) && secBrush is Microsoft.UI.Xaml.Media.Brush bSec)
+        {
+            icon.Foreground = bSec;
+        }
+        Grid.SetColumn(icon, 0);
+        headerGrid.Children.Add(icon);
+
+        var text = new TextBlock
+        {
+            Text = label,
+            FontSize = 13,
+            FontWeight = done ? Microsoft.UI.Text.FontWeights.Normal : Microsoft.UI.Text.FontWeights.Medium,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        Grid.SetColumn(text, 1);
+        headerGrid.Children.Add(text);
+
+        if (state == ColdStartPhaseState.Running)
+        {
+            if (kind == "cache" && phases.CacheProgress.HasValue)
+            {
+                var percent = (int)(Math.Clamp(phases.CacheProgress.Value, 0.0, 1.0) * 100);
+                var percentText = new TextBlock
+                {
+                    Text = $"{percent}%",
+                    FontSize = 12,
+                    VerticalAlignment = VerticalAlignment.Center,
+                };
+                if (Application.Current.Resources.TryGetValue("TextFillColorSecondaryBrush", out var pSecBrush) && pSecBrush is Microsoft.UI.Xaml.Media.Brush bPSec)
+                    percentText.Foreground = bPSec;
+                Grid.SetColumn(percentText, 2);
+                headerGrid.Children.Add(percentText);
+            }
+            else
+            {
+                var ring = new ProgressRing
+                {
+                    Width = 14,
+                    Height = 14,
+                    IsActive = true,
+                    VerticalAlignment = VerticalAlignment.Center,
+                };
+                Grid.SetColumn(ring, 2);
+                headerGrid.Children.Add(ring);
+            }
+        }
+        rowContainer.Children.Add(headerGrid);
+
+        if (kind == "cache" && state == ColdStartPhaseState.Running && phases.CacheProgress.HasValue)
+        {
+            var bar = new ProgressBar
+            {
+                Value = Math.Clamp(phases.CacheProgress.Value, 0.0, 1.0) * 100,
+                Maximum = 100,
+                Height = 4,
+                IsIndeterminate = false,
+                Margin = new Thickness(24, 2, 0, 0),
+            };
+            rowContainer.Children.Add(bar);
+        }
+
+        ColdStartRowsPanel.Children.Add(rowContainer);
     }
 
     private void UpdateEngineStatus()

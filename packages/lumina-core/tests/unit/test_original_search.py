@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 
 from lumina_core.api import routes
 from lumina_core.config import Settings
+from lumina_core.db.connection import db_transaction
 from lumina_core.db.repos import SegmentRepo
 from lumina_core.db.schema import init_db
 from lumina_core.main import create_app
@@ -22,15 +23,15 @@ def client(tmp_path):
         yield c
 
 
-def _seed_book(conn, book_id: str = "b1") -> None:
-    conn.execute(
-        """
-        INSERT INTO books (id, title, format, file_path, created_at, updated_at)
-        VALUES (?, '原文检索', 'txt', '/x', 'now', 'now')
-        """,
-        (book_id,),
-    )
-    conn.commit()
+def _seed_book(conn, book_id: str = "b1", *, segment_count: int = 1) -> None:
+    with db_transaction(conn):
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO books (id, title, format, file_path, segment_count, status, created_at, updated_at)
+            VALUES (?, '原文检索', 'txt', '/x', ?, 'unread', 'now', 'now')
+            """,
+            (book_id, segment_count),
+        )
 
 
 def test_utf16_offset_emoji_and_cjk():
@@ -183,7 +184,7 @@ def test_original_search_api_never_returns_raw_text(client):
     conn = client.app.state.lumina.conn  # type: ignore[attr-defined]
     # Commit before API calls: lifespan recover_on_startup shares this conn and
     # can roll back an open implicit transaction, making the book vanish (404 flake).
-    _seed_book(conn, "ob")
+    _seed_book(conn, "ob", segment_count=1)
     SegmentRepo(conn).insert_many(
         [
             {
@@ -195,6 +196,8 @@ def test_original_search_api_never_returns_raw_text(client):
             }
         ]
     )
+    with db_transaction(conn):
+        pass
     missing = client.get("/books/nope/original-search", params={"q": "学而"})
     assert missing.status_code == 404
 

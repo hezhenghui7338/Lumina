@@ -44,6 +44,34 @@
 
         <Frame x:Name="ContentFrame" Grid.Row="1"/>
 
+        <!-- Cold Start Gate Overlay -->
+        <Grid x:Name="ColdStartOverlay"
+              Grid.Row="0"
+              Grid.RowSpan="2"
+              Background="{ThemeResource ApplicationPageBackgroundThemeBrush}"
+              Visibility="Collapsed">
+            <StackPanel HorizontalAlignment="Center"
+                        VerticalAlignment="Center"
+                        MaxWidth="420"
+                        Spacing="16">
+                <TextBlock Text="Lumina 准备就绪中"
+                           FontSize="24"
+                           FontWeight="SemiBold"
+                           HorizontalAlignment="Center"/>
+                <TextBlock Text="首次启动或加载大书库时需要一点时间，请稍候…"
+                           FontSize="13"
+                           Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                           HorizontalAlignment="Center"/>
+                <TextBlock x:Name="ColdStartElapsedText"
+                           Text="已用时 0 秒"
+                           FontSize="12"
+                           Foreground="{ThemeResource TextFillColorTertiaryBrush}"
+                           HorizontalAlignment="Center"
+                           Margin="0,0,0,12"/>
+                <StackPanel x:Name="ColdStartRowsPanel" Spacing="12"/>
+            </StackPanel>
+        </Grid>
+
         <TeachingTip x:Name="OnboardingTip"
                      Title="导入书籍"
                      IsLightDismissEnabled="False"

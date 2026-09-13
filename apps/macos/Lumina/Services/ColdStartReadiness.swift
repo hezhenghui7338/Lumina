@@ -12,6 +12,9 @@ struct ColdStartPhaseSnapshot: Equatable {
     var engine: ColdStartPhaseState = .pending
     var data: ColdStartPhaseState = .pending
     var cache: ColdStartPhaseState = .pending
+    var cacheProgress: Double?
+    var cacheDetail: String?
+    /// Background boot news (not part of the gate).
     var news: ColdStartPhaseState = .pending
     var newsDetail: String?
 
@@ -31,47 +34,58 @@ enum ColdStartReadiness {
         }
     }
 
-    /// Engine is local; data/cache/news come from GET /startup/status.
+    /// Engine is local; data/cache/(background) news come from GET /startup/status.
     static func merge(
         engineDone: Bool,
         data: String?,
         cache: String?,
+        cacheProgress: Double? = nil,
+        cacheDetail: String? = nil,
         news: String?,
-        newsDetail: String?
+        newsDetail: String? = nil
     ) -> ColdStartPhaseSnapshot {
         ColdStartPhaseSnapshot(
             engine: engineDone ? .done : .running,
             data: phaseState(from: data),
             cache: phaseState(from: cache),
+            cacheProgress: cacheProgress,
+            cacheDetail: cacheDetail,
             news: phaseState(from: news),
             newsDetail: newsDetail
         )
     }
 
-    /// News `failed` still unlocks the main UI (offline / timeout).
+    /// Product-ready after engine → data → cache (news is background, §3.5 / §5.8).
     static func isProductReady(_ snapshot: ColdStartPhaseSnapshot) -> Bool {
         snapshot.engine == .done
             && snapshot.data == .done
             && snapshot.cache == .done
-            && (snapshot.news == .done || snapshot.news == .failed)
     }
 
-    static func rowLabel(kind: ColdStartRowKind, state: ColdStartPhaseState, newsFailed: Bool) -> String {
+    static func isBootNewsTerminal(_ state: ColdStartPhaseState) -> Bool {
+        state == .done || state == .failed
+    }
+
+    static func rowLabel(
+        kind: ColdStartRowKind,
+        state: ColdStartPhaseState,
+        cacheDetail: String? = nil
+    ) -> String {
         switch kind {
         case .engine:
             return state == .done ? "启动完毕" : "引擎启动中"
         case .data:
             return state == .done ? "准备完毕" : "数据准备中"
         case .cache:
-            return state == .done ? "加载完毕" : "缓存加载中"
-        case .news:
-            if state == .done { return "更新完毕" }
-            if state == .failed || newsFailed { return "更新完毕（未全部成功）" }
-            return "资讯更新中"
+            if state == .done { return "加载完毕" }
+            if let detail = cacheDetail, !detail.isEmpty {
+                return "缓存加载中 · \(detail)"
+            }
+            return "缓存加载中"
         }
     }
 }
 
 enum ColdStartRowKind: CaseIterable {
-    case engine, data, cache, news
+    case engine, data, cache
 }

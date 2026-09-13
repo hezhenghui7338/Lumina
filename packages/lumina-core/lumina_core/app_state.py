@@ -74,7 +74,7 @@ def default_rss_sources(target_language: str = "zh-CN") -> list[tuple[str, str]]
 DEFAULT_RSS = default_rss_sources("zh-CN")
 
 
-# Cold-start news sync wall clock (PRD §3.5 / §5.8).
+# Boot news sync wall clock (PRD §5.8; does not gate §3.5 product-ready).
 BOOT_NEWS_SYNC_TIMEOUT_S = 60.0
 
 
@@ -110,17 +110,31 @@ class AppState:
         return self.settings.data_dir / "books"
 
     def startup_status(self) -> dict[str, Any]:
-        """Product-ready phases for the cold-start gate (not process liveness)."""
+        """Cold-start gate phases + background boot news (not process liveness).
+
+        Product-ready uses engine/data/cache only; news is for the News tab.
+        """
+        cache_phase = self.job_queue.startup_cache_phase()
         return {
             "engine": "ready",
             "data": self.job_queue.startup_data_phase(),
-            "cache": self.job_queue.startup_cache_phase(),
+            "cache": cache_phase,
+            "cache_progress": (
+                self.job_queue.startup_cache_progress()
+                if cache_phase == "running"
+                else (1.0 if cache_phase == "done" else None)
+            ),
+            "cache_detail": (
+                self.job_queue.startup_cache_detail()
+                if cache_phase == "running"
+                else None
+            ),
             "news": self.startup_news_phase,
             "news_detail": self.startup_news_detail,
         }
 
     async def run_boot_news_sync(self) -> None:
-        """One-shot RSS sync after cache phase; never blocks /health.
+        """One-shot RSS sync after cache; never blocks /health or product-ready.
 
         Uses a daemon thread (not asyncio.to_thread): cancelling / shutting down
         must not leave a non-daemon pool worker in httpx.get holding the process

@@ -185,6 +185,15 @@ struct BookshelfView: View {
         ) { result in
             handleFileExportCompletion(result)
         }
+        .background(
+            BookshelfKeyMonitorBridge { delta in
+                if delta < 0 {
+                    viewModel.previousPage()
+                } else if delta > 0 {
+                    viewModel.nextPage()
+                }
+            }
+        )
     }
 
     @ToolbarContentBuilder
@@ -323,11 +332,12 @@ struct BookshelfView: View {
     private var paginationBar: some View {
         HStack(spacing: 12) {
             Button {
-                viewModel.setPage(viewModel.pageIndex - 1)
+                viewModel.previousPage()
             } label: {
                 Label("上一页", systemImage: "chevron.left")
             }
-            .disabled(viewModel.pageIndex <= 0 || viewModel.pageCount <= 1)
+            .disabled(!viewModel.canGoPreviousPage)
+            .help("上一页（←）")
 
             Text("第 \(viewModel.pageIndex + 1) / \(max(viewModel.pageCount, 1)) 页")
                 .font(.caption)
@@ -335,11 +345,12 @@ struct BookshelfView: View {
                 .monospacedDigit()
 
             Button {
-                viewModel.setPage(viewModel.pageIndex + 1)
+                viewModel.nextPage()
             } label: {
                 Label("下一页", systemImage: "chevron.right")
             }
-            .disabled(viewModel.pageIndex >= viewModel.pageCount - 1 || viewModel.pageCount <= 1)
+            .disabled(!viewModel.canGoNextPage)
+            .help("下一页（→）")
 
             Spacer(minLength: 8)
 
@@ -756,3 +767,86 @@ struct BookshelfView: View {
         return true
     }
 }
+
+struct BookshelfKeyMonitorBridge: NSViewRepresentable {
+    var onTurnPage: (Int) -> Void
+
+    func makeNSView(context: Context) -> BookshelfKeyNSView {
+        let view = BookshelfKeyNSView()
+        view.onTurnPage = onTurnPage
+        return view
+    }
+
+    func updateNSView(_ nsView: BookshelfKeyNSView, context: Context) {
+        nsView.onTurnPage = onTurnPage
+    }
+}
+
+final class BookshelfKeyNSView: NSView {
+    var onTurnPage: ((Int) -> Void)?
+    private var keyMonitor: Any?
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if window != nil {
+            installKeyMonitor()
+        } else {
+            removeKeyMonitor()
+        }
+    }
+
+    deinit {
+        removeKeyMonitor()
+    }
+
+    private func installKeyMonitor() {
+        guard keyMonitor == nil else { return }
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard let self else { return event }
+            return self.handleKeyDown(event)
+        }
+    }
+
+    private func removeKeyMonitor() {
+        if let keyMonitor {
+            NSEvent.removeMonitor(keyMonitor)
+            self.keyMonitor = nil
+        }
+    }
+
+    private func handleKeyDown(_ event: NSEvent) -> NSEvent? {
+        guard event.window == window else { return event }
+        if window?.attachedSheet != nil { return event }
+        guard !Self.isTextInputResponder(window?.firstResponder) else { return event }
+
+        let mods = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        let hasModifiers = !mods.intersection([.command, .option, .control, .shift]).isEmpty
+
+        guard let delta = BookshelfPageTurnKeyPolicy.delta(
+            keyCode: event.keyCode,
+            characters: event.characters,
+            hasModifiers: hasModifiers,
+            isRepeat: event.isARepeat
+        ) else {
+            return event
+        }
+
+        onTurnPage?(delta)
+        return nil
+    }
+
+    static func isTextInputResponder(_ responder: NSResponder?) -> Bool {
+        var current = responder
+        while let node = current {
+            if let textView = node as? NSTextView {
+                return textView.isEditable
+            }
+            if let field = node as? NSTextField {
+                return field.isEditable
+            }
+            current = node.nextResponder
+        }
+        return false
+    }
+}
+

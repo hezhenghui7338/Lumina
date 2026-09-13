@@ -128,7 +128,7 @@ Lumina/
 | ID | PRD | 场景 | 断言 | 层 | LLM |
 |----|-----|------|------|-----|-----|
 | **E2E-BOOT-01** | §3.4 | 启动时书库/设置/资讯三接口 JSON 契约 | `is_favorite` 为 JSON bool；Swift `BookSummary`/`AppSettings`/`NewsBrief` 可解码 | API unit + XCTest | Mock |
-| **E2E-BOOT-02** | §3.4 / §3.5 / §5.9 | Sidecar 启动就绪、冷启动门闩、退出必停、设置可停/重启 | `/health` 即时响应；`GET /startup/status` 阶段至 product-ready；资讯 boot sync 失败/超时放行；`POST /shutdown` 结束 uvicorn；卡死/复用孤儿退出时仍杀端口监听；Swift 连接错误中文 fallback；Release sidecar 冒烟 | API unit + XCTest + release smoke | Mock |
+| **E2E-BOOT-02** | §3.4 / §3.5 / §5.9 | Sidecar 启动就绪、冷启动门闩、退出必停、设置可停/重启 | `/health` 即时响应；`GET /startup/status` 引擎/数据/缓存至 product-ready（不等资讯）；资讯 boot sync 后台进行，失败/超时资讯 Tab 可重试；`POST /shutdown` 结束 uvicorn；卡死/复用孤儿退出时仍杀端口监听；Swift 连接错误中文 fallback；Release sidecar 冒烟 | API unit + XCTest + release smoke | Mock |
 
 实现：`tests/unit/test_api_swift_contract.py` · `LuminaTests/Unit/CoreClientDecodingTests.swift`
 

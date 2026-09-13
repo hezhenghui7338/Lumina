@@ -125,6 +125,8 @@ class JobQueue:
         # Cold-start gate phases for GET /startup/status (not /health).
         self._startup_data_phase = "pending"  # pending|running|done
         self._startup_cache_phase = "pending"  # pending|running|done
+        self._startup_cache_progress: float | None = None
+        self._startup_cache_detail: str | None = None
         # Drop trees + catalog backfill + summarize resume (must not block open/read).
         self._startup_deferred_task: asyncio.Task[None] | None = None
         # Backward-compatible alias used by older tests / call sites.
@@ -135,6 +137,16 @@ class JobQueue:
 
     def startup_cache_phase(self) -> str:
         return self._startup_cache_phase
+
+    def startup_cache_progress(self) -> float | None:
+        return self._startup_cache_progress
+
+    def startup_cache_detail(self) -> str | None:
+        return self._startup_cache_detail
+
+    def set_cache_progress(self, progress: float | None, detail: str | None) -> None:
+        self._startup_cache_progress = progress
+        self._startup_cache_detail = detail
 
     def summarize_active_for_book(self, book_id: str) -> dict[str, Any] | None:
         for (bid, idx), state in self._active_summarize.items():
@@ -831,6 +843,8 @@ class JobQueue:
         if self._shutting_down:
             return
         self._startup_cache_phase = "running"
+        self._startup_cache_progress = 0.0
+        self._startup_cache_detail = "准备加载缓存…"
         self._startup_deferred_task = asyncio.create_task(
             self._deferred_startup_work(),
             name="lumina-startup-deferred",
@@ -840,14 +854,17 @@ class JobQueue:
     async def _deferred_startup_work(self) -> None:
         """Background startup work that must not starve open / segment reads."""
         try:
+            self.set_cache_progress(0.02, "清理目录缓存…")
             await self._run_db(self._books_repo.drop_stored_document_trees)
             await asyncio.sleep(0)
             if self._shutting_down:
                 return
+            self.set_cache_progress(0.06, "校准目录索引…")
             await self._run_db(self._segments_repo.backfill_catalog_cache)
             await asyncio.sleep(0)
             if self._shutting_down:
                 return
+            self.set_cache_progress(0.12, "校准章节标签…")
             await self._run_db(self._segments_repo.backfill_prefix_labels)
             await asyncio.sleep(0)
             if self._shutting_down:
@@ -860,6 +877,7 @@ class JobQueue:
         finally:
             if self._startup_cache_phase != "done":
                 self._startup_cache_phase = "done"
+            self.set_cache_progress(1.0, None)
 
     async def _resume_summarize_after_startup(self) -> None:
         """Rehydrate intent cache and re-enqueue active summarize books.
@@ -867,9 +885,19 @@ class JobQueue:
         Runs only from `_deferred_startup_work` so open/read is not blocked.
         """
         books = await self._run_db(self._books_repo.list_books)
-        for book in books:
+        total = len(books)
+        if total == 0:
+            self.set_cache_progress(1.0, None)
+            return
+
+        for idx, book in enumerate(books):
             if self._shutting_down:
                 return
+            current_num = idx + 1
+            ratio = current_num / total
+            # 0.15 ~ 0.98 range for book resume
+            progress = round(0.15 + 0.83 * ratio, 2)
+            self.set_cache_progress(progress, f"恢复书籍状态 ({current_num}/{total})")
             book_id = book["id"]
             promoted = await self._run_db(
                 lambda bid=book_id: self._books_repo.maybe_mark_summarized(bid)
@@ -899,6 +927,7 @@ class JobQueue:
                 )
             await asyncio.sleep(0)
         self.ensure_workers()
+        self.set_cache_progress(1.0, None)
 
     async def resume_orphaned_active(self) -> None:
         """Re-enqueue started books that have no in-memory job (lost worker/job)."""
@@ -1057,8 +1086,10 @@ class JobQueue:
                 await deferred
             except asyncio.CancelledError:
                 pass
-            self._startup_deferred_task = None
-            self._catalog_backfill_task = None
+        self._startup_deferred_task = None
+        self._catalog_backfill_task = None
+        self._startup_cache_progress = None
+        self._startup_cache_detail = None
         tasks = [
             task
             for task in (*self._workers, *self._rollup_workers)

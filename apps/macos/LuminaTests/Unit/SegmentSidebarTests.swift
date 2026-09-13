@@ -92,6 +92,49 @@ final class SegmentSidebarTests: XCTestCase {
         )
     }
 
+    func testReadingWindow_hysteresis_keepsAnchorWithinThreshold() {
+        let segments = (0..<100).map { i in
+            SegmentRow(
+                id: "s\(i)", idx: i, label: nil, chapter: nil, summary_status: "ready",
+                summary_json: nil, raw_text: nil, translation: nil, anchor_label: nil,
+                summary_provider: nil, summary_model: nil, summary_tier: nil, char_count: nil, retry_count: nil,
+                summary_duration_s: nil, summary_llm_attempts: nil
+            )
+        }
+        let initialAnchor = 30
+        // Small movement within hysteresis threshold keeps the original anchor and slice bounds
+        let smallScroll = initialAnchor + 3
+        let stabilized = SegmentRenderWindow.stabilizedAnchor(
+            currentPinnedIdx: smallScroll,
+            existingAnchorIdx: initialAnchor,
+            in: segments
+        )
+        XCTAssertEqual(stabilized, initialAnchor)
+
+        let windowA = SegmentRenderWindow.readingWindow(
+            segments: segments,
+            pinnedIdx: initialAnchor,
+            anchorIdx: initialAnchor
+        )
+        let windowB = SegmentRenderWindow.readingWindow(
+            segments: segments,
+            pinnedIdx: smallScroll,
+            anchorIdx: initialAnchor
+        )
+        XCTAssertEqual(windowA.aboveCount, windowB.aboveCount)
+        XCTAssertEqual(windowA.startIndex, windowB.startIndex)
+        XCTAssertEqual(windowA.items.map(\.idx), windowB.items.map(\.idx))
+
+        // Large scroll past threshold re-anchors to the current pin
+        let largeScroll = initialAnchor + SegmentRenderWindow.hysteresisThreshold + 2
+        let reanchored = SegmentRenderWindow.stabilizedAnchor(
+            currentPinnedIdx: largeScroll,
+            existingAnchorIdx: initialAnchor,
+            in: segments
+        )
+        XCTAssertEqual(reanchored, largeScroll)
+    }
+
     func testSidebarSegmentItem_prefersChapterTitleOverLabel() {
         let segment = SegmentRow(
             id: "s1", idx: 0, label: "引子", chapter: "第一章", summary_status: "ready",

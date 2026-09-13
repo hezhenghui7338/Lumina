@@ -7,7 +7,7 @@ alwaysApply: true
 
 PRD 章程 0：**任何导入、摘要、OCR、联网、切书、深聊都不得冻结 UI**。后台可慢，前台必须可点、可取消、可离开。
 
-**例外（仅冷启动 / 引擎重启）**：产品就绪门闩允许全屏四阶段进度（引擎→数据→缓存→资讯）；进入主界面后仍禁止 blocking spinner。`GET /health` 不得被 `recover_on_startup` / 资讯 boot sync `await` 阻塞（门闩只挡 UI）。
+**例外（仅冷启动 / 引擎重启）**：产品就绪门闩允许全屏三阶段进度（引擎→数据→缓存）；进入主界面后仍禁止 blocking spinner。`GET /health` 不得被 `recover_on_startup` / 资讯 boot sync `await` 阻塞；资讯启动 sync 为后台任务，不挡门闩。
 
 ## 每次改动自检
 

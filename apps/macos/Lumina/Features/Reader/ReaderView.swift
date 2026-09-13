@@ -54,6 +54,10 @@ struct ReaderView: View {
     /// scrolling; intentional jumps freeze commits until three further pins.
     /// Every jump still assigns here — nothing else may move the scroll view.
     @State private var topSegmentIdx: Int?
+    /// Materialized render window anchor. Updated with hysteresis so regular
+    /// scrolling within ±hysteresisThreshold segments never moves the window
+    /// bounds or changes spacer heights mid-flight.
+    @State private var renderAnchorIdx: Int?
     @State private var readerGlobalFrame: CGRect = .null
     @State private var overlay: ReaderOverlay = .none
     @State private var overlayEngaged = false
@@ -942,6 +946,14 @@ struct ReaderView: View {
                 }
                 return
             }
+            let nextAnchor = SegmentRenderWindow.stabilizedAnchor(
+                currentPinnedIdx: idx,
+                existingAnchorIdx: renderAnchorIdx,
+                in: viewModel.segments
+            )
+            if renderAnchorIdx != nextAnchor {
+                renderAnchorIdx = nextAnchor
+            }
             // Progress stays live; hydrate/prefetch wait for scroll idle.
             viewModel.noteTopSegment(idx)
             viewModel.noteScrollActivity()
@@ -974,6 +986,7 @@ struct ReaderView: View {
             contentMode = ReaderPreferences.contentMode(for: bookId)
             viewModel.setContentMode(contentMode)
             topSegmentIdx = nil
+            renderAnchorIdx = nil
             // The resume index is delivered before the segments are published so
             // the feed's very first layout already renders at the saved segment.
             await viewModel.load(
@@ -981,6 +994,7 @@ struct ReaderView: View {
                 core: core,
                 initialSegmentIndex: initialSegmentIndex
             ) { resumeIdx in
+                renderAnchorIdx = resumeIdx
                 topSegmentIdx = resumeIdx
             }
             readerContentFocused = true
@@ -1117,7 +1131,8 @@ struct ReaderView: View {
                         // laying out every intermediate SegmentReadingBlock.
                         let window = SegmentRenderWindow.readingWindow(
                             segments: viewModel.segments,
-                            pinnedIdx: topSegmentIdx ?? viewModel.selectedIdx
+                            pinnedIdx: topSegmentIdx ?? viewModel.selectedIdx,
+                            anchorIdx: renderAnchorIdx
                         )
                         if window.aboveCount > 0 {
                             Color.clear
@@ -1365,6 +1380,8 @@ struct ReaderView: View {
     private func jump(to idx: Int) {
         LuminaSelectionActionPopover.dismiss()
         guard topSegmentIdx != idx else { return }
+        renderAnchorIdx = idx
+        viewModel.acknowledgeUserNavigation(target: idx)
         let delta = SegmentRenderWindow.segmentIndexDelta(
             from: topSegmentIdx,
             to: idx,
@@ -1391,9 +1408,15 @@ struct ReaderView: View {
     }
 
     private func turnSegment(from idx: Int, delta: Int) {
+        let base = SegmentTurnNavigation.continuousBaseIdx(
+            clickedIdx: idx,
+            delta: delta,
+            selectedIdx: viewModel.selectedIdx
+        )
         guard let target = SegmentTurnNavigation.targetIdx(
-            current: idx, delta: delta, sortedIdxs: viewModel.sortedSegmentIdxs
+            current: base, delta: delta, sortedIdxs: viewModel.sortedSegmentIdxs
         ) else { return }
+        viewModel.acknowledgeUserNavigation(target: target)
         // Warm neighbours before the scroll lands so the turn feels instantaneous.
         viewModel.prefetchSummaries(
             around: target,
@@ -1413,6 +1436,7 @@ struct ReaderView: View {
     }
 
     private func navigateToSegment(_ idx: Int, suspendProgress: Bool = true) {
+        viewModel.acknowledgeUserNavigation(target: idx)
         if suspendProgress {
             viewModel.beginProgressSeek(at: idx)
         }
@@ -1427,6 +1451,7 @@ struct ReaderView: View {
     }
 
     private func selectSidebarSegment(_ idx: Int) {
+        viewModel.acknowledgeUserNavigation(target: idx)
         viewModel.beginProgressSeek(at: idx)
         viewModel.selectedIdx = idx
         jump(to: idx)
@@ -2561,6 +2586,7 @@ final class ReaderViewModel: ObservableObject {
     private var summaryHydrateTasks: [Int: Task<Void, Never>] = [:]
     private var summaryPrefetchTask: Task<Void, Never>?
     private var summaryPrefetchGeneration = 0
+    private var prefetchingSummaryIdx: Int?
     private var viewportPrefetchTask: Task<Void, Never>?
     private var scrollIdleTask: Task<Void, Never>?
     private var scrollBusy = false
@@ -2572,8 +2598,8 @@ final class ReaderViewModel: ObservableObject {
     private var catalogHasMoreAfter = false
     private var summaryParseTasks: [Int: Task<Void, Never>] = [:]
     private var chatTask: Task<Void, Never>?
-    private var hydratingSummaryIndices: Set<Int> = []
-    private var parsingSummaryIndices: Set<Int> = []
+    @Published private(set) var hydratingSummaryIndices: Set<Int> = []
+    @Published private(set) var parsingSummaryIndices: Set<Int> = []
     private var parsedSummarySourceJSON: [Int: String] = [:]
     private var parsingSummaryJSON: [Int: String] = [:]
     private var summaryParseGeneration: [Int: Int] = [:]
@@ -2847,6 +2873,7 @@ final class ReaderViewModel: ObservableObject {
         summaryPrefetchTask?.cancel()
         summaryPrefetchTask = nil
         summaryPrefetchGeneration += 1
+        prefetchingSummaryIdx = nil
         clearSummaryCache()
         hydratingSummaryIndices.removeAll()
         chatTask?.cancel()
@@ -3035,6 +3062,18 @@ final class ReaderViewModel: ObservableObject {
         }
     }
 
+    /// When the user explicitly navigates (turn segment, jump, sidebar click),
+    /// immediately dismiss any cold-start restore lock so user action is not
+    /// reverted back to the restored segment.
+    func acknowledgeUserNavigation(target: Int? = nil) {
+        if progressPhase == .restoring {
+            restoreSettleTask?.cancel()
+            restoreSettleTask = nil
+            progressPhase = .reading
+            restoreTarget = nil
+        }
+    }
+
     /// Record the segment pinned to the top of the viewport. This is the only
     /// place reading progress is written — and only when the seek gate allows.
     func noteTopSegment(_ idx: Int) {
@@ -3119,6 +3158,12 @@ final class ReaderViewModel: ObservableObject {
         let pageLimit = Self.catalogFillPageLimit
         catalogFillTask = Task { @MainActor [weak self] in
             guard let self else { return }
+            // Let the first paint and initial user interaction settle cleanly.
+            try? await Task.sleep(nanoseconds: ReaderScrollFeedPolicy.catalogFillInitialDelayNanoseconds)
+            guard !Task.isCancelled,
+                  self.catalogFillGeneration == generation,
+                  self.bookId == bookId
+            else { return }
             // Prefer expanding forward (reading direction), then backward.
             while !Task.isCancelled,
                   self.catalogFillGeneration == generation,
@@ -3237,7 +3282,17 @@ final class ReaderViewModel: ObservableObject {
         guard !window.isEmpty else { return }
         let desired = Set(window)
 
-        let obsoleteTaskIndices = summaryHydrateTasks.keys.filter { $0 != idx }
+        // 1. Cancel previous serial prefetch first and clean up in-flight prefetch index
+        if let currentPrefetch = prefetchingSummaryIdx {
+            hydratingSummaryIndices.remove(currentPrefetch)
+            prefetchingSummaryIdx = nil
+        }
+        summaryPrefetchTask?.cancel()
+        summaryPrefetchTask = nil
+        summaryPrefetchGeneration += 1
+
+        // 2. Cancel eager tasks that have moved completely outside the desired window
+        let obsoleteTaskIndices = summaryHydrateTasks.keys.filter { !desired.contains($0) }
         for taskIdx in obsoleteTaskIndices {
             summaryHydrateTasks.removeValue(forKey: taskIdx)?.cancel()
             hydratingSummaryIndices.remove(taskIdx)
@@ -3249,25 +3304,34 @@ final class ReaderViewModel: ObservableObject {
             hydratingSummaryIndices.remove(taskIdx)
         }
 
-        // The visible segment wins the only eager request. Neighbours hydrate
-        // serially at utility priority so a far jump cannot fan out seven DB reads.
+        // 3. Center segment gets eager first-class hydrate request
         hydrateSummary(idx: idx, core: core)
-        summaryPrefetchTask?.cancel()
-        summaryPrefetchGeneration += 1
+
+        // 4. Start serial background prefetch for remaining unhydrated neighbours
         let generation = summaryPrefetchGeneration
         let bookId = self.bookId
         let neighbours = window
-            .filter { $0 != idx }
+            .filter { $0 != idx && summaryHydrateTasks[$0] == nil }
             .sorted { abs($0 - idx) < abs($1 - idx) }
         summaryPrefetchTask = Task(priority: .utility) { @MainActor [weak self] in
             guard let self else { return }
+            defer {
+                if self.summaryPrefetchGeneration == generation {
+                    if let current = self.prefetchingSummaryIdx {
+                        self.hydratingSummaryIndices.remove(current)
+                        self.prefetchingSummaryIdx = nil
+                    }
+                    self.summaryPrefetchTask = nil
+                }
+            }
             for neighbour in neighbours {
-                guard !Task.isCancelled else { return }
+                guard !Task.isCancelled else { break }
                 guard self.summaryPrefetchGeneration == generation,
                       self.bookId == bookId,
                       let segment = self.segments.first(where: { $0.idx == neighbour }),
                       self.needsSummaryHydration(segment)
                 else { continue }
+                self.prefetchingSummaryIdx = neighbour
                 self.hydratingSummaryIndices.insert(neighbour)
                 let detail = try? await core.fetchSegmentSummary(
                     bookId: bookId,
@@ -3276,14 +3340,14 @@ final class ReaderViewModel: ObservableObject {
                 guard !Task.isCancelled,
                       self.summaryPrefetchGeneration == generation,
                       self.bookId == bookId
-                else { return }
-                self.hydratingSummaryIndices.remove(neighbour)
+                else { break }
+                if self.prefetchingSummaryIdx == neighbour {
+                    self.hydratingSummaryIndices.remove(neighbour)
+                    self.prefetchingSummaryIdx = nil
+                }
                 if let detail {
                     self.mergeSummaryDetail(detail, at: neighbour)
                 }
-            }
-            if self.summaryPrefetchGeneration == generation {
-                self.summaryPrefetchTask = nil
             }
         }
     }
@@ -3294,9 +3358,11 @@ final class ReaderViewModel: ObservableObject {
             ensureSummaryParsed(idx: idx, json: json)
         }
         guard needsSummaryHydration(seg) else { return }
-        guard !hydratingSummaryIndices.contains(idx) else { return }
+        guard summaryHydrateTasks[idx] == nil else { return }
 
-        summaryHydrateTasks[idx]?.cancel()
+        if prefetchingSummaryIdx == idx {
+            prefetchingSummaryIdx = nil
+        }
         hydratingSummaryIndices.insert(idx)
         let bookId = self.bookId
 
@@ -3460,6 +3526,7 @@ final class ReaderViewModel: ObservableObject {
 
     /// Apply list meta only — never fetch or cache raw_text / translation in `segments[]`.
     func selectSegment(_ idx: Int) {
+        if currentSegment?.idx == idx { return }
         if let meta = segments.first(where: { $0.idx == idx }) {
             currentSegment = meta
         }

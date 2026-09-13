@@ -25,6 +25,24 @@
             </Grid>
             <StackPanel Grid.Row="1" Spacing="8" Margin="0,0,0,8">
                 <ComboBox x:Name="SourceFilterBox" Header="信源筛选" SelectionChanged="SourceFilter_Changed"/>
+                <Border x:Name="BootNewsBanner" Visibility="Collapsed" Padding="10,8"
+                        Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                        CornerRadius="6">
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <StackPanel Orientation="Horizontal" Spacing="8">
+                            <ProgressRing x:Name="BootNewsRing" Width="16" Height="16" IsActive="False"/>
+                            <TextBlock x:Name="BootNewsBannerText" FontSize="12" VerticalAlignment="Center"
+                                       TextWrapping="WrapWholeWords"
+                                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                        </StackPanel>
+                        <Button x:Name="BootNewsRetryBtn" Grid.Column="1" Content="重试"
+                                Visibility="Collapsed" Click="BootNewsRetry_Click" Margin="8,0,0,0"/>
+                    </Grid>
+                </Border>
                 <TextBlock x:Name="StatusText" FontSize="12" Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextWrapping="WrapWholeWords"/>
             </StackPanel>
             <ListView x:Name="ArticlesList" Grid.Row="2"

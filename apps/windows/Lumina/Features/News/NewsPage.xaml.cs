@@ -17,6 +17,9 @@ public sealed partial class NewsPage : Page
     private List<NewsSource> _sources = [];
     private NewsArticleCard? _selected;
     private readonly ObservableCollection<string> _chatLines = [];
+    private bool _dismissBootNewsFailure;
+    private bool _syncing;
+    private ColdStartPhaseState _lastBootNewsPhase = ColdStartPhaseState.Pending;
 
     public NewsPage()
     {
@@ -38,15 +41,72 @@ public sealed partial class NewsPage : Page
     {
         base.OnNavigatedTo(e);
         ApplyReadingFont();
+        App.Sidecar.StateChanged += OnSidecarStateChanged;
+        UpdateBootNewsBanner();
         _ = LoadBriefAsync();
     }
 
     protected override void OnNavigatedFrom(NavigationEventArgs e)
     {
+        App.Sidecar.StateChanged -= OnSidecarStateChanged;
         _cts?.Cancel();
         _chatCts?.Cancel();
         base.OnNavigatedFrom(e);
     }
+
+    private void OnSidecarStateChanged()
+    {
+        DispatcherQueue.TryEnqueue(() =>
+        {
+            var phase = App.Sidecar.BootNewsPhase;
+            if (phase == ColdStartPhaseState.Done
+                && (_lastBootNewsPhase is ColdStartPhaseState.Pending or ColdStartPhaseState.Running))
+            {
+                _ = LoadBriefAsync();
+            }
+            if (phase != ColdStartPhaseState.Failed)
+                _dismissBootNewsFailure = false;
+            _lastBootNewsPhase = phase;
+            UpdateBootNewsBanner();
+        });
+    }
+
+    private void UpdateBootNewsBanner()
+    {
+        if (!App.Sidecar.ProductReady || _syncing)
+        {
+            BootNewsBanner.Visibility = Visibility.Collapsed;
+            BootNewsRing.IsActive = false;
+            return;
+        }
+
+        var phase = App.Sidecar.BootNewsPhase;
+        if (phase is ColdStartPhaseState.Pending or ColdStartPhaseState.Running)
+        {
+            BootNewsBanner.Visibility = Visibility.Visible;
+            BootNewsRing.IsActive = true;
+            BootNewsBannerText.Text = "资讯更新中…";
+            BootNewsRetryBtn.Visibility = Visibility.Collapsed;
+            return;
+        }
+
+        if (phase == ColdStartPhaseState.Failed && !_dismissBootNewsFailure)
+        {
+            BootNewsBanner.Visibility = Visibility.Visible;
+            BootNewsRing.IsActive = false;
+            var detail = (App.Sidecar.BootNewsDetail ?? "").Trim();
+            BootNewsBannerText.Text = string.IsNullOrEmpty(detail) || detail == "timeout"
+                ? "资讯更新未全部成功"
+                : $"资讯更新未全部成功 · {detail}";
+            BootNewsRetryBtn.Visibility = Visibility.Visible;
+            return;
+        }
+
+        BootNewsBanner.Visibility = Visibility.Collapsed;
+        BootNewsRing.IsActive = false;
+    }
+
+    private async void BootNewsRetry_Click(object sender, RoutedEventArgs e) => await SyncNewsAsync();
 
     private async Task LoadBriefAsync()
     {
@@ -102,19 +162,29 @@ public sealed partial class NewsPage : Page
             OpenUrlBtn.NavigateUri = u;
     }
 
-    private async void Sync_Click(object sender, RoutedEventArgs e)
+    private async void Sync_Click(object sender, RoutedEventArgs e) => await SyncNewsAsync();
+
+    private async Task SyncNewsAsync()
     {
+        _syncing = true;
+        UpdateBootNewsBanner();
         StatusText.Text = "同步中…（可继续浏览）";
         try
         {
             var results = await App.Core.SyncNewsAsync();
             var added = results.Sum(r => r.Added ?? 0);
+            _dismissBootNewsFailure = true;
             StatusText.Text = $"同步完成 · 新增约 {added}";
             await LoadBriefAsync();
         }
         catch (Exception ex)
         {
             StatusText.Text = ex.Message;
+        }
+        finally
+        {
+            _syncing = false;
+            UpdateBootNewsBanner();
         }
     }
 
