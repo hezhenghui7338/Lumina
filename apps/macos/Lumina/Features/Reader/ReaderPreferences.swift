@@ -87,8 +87,11 @@ struct ReadingPosition: Equatable {
 final class ReadingProgressStore: ObservableObject {
     static let shared = ReadingProgressStore()
 
-    /// Bumped on every recorded position so observers can re-read.
+    /// Bumped on every debounced position commit so observers can re-read without scroll churn.
     @Published private(set) var positions: [String: ReadingPosition] = [:]
+
+    /// Immediate in-memory cache for fast lookups without triggering SwiftUI objectWillChange storm.
+    private var memoryPositions: [String: ReadingPosition] = [:]
 
     private weak var core: CoreClient?
     /// Recorded but not yet accepted by the sidecar.
@@ -96,8 +99,10 @@ final class ReadingProgressStore: ObservableObject {
     /// Last index the sidecar acknowledged, to skip redundant PATCHes.
     private var synced: [String: Int] = [:]
     private var saveTasks: [String: Task<Void, Never>] = [:]
+    private var debouncePersistTasks: [String: Task<Void, Never>] = [:]
 
     private static let patchDebounceNanoseconds: UInt64 = 300_000_000
+    private static let localDebounceNanoseconds: UInt64 = 250_000_000
 
     func attach(core: CoreClient) {
         self.core = core
@@ -105,6 +110,7 @@ final class ReadingProgressStore: ObservableObject {
 
     /// In-memory position, falling back to disk. Never mutates published state.
     func position(for bookId: String) -> ReadingPosition? {
+        if let memory = memoryPositions[bookId] { return memory }
         if let position = positions[bookId] { return position }
         guard let cached = ReaderPreferences.cachedProgress(for: bookId) else { return nil }
         return ReadingPosition(index: cached.index, total: cached.segmentCount)
@@ -122,22 +128,46 @@ final class ReadingProgressStore: ObservableObject {
         )
     }
 
-    /// Record the segment currently being read. Local write is immediate;
-    /// the sidecar PATCH is coalesced per book.
-    func record(bookId: String, index: Int, total: Int) {
+    /// Record the segment currently being read. In-memory update is immediate;
+    /// local disk write and published notifications are debounced to prevent
+    /// layout cascade storms during fast scrolling.
+    func record(bookId: String, index: Int, total: Int, immediate: Bool = false) {
         guard !bookId.isEmpty, total > 0 else { return }
         let idx = min(max(index, 0), total - 1)
         let next = ReadingPosition(index: idx, total: total)
-        guard positions[bookId] != next else { return }
+        guard memoryPositions[bookId] != next || positions[bookId] != next else { return }
+        memoryPositions[bookId] = next
 
-        ReaderPreferences.setCachedProgress(index: idx, segmentCount: total, for: bookId)
-        positions[bookId] = next
+        if immediate {
+            debouncePersistTasks[bookId]?.cancel()
+            debouncePersistTasks.removeValue(forKey: bookId)
+            commitLocalProgress(next, for: bookId)
+            scheduleRemoteSave(index: idx, bookId: bookId)
+            return
+        }
 
-        guard synced[bookId] != idx else {
+        debouncePersistTasks[bookId]?.cancel()
+        debouncePersistTasks[bookId] = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: Self.localDebounceNanoseconds)
+            guard !Task.isCancelled, let self else { return }
+            self.commitLocalProgress(next, for: bookId)
+            self.scheduleRemoteSave(index: idx, bookId: bookId)
+        }
+    }
+
+    private func commitLocalProgress(_ next: ReadingPosition, for bookId: String) {
+        ReaderPreferences.setCachedProgress(index: next.index, segmentCount: next.total, for: bookId)
+        if positions[bookId] != next {
+            positions[bookId] = next
+        }
+    }
+
+    private func scheduleRemoteSave(index: Int, bookId: String) {
+        guard synced[bookId] != index else {
             pending.removeValue(forKey: bookId)
             return
         }
-        pending[bookId] = idx
+        pending[bookId] = index
         saveTasks[bookId]?.cancel()
         saveTasks[bookId] = Task { [weak self] in
             try? await Task.sleep(nanoseconds: Self.patchDebounceNanoseconds)
@@ -151,12 +181,18 @@ final class ReadingProgressStore: ObservableObject {
         guard !bookId.isEmpty, total > 0 else { return }
         let idx = min(max(index, 0), total - 1)
         let next = ReadingPosition(index: idx, total: total)
+        memoryPositions[bookId] = next
         guard positions[bookId] != next else { return }
         positions[bookId] = next
         synced[bookId] = idx
     }
 
     func flush(bookId: String, timeoutNanoseconds: UInt64 = 2_000_000_000) async {
+        debouncePersistTasks[bookId]?.cancel()
+        debouncePersistTasks.removeValue(forKey: bookId)
+        if let memory = memoryPositions[bookId] {
+            commitLocalProgress(memory, for: bookId)
+        }
         saveTasks[bookId]?.cancel()
         saveTasks.removeValue(forKey: bookId)
         guard let index = pending[bookId], let core else { return }
@@ -183,16 +219,24 @@ final class ReadingProgressStore: ObservableObject {
     }
 
     func flushAll() async {
+        for bookId in Array(memoryPositions.keys) {
+            if let memory = memoryPositions[bookId] {
+                commitLocalProgress(memory, for: bookId)
+            }
+        }
         for bookId in pending.keys {
             await flush(bookId: bookId)
         }
     }
 
     func forget(bookId: String) {
+        debouncePersistTasks[bookId]?.cancel()
+        debouncePersistTasks.removeValue(forKey: bookId)
         saveTasks[bookId]?.cancel()
         saveTasks.removeValue(forKey: bookId)
         pending.removeValue(forKey: bookId)
         synced.removeValue(forKey: bookId)
+        memoryPositions.removeValue(forKey: bookId)
         positions.removeValue(forKey: bookId)
         ReaderPreferences.clearCachedProgress(for: bookId)
     }

@@ -16,6 +16,7 @@ struct NewsView: View {
     @State private var selectedId: String?
     @State private var error: String?
     @State private var syncing = false
+    @State private var dismissBootNewsFailure = false
     @State private var showSourceManager = false
     @State private var path = NavigationPath()
     @StateObject private var skimViewModel = NewsSkimViewModel()
@@ -57,6 +58,9 @@ struct NewsView: View {
             } else {
                 ProgressView("加载资讯…")
             }
+        }
+        .safeAreaInset(edge: .top, spacing: 0) {
+            bootNewsBanner
         }
         .background(LuminaTheme.background)
         .navigationTitle("今日简报")
@@ -116,6 +120,17 @@ struct NewsView: View {
         .onChange(of: briefLimit) { _, _ in
             Task { await loadBrief() }
         }
+        .onChange(of: sidecar.bootNewsPhase) { old, new in
+            if new == .done && (old == .running || old == .pending) {
+                Task {
+                    await loadSources()
+                    await loadBrief()
+                }
+            }
+            if new != .failed {
+                dismissBootNewsFailure = false
+            }
+        }
         .sheet(isPresented: $showSourceManager) {
             NavigationStack {
                 NewsSourcesSettingsView(showsDismissButton: true) {
@@ -127,6 +142,65 @@ struct NewsView: View {
             }
             .environmentObject(core)
         }
+    }
+
+    @ViewBuilder
+    private var bootNewsBanner: some View {
+        if showBootNewsSyncing {
+            HStack(spacing: 10) {
+                ProgressView()
+                    .controlSize(.small)
+                Text("资讯更新中…")
+                    .font(.subheadline)
+                    .foregroundStyle(LuminaTheme.textSecondary)
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+            .background(LuminaTheme.background.opacity(0.95))
+        } else if showBootNewsFailure {
+            HStack(spacing: 10) {
+                Image(systemName: "exclamationmark.triangle")
+                    .foregroundStyle(.orange)
+                Text(bootNewsFailureLabel)
+                    .font(.subheadline)
+                    .foregroundStyle(LuminaTheme.textSecondary)
+                    .lineLimit(2)
+                Spacer(minLength: 0)
+                Button("重试") {
+                    Task { await syncNews() }
+                }
+                .disabled(syncing)
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+            .background(LuminaTheme.background.opacity(0.95))
+        }
+    }
+
+    private var showBootNewsSyncing: Bool {
+        guard sidecar.productReady, !syncing else { return false }
+        switch sidecar.bootNewsPhase {
+        case .pending, .running:
+            return true
+        case .done, .failed:
+            return false
+        }
+    }
+
+    private var showBootNewsFailure: Bool {
+        sidecar.productReady
+            && sidecar.bootNewsPhase == .failed
+            && !dismissBootNewsFailure
+            && !syncing
+    }
+
+    private var bootNewsFailureLabel: String {
+        let detail = sidecar.bootNewsDetail?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if detail.isEmpty || detail == "timeout" {
+            return "资讯更新未全部成功"
+        }
+        return "资讯更新未全部成功 · \(detail)"
     }
 
     @ViewBuilder
@@ -348,8 +422,10 @@ struct NewsView: View {
         defer { syncing = false }
         do {
             _ = try await core.syncNews()
+            dismissBootNewsFailure = true
             await loadSources()
             await loadBrief()
+            error = nil
         } catch {
             self.error = error.localizedDescription
         }

@@ -260,13 +260,31 @@ enum SegmentTurnNavigation {
         guard sortedIdxs.indices.contains(newPos) else { return nil }
         return sortedIdxs[newPos]
     }
+
+    /// When the user rapidly clicks next/prev before the feed animation finishes,
+    /// advance from `selectedIdx` if it has already moved in the requested direction.
+    static func continuousBaseIdx(
+        clickedIdx: Int,
+        delta: Int,
+        selectedIdx: Int?
+    ) -> Int {
+        guard let selectedIdx else { return clickedIdx }
+        if delta > 0, selectedIdx > clickedIdx {
+            return selectedIdx
+        }
+        if delta < 0, selectedIdx < clickedIdx {
+            return selectedIdx
+        }
+        return clickedIdx
+    }
 }
 
 /// Fast-scroll feed: keep progress live, debounce hydrate/prefetch, and pause
 /// catalog merges so LazyVStack is not rebuilt mid-fling.
 enum ReaderScrollFeedPolicy {
-    static let scrollIdleNanoseconds: UInt64 = 180_000_000
+    static let scrollIdleNanoseconds: UInt64 = 300_000_000
     static let prefetchDebounceNanoseconds: UInt64 = 90_000_000
+    static let catalogFillInitialDelayNanoseconds: UInt64 = 800_000_000
     static let sourceFetchConcurrency = 2
     /// Prefer the direction of travel so the next turn is already warm.
     static let forwardPrefetchRadius = 4

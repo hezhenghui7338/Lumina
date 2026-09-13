@@ -293,6 +293,26 @@ def _migrate_segments(conn: sqlite3.Connection) -> None:
             "UPDATE segments SET summary_tier = 'normal' "
             "WHERE summary_tier IS NULL OR summary_tier = ''"
         )
+    # Partial indexes for legacy backfills: avoids multi-second table scans
+    # on multi-GB libraries when 0 legacy rows remain.
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_segments_backfill_catalog
+        ON segments(book_id, idx)
+        WHERE summary_status = 'ready'
+          AND summary_json IS NOT NULL
+          AND (summary_preview IS NULL OR bullet_labels IS NULL)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_segments_backfill_prefix
+        ON segments(id)
+        WHERE summary_status = 'ready'
+          AND summary_json IS NOT NULL
+          AND (label IS NULL OR TRIM(label) = '')
+        """
+    )
 
 
 def _migrate_news_articles(conn: sqlite3.Connection) -> None:

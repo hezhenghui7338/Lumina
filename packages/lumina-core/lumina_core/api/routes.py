@@ -709,7 +709,7 @@ async def health() -> dict[str, str | int]:
 
 @router.get("/startup/status")
 async def startup_status(request: Request) -> dict[str, Any]:
-    """Cold-start product-ready phases (engine/data/cache/news). Not liveness."""
+    """Cold-start phases: engine/data/cache gate product-ready; news is background."""
     return _state(request).startup_status()
 
 

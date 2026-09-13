@@ -25,6 +25,8 @@ public sealed class SidecarHost : IDisposable
     public bool ProductReady { get; private set; }
     public ColdStartPhaseSnapshot ColdStartPhases { get; private set; } = ColdStartPhaseSnapshot.Initial;
     public DateTime ColdStartStartedAt { get; private set; } = DateTime.UtcNow;
+    public ColdStartPhaseState BootNewsPhase => ColdStartPhases.News;
+    public string? BootNewsDetail => ColdStartPhases.NewsDetail;
 
     public void ClearUserStopped()
     {
@@ -209,14 +211,13 @@ public sealed class SidecarHost : IDisposable
             if (dto is not null)
             {
                 ColdStartPhases = ColdStartReadiness.Merge(
-                    true, dto.Data, dto.Cache, dto.News, dto.NewsDetail);
-                Notify();
-                if (ColdStartReadiness.IsProductReady(ColdStartPhases))
-                {
+                    true, dto.Data, dto.Cache, dto.News, dto.NewsDetail, dto.CacheProgress, dto.CacheDetail);
+                if (!ProductReady && ColdStartReadiness.IsProductReady(ColdStartPhases))
                     ProductReady = true;
-                    Notify();
+                Notify();
+                // Keep polling until boot news finishes so the News page can refresh.
+                if (ProductReady && ColdStartReadiness.IsBootNewsTerminal(ColdStartPhases.News))
                     return;
-                }
             }
             try
             {

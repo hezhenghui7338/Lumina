@@ -12,6 +12,9 @@ final class SidecarManager: ObservableObject {
     @Published var productReady = false
     @Published var coldStartPhases = ColdStartPhaseSnapshot.initial
     @Published var coldStartStartedAt = Date()
+    /// Background boot RSS sync (not part of the gate; News tab observes this).
+    @Published var bootNewsPhase: ColdStartPhaseState = .pending
+    @Published var bootNewsDetail: String?
     private var process: Process?
     private var lastKnownPID: Int32?
     private var coldStartPollTask: Task<Void, Never>?
@@ -57,11 +60,15 @@ final class SidecarManager: ObservableObject {
         let engine: String?
         let data: String?
         let cache: String?
+        let cacheProgress: Double?
+        let cacheDetail: String?
         let news: String?
         let newsDetail: String?
 
         enum CodingKeys: String, CodingKey {
             case engine, data, cache, news
+            case cacheProgress = "cache_progress"
+            case cacheDetail = "cache_detail"
             case newsDetail = "news_detail"
         }
     }
@@ -317,6 +324,8 @@ final class SidecarManager: ObservableObject {
         if !userInitiated {
             productReady = false
             coldStartPhases = .initial
+            bootNewsPhase = .pending
+            bootNewsDetail = nil
         }
         await requestShutdown()
         let ownedPID = process.flatMap { $0.isRunning ? Int32($0.processIdentifier) : nil }
@@ -339,14 +348,18 @@ final class SidecarManager: ObservableObject {
         await ensureRunningAndProductReady()
     }
 
-    /// Spawn / reuse sidecar, then wait until data/cache/news phases are terminal.
+    /// Spawn / reuse sidecar, then wait until data/cache phases are done (news is background).
     func ensureRunningAndProductReady() async {
         coldStartStartedAt = Date()
         productReady = false
+        bootNewsPhase = .pending
+        bootNewsDetail = nil
         coldStartPhases = ColdStartReadiness.merge(
             engineDone: false,
             data: "pending",
             cache: "pending",
+            cacheProgress: nil,
+            cacheDetail: nil,
             news: "pending",
             newsDetail: nil
         )
@@ -359,6 +372,8 @@ final class SidecarManager: ObservableObject {
             engineDone: true,
             data: "running",
             cache: "pending",
+            cacheProgress: nil,
+            cacheDetail: nil,
             news: "pending",
             newsDetail: nil
         )
@@ -374,12 +389,19 @@ final class SidecarManager: ObservableObject {
                         engineDone: true,
                         data: dto.data,
                         cache: dto.cache,
+                        cacheProgress: dto.cacheProgress,
+                        cacheDetail: dto.cacheDetail,
                         news: dto.news,
                         newsDetail: dto.newsDetail
                     )
                     coldStartPhases = snap
-                    if ColdStartReadiness.isProductReady(snap) {
+                    bootNewsPhase = snap.news
+                    bootNewsDetail = snap.newsDetail
+                    if !productReady && ColdStartReadiness.isProductReady(snap) {
                         productReady = true
+                    }
+                    // Keep polling until boot news finishes so the News tab can refresh.
+                    if productReady && ColdStartReadiness.isBootNewsTerminal(snap.news) {
                         return
                     }
                 }

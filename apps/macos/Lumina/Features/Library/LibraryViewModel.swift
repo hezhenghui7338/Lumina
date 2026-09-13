@@ -72,6 +72,44 @@ enum BookshelfPaging {
     }
 }
 
+enum BookshelfPageTurnKeyPolicy {
+    static let leftArrowKeyCode: UInt16 = 123
+    static let rightArrowKeyCode: UInt16 = 124
+
+    /// Returns -1 for previous page, +1 for next page, or nil if not a bookshelf page-turn key event.
+    static func delta(
+        keyCode: UInt16,
+        characters: String? = nil,
+        hasModifiers: Bool = false,
+        isRepeat: Bool = false
+    ) -> Int? {
+        if isRepeat { return nil }
+        if hasModifiers { return nil }
+
+        switch keyCode {
+        case leftArrowKeyCode:
+            return -1
+        case rightArrowKeyCode:
+            return 1
+        default:
+            break
+        }
+
+        if let chars = characters, chars.count == 1, let scalar = chars.unicodeScalars.first {
+            switch scalar.value {
+            case 0xF702: // NSLeftArrowFunctionKey
+                return -1
+            case 0xF703: // NSRightArrowFunctionKey
+                return 1
+            default:
+                break
+            }
+        }
+
+        return nil
+    }
+}
+
 @MainActor
 final class LibraryViewModel: ObservableObject {
     @Published var books: [BookSummary] = []
@@ -363,6 +401,28 @@ final class LibraryViewModel: ObservableObject {
 
     func resetPage() {
         pageIndex = 0
+    }
+
+    var canGoPreviousPage: Bool {
+        pageCount > 1 && pageIndex > 0
+    }
+
+    var canGoNextPage: Bool {
+        pageCount > 1 && pageIndex < pageCount - 1
+    }
+
+    @discardableResult
+    func previousPage() -> Bool {
+        guard canGoPreviousPage else { return false }
+        setPage(pageIndex - 1)
+        return true
+    }
+
+    @discardableResult
+    func nextPage() -> Bool {
+        guard canGoNextPage else { return false }
+        setPage(pageIndex + 1)
+        return true
     }
 
     func setPage(_ index: Int) {

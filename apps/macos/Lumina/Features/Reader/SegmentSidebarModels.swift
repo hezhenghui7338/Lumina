@@ -133,6 +133,8 @@ enum SegmentRenderWindow {
     static let readBuffer = 4
     /// 主阅读区实际物化的段数半径；远跳只重建此窗口，不跨中间段 layout。
     static let readRenderBuffer = 20
+    /// 触发窗口滑动的滞后阈值（段数）。在当前锚点 ±hysteresisThreshold 范围内滑动不调整窗口，避免逐段位移跳变。
+    static let hysteresisThreshold = 8
     /// 窗口外 spacer 的单段估高（pt）；只影响滚动条比例，不参与钉位。
     static let offscreenSegmentEstimate: CGFloat = 280
 
@@ -162,13 +164,36 @@ enum SegmentRenderWindow {
         )
     }
 
+    /// 计算在给定当前 pinned index 和既有 anchor index 时的平稳化锚点
+    static func stabilizedAnchor(
+        currentPinnedIdx: Int?,
+        existingAnchorIdx: Int?,
+        in segments: [SegmentRow],
+        threshold: Int = hysteresisThreshold
+    ) -> Int {
+        guard !segments.isEmpty else { return 0 }
+        let currentPin = currentPinnedIdx ?? segments.first?.idx ?? 0
+        guard let existingAnchor = existingAnchorIdx else { return currentPin }
+        let delta = segmentIndexDelta(from: existingAnchor, to: currentPin, in: segments)
+        if delta > threshold {
+            return currentPin
+        }
+        return existingAnchor
+    }
+
     /// Reading feed around the pinned segment. Cost is O(buffer), not O(jump distance).
     static func readingWindow(
         segments: [SegmentRow],
         pinnedIdx: Int?,
+        anchorIdx: Int? = nil,
         buffer: Int = readRenderBuffer
     ) -> IndexedWindow<SegmentRow> {
-        let pin = pinnedIdx ?? segments.first?.idx ?? 0
+        let pin: Int
+        if let anchorIdx {
+            pin = stabilizedAnchor(currentPinnedIdx: pinnedIdx, existingAnchorIdx: anchorIdx, in: segments)
+        } else {
+            pin = pinnedIdx ?? segments.first?.idx ?? 0
+        }
         let center = centerIndex(forSegmentIdx: pin, in: segments)
         return slice(segments, centerIndex: center, buffer: buffer)
     }

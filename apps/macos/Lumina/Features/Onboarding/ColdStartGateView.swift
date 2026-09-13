@@ -9,9 +9,11 @@ struct ColdStartGateView: View {
         TimelineView(.periodic(from: startedAt, by: 1)) { context in
             VStack(spacing: 28) {
                 Spacer()
-                Text("Lumina")
-                    .font(.system(size: 36, weight: .semibold, design: .rounded))
-                    .foregroundStyle(LuminaTheme.textPrimary)
+                Image("LuminaLogo")
+                    .resizable()
+                    .scaledToFit()
+                    .frame(maxWidth: 280)
+                    .accessibilityLabel("Lumina")
                 Text("正在准备…")
                     .font(.title3)
                     .foregroundStyle(LuminaTheme.textSecondary)
@@ -48,25 +50,39 @@ struct ColdStartGateView: View {
     @ViewBuilder
     private func row(_ kind: ColdStartRowKind) -> some View {
         let state = state(for: kind)
-        let done = state == .done || (kind == .news && state == .failed)
-        HStack(spacing: 12) {
-            Image(systemName: done ? "checkmark.circle.fill" : "circle")
-                .foregroundStyle(done ? Color.accentColor : LuminaTheme.textSecondary)
-                .font(.title3)
-            Text(
-                ColdStartReadiness.rowLabel(
-                    kind: kind,
-                    state: state,
-                    newsFailed: phases.news == .failed
+        let done = state == .done
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 12) {
+                Image(systemName: done ? "checkmark.circle.fill" : "circle")
+                    .foregroundStyle(done ? Color.accentColor : LuminaTheme.textSecondary)
+                    .font(.title3)
+                Text(
+                    ColdStartReadiness.rowLabel(
+                        kind: kind,
+                        state: state,
+                        cacheDetail: phases.cacheDetail
+                    )
                 )
-            )
-            .font(.body.weight(done ? .regular : .medium))
-            .foregroundStyle(LuminaTheme.textPrimary)
-            if state == .running {
-                ProgressView()
-                    .controlSize(.small)
+                .font(.body.weight(done ? .regular : .medium))
+                .foregroundStyle(LuminaTheme.textPrimary)
+                if state == .running && (kind != .cache || phases.cacheProgress == nil) {
+                    ProgressView()
+                        .controlSize(.small)
+                }
+                Spacer(minLength: 0)
+                if kind == .cache, state == .running, let p = phases.cacheProgress {
+                    Text("\(Int(min(1.0, max(0.0, p)) * 100))%")
+                        .font(.caption)
+                        .foregroundStyle(LuminaTheme.textSecondary)
+                        .monospacedDigit()
+                }
             }
-            Spacer(minLength: 0)
+            if kind == .cache, state == .running, let p = phases.cacheProgress {
+                ProgressView(value: min(1.0, max(0.0, p)), total: 1.0)
+                    .progressViewStyle(.linear)
+                    .tint(Color.accentColor)
+                    .padding(.leading, 32)
+            }
         }
         .accessibilityElement(children: .combine)
     }
@@ -76,7 +92,6 @@ struct ColdStartGateView: View {
         case .engine: return phases.engine
         case .data: return phases.data
         case .cache: return phases.cache
-        case .news: return phases.news
         }
     }
 }

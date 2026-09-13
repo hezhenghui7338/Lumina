@@ -20,9 +20,10 @@ from lumina_core.config import Settings
 
 
 async def _cold_start_pipeline(state: AppState) -> None:
-    """Recover → await deferred cache → one-shot news sync.
+    """Recover → await deferred cache → background one-shot news sync.
 
     Must run as a background task so GET /health stays reachable (E2E-BOOT-02e).
+    News sync must not gate product-ready (PRD §3.5); clients unlock after cache.
     """
     await state.job_queue.recover_on_startup()
     deferred = (
@@ -36,6 +37,7 @@ async def _cold_start_pipeline(state: AppState) -> None:
             raise
     if state.job_queue._shutting_down:
         return
+    # After cache: still one-shot RSS sync, but UI may already be open.
     await state.run_boot_news_sync()
 
 

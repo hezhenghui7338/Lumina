@@ -17,6 +17,7 @@
     <Compile Include="..\Lumina\Services\CoreClient.cs" Link="CoreClient.cs" />
     <Compile Include="..\Lumina\Services\SummaryJsonParser.cs" Link="SummaryJsonParser.cs" />
     <Compile Include="..\Lumina\Services\SidecarReadiness.cs" Link="SidecarReadiness.cs" />
+    <Compile Include="..\Lumina\Services\ColdStartReadiness.cs" Link="ColdStartReadiness.cs" />
     <Compile Include="..\Lumina\Features\Reader\SelectionActionPolicy.cs" Link="SelectionActionPolicy.cs" />
     <Compile Include="..\Lumina\Features\Reader\ChatCitationJumpPolicy.cs" Link="ChatCitationJumpPolicy.cs" />
     <Compile Include="..\Lumina\Features\Reader\NeighborPrefetchPolicy.cs" Link="NeighborPrefetchPolicy.cs" />
