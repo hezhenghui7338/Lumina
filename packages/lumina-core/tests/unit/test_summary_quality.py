@@ -646,3 +646,41 @@ async def test_first_person_narrator_rewrite_retries_without_quality_llm():
     assert "上次摘要未通过质量检查" in router.prompts[1]
     assert "改写成叙述者" in router.prompts[1]
     assert result.summary.sentences[0].startswith("我醒来")
+
+
+_BUENDIA_REDUNDANT_SENTENCES = [
+    "霍·阿·布恩蒂亚在人群中寻找梅尔加德斯未果，被告知梅尔加德斯已死，心中震惊。"
+    "他带孩子们观看吉卜赛人的魔术表演，孩子们兴致高昂，他则对一块奇特的冰块惊叹不已。",
+    "人群中满是江湖艺人或魔术师，霍·阿·布恩蒂亚向吉卜赛人打听梅尔加德斯，"
+    "却被告知其已死讯，这一消息使他震惊得呆立。",
+    "随后，霍·阿·布恩蒂亚带孩子们观看一个剃光头、穿着奇装异服的巨人展示的冰块，"
+    "他对此感到困惑，但最终被其所展示的奇妙现象深深吸引。",
+]
+
+_PARALLEL_STORYLINE_SENTENCES = [
+    "本段交代主角离乡赴考启程上路，并说明家人对他的期望与族人看重功名，以及途中陌生来信留下的冲突伏笔线索。",
+    "途中驿站遭遇盘缠不足，与同路人发生冲突耽误了行程，主角仍坚持继续北上。",
+    "段末陌生来信留下疑问，为后续权谋冲突埋下伏笔，也暗示乡邻期望将在后文回响。",
+]
+
+
+def test_clarity_scan_rejects_redundant_buendia_sentences():
+    summary = _summary(sentences=_BUENDIA_REDUNDANT_SENTENCES)
+    issues = scan_summary_clarity(summary)
+    assert any(issue.code == "sentences_redundant" for issue in issues)
+    assert quality_should_reject(issues)
+
+
+def test_clarity_scan_allows_parallel_storyline_sentences():
+    summary = _summary(sentences=_PARALLEL_STORYLINE_SENTENCES)
+    issues = scan_summary_clarity(summary)
+    assert not any(issue.code == "sentences_redundant" for issue in issues)
+
+
+def test_clarity_scan_rejects_near_copy_sentences():
+    first = "本段交代主角离乡赴考启程上路，并说明家人对他的期望与族人看重功名，以及途中陌生来信留下的冲突伏笔线索。"
+    second = "本段交代主角离乡赴考启程上路，并说明家人对他的期望与族人看重功名，以及途中陌生来信留下的冲突伏笔。"
+    summary = _summary(sentences=[first, second])
+    issues = scan_summary_clarity(summary)
+    assert any(issue.code == "sentences_redundant" for issue in issues)
+    assert quality_should_reject(issues)

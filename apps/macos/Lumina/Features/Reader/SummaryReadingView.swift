@@ -68,7 +68,7 @@ struct SummaryBlock: View {
             }
 
             if !summary.bullets.isEmpty {
-                summarySection(title: "结构化要点") {
+                summarySection(title: "主要内容") {
                     VStack(alignment: .leading, spacing: LuminaTheme.summaryBulletItemSpacing) {
                         ForEach(Array(summary.bullets.enumerated()), id: \.offset) { index, bullet in
                             StructuredBulletRow(
@@ -315,7 +315,7 @@ struct ParsedSummary: Equatable {
         }
 
         if !bullets.isEmpty {
-            var block = "结构化要点"
+            var block = "主要内容"
             for (index, bullet) in bullets.enumerated() {
                 if let label = bullet.label, !label.isEmpty {
                     block += "\n\(index + 1). \(label)：\(bullet.body)"

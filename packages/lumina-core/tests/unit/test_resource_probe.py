@@ -132,36 +132,59 @@ async def test_ollama_probe_without_chain_gate(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
-async def test_cursor_probe_missing_base_url() -> None:
+async def test_cursor_probe_missing_sdk(tmp_path, monkeypatch) -> None:
+    from lumina_core.models import cursor_sdk_adapter
+
+    cursor_sdk_adapter.reset_install_state_for_tests()
+    monkeypatch.setattr(
+        "lumina_core.resource_probe.get_install_state",
+        lambda data_dir: cursor_sdk_adapter.CursorSdkStatus(
+            installed=False,
+            importable=False,
+            status="idle",
+            message="未安装 Cursor SDK（请在设置中下载）",
+            vendor_dir=str(data_dir),
+        ),
+    )
     resource = ModelResource(
         id="cursor",
         provider="cursor",
-        base_url="",
         model="composer-2.5",
         api_key="cursor-key",
     )
-    status = await probe_resource(resource)
+    status = await probe_resource(resource, data_dir=tmp_path)
     assert status.ready is False
     assert status.probe_ok is False
-    assert "Base URL" in status.message
+    assert "SDK" in status.message
 
 
 @pytest.mark.asyncio
-async def test_cursor_probe_ready(monkeypatch) -> None:
-    def handler(request: httpx.Request) -> httpx.Response:
-        assert request.url.path.endswith("/models")
-        assert request.headers.get("Authorization") == "Bearer cursor-key"
-        return httpx.Response(200, json={"data": [{"id": "composer-2.5"}]})
+async def test_cursor_probe_ready(tmp_path, monkeypatch) -> None:
+    from lumina_core.models import cursor_sdk_adapter
 
-    monkeypatch.setattr(httpx, "AsyncClient", _client_factory(handler))
+    monkeypatch.setattr(
+        "lumina_core.resource_probe.get_install_state",
+        lambda data_dir: cursor_sdk_adapter.CursorSdkStatus(
+            installed=True,
+            importable=True,
+            status="ready",
+            message="ok",
+            vendor_dir=str(data_dir),
+        ),
+    )
+
+    async def fake_models(api_key: str):
+        assert api_key == "cursor-key"
+        return ["composer-2.5"]
+
+    monkeypatch.setattr("lumina_core.resource_probe.list_cursor_models", fake_models)
     resource = ModelResource(
         id="cursor",
         provider="cursor",
-        base_url="https://cursor-proxy.example/v1",
         model="composer-2.5",
         api_key="cursor-key",
     )
-    status = await probe_resource(resource)
+    status = await probe_resource(resource, data_dir=tmp_path)
     assert status.ready is True
     assert status.probe_ok is True
     assert status.key_configured is True
@@ -169,14 +192,25 @@ async def test_cursor_probe_ready(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
-async def test_cursor_probe_missing_key() -> None:
+async def test_cursor_probe_missing_key(tmp_path, monkeypatch) -> None:
+    from lumina_core.models import cursor_sdk_adapter
+
+    monkeypatch.setattr(
+        "lumina_core.resource_probe.get_install_state",
+        lambda data_dir: cursor_sdk_adapter.CursorSdkStatus(
+            installed=True,
+            importable=True,
+            status="ready",
+            message="ok",
+            vendor_dir=str(data_dir),
+        ),
+    )
     resource = ModelResource(
         id="cursor",
         provider="cursor",
-        base_url="https://cursor-proxy.example/v1",
         model="composer-2.5",
         api_key=None,
     )
-    status = await probe_resource(resource)
+    status = await probe_resource(resource, data_dir=tmp_path)
     assert status.ready is False
     assert "Key" in status.message

@@ -440,11 +440,95 @@ public class ModelJsonTests
     }
 
     [Fact]
+    public void ReadingProgressIndex_segment_total_ignores_summary_divergence()
+    {
+        Assert.Equal(40, ReadingProgressIndex.SegmentTotal(40));
+        Assert.Equal(64, ReadingProgressIndex.SegmentTotal(40, 64));
+        var openTotal = ReadingProgressIndex.SegmentTotal(40);
+        Assert.Equal(20, ReadingProgressIndex.Restore(11, 20, 40, openTotal));
+        // Old bug: max(segment, summary) discarded local progress.
+        Assert.Equal(11, ReadingProgressIndex.Restore(11, 20, 40, Math.Max(40, 48)));
+    }
+
+    [Fact]
+    public void ReadingProgressIndex_resume_idx_in_catalog_no_first_fallback()
+    {
+        Assert.Equal(20, ReadingProgressIndex.ResumeIdxInCatalog(20, new[] { 10, 11, 20, 21 }));
+        Assert.Null(ReadingProgressIndex.ResumeIdxInCatalog(20, new[] { 10, 11, 12 }));
+    }
+
+    [Fact]
     public void ReadingProgressIndex_restore_offset_when_segment_count_matches()
     {
         Assert.Equal(120, ReadingProgressIndex.RestoreOffset(120, 10, 10));
         Assert.Equal(0, ReadingProgressIndex.RestoreOffset(120, 12, 4));
         Assert.Equal(0, ReadingProgressIndex.RestoreOffset(null, 10, 10));
+    }
+
+    [Fact]
+    public void ReaderOpen_restores_local_before_around_and_skips_offset()
+    {
+        var testsRoot = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", ".."));
+        var path = Path.GetFullPath(Path.Combine(
+            testsRoot, "..", "Lumina", "Features", "Reader", "ReaderPage.xaml.cs"));
+        Assert.True(File.Exists(path), path);
+        var source = File.ReadAllText(path);
+        var open = source.Split("private async Task OpenAsync", 2)[1]
+            .Split("private void StartEvents", 2)[0];
+        Assert.Contains("GetCachedProgress", open);
+        Assert.Contains("ReadingProgressIndex.Restore(", open);
+        Assert.Contains("around: preferredIdx", open);
+        // preferredIdx must be computed before the first ListSegmentsAsync.
+        var restoreAt = open.IndexOf("ReadingProgressIndex.Restore(", StringComparison.Ordinal);
+        var listAt = open.IndexOf("ListSegmentsAsync(", StringComparison.Ordinal);
+        Assert.True(restoreAt >= 0 && listAt > restoreAt, "Restore local before around-fetch");
+        Assert.Contains("_pendingOffsetY = 0", open);
+        Assert.DoesNotContain("RestoreOffset(", open);
+        Assert.DoesNotContain("MinBy(s => Math.Abs(s.Idx - idx))", open);
+        Assert.Contains("ResumeIdxInCatalog", open);
+    }
+
+    [Fact]
+    public void SegmentSelection_skips_side_effects_for_merge_rebind()
+    {
+        var testsRoot = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", ".."));
+        var path = Path.GetFullPath(Path.Combine(
+            testsRoot, "..", "Lumina", "Features", "Reader", "ReaderPage.xaml.cs"));
+        Assert.True(File.Exists(path), path);
+        var source = File.ReadAllText(path);
+        var handler = source.Split("private async void SegmentList_SelectionChanged", 2)[1]
+            .Split("private void ContentScroll_ViewChanged", 2)[0];
+        // Same-idx rebind (catalog merge / chapter collapse) must return before
+        // hydrate / progress writes so a background merge never re-hydrates the
+        // visible segment or rewrites identical progress.
+        var guardAt = handler.IndexOf("_selected?.Idx == item.Segment.Idx", StringComparison.Ordinal);
+        var hydrateAt = handler.IndexOf("HydrateSelectedAsync(", StringComparison.Ordinal);
+        var saveAt = handler.IndexOf("SaveLocalProgress(", StringComparison.Ordinal);
+        Assert.True(guardAt >= 0, "selection handler must skip same-idx rebinds");
+        Assert.True(hydrateAt > guardAt, "guard must run before hydrate");
+        Assert.True(saveAt > guardAt, "guard must run before progress write");
+        // Open resets selection so the guard never blocks the first hydrate.
+        var nav = source.Split("protected override void OnNavigatedTo", 2)[1]
+            .Split("protected override void OnNavigatedFrom", 2)[0];
+        Assert.Contains("_selected = null", nav);
+    }
+
+    [Fact]
+    public void HydrateSelected_cache_hit_renders_without_awaiting_network()
+    {
+        var testsRoot = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", ".."));
+        var path = Path.GetFullPath(Path.Combine(
+            testsRoot, "..", "Lumina", "Features", "Reader", "ReaderPage.xaml.cs"));
+        Assert.True(File.Exists(path), path);
+        var source = File.ReadAllText(path);
+        var hydrate = source.Split("private async Task HydrateSelectedAsync()", 2)[1]
+            .Split("private bool TryGetRenderableCachedDetail", 2)[0];
+        Assert.Contains("TryGetRenderableCachedDetail(idx, out var cached)", hydrate);
+        Assert.Contains("RenderContent(cached)", hydrate);
+        var cacheBeforeCancel = hydrate.IndexOf("TryGetRenderableCachedDetail", StringComparison.Ordinal);
+        var cancelAt = hydrate.IndexOf("_hydrateCts?.Cancel()", StringComparison.Ordinal);
+        Assert.True(cacheBeforeCancel >= 0 && cancelAt > cacheBeforeCancel,
+            "cache hit must paint before cancelling in-flight hydrate");
     }
 
     [Fact]

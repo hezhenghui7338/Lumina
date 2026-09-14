@@ -60,7 +60,7 @@ struct ListenScript: Equatable {
     var ready: Bool
     var skipReason: String?
 
-    static let sectionBullets = "结构化要点"
+    static let sectionBullets = "主要内容"
     static let sectionNotes = "需要注意"
     static let maxUtteranceChars = 800
 

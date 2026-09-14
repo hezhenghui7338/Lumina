@@ -306,6 +306,34 @@ def test_load_html_preserves_headings_and_metadata(tmp_path):
     assert meta == {"title": "HTML 测试书", "author": "测试作者"}
 
 
+def test_html_soft_containers_do_not_invent_blank_lines():
+    """EPUB-style <div class="para"> must not become blank rows in the reader."""
+    from lumina_core.ingest.html import parse_html_document
+
+    div_paras, _ = parse_html_document(
+        """
+        <div class="chapter">
+          <div class="para">第一段内容。</div>
+          <div class="para">第二段内容。</div>
+          <div class="para">第三段内容。</div>
+        </div>
+        """
+    )
+    assert div_paras == "第一段内容。\n第二段内容。\n第三段内容。"
+
+    glued, _ = parse_html_document("<div>甲</div><div>乙</div>")
+    assert glued == "甲 乙"
+    assert "\n\n" not in glued
+
+    paragraphs, _ = parse_html_document("<p>甲</p><p>乙</p>")
+    assert paragraphs == "甲\n\n乙"
+
+    wrapped, _ = parse_html_document(
+        "<div><p>甲</p></div><div><p>乙</p></div>"
+    )
+    assert wrapped == "甲\n\n乙"
+
+
 def test_load_html_strips_source_section_sign_from_heading(tmp_path):
     p = tmp_path / "section.html"
     p.write_text(

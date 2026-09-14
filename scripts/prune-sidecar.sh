@@ -47,9 +47,12 @@ if [[ -n "$broken_links" ]]; then
   exit 1
 fi
 
-# Guard against legacy cursor-sdk artifacts (~150 MB Node runtime) in release bundles.
+# Guard against accidental packaging of cursor-sdk into the release sidecar
+# (~large Node/runtime footprint). Cursor SDK is downloaded on demand into the
+# user data directory (Application Support), never into _internal/.
 if [[ -d "$INTERNAL/cursor_sdk" ]]; then
   echo "ERROR: cursor_sdk must not be in release sidecar: $INTERNAL/cursor_sdk" >&2
+  echo "Install Cursor SDK from Settings into the user data directory instead." >&2
   exit 1
 fi
 

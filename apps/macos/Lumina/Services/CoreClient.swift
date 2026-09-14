@@ -150,6 +150,7 @@ struct BookSummary: Codable, Identifiable, Hashable {
         summaryTotal > 0 && summaryReady >= summaryTotal
     }
 
+    /// Progress restore/record total — segment rows only.
     var readingTotal: Int {
         max(segment_count ?? 0, 0)
     }
@@ -1050,6 +1051,15 @@ struct ResourceStatus: Codable {
     }
 }
 
+struct CursorSdkStatus: Codable {
+    let installed: Bool
+    let importable: Bool
+    let status: String
+    let message: String
+    let vendor_dir: String
+    let progress: String?
+}
+
 struct ContextProbeStep: Codable, Equatable {
     let chars: Int
     let ok: Bool
@@ -1781,6 +1791,16 @@ final class CoreClient: ObservableObject {
     func fetchResourceStatus(resourceId: String) async throws -> ResourceStatus {
         let data = try await get(path: "/settings/resources/\(resourceId)/status")
         return try await Self.decode(ResourceStatus.self, from: data)
+    }
+
+    func fetchCursorSdkStatus() async throws -> CursorSdkStatus {
+        let data = try await get(path: "/settings/cursor-sdk/status")
+        return try await Self.decode(CursorSdkStatus.self, from: data)
+    }
+
+    func installCursorSdk() async throws -> CursorSdkStatus {
+        let data = try await post(path: "/settings/cursor-sdk/install", body: Data("{}".utf8))
+        return try await Self.decode(CursorSdkStatus.self, from: data)
     }
 
     func startContextProbe(

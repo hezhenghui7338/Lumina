@@ -54,10 +54,6 @@ struct ReaderView: View {
     /// scrolling; intentional jumps freeze commits until three further pins.
     /// Every jump still assigns here — nothing else may move the scroll view.
     @State private var topSegmentIdx: Int?
-    /// Materialized render window anchor. Updated with hysteresis so regular
-    /// scrolling within ±hysteresisThreshold segments never moves the window
-    /// bounds or changes spacer heights mid-flight.
-    @State private var renderAnchorIdx: Int?
     @State private var readerGlobalFrame: CGRect = .null
     @State private var overlay: ReaderOverlay = .none
     @State private var overlayEngaged = false
@@ -150,7 +146,7 @@ struct ReaderView: View {
     }
 
     private var regenerateConfirmMessage: String {
-        let count = viewModel.effectiveSegmentCount
+        let count = viewModel.segments.count
         let tier = regenerateSummaryTier.label
         return "将用「\(tier)」重新生成全书 \(count) 个段的摘要。已有摘要会被全部覆盖，会消耗大量计算和 API 资源，且无法撤销。若只想用该档位补齐未摘要段落，请改用「开始摘要」。"
     }
@@ -281,7 +277,7 @@ struct ReaderView: View {
         resegmentTargetChars = ResegmentTarget.normalized(
             currentTarget: viewModel.chunkTargetChars,
             totalChars: viewModel.totalCharCount,
-            segmentCount: viewModel.effectiveSegmentCount
+            segmentCount: viewModel.segments.count
         )
         resegmentTier = .normal
         showResegmentSheet = true
@@ -289,7 +285,7 @@ struct ReaderView: View {
 
     private func openBoundaryEditor(at idx: Int? = nil) {
         let resolved = idx ?? viewModel.selectedIdx ?? 0
-        let lastIdx = max(0, viewModel.effectiveSegmentCount - 2)
+        let lastIdx = max(0, viewModel.segments.count - 2)
         boundaryLeftIdx = min(max(0, resolved), lastIdx)
         showBoundarySheet = true
     }
@@ -514,7 +510,7 @@ struct ReaderView: View {
     private func startListening(_ mode: ListenMode) {
         listenSession.configure(
             bookId: bookId,
-            segmentCount: viewModel.effectiveSegmentCount,
+            segmentCount: viewModel.segments.count,
             resolve: { [viewModel, core] idx, listenMode in
                 await viewModel.listenScript(idx: idx, mode: listenMode, core: core)
             },
@@ -664,7 +660,7 @@ struct ReaderView: View {
                     .buttonStyle(.plain)
                     .padding(.horizontal, 8)
                     .padding(.vertical, 6)
-                    .disabled(viewModel.effectiveSegmentCount < 2)
+                    .disabled(viewModel.segments.count < 2)
                     Button("整书重新分段") {
                         showSegmentPopover = false
                         prepareResegment()
@@ -946,22 +942,11 @@ struct ReaderView: View {
                 }
                 return
             }
-            let nextAnchor = SegmentRenderWindow.stabilizedAnchor(
-                currentPinnedIdx: idx,
-                existingAnchorIdx: renderAnchorIdx,
-                in: viewModel.segments
-            )
-            if renderAnchorIdx != nextAnchor {
-                renderAnchorIdx = nextAnchor
-            }
-            // Progress stays live; hydrate/prefetch wait for scroll idle.
             viewModel.noteTopSegment(idx)
-            viewModel.noteScrollActivity()
-            viewModel.scheduleViewportPrefetch(
-                around: idx,
-                core: core,
-                originalMode: contentMode == .original
-            )
+            viewModel.prefetchSummaries(around: idx, core: core, radius: 3)
+            if contentMode == .original {
+                viewModel.prefetchSources(around: idx, core: core, radius: 3)
+            }
         }
         .onPreferenceChange(ReaderGlobalFrameKey.self) { frame in
             readerGlobalFrame = frame
@@ -986,7 +971,6 @@ struct ReaderView: View {
             contentMode = ReaderPreferences.contentMode(for: bookId)
             viewModel.setContentMode(contentMode)
             topSegmentIdx = nil
-            renderAnchorIdx = nil
             // The resume index is delivered before the segments are published so
             // the feed's very first layout already renders at the saved segment.
             await viewModel.load(
@@ -994,7 +978,6 @@ struct ReaderView: View {
                 core: core,
                 initialSegmentIndex: initialSegmentIndex
             ) { resumeIdx in
-                renderAnchorIdx = resumeIdx
                 topSegmentIdx = resumeIdx
             }
             readerContentFocused = true
@@ -1004,7 +987,7 @@ struct ReaderView: View {
             if let idx = viewModel.selectedIdx {
                 viewModel.prefetchSummaries(around: idx, core: core, radius: 5)
             }
-            listenSession.updateSegmentCount(viewModel.effectiveSegmentCount)
+            listenSession.updateSegmentCount(viewModel.segments.count)
             if let settings = try? await core.fetchSettings() {
                 ListenPreferences.syncFromSettings(settings.models.tts)
             }
@@ -1127,35 +1110,8 @@ struct ReaderView: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(LuminaTheme.summaryPadding)
                     } else {
-                        // Bounded feed: far jumps teleport the window instead of
-                        // laying out every intermediate SegmentReadingBlock.
-                        let window = SegmentRenderWindow.readingWindow(
-                            segments: viewModel.segments,
-                            pinnedIdx: topSegmentIdx ?? viewModel.selectedIdx,
-                            anchorIdx: renderAnchorIdx
-                        )
-                        if window.aboveCount > 0 {
-                            Color.clear
-                                .frame(
-                                    height: SegmentRenderWindow.offscreenSpacerHeight(
-                                        count: window.aboveCount
-                                    )
-                                )
-                                .allowsHitTesting(false)
-                                .accessibilityHidden(true)
-                        }
-                        ForEach(window.items, id: \.idx) { seg in
+                        ForEach(viewModel.segments, id: \.idx) { seg in
                             segmentBlock(for: seg)
-                        }
-                        if window.belowCount > 0 {
-                            Color.clear
-                                .frame(
-                                    height: SegmentRenderWindow.offscreenSpacerHeight(
-                                        count: window.belowCount
-                                    )
-                                )
-                                .allowsHitTesting(false)
-                                .accessibilityHidden(true)
                         }
                     }
                 }
@@ -1308,15 +1264,14 @@ struct ReaderView: View {
 
     @ViewBuilder
     private func segmentBlock(for seg: SegmentRow) -> some View {
+        let _ = viewModel.sourceCacheVersion
         let cachedSource = viewModel.cachedSource(for: seg.idx)
         let idx = seg.idx
-        let sortedIdxs = viewModel.sortedSegmentIdxs
-        let isLast = viewModel.effectiveSegmentCount > 0
-            && seg.idx == viewModel.effectiveSegmentCount - 1
+        let isLast = seg.idx == viewModel.segments.last?.idx
         SegmentReadingBlock(
             contentMode: contentMode,
             segment: seg,
-            segmentTotal: viewModel.effectiveSegmentCount,
+            segmentTotal: viewModel.segments.count,
             isLast: isLast,
             isHighlighted: highlightSegment == idx,
             isSourceExpanded: contentMode == .original || expandedSourceSegments.contains(idx),
@@ -1350,10 +1305,10 @@ struct ReaderView: View {
                 }
             },
             canGoPrev: SegmentTurnNavigation.targetIdx(
-                current: idx, delta: -1, sortedIdxs: sortedIdxs
+                current: idx, delta: -1, sortedIdxs: viewModel.segments.map(\.idx).sorted()
             ) != nil,
             canGoNext: SegmentTurnNavigation.targetIdx(
-                current: idx, delta: 1, sortedIdxs: sortedIdxs
+                current: idx, delta: 1, sortedIdxs: viewModel.segments.map(\.idx).sorted()
             ) != nil,
             onPrevSegment: { turnSegment(from: idx, delta: -1) },
             onNextSegment: { turnSegment(from: idx, delta: 1) },
@@ -1374,14 +1329,9 @@ struct ReaderView: View {
 
     /// The one and only way to move the reader. Assigning the pinned segment is
     /// the scroll: SwiftUI owns the anchoring, nothing else touches the origin.
-    /// Far jumps (> scrollAnimateThreshold) disable animation so the bounded
-    /// reading window teleports around the target — cost stays O(buffer), not
-    /// O(distance), including ±100 segment sidebar / citation jumps.
     private func jump(to idx: Int) {
         LuminaSelectionActionPopover.dismiss()
         guard topSegmentIdx != idx else { return }
-        renderAnchorIdx = idx
-        viewModel.acknowledgeUserNavigation(target: idx)
         let delta = SegmentRenderWindow.segmentIndexDelta(
             from: topSegmentIdx,
             to: idx,
@@ -1408,35 +1358,14 @@ struct ReaderView: View {
     }
 
     private func turnSegment(from idx: Int, delta: Int) {
-        let base = SegmentTurnNavigation.continuousBaseIdx(
-            clickedIdx: idx,
-            delta: delta,
-            selectedIdx: viewModel.selectedIdx
-        )
+        let sorted = viewModel.segments.map(\.idx).sorted()
         guard let target = SegmentTurnNavigation.targetIdx(
-            current: base, delta: delta, sortedIdxs: viewModel.sortedSegmentIdxs
+            current: idx, delta: delta, sortedIdxs: sorted
         ) else { return }
-        viewModel.acknowledgeUserNavigation(target: target)
-        // Warm neighbours before the scroll lands so the turn feels instantaneous.
-        viewModel.prefetchSummaries(
-            around: target,
-            core: core,
-            back: ReaderScrollFeedPolicy.backwardPrefetchRadius,
-            forward: ReaderScrollFeedPolicy.forwardPrefetchRadius
-        )
-        if contentMode == .original {
-            viewModel.prefetchSources(
-                around: target,
-                core: core,
-                back: ReaderScrollFeedPolicy.backwardPrefetchRadius,
-                forward: ReaderScrollFeedPolicy.forwardPrefetchRadius
-            )
-        }
         navigateToSegment(target, suspendProgress: false)
     }
 
     private func navigateToSegment(_ idx: Int, suspendProgress: Bool = true) {
-        viewModel.acknowledgeUserNavigation(target: idx)
         if suspendProgress {
             viewModel.beginProgressSeek(at: idx)
         }
@@ -1451,7 +1380,6 @@ struct ReaderView: View {
     }
 
     private func selectSidebarSegment(_ idx: Int) {
-        viewModel.acknowledgeUserNavigation(target: idx)
         viewModel.beginProgressSeek(at: idx)
         viewModel.selectedIdx = idx
         jump(to: idx)
@@ -2534,20 +2462,15 @@ enum BookLanguageMatcher {
 @MainActor
 final class ReaderViewModel: ObservableObject {
     @Published var segments: [SegmentRow] = []
-    /// Cached ascending idxs for the current `segments` (updated only when the catalog changes).
-    private(set) var sortedSegmentIdxs: [Int] = []
-    /// Authoritative segment count from the server; may exceed `segments.count` while catalog fills.
-    @Published private(set) var catalogTotalCount = 0
     @Published var selectedIdx: Int?
     @Published var checkedSegmentIndices: Set<Int> = []
     @Published var isSegmentSelectionMode = false
     @Published var collapsedOutlineKeys: Set<String> = []
     private var collapsedOutlineByBook: [String: Set<String>] = [:]
     @Published var currentSegment: SegmentRow?
-    /// Bumps when a source body is stored/evicted so Equatable rows can refresh without a global force-read.
     @Published private(set) var sourceCacheVersion = 0
-    @Published private(set) var loadingSourceIndices: Set<Int> = []
-    @Published private(set) var refreshingSourceIndices: Set<Int> = []
+    @Published var loadingSourceIndices: Set<Int> = []
+    @Published var refreshingSourceIndices: Set<Int> = []
     @Published var messages: [ChatMessage] = []
     @Published var isSending = false
     @Published var chatStatus: String?
@@ -2586,20 +2509,10 @@ final class ReaderViewModel: ObservableObject {
     private var summaryHydrateTasks: [Int: Task<Void, Never>] = [:]
     private var summaryPrefetchTask: Task<Void, Never>?
     private var summaryPrefetchGeneration = 0
-    private var prefetchingSummaryIdx: Int?
-    private var viewportPrefetchTask: Task<Void, Never>?
-    private var scrollIdleTask: Task<Void, Never>?
-    private var scrollBusy = false
-    private var lastScrollSegmentIdx: Int?
-    private var pendingSourcePrefetch: (idx: Int, core: CoreClient, back: Int, forward: Int)?
-    private var catalogFillTask: Task<Void, Never>?
-    private var catalogFillGeneration = 0
-    private var catalogHasMoreBefore = false
-    private var catalogHasMoreAfter = false
     private var summaryParseTasks: [Int: Task<Void, Never>] = [:]
     private var chatTask: Task<Void, Never>?
-    @Published private(set) var hydratingSummaryIndices: Set<Int> = []
-    @Published private(set) var parsingSummaryIndices: Set<Int> = []
+    private var hydratingSummaryIndices: Set<Int> = []
+    private var parsingSummaryIndices: Set<Int> = []
     private var parsedSummarySourceJSON: [Int: String] = [:]
     private var parsingSummaryJSON: [Int: String] = [:]
     private var summaryParseGeneration: [Int: Int] = [:]
@@ -2608,29 +2521,9 @@ final class ReaderViewModel: ObservableObject {
     private var contentMode: ReaderContentMode = .summary
     private let summaryModeCacheLimit = 5
     private let originalModeCacheLimit = 12
-    /// First paint around resume index; remainder fills in the background.
-    static let openCatalogWindowLimit = 64
-    static let catalogFillPageLimit = 200
 
     private var effectiveCacheLimit: Int {
         contentMode == .original ? originalModeCacheLimit : summaryModeCacheLimit
-    }
-
-    private func replaceSegments(_ next: [SegmentRow]) {
-        segments = next
-        sortedSegmentIdxs = next.map(\.idx)
-    }
-
-    private func appendSegments(_ more: [SegmentRow]) {
-        guard !more.isEmpty else { return }
-        segments.append(contentsOf: more)
-        sortedSegmentIdxs.append(contentsOf: more.map(\.idx))
-    }
-
-    private func prependSegments(_ more: [SegmentRow]) {
-        guard !more.isEmpty else { return }
-        segments = more + segments
-        sortedSegmentIdxs = more.map(\.idx) + sortedSegmentIdxs
     }
 
     static let resegmentMinTargetChars = ResegmentTarget.minChars
@@ -2649,11 +2542,6 @@ final class ReaderViewModel: ObservableObject {
         )
     }
 
-    /// Prefer server total while progressive catalog is still filling.
-    var effectiveSegmentCount: Int {
-        max(catalogTotalCount, segments.count)
-    }
-
     func setContentMode(_ mode: ReaderContentMode) {
         guard contentMode != mode else { return }
         contentMode = mode
@@ -2665,106 +2553,15 @@ final class ReaderViewModel: ObservableObject {
     }
 
     func prefetchSources(around idx: Int, core: CoreClient, radius: Int) {
-        prefetchSources(around: idx, core: core, back: radius, forward: radius)
-    }
-
-    func prefetchSources(around idx: Int, core: CoreClient, back: Int, forward: Int) {
-        let sorted = sortedSegmentIdxs
-        let window = ReaderScrollFeedPolicy.prefetchWindow(
-            sorted: sorted,
-            center: idx,
-            back: back,
-            forward: forward
-        )
-        guard !window.isEmpty else { return }
-        let desired = Set(window)
-        cancelSourceFetches(outside: desired)
-        let missing = window.filter {
-            sourceCache[$0] == nil && !loadingSourceIndices.contains($0)
-        }
-        .sorted { abs($0 - idx) < abs($1 - idx) }
-        let inFlight = detailTasks.count
-        let slots = max(0, ReaderScrollFeedPolicy.sourceFetchConcurrency - inFlight)
-        guard slots > 0 else {
-            pendingSourcePrefetch = (idx, core, back, forward)
-            return
-        }
-        pendingSourcePrefetch = nil
-        for segmentIdx in missing.prefix(slots) {
+        let sorted = segments.map(\.idx).sorted()
+        guard let pos = sorted.firstIndex(of: idx) else { return }
+        let start = max(0, pos - radius)
+        let end = min(sorted.count - 1, pos + radius)
+        for i in start...end {
+            let segmentIdx = sorted[i]
+            if sourceCache[segmentIdx] != nil { continue }
+            if loadingSourceIndices.contains(segmentIdx) { continue }
             fetchSource(idx: segmentIdx, core: core)
-        }
-        if missing.count > slots {
-            pendingSourcePrefetch = (idx, core, back, forward)
-        }
-    }
-
-    private func cancelSourceFetches(outside desired: Set<Int>) {
-        let obsolete = detailTasks.keys.filter { !desired.contains($0) }
-        var removed = false
-        for taskIdx in obsolete {
-            detailTasks.removeValue(forKey: taskIdx)?.cancel()
-            if loadingSourceIndices.contains(taskIdx) {
-                loadingSourceIndices.remove(taskIdx)
-            }
-            refreshingSourceIndices.remove(taskIdx)
-            removed = true
-        }
-        if removed {
-            pumpPendingSourcePrefetch()
-        }
-    }
-
-    private func pumpPendingSourcePrefetch() {
-        guard let pending = pendingSourcePrefetch else { return }
-        pendingSourcePrefetch = nil
-        prefetchSources(
-            around: pending.idx,
-            core: pending.core,
-            back: pending.back,
-            forward: pending.forward
-        )
-    }
-
-    /// Mark the feed as scrolling so background catalog merges wait for idle.
-    func noteScrollActivity() {
-        scrollBusy = true
-        scrollIdleTask?.cancel()
-        scrollIdleTask = Task { @MainActor [weak self] in
-            try? await Task.sleep(nanoseconds: ReaderScrollFeedPolicy.scrollIdleNanoseconds)
-            guard !Task.isCancelled, let self else { return }
-            self.scrollBusy = false
-        }
-    }
-
-    /// Progress is recorded immediately; hydrate/prefetch runs after a short debounce.
-    func scheduleViewportPrefetch(around idx: Int, core: CoreClient, originalMode: Bool) {
-        let previous = lastScrollSegmentIdx
-        lastScrollSegmentIdx = idx
-        viewportPrefetchTask?.cancel()
-        viewportPrefetchTask = Task { @MainActor [weak self] in
-            try? await Task.sleep(nanoseconds: ReaderScrollFeedPolicy.prefetchDebounceNanoseconds)
-            guard !Task.isCancelled, let self else { return }
-            let radii = ReaderScrollFeedPolicy.directionalRadii(from: previous, to: idx)
-            self.prefetchSummaries(
-                around: idx,
-                core: core,
-                back: radii.back,
-                forward: radii.forward
-            )
-            if originalMode {
-                self.prefetchSources(
-                    around: idx,
-                    core: core,
-                    back: radii.back,
-                    forward: radii.forward
-                )
-            }
-        }
-    }
-
-    private func waitWhileScrollBusy() async {
-        while scrollBusy && !Task.isCancelled {
-            try? await Task.sleep(nanoseconds: 50_000_000)
         }
     }
 
@@ -2852,16 +2649,6 @@ final class ReaderViewModel: ObservableObject {
         eventTask = nil
         restoreSettleTask?.cancel()
         restoreSettleTask = nil
-        catalogFillTask?.cancel()
-        catalogFillTask = nil
-        catalogFillGeneration += 1
-        viewportPrefetchTask?.cancel()
-        viewportPrefetchTask = nil
-        scrollIdleTask?.cancel()
-        scrollIdleTask = nil
-        scrollBusy = false
-        lastScrollSegmentIdx = nil
-        pendingSourcePrefetch = nil
         for task in detailTasks.values {
             task.cancel()
         }
@@ -2873,7 +2660,6 @@ final class ReaderViewModel: ObservableObject {
         summaryPrefetchTask?.cancel()
         summaryPrefetchTask = nil
         summaryPrefetchGeneration += 1
-        prefetchingSummaryIdx = nil
         clearSummaryCache()
         hydratingSummaryIndices.removeAll()
         chatTask?.cancel()
@@ -2898,10 +2684,7 @@ final class ReaderViewModel: ObservableObject {
         if !self.bookId.isEmpty {
             collapsedOutlineByBook[self.bookId] = collapsedOutlineKeys
         }
-        replaceSegments([])
-        catalogTotalCount = 0
-        catalogHasMoreBefore = false
-        catalogHasMoreAfter = false
+        segments = []
         selectedIdx = nil
         checkedSegmentIndices = []
         isSegmentSelectionMode = false
@@ -2959,41 +2742,31 @@ final class ReaderViewModel: ObservableObject {
             }
 
             async let openTask = core.openBook(id: bookId)
+            // Compat full slim catalog (no around) — intentional d383158 rollback.
+            async let listTask = core.listSegments(bookId: bookId)
             let open = try await openTask
             try Task.checkCancellation()
+            let page = try await listTask
+            try Task.checkCancellation()
+            let list = page.segments
 
             let saved = ReadingProgressStore.shared.resumeIndex(
                 bookId: bookId,
                 serverIndex: open.current_segment_index,
-                segmentCount: max(book.segment_count ?? 0, book.summary_total_count ?? 0, 1)
+                segmentCount: page.total ?? list.count
             )
             let jumpedIn = initialSegmentIndex != nil
-            let preferredIdx = initialSegmentIndex ?? saved
-            // Windowed catalog — never wait on O(n) full list for first paint.
-            let page = try await core.listSegments(
-                bookId: bookId,
-                around: preferredIdx,
-                limit: Self.openCatalogWindowLimit
-            )
-            try Task.checkCancellation()
-            let list = page.segments.sorted { $0.idx < $1.idx }
-            catalogTotalCount = page.total
-                ?? book.segment_count
-                ?? book.summary_total_count
-                ?? list.count
-            catalogHasMoreBefore = page.has_more_before ?? false
-            catalogHasMoreAfter = page.has_more_after ?? false
-
-            let idx = list.first(where: { $0.idx == preferredIdx })?.idx
+            let idx = initialSegmentIndex
+                ?? list.first(where: { $0.idx == saved })?.idx
                 ?? list.first?.idx
             restoreTarget = idx
             // Pin before publishing the feed: the first layout lands on `idx`.
             onResume(idx)
 
-            replaceSegments(list)
+            segments = list
             warmSummaryCache(from: list)
             summaryReadyCount = book.summary_ready_count ?? list.filter { $0.summary_status == "ready" }.count
-            summaryTotalCount = book.summary_total_count ?? catalogTotalCount
+            summaryTotalCount = book.summary_total_count ?? list.count
             summarizeState = book.summarize_state
             totalCharCount = book.total_char_count
             chunkTargetChars = book.chunk_target_chars
@@ -3006,7 +2779,7 @@ final class ReaderViewModel: ObservableObject {
                 ReadingProgressStore.shared.hydrate(
                     bookId: bookId,
                     index: progressIdx,
-                    total: catalogTotalCount
+                    total: list.count
                 )
                 if jumpedIn {
                     beginProgressSeek(at: idx)
@@ -3020,7 +2793,6 @@ final class ReaderViewModel: ObservableObject {
                 progressPhase = .reading
                 selectedIdx = nil
             }
-            fillCatalogInBackground(core: core)
         } catch is CancellationError {
             progressPhase = .reading
             return
@@ -3062,18 +2834,6 @@ final class ReaderViewModel: ObservableObject {
         }
     }
 
-    /// When the user explicitly navigates (turn segment, jump, sidebar click),
-    /// immediately dismiss any cold-start restore lock so user action is not
-    /// reverted back to the restored segment.
-    func acknowledgeUserNavigation(target: Int? = nil) {
-        if progressPhase == .restoring {
-            restoreSettleTask?.cancel()
-            restoreSettleTask = nil
-            progressPhase = .reading
-            restoreTarget = nil
-        }
-    }
-
     /// Record the segment pinned to the top of the viewport. This is the only
     /// place reading progress is written — and only when the seek gate allows.
     func noteTopSegment(_ idx: Int) {
@@ -3088,7 +2848,7 @@ final class ReaderViewModel: ObservableObject {
         ReadingProgressStore.shared.record(
             bookId: bookId,
             index: idx,
-            total: effectiveSegmentCount
+            total: segments.count
         )
     }
 
@@ -3119,7 +2879,7 @@ final class ReaderViewModel: ObservableObject {
         ReadingProgressStore.shared.record(
             bookId: bookId,
             index: currentIdx,
-            total: effectiveSegmentCount
+            total: segments.count
         )
         if selectedIdx != currentIdx {
             topSegmentSelection = currentIdx
@@ -3149,150 +2909,15 @@ final class ReaderViewModel: ObservableObject {
         await ReadingProgressStore.shared.flush(bookId: bookId)
     }
 
-    /// Background pages until the full slim catalog is present. Cancelled on leave/switch.
-    private func fillCatalogInBackground(core: CoreClient) {
-        catalogFillTask?.cancel()
-        catalogFillGeneration += 1
-        let generation = catalogFillGeneration
-        let bookId = self.bookId
-        let pageLimit = Self.catalogFillPageLimit
-        catalogFillTask = Task { @MainActor [weak self] in
-            guard let self else { return }
-            // Let the first paint and initial user interaction settle cleanly.
-            try? await Task.sleep(nanoseconds: ReaderScrollFeedPolicy.catalogFillInitialDelayNanoseconds)
-            guard !Task.isCancelled,
-                  self.catalogFillGeneration == generation,
-                  self.bookId == bookId
-            else { return }
-            // Prefer expanding forward (reading direction), then backward.
-            while !Task.isCancelled,
-                  self.catalogFillGeneration == generation,
-                  self.bookId == bookId,
-                  self.catalogHasMoreAfter
-            {
-                await self.waitWhileScrollBusy()
-                guard !Task.isCancelled,
-                      self.catalogFillGeneration == generation,
-                      self.bookId == bookId
-                else { return }
-                guard let maxIdx = self.sortedSegmentIdxs.last else { break }
-                guard let page = try? await core.listSegments(
-                    bookId: bookId,
-                    afterIdx: maxIdx,
-                    limit: pageLimit
-                ) else { return }
-                guard !Task.isCancelled,
-                      self.catalogFillGeneration == generation,
-                      self.bookId == bookId
-                else { return }
-                await self.waitWhileScrollBusy()
-                guard !Task.isCancelled,
-                      self.catalogFillGeneration == generation,
-                      self.bookId == bookId
-                else { return }
-                self.mergeCatalogPage(page)
-                self.catalogHasMoreAfter = page.has_more_after ?? false
-                await Task.yield()
-            }
-            while !Task.isCancelled,
-                  self.catalogFillGeneration == generation,
-                  self.bookId == bookId,
-                  self.catalogHasMoreBefore
-            {
-                await self.waitWhileScrollBusy()
-                guard !Task.isCancelled,
-                      self.catalogFillGeneration == generation,
-                      self.bookId == bookId
-                else { return }
-                guard let minIdx = self.sortedSegmentIdxs.first else { break }
-                guard let page = try? await core.listSegments(
-                    bookId: bookId,
-                    beforeIdx: minIdx,
-                    limit: pageLimit
-                ) else { return }
-                guard !Task.isCancelled,
-                      self.catalogFillGeneration == generation,
-                      self.bookId == bookId
-                else { return }
-                await self.waitWhileScrollBusy()
-                guard !Task.isCancelled,
-                      self.catalogFillGeneration == generation,
-                      self.bookId == bookId
-                else { return }
-                self.mergeCatalogPage(page)
-                self.catalogHasMoreBefore = page.has_more_before ?? false
-                await Task.yield()
-            }
-            if self.catalogFillGeneration == generation {
-                self.catalogFillTask = nil
-            }
-        }
-    }
-
-    private func mergeCatalogPage(_ page: SegmentCatalogPage) {
-        if let total = page.total, total > 0 {
-            catalogTotalCount = total
-        }
-        guard !page.segments.isEmpty else { return }
-        let incomingIdxs = page.segments.map(\.idx)
-        if ReaderCatalogMergePolicy.canAppendAfter(
-            existingMaxIdx: sortedSegmentIdxs.last,
-            incomingIdxs: incomingIdxs
-        ) {
-            appendSegments(page.segments)
-            warmSummaryCache(from: page.segments)
-            return
-        }
-        if ReaderCatalogMergePolicy.canPrependBefore(
-            existingMinIdx: sortedSegmentIdxs.first,
-            incomingIdxs: incomingIdxs
-        ) {
-            prependSegments(page.segments)
-            warmSummaryCache(from: page.segments)
-            return
-        }
-        var byIdx = Dictionary(uniqueKeysWithValues: segments.map { ($0.idx, $0) })
-        for incoming in page.segments {
-            if let existing = byIdx[incoming.idx] {
-                var merged = existing
-                if merged.summary_preview == nil { merged.summary_preview = incoming.summary_preview }
-                if merged.bullet_labels == nil { merged.bullet_labels = incoming.bullet_labels }
-                if merged.label == nil { merged.label = incoming.label }
-                if merged.heading_path == nil { merged.heading_path = incoming.heading_path }
-                byIdx[incoming.idx] = merged
-            } else {
-                byIdx[incoming.idx] = incoming
-            }
-        }
-        replaceSegments(byIdx.values.sorted { $0.idx < $1.idx })
-        warmSummaryCache(from: page.segments)
-    }
-
     func prefetchSummaries(around idx: Int, core: CoreClient, radius: Int = 3) {
-        prefetchSummaries(around: idx, core: core, back: radius, forward: radius)
-    }
-
-    func prefetchSummaries(around idx: Int, core: CoreClient, back: Int, forward: Int) {
-        let window = ReaderScrollFeedPolicy.prefetchWindow(
-            sorted: sortedSegmentIdxs,
-            center: idx,
-            back: back,
-            forward: forward
-        )
-        guard !window.isEmpty else { return }
+        let sorted = segments.map(\.idx).sorted()
+        guard let pos = sorted.firstIndex(of: idx) else { return }
+        let start = max(0, pos - radius)
+        let end = min(sorted.count - 1, pos + radius)
+        let window = Array(sorted[start...end])
         let desired = Set(window)
 
-        // 1. Cancel previous serial prefetch first and clean up in-flight prefetch index
-        if let currentPrefetch = prefetchingSummaryIdx {
-            hydratingSummaryIndices.remove(currentPrefetch)
-            prefetchingSummaryIdx = nil
-        }
-        summaryPrefetchTask?.cancel()
-        summaryPrefetchTask = nil
-        summaryPrefetchGeneration += 1
-
-        // 2. Cancel eager tasks that have moved completely outside the desired window
-        let obsoleteTaskIndices = summaryHydrateTasks.keys.filter { !desired.contains($0) }
+        let obsoleteTaskIndices = summaryHydrateTasks.keys.filter { $0 != idx }
         for taskIdx in obsoleteTaskIndices {
             summaryHydrateTasks.removeValue(forKey: taskIdx)?.cancel()
             hydratingSummaryIndices.remove(taskIdx)
@@ -3304,34 +2929,25 @@ final class ReaderViewModel: ObservableObject {
             hydratingSummaryIndices.remove(taskIdx)
         }
 
-        // 3. Center segment gets eager first-class hydrate request
+        // The visible segment wins the only eager request. Neighbours hydrate
+        // serially at utility priority so a far jump cannot fan out seven DB reads.
         hydrateSummary(idx: idx, core: core)
-
-        // 4. Start serial background prefetch for remaining unhydrated neighbours
+        summaryPrefetchTask?.cancel()
+        summaryPrefetchGeneration += 1
         let generation = summaryPrefetchGeneration
         let bookId = self.bookId
         let neighbours = window
-            .filter { $0 != idx && summaryHydrateTasks[$0] == nil }
+            .filter { $0 != idx }
             .sorted { abs($0 - idx) < abs($1 - idx) }
         summaryPrefetchTask = Task(priority: .utility) { @MainActor [weak self] in
             guard let self else { return }
-            defer {
-                if self.summaryPrefetchGeneration == generation {
-                    if let current = self.prefetchingSummaryIdx {
-                        self.hydratingSummaryIndices.remove(current)
-                        self.prefetchingSummaryIdx = nil
-                    }
-                    self.summaryPrefetchTask = nil
-                }
-            }
             for neighbour in neighbours {
-                guard !Task.isCancelled else { break }
+                guard !Task.isCancelled else { return }
                 guard self.summaryPrefetchGeneration == generation,
                       self.bookId == bookId,
                       let segment = self.segments.first(where: { $0.idx == neighbour }),
                       self.needsSummaryHydration(segment)
                 else { continue }
-                self.prefetchingSummaryIdx = neighbour
                 self.hydratingSummaryIndices.insert(neighbour)
                 let detail = try? await core.fetchSegmentSummary(
                     bookId: bookId,
@@ -3340,14 +2956,14 @@ final class ReaderViewModel: ObservableObject {
                 guard !Task.isCancelled,
                       self.summaryPrefetchGeneration == generation,
                       self.bookId == bookId
-                else { break }
-                if self.prefetchingSummaryIdx == neighbour {
-                    self.hydratingSummaryIndices.remove(neighbour)
-                    self.prefetchingSummaryIdx = nil
-                }
+                else { return }
+                self.hydratingSummaryIndices.remove(neighbour)
                 if let detail {
                     self.mergeSummaryDetail(detail, at: neighbour)
                 }
+            }
+            if self.summaryPrefetchGeneration == generation {
+                self.summaryPrefetchTask = nil
             }
         }
     }
@@ -3358,11 +2974,9 @@ final class ReaderViewModel: ObservableObject {
             ensureSummaryParsed(idx: idx, json: json)
         }
         guard needsSummaryHydration(seg) else { return }
-        guard summaryHydrateTasks[idx] == nil else { return }
+        guard !hydratingSummaryIndices.contains(idx) else { return }
 
-        if prefetchingSummaryIdx == idx {
-            prefetchingSummaryIdx = nil
-        }
+        summaryHydrateTasks[idx]?.cancel()
         hydratingSummaryIndices.insert(idx)
         let bookId = self.bookId
 
@@ -3526,7 +3140,6 @@ final class ReaderViewModel: ObservableObject {
 
     /// Apply list meta only — never fetch or cache raw_text / translation in `segments[]`.
     func selectSegment(_ idx: Int) {
-        if currentSegment?.idx == idx { return }
         if let meta = segments.first(where: { $0.idx == idx }) {
             currentSegment = meta
         }
@@ -3596,7 +3209,6 @@ final class ReaderViewModel: ObservableObject {
                 self.detailTasks.removeValue(forKey: idx)
                 self.loadingSourceIndices.remove(idx)
                 self.refreshingSourceIndices.remove(idx)
-                defer { self.pumpPendingSourcePrefetch() }
                 guard let fresh else { return }
                 let rawText = fresh.raw_text ?? ""
                 let translation = fresh.translation ?? ""

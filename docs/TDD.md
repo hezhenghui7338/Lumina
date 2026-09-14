@@ -37,6 +37,8 @@
 | Ollama 首次体验 | 参考 LocalAgent `la setup`（RAM 分档 + pull） | B10 |
 | 资讯简报 | RSS **标题 + excerpt 规则截取** | N2 |
 | 深聊线程 | 每书一个 thread | B4 |
+| 阅读定位 | **段 absolute Y**；开书/段列表贴顶、上下段进视口；先跳后补；空闲轻量 hydrate | §3.2 / §5.3 |
+| 摘要/原文几何 | 全书与段内均为自然高度（可重算后缀 Y）；段内以切换速度为先 | §3.2 / §5.4 |
 
 ---
 
@@ -726,11 +728,45 @@ final class ReaderViewModel: ObservableObject {
 
 听文本：`ListenSession`（macOS `ObservableObject` / Windows 会话对象）管连播、倍速与离开即停；系统引擎本地拼稿并调用本机语音包。设置可打开 VoiceOver Utility（macOS 15+）或 `ms-settings:speech`（Windows）引导下载系统语音包；客户端**不代下**音库。切书走 `cancelAllTasks()` / `OnNavigatedFrom` 时必须 `stop()`。 sidecar **不发起**外网 TTS。
 
+### 6.1a 阅读定位与内容 hydrate（PRD §3.2 / §5.3）
+
+macOS 连续 Feed 的进度与跳转以**段绝对位置**为准；`scrollPosition(id:)` 可为派生 UI 状态，不得作为开书后反复 bounce 的主人。估高可先跳，测高后异步修正。
+
+**绝对位置**
+- 每段维护 `absolute_y`（段起点 Y）与 `outer_height`；`absolute_y[i] = sum(outer_height[0..<i])`（或等价前缀和）；未测高时用稳定估高
+- **摘要 / 原文（含段内切换）**：`outer_height` = 段标题行 + 当前可见内容面板**自然高度** + 段间分隔；摘要未就绪时用稳定占位高
+- **全书原文模式**：原文（及译文若呈现）自然高度；切换后异步重算 absolute Y，允许较慢，不得冻 UI
+- **开书 / 段列表**：`scrollTo(absolute_y[target])`，段顶对齐视口顶（不恢复段内偏移）；一次即可，无长 settle / pin bounce
+- **上下段**：`ensureVisible(target)`——目标段进入视口即可，不强制贴顶
+
+**段内「切换原文 / 切换摘要」**
+- 立刻替换内容面板，外框随内容自然高度；允许后缀 absolute Y 更新
+- 切换后**不**再 seek；相邻翻段保持展开态；离开该书或切全书模式时再收起
+
+**须触发后缀 absolute Y 更新（异步 / 分帧；阅读中不自动 seek 纠偏）**
+- 重新摘要（从变更段起）
+- 首次摘要到货导致外框改高
+- 字号变化
+- 全书摘要 ↔ 原文模式切换
+- 段内摘要 ↔ 原文自然高度变化
+
+**内容 hydrate 队列（与摘要 Job prefetch 区分）**
+- macOS 开书：compat 全量 slim catalog（无 `around`）一次入内存；主区 `ForEach` 全部段；`scrollPosition` 钉顶边段。大书卡顿为已知取舍。
+- 当前段优先拉 `GET .../summary`（摘要模式）或 `GET .../segments/{idx}`（原文可见时）；JSON 解码离开 MainActor；邻域可 prefetch
+- 后端仍保留窗口 API：`GET /segments?around|after_idx|before_idx`（导出 / 其他客户端）；列表永不含 `raw_text`
+- 滑动路径不主动 seek；开书一次贴顶，无长 settle / 反复 pin bounce
+
+**禁止**
+- 主线程同步扫全书测高 / 重算 absolute Y / 解码大体量 JSON
+- 开书后长 settle 反复 pin bounce
+- SSE `snapshot` 倾倒含 `raw_text` 的 O(n) 段行；`GET /segments` 列表带正文
+- 等邻域 hydrate 完成才允许跳转
+
 ### 6.2 布局映射 PRD §3.2
 
 ```
 ZStack
-├── SegmentContentView（摘要 + 原文/译文；始终全宽）
+├── SegmentContentView（摘要 + 原文/译文；始终全宽；自然高度按 §6.1a）
 ├── NotesDrawer（渐进披露 · 右侧；上下让开顶底栏）
 ├── ChatDrawer（渐进披露 · 底部；停在底栏之上）
 ├── TopChromeBar（overlay；恒定 inset，显隐不得位移正文）
@@ -740,12 +776,12 @@ ZStack
 ```
 
 - 段列表是覆盖层，不是内嵌侧栏，不得挤压阅读区。底栏打开目录（自底上滑、不盖住底栏）；再点段列表 / Esc / 选段关闭。打开笔记或深聊时关掉目录。深聊 / 笔记仍为抽屉。阅读中不提供「最近」书库列表，切书走书架。无贴边图标、无触边 250ms dwell。字号与纸色走底栏「显示」popover；纸色不得改 `preferredColorScheme`。
-- 段切换：`currentSegment` 更新；Chat 历史按 **book** 保留（PRD）
+- 段切换：开书/段列表贴顶；上下段 ensureVisible；先跳后轻量 hydrate；Chat 历史按 **book** 保留（PRD）
 - **Citation 跳转 + 整段闪高亮（v1.0）**：
-  1. `selectSegment(idx)` 切换段列表与内容区
+  1. `selectSegment(idx)` 切换段列表与内容区并 `scrollTo(absolute_y)`
   2. `SegmentContentView` 对整段容器施加 **flash 背景动画**（~400ms 琥珀色 fade-out）
   3. **不做**句级 offset 高亮；选区提问仅注入上下文，跳转仍整段闪高亮
-
+  4. 书内原文搜索命中：切全书原文模式后框内/段内滚到高亮；外层仍按段顶 absolute Y 定位
 ### 6.3 书籍视图（占位）
 
 `ReaderView` 顶栏 SegmentedControl：`段阅读 | 全书`  
@@ -803,6 +839,7 @@ class ModelRouter:
 
 - Ollama 流式：SSE 解析 `message.content` delta
 - 外部 API：`httpx` + OpenAI-compatible；Key 由 core `secrets.json` 持久化，启动时加载；开发可用 `LUMINA_*_API_KEY` 环境变量覆盖
+- **Cursor**：`provider=cursor` 走 `cursor_sdk_adapter`（Python `cursor-sdk`），**不是** OpenAI-compatible HTTP。运行时固定 `cloud` + `repos=[]`；`AsyncAgent` 覆盖 `complete` / `chat` / stream。`json_mode` 靠 prompt 约束 + 现有 JSON 重试。SDK 按需 `pip install --target {data_dir}/vendor/cursor-sdk`，调用前插入 `sys.path`；release sidecar **不**打包。设置提供安装进度 API；`prune-sidecar` 仍禁止 `_internal/cursor_sdk/`
 
 ### 7.3 Ollama 首次体验（参考 LocalAgent `ollama_setup.py`）
 
@@ -847,7 +884,7 @@ class ModelRouter:
 |------|------|----------|--------|
 | **CPU** | ingest · OCR · chunk | 1 | 中 |
 | **Ollama** | 段摘要 prefetch · 翻译 prefetch | **2**（可配置 1–4） | 摘要 > 翻译 |
-| **Cursor** | summarize fallback · OpenAI 兼容 HTTP | **8**（可配置 1–8） | 摘要 fallback |
+| **Cursor** | summarize / chat / classify · 官方 Python SDK（cloud `repos=[]`） | **8**（可配置 1–8） | 摘要 fallback；SDK 按需装到 `data_dir/vendor`，不进 sidecar |
 | **Cloud** | OpenAI / OpenRouter 等 | 4 | 摘要 fallback |
 
 **Router 层 Semaphore**：chat、summarize、translate 经 `ProfileModelRouter` 的调用共享按 **resource id** 的并发槽。JobQueue worker 数 = 摘要链各资源 `concurrency` 的 **max**（默认 `max(2,8,4)=8`）；Ollama 槽满时立即 fallback Cursor，不再等 12s 超时。
@@ -873,7 +910,9 @@ JobQueue：`asyncio.PriorityQueue` + worker pool；每书一个摘要链锁，�
 |----------|----------|
 | **永不卡住用户** | 瘦段列表 API；增量 SSE；`to_thread`/JobQueue 保护事件循环；CoreClient 解码离 MainActor；请求可取消 |
 | 首段 ≤15s | 仅生成 segment[0] summary+label；短 prompt |
-| 段切换 ≤200ms | 段内容已缓存在 SQLite；列表不含 raw_text，按需单段拉取 |
+| 段切换 ≤200ms | 段内容已缓存在 SQLite；列表不含 raw_text，按需单段拉取；先跳后补；开书/段列表用 absolute Y 贴顶，上下段 ensureVisible |
+| 段内自然高度切换 | 立刻换面板；允许后缀 absolute Y 更新；切换后不 seek |
+| 全书模式切换 / 字号 / 重摘要 | 异步分帧更新 absolute Y；禁止主线程同步全书 layout；阅读中不自动 seek |
 | 深聊首 token ≤3s | 流式 SSE；RAG 限制 top-k=3；token 批处理刷新 UI |
 | 离线书库 | Core 无网时跳过 web_search |
 | 隐私 | Sidecar 只 bind 127.0.0.1；keys 存 `secrets.json`（0600） |
@@ -988,6 +1027,9 @@ JobQueue：`asyncio.PriorityQueue` + worker pool；每书一个摘要链锁，�
 | 分段时机 | ✅ | **导入即开始**分段+摘要 |
 | 段生成失败 | ✅ | 重试 **3 次** → `failed`；可手动 retry |
 | 磁盘缓存上限 | ✅ | 单书 **2GB** quota；LRU 淘汰 |
+| 阅读 absolute Y | ✅ | 估高可先跳；开书/段列表贴顶；上下段进视口；空闲轻量 hydrate |
+| 段内摘要/原文 | ✅ | 自然高度即时替换；可更新后续 Y；切换后不 seek |
+| 全书原文模式 | ✅ | 自然高度连续原文；切换后允许较慢异步重算 Y |
 
 ### B12 听文本
 

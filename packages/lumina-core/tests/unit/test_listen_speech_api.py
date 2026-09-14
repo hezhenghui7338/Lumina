@@ -104,7 +104,7 @@ def test_listen_script_detailed_has_bullets_not_follow_ups(client):
         params={"mode": "detailed"},
     ).json()
     texts = [u["text"] for u in payload["utterances"]]
-    assert "结构化要点" in texts
+    assert "主要内容" in texts
     assert any(t.startswith("1. 寒门出身。") for t in texts)
     assert "需要注意" not in texts
     joined = "\n".join(texts)

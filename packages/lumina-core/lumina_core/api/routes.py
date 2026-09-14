@@ -75,6 +75,11 @@ from lumina_core.search.original import search_original
 from lumina_core.tts.script import LISTEN_MODES, ListenMode
 from lumina_core.tts.service import load_listen_script
 from lumina_core.resource_probe import probe_ocr, probe_resource
+from lumina_core.models.cursor_sdk_adapter import (
+    get_install_state as cursor_sdk_get_install_state,
+    install_cursor_sdk_async,
+    mark_installing as cursor_sdk_mark_installing,
+)
 from lumina_core.ops.helpers import (
     book_title,
     register_article_task,
@@ -1070,7 +1075,37 @@ async def list_segments(
             _raise_on_db_schema_error(e)
             raise  # pragma: no cover
 
-    return await asyncio.to_thread(_list_meta)
+    started = time.perf_counter()
+    try:
+        result = await asyncio.to_thread(_list_meta)
+    except Exception:
+        elapsed_ms = (time.perf_counter() - started) * 1000
+        logger.warning(
+            "list_segments failed book_id=%s around=%s after_idx=%s before_idx=%s "
+            "limit=%s elapsed_ms=%.0f",
+            book_id,
+            around,
+            after_idx,
+            before_idx,
+            limit,
+            elapsed_ms,
+            exc_info=True,
+        )
+        raise
+    elapsed_ms = (time.perf_counter() - started) * 1000
+    if elapsed_ms >= 2000:
+        logger.warning(
+            "list_segments slow book_id=%s around=%s after_idx=%s before_idx=%s "
+            "limit=%s elapsed_ms=%.0f total=%s",
+            book_id,
+            around,
+            after_idx,
+            before_idx,
+            limit,
+            elapsed_ms,
+            result.get("total"),
+        )
+    return result
 
 
 @router.get("/books/{book_id}/original-search")
@@ -1332,9 +1367,27 @@ async def open_book(book_id: str, request: Request) -> dict[str, Any]:
 
     # Opening writes recency metadata and can wait behind an ingest writer.
     # Keep that wait off the single uvicorn event-loop thread.
-    book = await asyncio.to_thread(_open_book)
+    started = time.perf_counter()
+    try:
+        book = await asyncio.to_thread(_open_book)
+    except Exception:
+        elapsed_ms = (time.perf_counter() - started) * 1000
+        logger.warning(
+            "open_book failed book_id=%s elapsed_ms=%.0f",
+            book_id,
+            elapsed_ms,
+            exc_info=True,
+        )
+        raise
+    elapsed_ms = (time.perf_counter() - started) * 1000
     if not book:
         raise HTTPException(404, "Book not found")
+    if elapsed_ms >= 2000:
+        logger.warning(
+            "open_book slow book_id=%s elapsed_ms=%.0f",
+            book_id,
+            elapsed_ms,
+        )
     _wire_job_events(state)
     if state.job_queue.auto_start_summary:
         # Never block first paint on O(n) prefetch / recover scans.
@@ -1839,7 +1892,7 @@ async def all_resource_status(request: Request) -> dict[str, Any]:
     state = _state(request)
     results: list[dict[str, Any]] = []
     for resource in state.models.resources:
-        status = await probe_resource(resource)
+        status = await probe_resource(resource, data_dir=state.settings.data_dir)
         results.append(status.to_dict())
     return {"resources": results}
 
@@ -1855,7 +1908,7 @@ async def resource_status(resource_id: str, request: Request) -> dict[str, Any]:
     resource = state.models.resource_by_id(resource_id)
     if resource is None:
         raise HTTPException(404, "Resource not found")
-    status = await probe_resource(resource)
+    status = await probe_resource(resource, data_dir=state.settings.data_dir)
     return status.to_dict()
 
 
@@ -1911,7 +1964,7 @@ async def ollama_status(request: Request, resource_id: str = "ollama") -> dict[s
     if resource is None or resource.provider != "ollama":
         return {"skipped": True, "resource_id": resource_id}
 
-    status = await probe_resource(resource)
+    status = await probe_resource(resource, data_dir=state.settings.data_dir)
     payload = status.to_dict()
     payload["skipped"] = False
     payload["served"] = status.probe_ok
@@ -1924,6 +1977,34 @@ async def ollama_status(request: Request, resource_id: str = "ollama") -> dict[s
 @router.get("/settings/resources/{resource_id}/ollama-status")
 async def ollama_status_for_resource(resource_id: str, request: Request) -> dict[str, Any]:
     return await ollama_status(request, resource_id=resource_id)
+
+
+@router.get("/settings/cursor-sdk/status")
+async def cursor_sdk_status(request: Request) -> dict[str, Any]:
+    state = _state(request)
+    return cursor_sdk_get_install_state(state.settings.data_dir).to_dict()
+
+
+@router.post("/settings/cursor-sdk/install", status_code=202)
+async def cursor_sdk_install(request: Request) -> dict[str, Any]:
+    state = _state(request)
+    existing = getattr(state, "cursor_sdk_install_task", None)
+    if existing is not None and not existing.done():
+        return {
+            "status": "installing",
+            **cursor_sdk_get_install_state(state.settings.data_dir).to_dict(),
+        }
+
+    async def _run() -> None:
+        await install_cursor_sdk_async(state.settings.data_dir)
+
+    cursor_sdk_mark_installing()
+    task = asyncio.create_task(_run())
+    state.cursor_sdk_install_task = task
+    return {
+        "status": "started",
+        **cursor_sdk_get_install_state(state.settings.data_dir).to_dict(),
+    }
 
 
 @router.post("/shutdown")

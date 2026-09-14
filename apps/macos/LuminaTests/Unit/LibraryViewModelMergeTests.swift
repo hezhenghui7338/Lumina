@@ -238,13 +238,13 @@ final class LibraryViewModelMergeTests: XCTestCase {
             )
         ]
 
-        viewModel.applyLocalProgress(["reading": ReadingPosition(index: 4, total: 10)])
+        viewModel.applyLocalProgress { _ in ReadingPosition(index: 4, total: 10) }
 
         XCTAssertEqual(viewModel.books[0].current_segment_index, 4)
         XCTAssertEqual(viewModel.books[0].readingStatusLabel, "在读 · 5/10 段")
         XCTAssertEqual(viewModel.books[0].readingProgressBucket, .reading)
 
-        viewModel.applyLocalProgress(["reading": ReadingPosition(index: 9, total: 10)])
+        viewModel.applyLocalProgress { _ in ReadingPosition(index: 9, total: 10) }
         XCTAssertEqual(viewModel.books[0].readingStatusLabel, "已读完")
         XCTAssertEqual(viewModel.books[0].readingProgressBucket, .finished)
     }
@@ -258,13 +258,52 @@ final class LibraryViewModelMergeTests: XCTestCase {
             book(id: "b", lastOpenedAt: "2024-05-01T00:00:00Z", currentSegmentIndex: 0),
         ]
 
-        viewModel.applyLocalProgress([
+        let positions: [String: ReadingPosition] = [
             "a": ReadingPosition(index: 5, total: 10),
             "b": ReadingPosition(index: 8, total: 10),
-        ])
+        ]
+        viewModel.applyLocalProgress { positions[$0] }
 
         XCTAssertEqual(viewModel.books[0].readingStatusLabel, "在读 · 6/10 段")
         XCTAssertEqual(viewModel.books[1].readingStatusLabel, "在读 · 9/10 段")
+    }
+
+    /// The overlay lookup is consulted per book, so a position that only
+    /// exists deeper in the store chain (memory not yet published, or the disk
+    /// cache) still reaches the row — the shelf can never keep a stale baked
+    /// value the reader's resume would not use.
+    func testApplyLocalProgress_consultsLookupForEveryRow() {
+        let viewModel = LibraryViewModel()
+        viewModel.books = [
+            book(id: "a", lastOpenedAt: "2024-05-01T00:00:00Z", currentSegmentIndex: 1),
+            book(id: "b", lastOpenedAt: "2024-05-01T00:00:00Z", currentSegmentIndex: 2),
+        ]
+        var consulted: [String] = []
+        viewModel.applyLocalProgress { id in
+            consulted.append(id)
+            return id == "b" ? ReadingPosition(index: 7, total: 10) : nil
+        }
+        XCTAssertEqual(Set(consulted), ["a", "b"])
+        XCTAssertEqual(viewModel.books[0].current_segment_index, 1)
+        XCTAssertEqual(viewModel.books[1].current_segment_index, 7)
+    }
+
+    /// The shelf overlay must use the store's full memory → published → disk
+    /// lookup — the same chain the reader's resume uses — not just the
+    /// published positions dictionary.
+    func testShelfOverlayUsesFullProgressLookup() throws {
+        let macosRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let content = try String(
+            contentsOf: macosRoot.appendingPathComponent("Lumina/ContentView.swift"),
+            encoding: .utf8
+        )
+        XCTAssertTrue(
+            content.contains("viewModel.applyLocalProgress { readingProgress.position(for: $0) }"),
+            "shelf overlay must read through ReadingProgressStore.position(for:)"
+        )
     }
 
     func testApplyReadingProgress_setsOpenedAtWhenUnread() {
@@ -272,10 +311,9 @@ final class LibraryViewModelMergeTests: XCTestCase {
         viewModel.books = [book(id: "unread", lastOpenedAt: nil, currentSegmentIndex: 0)]
 
         let opened = Date(timeIntervalSince1970: 1_700_000_000)
-        viewModel.applyLocalProgress(
-            ["unread": ReadingPosition(index: 2, total: 10)],
-            openedAt: opened
-        )
+        viewModel.applyLocalProgress(openedAt: opened) { _ in
+            ReadingPosition(index: 2, total: 10)
+        }
 
         XCTAssertNotNil(viewModel.books[0].last_opened_at)
         XCTAssertEqual(viewModel.books[0].current_segment_index, 2)

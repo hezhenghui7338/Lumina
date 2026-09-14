@@ -693,10 +693,18 @@ final class ReaderChromeClickArchitectureTests: XCTestCase {
     func testSegmentHeaderDoesNotScaleWithReadingFont() throws {
         let block = try source("Lumina/Features/Reader/SegmentReadingBlock.swift")
         let header = block.components(separatedBy: "private var segmentHeaderRow").last?
-            .components(separatedBy: "private var resolvedAnchorText").first ?? ""
+            .components(separatedBy: "private var progressStatusView").first ?? ""
         XCTAssertFalse(
             header.contains("scaled("),
             "turn buttons and header metadata must keep a stable size when body type scales"
+        )
+        XCTAssertTrue(
+            header.contains("SegmentReadingHeaderTitle.title"),
+            "reading header must share segment-list title resolution"
+        )
+        XCTAssertFalse(
+            header.contains("anchor_label") || header.contains("parsedSummary?.anchor"),
+            "anchor must not occupy the reading header leading slot"
         )
     }
 

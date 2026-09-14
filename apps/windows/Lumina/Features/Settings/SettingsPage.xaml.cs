@@ -310,6 +310,18 @@ public sealed partial class SettingsPage : Page
             ResourceStatusText.Text = resources.Count == 0
                 ? "无资源状态"
                 : string.Join(" · ", resources.Select(r => $"{r.ResourceId}: {r.DisplayMessage}"));
+            try
+            {
+                var cursorSdk = await App.Core.FetchCursorSdkStatusAsync(ct);
+                CursorSdkStatusText.Text = string.IsNullOrWhiteSpace(cursorSdk.Message)
+                    ? cursorSdk.Status
+                    : cursorSdk.Message;
+                CursorSdkInstallBtn.Content = cursorSdk.Importable ? "更新 Cursor SDK" : "下载 Cursor SDK";
+            }
+            catch
+            {
+                // optional status; ignore
+            }
         }
         catch (Exception ex)
         {
@@ -320,6 +332,35 @@ public sealed partial class SettingsPage : Page
     private async void OpenOllama_Click(object sender, RoutedEventArgs e)
     {
         await Launcher.LaunchUriAsync(new Uri("https://ollama.com/download"));
+    }
+
+    private async void InstallCursorSdk_Click(object sender, RoutedEventArgs e)
+    {
+        CursorSdkInstallBtn.IsEnabled = false;
+        try
+        {
+            CursorSdkStatusText.Text = "正在下载 Cursor SDK…";
+            _ = await App.Core.InstallCursorSdkAsync();
+            for (var i = 0; i < 120; i++)
+            {
+                var status = await App.Core.FetchCursorSdkStatusAsync();
+                CursorSdkStatusText.Text = string.IsNullOrWhiteSpace(status.Message)
+                    ? status.Status
+                    : status.Message;
+                CursorSdkInstallBtn.Content = status.Importable ? "更新 Cursor SDK" : "下载 Cursor SDK";
+                if (status.Status is not "installing")
+                    break;
+                await Task.Delay(500);
+            }
+        }
+        catch (Exception ex)
+        {
+            CursorSdkStatusText.Text = ex.Message;
+        }
+        finally
+        {
+            CursorSdkInstallBtn.IsEnabled = true;
+        }
     }
 
     private async Task RefreshOcrStatusAsync(CancellationToken ct = default)

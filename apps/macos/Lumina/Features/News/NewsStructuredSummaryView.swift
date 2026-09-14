@@ -45,7 +45,7 @@ struct NewsStructuredSummaryView: View {
             }
 
             if !parsed.bullets.isEmpty {
-                summarySection(title: "结构化要点") {
+                summarySection(title: "主要内容") {
                     VStack(alignment: .leading, spacing: LuminaTheme.summaryBulletItemSpacing) {
                         ForEach(Array(parsed.bullets.enumerated()), id: \.offset) { index, bullet in
                             NewsStructuredBulletRow(index: index + 1, bullet: bullet, scale: scale)
@@ -202,7 +202,7 @@ struct SummarySkimSkeleton: View {
 
             SourceTextSkeleton(lineCount: 2)
 
-            Text("结构化要点")
+            Text("主要内容")
                 .font(.system(size: scaled(LuminaTheme.summaryLabelSize), weight: .semibold))
                 .foregroundStyle(LuminaTheme.textSecondary)
                 .tracking(0.6)

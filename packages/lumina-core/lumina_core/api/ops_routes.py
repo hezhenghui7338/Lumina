@@ -32,7 +32,7 @@ async def _cached_probes(state: AppState) -> list[dict[str, Any]]:
         return _probe_cache["resources"]
     results: list[dict[str, Any]] = []
     for resource in state.models.resources:
-        status = await probe_resource(resource)
+        status = await probe_resource(resource, data_dir=state.settings.data_dir)
         results.append(status.to_dict())
     _probe_cache["at"] = now
     _probe_cache["resources"] = results

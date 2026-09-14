@@ -16,21 +16,27 @@ def _read_html(path: Path) -> str:
 
 
 class _DocumentParser(HTMLParser):
-    _BLOCK_TAGS: ClassVar[set[str]] = {
+    # Real paragraphs / breaks → blank-line-ish separation after _clean_document.
+    _HARD_BLOCK_TAGS: ClassVar[set[str]] = {
+        "blockquote",
+        "li",
+        "p",
+        "pre",
+        "table",
+        "tr",
+    }
+    # Layout wrappers common in EPUB/XHTML. Emitting \n on both sides turned
+    # every <div class="para"> into a blank row in the reader. Match the old
+    # EPUB regex (non-p tags → space) so adjacent wrappers do not invent \n\n.
+    _SOFT_BLOCK_TAGS: ClassVar[set[str]] = {
         "address",
         "article",
         "aside",
-        "blockquote",
         "div",
         "footer",
         "header",
-        "li",
         "main",
-        "p",
-        "pre",
         "section",
-        "table",
-        "tr",
     }
 
     def __init__(self) -> None:
@@ -63,8 +69,10 @@ class _DocumentParser(HTMLParser):
         elif re.fullmatch(r"h[1-6]", tag):
             self._heading_depth += 1
             self._heading_parts = []
-        elif tag == "br" or tag in self._BLOCK_TAGS:
+        elif tag == "br" or tag in self._HARD_BLOCK_TAGS:
             self.parts.append("\n")
+        elif tag in self._SOFT_BLOCK_TAGS:
+            self.parts.append(" ")
 
     def handle_endtag(self, tag: str) -> None:
         tag = tag.lower()
@@ -82,8 +90,10 @@ class _DocumentParser(HTMLParser):
                 self.metadata.setdefault("title", heading)
             self._heading_depth -= 1
             self._heading_parts = []
-        elif tag in self._BLOCK_TAGS:
+        elif tag in self._HARD_BLOCK_TAGS:
             self.parts.append("\n")
+        elif tag in self._SOFT_BLOCK_TAGS:
+            self.parts.append(" ")
 
     def handle_data(self, data: str) -> None:
         if self._hidden_depth:

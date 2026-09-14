@@ -51,7 +51,7 @@ final class NewsSummaryMarkdownTests: XCTestCase {
         let parsed = NewsSummaryMarkdown.parse(markdown)
 
         XCTAssertTrue(parsed.bodyMarkdown.contains("## 总结"))
-        XCTAssertTrue(parsed.bodyMarkdown.contains("## 结构化要点"))
+        XCTAssertTrue(parsed.bodyMarkdown.contains("## 主要内容"))
         XCTAssertFalse(parsed.bodyMarkdown.contains("你可以接着问"))
         XCTAssertEqual(parsed.followUps, [
             "这篇文章的核心论点是什么？",

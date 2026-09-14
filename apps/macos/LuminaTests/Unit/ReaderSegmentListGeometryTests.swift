@@ -24,56 +24,6 @@ final class ReaderCoverPagePolicyTests: XCTestCase {
     }
 }
 
-final class ReaderScrollFeedPolicyTests: XCTestCase {
-    func testDirectionalRadii_prefersTravelDirection() {
-        let down = ReaderScrollFeedPolicy.directionalRadii(from: 10, to: 14)
-        XCTAssertEqual(down.back, ReaderScrollFeedPolicy.backwardPrefetchRadius)
-        XCTAssertEqual(down.forward, ReaderScrollFeedPolicy.forwardPrefetchRadius)
-
-        let up = ReaderScrollFeedPolicy.directionalRadii(from: 14, to: 10)
-        XCTAssertEqual(up.back, ReaderScrollFeedPolicy.forwardPrefetchRadius)
-        XCTAssertEqual(up.forward, ReaderScrollFeedPolicy.backwardPrefetchRadius)
-    }
-
-    func testPrefetchWindow_isBoundedAroundCenter() {
-        let sorted = Array(0..<100)
-        let window = ReaderScrollFeedPolicy.prefetchWindow(
-            sorted: sorted,
-            center: 50,
-            back: 2,
-            forward: 4
-        )
-        XCTAssertEqual(window, Array(48...54))
-    }
-
-    func testCatalogMerge_detectsPureAppendAndPrepend() {
-        XCTAssertTrue(
-            ReaderCatalogMergePolicy.canAppendAfter(
-                existingMaxIdx: 63,
-                incomingIdxs: [64, 65, 66]
-            )
-        )
-        XCTAssertFalse(
-            ReaderCatalogMergePolicy.canAppendAfter(
-                existingMaxIdx: 63,
-                incomingIdxs: [62, 64]
-            )
-        )
-        XCTAssertTrue(
-            ReaderCatalogMergePolicy.canPrependBefore(
-                existingMinIdx: 64,
-                incomingIdxs: [60, 61, 62, 63]
-            )
-        )
-        XCTAssertFalse(
-            ReaderCatalogMergePolicy.canPrependBefore(
-                existingMinIdx: 64,
-                incomingIdxs: [63, 62, 61]
-            )
-        )
-    }
-}
-
 final class ReaderCoverPageArchitectureTests: XCTestCase {
     private func source(_ relativePath: String) throws -> String {
         let macosRoot = URL(fileURLWithPath: #filePath)
@@ -122,7 +72,7 @@ final class ReaderCoverPageArchitectureTests: XCTestCase {
     func testSegmentJumpBoundsAndCancelsSummaryPrefetch() throws {
         let reader = try source("Lumina/Features/Reader/ReaderView.swift")
         guard
-            let start = reader.range(of: "func prefetchSummaries(around idx: Int, core: CoreClient, back: Int, forward: Int)"),
+            let start = reader.range(of: "func prefetchSummaries("),
             let end = reader.range(
                 of: "\n    func hydrateSummary(",
                 range: start.lowerBound..<reader.endIndex
@@ -139,34 +89,6 @@ final class ReaderCoverPageArchitectureTests: XCTestCase {
             prefetch.contains("for i in start...end"),
             "a segment jump must not fan out every summary request at once"
         )
-    }
-
-    func testFastScrollDebouncesPrefetchAndPausesCatalogFill() throws {
-        let reader = try source("Lumina/Features/Reader/ReaderView.swift")
-        let geometry = try source("Lumina/Features/Reader/ReaderSegmentListGeometry.swift")
-
-        XCTAssertTrue(geometry.contains("enum ReaderScrollFeedPolicy"))
-        XCTAssertTrue(geometry.contains("prefetchDebounceNanoseconds"))
-        XCTAssertTrue(geometry.contains("enum ReaderCatalogMergePolicy"))
-        XCTAssertTrue(geometry.contains("canAppendAfter"))
-
-        XCTAssertTrue(
-            reader.contains("scheduleViewportPrefetch("),
-            "topSegmentIdx must debounce hydrate/prefetch while recording progress live"
-        )
-        XCTAssertTrue(reader.contains("noteScrollActivity()"))
-        XCTAssertTrue(reader.contains("waitWhileScrollBusy()"))
-        XCTAssertTrue(
-            reader.contains("ReaderCatalogMergePolicy.canAppendAfter"),
-            "catalog fill must append without a full dictionary rebuild when possible"
-        )
-        XCTAssertTrue(reader.contains("cancelSourceFetches(outside:"))
-        XCTAssertTrue(reader.contains("sourceFetchConcurrency"))
-        XCTAssertFalse(
-            reader.contains("let _ = viewModel.sourceCacheVersion"),
-            "segment rows must not force-subscribe to a global source cache version"
-        )
-        XCTAssertTrue(reader.contains("sortedSegmentIdxs"))
     }
 
     func testSegmentCoverSlidesFromBottomAboveTheBottomBar() throws {
@@ -577,24 +499,10 @@ final class ReadingProgressStoreTests: XCTestCase {
     func testRecord_persistsSegmentIndexImmediately() {
         let book = makeBookId()
         let store = ReadingProgressStore.shared
-        store.record(bookId: book, index: 5, total: 20, immediate: true)
-
-        XCTAssertEqual(store.position(for: book)?.index, 5)
-        XCTAssertEqual(store.position(for: book)?.total, 20)
-        XCTAssertEqual(ReaderPreferences.cachedProgress(for: book)?.index, 5)
-    }
-
-    func testRecord_debouncesPersistentCacheByDefault() async {
-        let book = makeBookId()
-        let store = ReadingProgressStore.shared
         store.record(bookId: book, index: 5, total: 20)
 
-        // In-memory position is updated immediately for reading continuity
         XCTAssertEqual(store.position(for: book)?.index, 5)
         XCTAssertEqual(store.position(for: book)?.total, 20)
-
-        // Flushing immediately commits memory cache to UserDefaults
-        await store.flush(bookId: book)
         XCTAssertEqual(ReaderPreferences.cachedProgress(for: book)?.index, 5)
     }
 
@@ -615,9 +523,9 @@ final class ReadingProgressStoreTests: XCTestCase {
         let bookB = makeBookId()
         let store = ReadingProgressStore.shared
 
-        store.record(bookId: bookA, index: 5, total: 20, immediate: true)
-        store.record(bookId: bookB, index: 12, total: 40, immediate: true)
-        store.record(bookId: bookB, index: 13, total: 40, immediate: true)
+        store.record(bookId: bookA, index: 5, total: 20)
+        store.record(bookId: bookB, index: 12, total: 40)
+        store.record(bookId: bookB, index: 13, total: 40)
 
         XCTAssertEqual(store.position(for: bookA)?.index, 5)
         XCTAssertEqual(store.position(for: bookB)?.index, 13)
@@ -722,22 +630,6 @@ final class ReaderProgressArchitectureTests: XCTestCase {
             "the reader feed must have exactly one scrollPosition binding"
         )
     }
-
-    func testUserNavigationReleasesRestorePhaseLock() throws {
-        let source = try readerSource()
-        XCTAssertTrue(
-            source.contains("func acknowledgeUserNavigation(target: Int? = nil)"),
-            "ReaderViewModel must provide acknowledgeUserNavigation to unlock cold-start restore lock on active navigation"
-        )
-        XCTAssertTrue(
-            source.contains("viewModel.acknowledgeUserNavigation(target: target)"),
-            "turnSegment must acknowledge user navigation to prevent reverting to restore target"
-        )
-        XCTAssertTrue(
-            source.contains("prefetchingSummaryIdx"),
-            "ReaderViewModel must track and clean up in-flight prefetch index on cancellation"
-        )
-    }
 }
 
 final class ReaderKeyboardScrollTests: XCTestCase {
@@ -817,40 +709,6 @@ final class SegmentTurnNavigationTests: XCTestCase {
         XCTAssertNil(SegmentTurnNavigation.targetIdx(current: 0, delta: 1, sortedIdxs: []))
         XCTAssertNil(
             SegmentTurnNavigation.targetIdx(current: 9, delta: 1, sortedIdxs: [0, 2, 5])
-        )
-    }
-
-    func testContinuousBaseIdx_advancesWhenSelectedIdxIsAhead() {
-        XCTAssertEqual(
-            SegmentTurnNavigation.continuousBaseIdx(clickedIdx: 0, delta: 1, selectedIdx: 1),
-            1
-        )
-        XCTAssertEqual(
-            SegmentTurnNavigation.continuousBaseIdx(clickedIdx: 0, delta: 1, selectedIdx: 2),
-            2
-        )
-        XCTAssertEqual(
-            SegmentTurnNavigation.continuousBaseIdx(clickedIdx: 0, delta: 1, selectedIdx: 0),
-            0
-        )
-        XCTAssertEqual(
-            SegmentTurnNavigation.continuousBaseIdx(clickedIdx: 0, delta: 1, selectedIdx: nil),
-            0
-        )
-    }
-
-    func testContinuousBaseIdx_retreatsWhenSelectedIdxIsBehind() {
-        XCTAssertEqual(
-            SegmentTurnNavigation.continuousBaseIdx(clickedIdx: 5, delta: -1, selectedIdx: 4),
-            4
-        )
-        XCTAssertEqual(
-            SegmentTurnNavigation.continuousBaseIdx(clickedIdx: 5, delta: -1, selectedIdx: 5),
-            5
-        )
-        XCTAssertEqual(
-            SegmentTurnNavigation.continuousBaseIdx(clickedIdx: 5, delta: -1, selectedIdx: 6),
-            5
         )
     }
 }

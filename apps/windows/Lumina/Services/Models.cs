@@ -88,7 +88,7 @@ public sealed class BookSummary
     }
 
     [JsonIgnore]
-    public int ReadingTotal => Math.Max(SegmentCount ?? 0, 0);
+    public int ReadingTotal => ReadingProgressIndex.SegmentTotal(SegmentCount);
 
     [JsonIgnore]
     public int ReadingCurrent
@@ -1281,6 +1281,16 @@ public sealed class OllamaStatus
     public bool Available => !Skipped && (ProbeOk || Served);
 }
 
+public sealed class CursorSdkStatus
+{
+    public bool Installed { get; set; }
+    public bool Importable { get; set; }
+    public string Status { get; set; } = "idle";
+    public string Message { get; set; } = "";
+    public string VendorDir { get; set; } = "";
+    public string? Progress { get; set; }
+}
+
 public sealed class ImportConflictException : Exception
 {
     public string ExistingBookId { get; }
@@ -1308,6 +1318,20 @@ public sealed class StructuredSummary
 
 public static class ReadingProgressIndex
 {
+    /// <summary>Canonical segment count for progress — segment rows only, never summary_total.</summary>
+    public static int SegmentTotal(int? segmentCount, int? catalogTotal = null) =>
+        Math.Max(catalogTotal ?? 0, Math.Max(segmentCount ?? 0, 0));
+
+    /// <summary>Pin target after an around-window fetch; null if preferred is still absent.</summary>
+    public static int? ResumeIdxInCatalog(int preferredIdx, IEnumerable<int> catalogIdxs)
+    {
+        foreach (var idx in catalogIdxs)
+        {
+            if (idx == preferredIdx) return preferredIdx;
+        }
+        return null;
+    }
+
     public static int Restore(
         int serverIndex,
         int? localIndex,
@@ -1320,6 +1344,10 @@ public static class ReadingProgressIndex
         return Math.Clamp(serverIndex, 0, last);
     }
 
+    /// <summary>
+    /// Legacy mid-segment offset. Open-book resume must not call this — progress
+    /// is segment-index only so reopen always starts at the segment head.
+    /// </summary>
     public static double RestoreOffset(
         double? localOffset,
         int? localSegmentCount,

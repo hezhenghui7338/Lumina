@@ -567,6 +567,18 @@ public sealed class CoreClient : IDisposable
         return Deserialize<ResourceStatus>(data) ?? new ResourceStatus { ResourceId = resourceId };
     }
 
+    public async Task<CursorSdkStatus> FetchCursorSdkStatusAsync(CancellationToken ct = default)
+    {
+        var data = await GetAsync("/settings/cursor-sdk/status", ct).ConfigureAwait(false);
+        return Deserialize<CursorSdkStatus>(data) ?? new CursorSdkStatus();
+    }
+
+    public async Task<CursorSdkStatus> InstallCursorSdkAsync(CancellationToken ct = default)
+    {
+        var data = await PostAsync("/settings/cursor-sdk/install", "{}", ct).ConfigureAwait(false);
+        return Deserialize<CursorSdkStatus>(data) ?? new CursorSdkStatus();
+    }
+
     public async Task<ContextProbeStatus> StartContextProbeAsync(
         string resourceId,
         string? model = null,

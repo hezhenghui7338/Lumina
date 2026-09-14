@@ -540,8 +540,11 @@ final class LibraryViewModel: ObservableObject {
 
     /// Re-apply the store's positions to the rows. Called whenever the reader
     /// records a new position, so the shelf never drifts from what is on screen.
-    func applyLocalProgress(_ positions: [String: ReadingPosition], openedAt: Date = Date()) {
-        books = Self.overlayLocalProgress(books, openedAt: openedAt) { positions[$0] }
+    /// The lookup must be the store's full memory → published → disk chain so
+    /// the shelf shows exactly what the reader will resume from — a row must
+    /// never keep a previously overlaid value the open path would not use.
+    func applyLocalProgress(openedAt: Date = Date(), cached: (String) -> ReadingPosition?) {
+        books = Self.overlayLocalProgress(books, openedAt: openedAt, cached: cached)
     }
 
     var hasIncompleteSummaries: Bool {

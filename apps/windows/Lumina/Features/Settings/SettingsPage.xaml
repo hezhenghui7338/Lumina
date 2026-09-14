@@ -129,6 +129,14 @@
             <TextBox x:Name="CursorKeyBox" Header="Cursor API Key（可选）"/>
             <TextBox x:Name="CursorModelBox" Header="Cursor 正常模型" PlaceholderText="composer-2.5"/>
             <TextBox x:Name="CursorAdvancedModelBox" Header="Cursor 高级模型（留空回退正常模型）"/>
+            <TextBlock Text="Cursor 使用官方 SDK（cloud 无仓库），无需 Base URL；首次使用请下载 SDK。"
+                       FontSize="12" TextWrapping="WrapWholeWords"
+                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+            <StackPanel Orientation="Horizontal" Spacing="8">
+                <Button x:Name="CursorSdkInstallBtn" Content="下载 Cursor SDK" Click="InstallCursorSdk_Click"/>
+                <TextBlock x:Name="CursorSdkStatusText" VerticalAlignment="Center" TextWrapping="WrapWholeWords"
+                           Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+            </StackPanel>
             <StackPanel Orientation="Horizontal" Spacing="8">
                 <Button x:Name="CursorProbeBtn" Content="测上下文" Click="ProbeContext_Click" Tag="cursor"/>
                 <TextBlock x:Name="CursorProbeText" VerticalAlignment="Center" TextWrapping="WrapWholeWords"

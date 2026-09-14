@@ -480,8 +480,8 @@ private struct LibraryTabView: View {
         .onReceive(NotificationCenter.default.publisher(for: .luminaLibraryRefresh)) { _ in
             Task { await refreshBooks() }
         }
-        .onReceive(readingProgress.$positions) { positions in
-            viewModel.applyLocalProgress(positions)
+        .onReceive(readingProgress.$positions) { _ in
+            viewModel.applyLocalProgress { readingProgress.position(for: $0) }
         }
         .onChange(of: selectedBookId) { oldId, newId in
             if newId != nil {

@@ -284,7 +284,7 @@ public sealed partial class NewsPage : Page
             SummaryText.Text = parsed.ThreeSentence ?? "";
             KeyPointsText.Text = parsed.KeyPoints.Count == 0
                 ? ""
-                : "要点\n" + string.Join("\n", parsed.KeyPoints.Select(p => "• " + p));
+                : "主要内容\n" + string.Join("\n", parsed.KeyPoints.Select(p => "• " + p));
             WatchOutsText.Text = parsed.WatchOuts.Count == 0
                 ? ""
                 : "需要注意\n" + string.Join("\n", parsed.WatchOuts.Select(p => "• " + p));

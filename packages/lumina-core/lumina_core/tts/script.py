@@ -11,7 +11,7 @@ from lumina_core.summarize.schema import parse_json_response
 ListenMode = Literal["summary", "detailed", "original"]
 LISTEN_MODES: tuple[str, ...] = ("summary", "detailed", "original")
 
-SECTION_BULLETS = "结构化要点"
+SECTION_BULLETS = "主要内容"
 SECTION_NOTES = "需要注意"
 
 # Keep utterances short enough for OpenAI TTS (4096) and natural pauses.

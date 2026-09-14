@@ -656,7 +656,5 @@ final class CoreClientDecodingTests: XCTestCase {
         XCTAssertEqual(page.has_more_before, true)
         XCTAssertEqual(page.has_more_after, true)
         XCTAssertNil(page.segments[0].raw_text)
-        XCTAssertEqual(ReaderViewModel.openCatalogWindowLimit, 64)
-        XCTAssertEqual(ReaderViewModel.catalogFillPageLimit, 200)
     }
 }

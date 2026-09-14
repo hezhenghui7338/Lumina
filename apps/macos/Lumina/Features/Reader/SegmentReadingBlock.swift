@@ -29,6 +29,14 @@ enum SegmentHeaderLayoutPolicy {
     }
 }
 
+private struct SegmentPanelContentHeightKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
+    }
+}
+
 /// Single segment in the continuous reading feed: summary, placeholder, and optional source text.
 struct SegmentReadingBlock: View, Equatable {
     let contentMode: ReaderContentMode
@@ -60,6 +68,9 @@ struct SegmentReadingBlock: View, Equatable {
     var onSourceAppear: (() -> Void)?
     var onSummaryAppear: (() -> Void)?
     var originalHighlightUTF16: NSRange? = nil
+
+    @State private var lockedViewportHeight: CGFloat?
+    @State private var measuredContentHeight: CGFloat = LuminaTheme.segmentContentMinHeight
 
     private func scaled(_ base: CGFloat) -> CGFloat {
         base * CGFloat(fontScale)
@@ -135,8 +146,15 @@ struct SegmentReadingBlock: View, Equatable {
         contentMode == .summary && isSourceExpanded
     }
 
+    private var shouldMeasureSummaryHeight: Bool {
+        contentMode == .summary && !isSourceExpanded
+    }
+
     private var viewportHeight: CGFloat {
-        ReaderSegmentPanelHeight.clamp(320)
+        ReaderSegmentPanelHeight.boxedViewportHeight(
+            measured: measuredContentHeight,
+            locked: lockedViewportHeight
+        )
     }
 
     @ViewBuilder
@@ -153,11 +171,13 @@ struct SegmentReadingBlock: View, Equatable {
         VStack(alignment: .leading, spacing: 0) {
             panelBody(showingSource: showingSource)
                 .frame(maxWidth: .infinity, alignment: .leading)
+                .background(summaryHeightMeasurement)
 
             panelToggleButton
                 .padding(.top, 10)
         }
         .readingColumn()
+        .onPreferenceChange(SegmentPanelContentHeightKey.self, perform: handleSummaryHeightChange)
     }
 
     @ViewBuilder
@@ -183,6 +203,18 @@ struct SegmentReadingBlock: View, Equatable {
                 .fill(paper.card.opacity(0.45))
         )
         .clipShape(RoundedRectangle(cornerRadius: LuminaTheme.summaryCornerRadius))
+    }
+
+    @ViewBuilder
+    private var summaryHeightMeasurement: some View {
+        if shouldMeasureSummaryHeight {
+            GeometryReader { proxy in
+                Color.clear.preference(
+                    key: SegmentPanelContentHeightKey.self,
+                    value: proxy.size.height
+                )
+            }
+        }
     }
 
     private var panelToggleButton: some View {
@@ -255,6 +287,19 @@ struct SegmentReadingBlock: View, Equatable {
         let text = summary.copyablePlainText
             .trimmingCharacters(in: .whitespacesAndNewlines)
         return text.isEmpty ? nil : text
+    }
+
+    private func handleSummaryHeightChange(_ height: CGFloat) {
+        guard shouldMeasureSummaryHeight else { return }
+        guard ReaderSegmentPanelHeight.shouldCommitMeasurement(
+            current: measuredContentHeight,
+            incoming: height
+        ) else { return }
+        measuredContentHeight = height
+        let locked = ReaderSegmentPanelHeight.clamp(height)
+        if lockedViewportHeight != locked {
+            lockedViewportHeight = locked
+        }
     }
 
     @ViewBuilder

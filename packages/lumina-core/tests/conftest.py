@@ -112,6 +112,23 @@ def _fast_boot_news_sync(monkeypatch):
     monkeypatch.setattr("lumina_core.news.sync.sync_all", _noop_sync)
 
 
+@pytest.fixture(autouse=True)
+def _stub_chat_web_fetch(monkeypatch):
+    """Deep chat must not download URLs in mock suite (lxml/trafilatura flakes under xdist)."""
+    from lumina_core.news.fetch import FetchResult
+
+    def _stub(url: str, **kwargs):
+        return FetchResult(
+            url=url or "",
+            title="",
+            text="",
+            error="fetch disabled in tests",
+            strategy="direct",
+        )
+
+    monkeypatch.setattr("lumina_core.search.evidence.fetch_article", _stub)
+
+
 # Eigen/ORT thread pools can deadlock xdist session teardown. Only force-exit
 # workers that actually imported onnxruntime — mock workers that os._exit
 # anyway look "Not properly terminated" and (with restarts) kill in-flight

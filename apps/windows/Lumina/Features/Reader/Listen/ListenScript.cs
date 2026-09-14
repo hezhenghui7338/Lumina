@@ -20,7 +20,7 @@ public sealed record ListenScript(
     bool Ready,
     string? SkipReason)
 {
-    public const string SectionBullets = "结构化要点";
+    public const string SectionBullets = "主要内容";
     public const string SectionNotes = "需要注意";
     public const int MaxUtteranceChars = 800;
 

@@ -1,9 +1,20 @@
 namespace Lumina.Features.Reader;
 
-/// Prefetch only idx±1 so segment turns stay off the UI thread without loading the book.
+/// Prefetch neighbourhood after entering a segment (PRD: current → down 15 → up 5).
 public static class NeighborPrefetchPolicy
 {
+    public const int ForwardCount = 15;
+    public const int BackwardCount = 5;
+
     public static IReadOnlyList<int> Neighbors(int idx, IReadOnlyList<int> sortedIdx)
+        => Neighbors(idx, sortedIdx, BackwardCount, ForwardCount);
+
+    public static IReadOnlyList<int> Neighbors(
+        int idx,
+        IReadOnlyList<int> sortedIdx,
+        int back,
+        int forward
+    )
     {
         if (sortedIdx.Count == 0) return [];
         var pos = -1;
@@ -16,9 +27,14 @@ public static class NeighborPrefetchPolicy
             }
         }
         if (pos < 0) return [];
-        var result = new List<int>(2);
-        if (pos > 0) result.Add(sortedIdx[pos - 1]);
-        if (pos + 1 < sortedIdx.Count) result.Add(sortedIdx[pos + 1]);
+        var start = Math.Max(0, pos - back);
+        var end = Math.Min(sortedIdx.Count - 1, pos + forward);
+        var result = new List<int>(end - start + 1);
+        for (var i = start; i <= end; i++)
+        {
+            if (i == pos) continue;
+            result.Add(sortedIdx[i]);
+        }
         return result;
     }
 

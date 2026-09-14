@@ -39,7 +39,7 @@ if (Test-Path -LiteralPath $ort -PathType Container) {
 
 $cursorSdk = Join-Path $Internal "cursor_sdk"
 if (Test-Path -LiteralPath $cursorSdk) {
-    Write-Error "cursor_sdk must not be in release sidecar: $cursorSdk"
+    Write-Error "cursor_sdk must not be in release sidecar: $cursorSdk (download on demand into user data dir)"
 }
 
 $smallLeft = @(Get-ChildItem -LiteralPath $modelsDir -Filter "*_small.onnx" -ErrorAction SilentlyContinue)

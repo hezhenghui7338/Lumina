@@ -210,6 +210,9 @@ public sealed partial class ReaderPage : Page
         {
             RestoreCollapsedChapters(args.BookId);
             _bookId = args.BookId;
+            // Fresh open must hydrate even if a reused page still holds the
+            // same-segment selection from a previous book.
+            _selected = null;
             TitleText.Text = args.Title;
             _pendingJump = args.SegmentIndex;
             _showRaw = LocalPrefs.GetShowRaw(_bookId);
@@ -329,8 +332,16 @@ public sealed partial class ReaderPage : Page
             _isProcessing = false;
             CancelProcessingBtn.Visibility = Visibility.Collapsed;
             var open = await App.Core.OpenBookAsync(args.BookId, _pageCts.Token);
-            var preferredIdx = _pendingJump
-                ?? open.CurrentSegmentIndex;
+            // Restore local index BEFORE around-fetch (same contract as macOS).
+            // Never mix summary_total into the count check — that demotes local progress.
+            var segmentTotal = Math.Max(ReadingProgressIndex.SegmentTotal(book.SegmentCount), 1);
+            var cached = LocalPrefs.GetCachedProgress(_bookId);
+            var preferredIdx = _pendingJump ?? ReadingProgressIndex.Restore(
+                open.CurrentSegmentIndex,
+                cached?.Index,
+                cached?.SegmentCount,
+                segmentTotal);
+            preferredIdx = Math.Clamp(preferredIdx, 0, Math.Max(0, segmentTotal - 1));
             var page = await App.Core.ListSegmentsAsync(
                 args.BookId,
                 _pageCts.Token,
@@ -338,33 +349,39 @@ public sealed partial class ReaderPage : Page
                 limit: OpenCatalogWindowLimit);
             _segments = page.Segments.OrderBy(s => s.Idx).ToList();
             foreach (var s in _segments) s.RawText = null;
-            _totalCount = page.Total
-                ?? book.SegmentCount
-                ?? book.SummaryTotalCount
-                ?? _segments.Count;
+            _totalCount = ReadingProgressIndex.SegmentTotal(book.SegmentCount, page.Total);
+            if (_totalCount <= 0) _totalCount = _segments.Count;
             _catalogHasMoreBefore = page.HasMoreBefore ?? false;
             _catalogHasMoreAfter = page.HasMoreAfter ?? false;
+
+            if (ReadingProgressIndex.ResumeIdxInCatalog(preferredIdx, _segments.Select(s => s.Idx)) is null
+                && (_segments.Count > 0 || (page.Total ?? 0) > 0))
+            {
+                page = await App.Core.ListSegmentsAsync(
+                    args.BookId,
+                    _pageCts.Token,
+                    around: preferredIdx,
+                    limit: OpenCatalogWindowLimit);
+                _segments = page.Segments.OrderBy(s => s.Idx).ToList();
+                foreach (var s in _segments) s.RawText = null;
+                _totalCount = Math.Max(
+                    _totalCount,
+                    ReadingProgressIndex.SegmentTotal(book.SegmentCount, page.Total));
+                _catalogHasMoreBefore = page.HasMoreBefore ?? false;
+                _catalogHasMoreAfter = page.HasMoreAfter ?? false;
+            }
+
             _readyCount = book.SummaryReadyCount
                 ?? _segments.Count(s => s.SummaryStatus is "ready" or "done");
             UpdateProgressBanner();
             UpdateChatScopeUi();
 
-            var local = LocalPrefs.GetReadingProgress(_bookId, _totalCount);
-            var idx = _pendingJump ?? ReadingProgressIndex.Restore(
-                open.CurrentSegmentIndex,
-                local,
-                local is null ? null : _totalCount,
-                _totalCount);
-            idx = Math.Clamp(idx, 0, Math.Max(0, _totalCount - 1));
-            // If resume idx is outside the first window (should be rare), clamp to loaded.
-            if (_segments.Count > 0 && _segments.All(s => s.Idx != idx))
-            {
-                idx = _segments.MinBy(s => Math.Abs(s.Idx - idx))!.Idx;
-            }
-            _pendingOffsetY = ReadingProgressIndex.RestoreOffset(
-                LocalPrefs.GetReadingProgressOffset(_bookId, _totalCount),
-                local is null ? null : _totalCount,
-                _totalCount);
+            // Never clamp to list.first / nearest — that writes dirty progress via SelectionChanged.
+            var idx = ReadingProgressIndex.ResumeIdxInCatalog(
+                preferredIdx,
+                _segments.Select(s => s.Idx)) ?? preferredIdx;
+            // Open always starts at the segment head (no mid-segment OffsetY).
+            _pendingOffsetY = 0;
             BindSegmentCatalog(idx);
             UpdateSegmentTurnButtons();
             StartEvents();
@@ -791,6 +808,10 @@ public sealed partial class ReaderPage : Page
             return;
         }
         if (item.Segment is null) return;
+        // Background catalog merges and chapter collapse re-bind SegmentList and
+        // re-assign the same segment: skip side effects so a merge never
+        // re-hydrates the visible segment or rewrites identical progress.
+        if (_selected?.Idx == item.Segment.Idx) return;
         DismissSelectionFlyout();
         _selected = item.Segment;
         UpdateSegmentTurnButtons();
@@ -834,13 +855,25 @@ public sealed partial class ReaderPage : Page
     private void SaveLocalProgress(int index)
     {
         var percent = ReadingProgressIndex.Percent(index, _totalCount);
-        LocalPrefs.SetReadingProgress(_bookId, index, _totalCount, ContentScroll.VerticalOffset, percent);
+        // OffsetY is not part of resume — reopen must land on the segment head.
+        LocalPrefs.SetReadingProgress(_bookId, index, _totalCount, offsetY: 0, percent);
     }
 
     private async Task HydrateSelectedAsync()
     {
         if (_selected is null) return;
         var idx = _selected.Idx;
+
+        // Cache hit: paint immediately — do not flash the spinner or await.
+        if (TryGetRenderableCachedDetail(idx, out var cached))
+        {
+            SegmentTitle.Text = cached.DisplayLabel;
+            RenderContent(cached);
+            SegmentLoading.IsActive = false;
+            _ = PrefetchNeighborsAsync(idx);
+            return;
+        }
+
         _hydrateCts?.Cancel();
         _hydrateCts = CancellationTokenSource.CreateLinkedTokenSource(_pageCts?.Token ?? default);
         var ct = _hydrateCts.Token;
@@ -875,6 +908,21 @@ public sealed partial class ReaderPage : Page
         {
             SegmentLoading.IsActive = false;
         }
+    }
+
+    private bool TryGetRenderableCachedDetail(int idx, out SegmentRow detail)
+    {
+        if (_hydrated.TryGetValue(idx, out var cached)
+            && (!_showRaw || !string.IsNullOrEmpty(cached.RawText))
+            && (_showRaw
+                || !string.IsNullOrEmpty(cached.SummaryJson)
+                || cached.SummaryStatus is not ("ready" or "done")))
+        {
+            detail = cached;
+            return true;
+        }
+        detail = null!;
+        return false;
     }
 
     private async Task<SegmentRow> LoadSegmentDetailAsync(int idx, bool needRaw, CancellationToken ct)
@@ -986,7 +1034,7 @@ public sealed partial class ReaderPage : Page
             ?? SummaryStatusPlaceholder(detail.SummaryStatus);
         KeyPointsText.Text = parsed.KeyPoints.Count == 0
             ? ""
-            : "要点\n" + string.Join("\n", parsed.KeyPoints.Select(p => "• " + p));
+            : "主要内容\n" + string.Join("\n", parsed.KeyPoints.Select(p => "• " + p));
         WatchOutsText.Text = parsed.WatchOuts.Count == 0
             ? ""
             : "需要注意\n" + string.Join("\n", parsed.WatchOuts.Select(p => "• " + p));
@@ -1029,9 +1077,11 @@ public sealed partial class ReaderPage : Page
         var hit = _selected is null ? null : CurrentOriginalHitFor(_selected.Idx);
         var start = hit?.StartUtf16 ?? -1;
         var end = hit?.EndUtf16 ?? -1;
-        if (hit is null || start < 0 || end > raw.Length || end <= start)
+        var hasHighlight = hit is not null && start >= 0 && end <= raw.Length && end > start;
+        var display = ReaderBodyTypography.DisplayText(raw, preservingHighlight: hasHighlight);
+        if (!hasHighlight)
         {
-            BodyText.Inlines.Add(new Run { Text = raw });
+            BodyText.Inlines.Add(new Run { Text = display });
         }
         else
         {
@@ -1048,7 +1098,10 @@ public sealed partial class ReaderPage : Page
         }
 
         if (!string.IsNullOrWhiteSpace(translation))
-            BodyText.Inlines.Add(new Run { Text = $"\n\n—— 译文 ——\n{translation}" });
+        {
+            var translated = ReaderBodyTypography.CollapseEmptyLines(translation);
+            BodyText.Inlines.Add(new Run { Text = $"\n\n—— 译文 ——\n{translated}" });
+        }
     }
 
     private void ScrollOriginalHitIntoView(int utf16Start, int rawLength)
