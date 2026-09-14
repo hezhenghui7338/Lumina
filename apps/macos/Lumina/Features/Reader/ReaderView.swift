@@ -54,6 +54,9 @@ struct ReaderView: View {
     /// scrolling; intentional jumps freeze commits until three further pins.
     /// Every jump still assigns here — nothing else may move the scroll view.
     @State private var topSegmentIdx: Int?
+    /// While true, `scrollPosition` does not force the pinned segment to `.top`,
+    /// so ↑/↓ can pixel-scroll mid-segment; SwiftUI may still write the binding.
+    @State private var freeKeyboardScroll = false
     @State private var readerGlobalFrame: CGRect = .null
     @State private var overlay: ReaderOverlay = .none
     @State private var overlayEngaged = false
@@ -133,7 +136,6 @@ struct ReaderView: View {
 
     private var readerKeyboardScrollEnabled: Bool {
         overlay == .none
-            && coverPage == .none
             && !chatFocused
             && !showBoundarySheet
             && !showExport
@@ -171,10 +173,6 @@ struct ReaderView: View {
     var body: some View {
         readerLayout
             .toolbar(removing: .sidebarToggle)
-            .background {
-                readerModeShortcutButton
-                originalSearchShortcutButton
-            }
             .confirmationDialog(
                 "全书重新摘要",
                 isPresented: $showRegenerateConfirm,
@@ -344,20 +342,6 @@ struct ReaderView: View {
         )
     }
 
-    private var readerModeShortcutButton: some View {
-        Button("切换阅读模式", action: toggleContentMode)
-            .keyboardShortcut("o", modifiers: [.command, .shift])
-            .opacity(0)
-            .frame(width: 0, height: 0)
-    }
-
-    private var originalSearchShortcutButton: some View {
-        Button("搜索原文", action: openOriginalSearch)
-            .keyboardShortcut("f", modifiers: .command)
-            .opacity(0)
-            .frame(width: 0, height: 0)
-    }
-
     private func startReaderSummarize(_ tier: SummaryTier) {
         Task {
             do {
@@ -458,7 +442,7 @@ struct ReaderView: View {
                 }
                 .buttonStyle(.plain)
                 .disabled(originalSearchHits.isEmpty)
-                .help("上一条")
+            .help("上一条（\(ShortcutStore.shared.display(for: .searchPrev))）")
                 .accessibilityIdentifier("lumina.reader.originalSearch.prev")
                 Button {
                     stepOriginalSearch(1)
@@ -467,7 +451,7 @@ struct ReaderView: View {
                 }
                 .buttonStyle(.plain)
                 .disabled(originalSearchHits.isEmpty)
-                .help("下一条")
+                .help("下一条（\(ShortcutStore.shared.display(for: .searchNext))）")
                 .accessibilityIdentifier("lumina.reader.originalSearch.next")
                 Button {
                     closeOriginalSearch()
@@ -493,7 +477,7 @@ struct ReaderView: View {
             }
             .labelStyle(.iconOnly)
             .readerChromeIconAction()
-            .help("搜索原文（⌘F）")
+            .help("搜索原文（\(ShortcutStore.shared.display(for: .originalSearch))）")
             .accessibilityIdentifier("lumina.reader.originalSearch")
         }
     }
@@ -559,7 +543,7 @@ struct ReaderView: View {
             .pickerStyle(.segmented)
             .labelsHidden()
             .frame(width: ReaderChromeBarMetrics.modePickerWidth)
-            .help("切换摘要 / 原文阅读模式（⌘⇧O）")
+            .help("切换摘要 / 原文阅读模式（\(ShortcutStore.shared.display(for: .toggleContentMode))）")
             .tourAnchor(.modePicker)
 
             listenChromeControl
@@ -922,6 +906,11 @@ struct ReaderView: View {
         .onAppear {
             readerOverlayActive = overlay != .none
             revealChromeIfTouringReader()
+            ShortcutKeyMonitor.isReaderActive = true
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .luminaReaderShortcutAction)) { note in
+            guard let action = ShortcutActionUserInfo.action(from: note) else { return }
+            handleShortcut(action)
         }
         .onChange(of: tour.step) { _, _ in
             revealChromeIfTouringReader()
@@ -998,6 +987,7 @@ struct ReaderView: View {
             }
         }
         .onDisappear {
+            ShortcutKeyMonitor.isReaderActive = false
             listenSession.stop()
             LuminaSelectionActionPopover.dismiss()
             originalSearchTask?.cancel()
@@ -1006,6 +996,163 @@ struct ReaderView: View {
                 NotificationCenter.default.post(name: .luminaLibraryRefresh, object: nil)
                 viewModel.cancelAllTasks()
             }
+        }
+    }
+
+    // MARK: - Shortcuts
+
+    private func handleShortcut(_ action: ShortcutAction) {
+        switch action {
+        case .toggleContentMode:
+            setChromeMode(.revealed)
+            toggleContentMode()
+        case .toggleSegmentPanel:
+            toggleCurrentSegmentPanel()
+        case .originalSearch:
+            openOriginalSearch()
+        case .searchNext:
+            guard originalSearchExpanded, !originalSearchHits.isEmpty else { return }
+            stepOriginalSearch(1)
+        case .searchPrev:
+            guard originalSearchExpanded, !originalSearchHits.isEmpty else { return }
+            stepOriginalSearch(-1)
+        case .startSummarize:
+            guard viewModel.bookStatus != "processing" else { return }
+            startReaderSummarize(.normal)
+        case .stopSummarize:
+            Task {
+                do { try await viewModel.stopSummarize(core: core) }
+                catch { actionError = error.localizedDescription }
+            }
+        case .openSummarizeMenu:
+            guard viewModel.bookStatus != "processing" else { return }
+            setChromeMode(.revealed)
+            showSummarizePopover.toggle()
+        case .regenerateSegment:
+            regenerateCurrentSegment()
+        case .openSegmentMenu:
+            guard viewModel.bookStatus != "processing" else { return }
+            setChromeMode(.revealed)
+            showSegmentPopover.toggle()
+        case .adjustBoundary:
+            guard viewModel.bookStatus != "processing" else { return }
+            openBoundaryEditor()
+        case .toggleListen:
+            toggleListenShortcut()
+        case .toggleSegmentList:
+            setChromeMode(.revealed)
+            toggleCoverPage(.segments)
+        case .toggleNotes:
+            guard viewModel.bookStatus != "processing" else { return }
+            setChromeMode(.revealed)
+            toggleOverlay(.notes)
+        case .toggleChat:
+            guard viewModel.bookStatus != "processing" else { return }
+            setChromeMode(.revealed)
+            toggleOverlay(.chat)
+        case .toggleDisplay:
+            setChromeMode(.revealed)
+            showAppearancePopover = true
+        case .exportMarkdown:
+            guard viewModel.bookStatus != "processing" else { return }
+            exportIncludeNotes = false
+            exportMode = .full
+            showExport = true
+        case .backToLibrary:
+            onReturnToBookshelf()
+        case .prevSegment:
+            navigateSegment(delta: -1)
+        case .nextSegment:
+            navigateSegment(delta: 1)
+        case .scrollUp:
+            performReaderKeyboardScroll(lineDelta: -ReaderKeyboardScroll.lineDelta, page: nil)
+        case .scrollDown:
+            performReaderKeyboardScroll(lineDelta: ReaderKeyboardScroll.lineDelta, page: nil)
+        case .pageUp:
+            performReaderKeyboardScroll(lineDelta: nil, page: -1)
+        case .pageDown:
+            performReaderKeyboardScroll(lineDelta: nil, page: 1)
+        case .dismissOverlay:
+            dismissReaderOverlayShortcut()
+        case .globalSearch, .importBooks:
+            break
+        }
+    }
+
+    private func dismissReaderOverlayShortcut() {
+        if coverPage != .none {
+            coverPage = ReaderCoverPagePolicy.close()
+            return
+        }
+        if overlay != .none {
+            overlay = .none
+            overlayEngaged = false
+        }
+    }
+
+    /// ↑/↓ / PgUp / PgDn — posts to the feed key handler after releasing the
+    /// scrollPosition pin (or turns the segment list when that cover is open).
+    private func performReaderKeyboardScroll(lineDelta: CGFloat?, page: Int?) {
+        if coverPage.showsSegments {
+            let delta: Int
+            if let lineDelta {
+                delta = lineDelta < 0 ? -1 : 1
+            } else if let page {
+                delta = page < 0 ? -1 : 1
+            } else {
+                return
+            }
+            navigateSegment(delta: delta)
+            return
+        }
+        freeKeyboardScroll = true
+        if let lineDelta {
+            NotificationCenter.default.post(
+                name: .luminaScrollContent,
+                object: nil,
+                userInfo: ["delta": lineDelta]
+            )
+        } else if let page {
+            NotificationCenter.default.post(
+                name: .luminaScrollContent,
+                object: nil,
+                userInfo: ["page": page]
+            )
+        }
+    }
+
+    private func toggleCurrentSegmentPanel() {
+        let idx = topSegmentIdx ?? viewModel.selectedIdx ?? viewModel.segments.first?.idx
+        guard let idx else { return }
+        switch contentMode {
+        case .summary:
+            toggleSource(for: idx)
+        case .original:
+            toggleSummary(for: idx)
+        }
+    }
+
+    private func regenerateCurrentSegment() {
+        let idx = topSegmentIdx ?? viewModel.selectedIdx ?? viewModel.segments.first?.idx
+        guard let idx, viewModel.bookStatus != "processing" else { return }
+        Task {
+            do {
+                try await viewModel.retrySegment(idx, summaryTier: .normal, core: core)
+            } catch {
+                actionError = error.localizedDescription
+            }
+        }
+    }
+
+    private func toggleListenShortcut() {
+        if listenSession.isActive {
+            listenSession.stop()
+            return
+        }
+        if listenTargetShowsOriginal {
+            startListening(.original)
+        } else {
+            startListening(.summary)
         }
     }
 
@@ -1094,6 +1241,12 @@ struct ReaderView: View {
     private var segmentContent: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
+                // Must live *inside* the feed ScrollView so enclosingScrollView
+                // is the reading surface (the key handler sits in .background).
+                ReaderFeedScrollAnchor()
+                    .frame(width: 0, height: 0)
+                    .accessibilityHidden(true)
+
                 LazyVStack(alignment: .leading, spacing: segmentFeedGap) {
                     if let error = viewModel.loadError {
                         loadErrorContent(error)
@@ -1141,7 +1294,13 @@ struct ReaderView: View {
             .onReaderBodyTextPlainClick(toggleChromeOnBlankClick)
             .readerSelectionNoteContext(client: core, onSaved: bumpNotesRefresh)
         }
-        .scrollPosition(id: $topSegmentIdx, anchor: .top)
+        .scrollPosition(
+            id: Binding(
+                get: { freeKeyboardScroll ? nil : topSegmentIdx },
+                set: { topSegmentIdx = $0 }
+            ),
+            anchor: .top
+        )
         // Nothing here may depend on the chrome: this inset steals height from
         // the feed, so a chrome-driven change would slide the text. The summary
         // banner uses a constant reserved height for the same reason — captions
@@ -1181,8 +1340,14 @@ struct ReaderView: View {
         .background {
             ScrollViewKeyHandler(
                 enabled: readerKeyboardScrollEnabled,
+                segmentListOpen: coverPage.showsSegments,
                 onTurnSegment: { delta in
                     navigateSegment(delta: delta)
+                },
+                onReleaseMainScrollPin: {
+                    // Stop forcing segment-top while ↑/↓ pixel-scroll; keep the
+                    // last idx so progress / turn still have a current segment.
+                    freeKeyboardScroll = true
                 }
             )
         }
@@ -1204,30 +1369,22 @@ struct ReaderView: View {
         .onAppear { readerContentFocused = true }
         .onKeyPress(.upArrow) {
             guard readerKeyboardScrollEnabled else { return .ignored }
-            NotificationCenter.default.post(
-                name: .luminaScrollContent,
-                object: nil,
-                userInfo: ["delta": -ReaderKeyboardScroll.lineDelta]
-            )
+            performReaderKeyboardScroll(lineDelta: -ReaderKeyboardScroll.lineDelta, page: nil)
             return .handled
         }
         .onKeyPress(.downArrow) {
             guard readerKeyboardScrollEnabled else { return .ignored }
-            NotificationCenter.default.post(
-                name: .luminaScrollContent,
-                object: nil,
-                userInfo: ["delta": ReaderKeyboardScroll.lineDelta]
-            )
+            performReaderKeyboardScroll(lineDelta: ReaderKeyboardScroll.lineDelta, page: nil)
             return .handled
         }
         .onKeyPress(.pageUp) {
             guard readerKeyboardScrollEnabled else { return .ignored }
-            NotificationCenter.default.post(name: .luminaScrollContent, object: nil, userInfo: ["page": -1])
+            performReaderKeyboardScroll(lineDelta: nil, page: -1)
             return .handled
         }
         .onKeyPress(.pageDown) {
             guard readerKeyboardScrollEnabled else { return .ignored }
-            NotificationCenter.default.post(name: .luminaScrollContent, object: nil, userInfo: ["page": 1])
+            performReaderKeyboardScroll(lineDelta: nil, page: 1)
             return .handled
         }
     }
@@ -1331,6 +1488,7 @@ struct ReaderView: View {
     /// the scroll: SwiftUI owns the anchoring, nothing else touches the origin.
     private func jump(to idx: Int) {
         LuminaSelectionActionPopover.dismiss()
+        freeKeyboardScroll = false
         guard topSegmentIdx != idx else { return }
         let delta = SegmentRenderWindow.segmentIndexDelta(
             from: topSegmentIdx,
@@ -2087,47 +2245,87 @@ private struct ReaderGlobalFrameKey: PreferenceKey {
     }
 }
 
-/// Scrolls the enclosing NSScrollView on keyboard scroll notifications.
-/// Also turns segments on `[` / `]` (and IME 【】 on the same key codes).
+/// Registers the reading-feed NSScrollView from *inside* the ScrollView content.
+/// The key handler lives in `.background` and cannot use enclosingScrollView.
+private struct ReaderFeedScrollAnchor: NSViewRepresentable {
+    func makeNSView(context: Context) -> ReaderFeedScrollAnchorNSView {
+        ReaderFeedScrollAnchorNSView()
+    }
+
+    func updateNSView(_ nsView: ReaderFeedScrollAnchorNSView, context: Context) {
+        nsView.registerFeedScrollView()
+    }
+}
+
+private final class ReaderFeedScrollAnchorNSView: NSView {
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        registerFeedScrollView()
+    }
+
+    override func viewDidMoveToSuperview() {
+        super.viewDidMoveToSuperview()
+        registerFeedScrollView()
+    }
+
+    override func layout() {
+        super.layout()
+        registerFeedScrollView()
+    }
+
+    func registerFeedScrollView() {
+        ScrollViewKeyNSView.feedScrollView = enclosingScrollView
+    }
+}
+
+/// Scrolls the feed NSScrollView on keyboard scroll notifications.
+/// Also turns segments on `←` / `→`. Continuous reading uses `↑` / `↓` / page keys.
 private struct ScrollViewKeyHandler: NSViewRepresentable {
     var enabled: Bool
+    var segmentListOpen: Bool
     var onTurnSegment: (Int) -> Void
+    var onReleaseMainScrollPin: () -> Void
 
     func makeNSView(context: Context) -> ScrollViewKeyNSView {
         let view = ScrollViewKeyNSView()
         view.isEnabled = enabled
+        view.segmentListOpen = segmentListOpen
         view.onTurnSegment = onTurnSegment
+        view.onReleaseMainScrollPin = onReleaseMainScrollPin
         return view
     }
 
     func updateNSView(_ nsView: ScrollViewKeyNSView, context: Context) {
         nsView.isEnabled = enabled
+        nsView.segmentListOpen = segmentListOpen
         nsView.onTurnSegment = onTurnSegment
+        nsView.onReleaseMainScrollPin = onReleaseMainScrollPin
     }
 }
 
-/// Keyboard scrolling only. This view must never move the scroll origin on its
-/// own: anchoring belongs to SwiftUI's `scrollPosition`, and a second writer is
-/// what used to make reading progress drift.
+/// ↑/↓ continuous reading via the feed NSScrollView registered by
+/// `ReaderFeedScrollAnchor`. Segment jumps still go through SwiftUI
+/// `scrollPosition` (`←` / `→`).
 private final class ScrollViewKeyNSView: NSView {
     var isEnabled = true
+    var segmentListOpen = false
     var onTurnSegment: ((Int) -> Void)?
+    var onReleaseMainScrollPin: (() -> Void)?
     private var observer: NSObjectProtocol?
     private var revealObserver: NSObjectProtocol?
     private var keyMonitor: Any?
     private static weak var activeInstance: ScrollViewKeyNSView?
-    private static weak var readerScrollView: NSScrollView?
+    /// Set from inside the feed ScrollView; preferred over window-wide search.
+    static weak var feedScrollView: NSScrollView?
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         if window != nil {
             Self.activeInstance = self
-            Self.readerScrollView = Self.discoverScrollView(from: self)
             installKeyMonitor()
         } else {
             if Self.activeInstance === self {
                 Self.activeInstance = nil
-                Self.readerScrollView = nil
             }
             removeKeyMonitor()
         }
@@ -2177,39 +2375,64 @@ private final class ScrollViewKeyNSView: NSView {
     }
 
     private func handleKeyDown(_ event: NSEvent) -> NSEvent? {
-        guard isEnabled, event.window == window else { return event }
-        if window?.attachedSheet != nil { return event }
-        guard !Self.isTextInputResponder(window?.firstResponder) else { return event }
+        guard isEnabled else { return event }
+        if let window, event.window != window { return event }
+        if event.window == nil { return event }
+        if event.window?.attachedSheet != nil { return event }
+        guard !Self.isTextInputResponder(event.window?.firstResponder) else { return event }
 
         let mods = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
         if !mods.intersection([.command, .option, .control]).isEmpty { return event }
 
-        if let delta = SegmentTurnKeyPolicy.delta(
-            keyCode: event.keyCode,
-            characters: event.characters ?? "",
-            shift: mods.contains(.shift),
-            isRepeat: event.isARepeat
-        ) {
-            onTurnSegment?(delta)
+        if !event.isARepeat {
+            let currentPrev = ShortcutStore.shared.chord(for: .prevSegment)
+            let currentNext = ShortcutStore.shared.chord(for: .nextSegment)
+            if currentPrev.matches(event) {
+                onTurnSegment?(-1)
+                return nil
+            }
+            if currentNext.matches(event) {
+                onTurnSegment?(1)
+                return nil
+            }
+        }
+
+        // Fixed scroll chords (not in customizableActions) — must handle here
+        // because this monitor runs before ShortcutKeyMonitor.
+        if ShortcutCatalog.defaultChord(for: .scrollUp).matches(event) {
+            if segmentListOpen {
+                if !event.isARepeat { onTurnSegment?(-1) }
+            } else {
+                performKeyboardScroll(lineDelta: -ReaderKeyboardScroll.lineDelta, page: nil)
+            }
+            return nil
+        }
+        if ShortcutCatalog.defaultChord(for: .scrollDown).matches(event) {
+            if segmentListOpen {
+                if !event.isARepeat { onTurnSegment?(1) }
+            } else {
+                performKeyboardScroll(lineDelta: ReaderKeyboardScroll.lineDelta, page: nil)
+            }
+            return nil
+        }
+        if ShortcutCatalog.defaultChord(for: .pageUp).matches(event) {
+            if segmentListOpen {
+                if !event.isARepeat { onTurnSegment?(-1) }
+            } else {
+                performKeyboardScroll(lineDelta: nil, page: -1)
+            }
+            return nil
+        }
+        if ShortcutCatalog.defaultChord(for: .pageDown).matches(event) {
+            if segmentListOpen {
+                if !event.isARepeat { onTurnSegment?(1) }
+            } else {
+                performKeyboardScroll(lineDelta: nil, page: 1)
+            }
             return nil
         }
 
-        switch event.keyCode {
-        case 126: // up arrow
-            performKeyboardScroll(lineDelta: -ReaderKeyboardScroll.lineDelta, page: nil)
-            return nil
-        case 125: // down arrow
-            performKeyboardScroll(lineDelta: ReaderKeyboardScroll.lineDelta, page: nil)
-            return nil
-        case 116: // page up
-            performKeyboardScroll(lineDelta: nil, page: -1)
-            return nil
-        case 121: // page down
-            performKeyboardScroll(lineDelta: nil, page: 1)
-            return nil
-        default:
-            return event
-        }
+        return event
     }
 
     private func handleReveal(_ note: Notification) {
@@ -2228,11 +2451,14 @@ private final class ScrollViewKeyNSView: NSView {
         } else {
             return
         }
-        Self.applyScrollOrigin(origin, to: scrollView)
+        onReleaseMainScrollPin?()
+        DispatchQueue.main.async {
+            Self.applyScrollOrigin(origin, to: scrollView)
+        }
     }
 
     private func handleScroll(_ note: Notification) {
-        guard isEnabled else { return }
+        guard isEnabled, !segmentListOpen else { return }
         if let delta = note.userInfo?["delta"] as? CGFloat {
             performKeyboardScroll(lineDelta: delta, page: nil)
         } else if let page = note.userInfo?["page"] as? Int {
@@ -2249,34 +2475,73 @@ private final class ScrollViewKeyNSView: NSView {
         } else {
             return
         }
-        guard let scrollView = Self.targetScrollView(deltaY: probeDelta) else { return }
+        guard let main = Self.resolvedScrollView else { return }
+        let nested = Self.preferredNestedScrollView(in: main, deltaY: probeDelta)
+        let route = ReaderKeyboardScrollRouting.target(nestedCanMove: nested != nil)
+        let scrollView: NSScrollView = {
+            switch route {
+            case .nested: return nested ?? main
+            case .main: return main
+            }
+        }()
 
-        let clipView = scrollView.contentView
         let deltaY: CGFloat
         if let lineDelta {
             deltaY = lineDelta
         } else if let page {
-            deltaY = ReaderKeyboardScroll.pageDelta(viewportHeight: clipView.bounds.height, page: page)
+            deltaY = ReaderKeyboardScroll.pageDelta(
+                viewportHeight: scrollView.contentView.bounds.height,
+                page: page
+            )
         } else {
             return
         }
 
+        let isMainFeed = scrollView === main
+        if isMainFeed {
+            onReleaseMainScrollPin?()
+            // Wait for scrollPosition binding to stop forcing .top, then nudge.
+            DispatchQueue.main.async {
+                DispatchQueue.main.async {
+                    Self.applyOriginDelta(deltaY, to: scrollView)
+                }
+            }
+        } else {
+            Self.applyOriginDelta(deltaY, to: scrollView)
+        }
+    }
+
+    private static func applyOriginDelta(_ deltaY: CGFloat, to scrollView: NSScrollView) {
+        let clipView = scrollView.contentView
+        let contentHeight = documentContentHeight(of: scrollView)
         var origin = clipView.bounds.origin
-        origin.y = ReaderKeyboardScroll.clampedOriginY(
+        let nextY = ReaderKeyboardScroll.clampedOriginY(
             currentY: origin.y,
             deltaY: deltaY,
             viewportHeight: clipView.bounds.height,
-            contentHeight: scrollView.documentView?.bounds.height ?? 0
+            contentHeight: contentHeight
         )
-        Self.applyScrollOrigin(origin, to: scrollView)
+        if abs(nextY - origin.y) > 0.5 {
+            origin.y = nextY
+            applyScrollOrigin(origin, to: scrollView)
+            return
+        }
+        // SwiftUI LazyVStack feeds often report no AppKit overflow; fall back to
+        // NSResponder actions after making the scroll view first responder.
+        scrollView.window?.makeFirstResponder(scrollView)
+        if deltaY < 0 {
+            scrollView.scrollLineUp(nil)
+        } else if deltaY > 0 {
+            scrollView.scrollLineDown(nil)
+        }
     }
 
-    private static func targetScrollView(deltaY: CGFloat) -> NSScrollView? {
-        guard let main = resolvedScrollView else { return nil }
-        if let nested = preferredNestedScrollView(in: main, deltaY: deltaY) {
-            return nested
-        }
-        return main
+    private static func documentContentHeight(of scrollView: NSScrollView) -> CGFloat {
+        let clip = scrollView.contentView
+        let fromDocRect = clip.documentRect.height
+        let fromFrame = scrollView.documentView?.frame.height ?? 0
+        let fromBounds = scrollView.documentView?.bounds.height ?? 0
+        return max(fromDocRect, fromFrame, fromBounds, clip.bounds.height)
     }
 
     private static func preferredNestedScrollView(in main: NSScrollView, deltaY: CGFloat) -> NSScrollView? {
@@ -2316,7 +2581,7 @@ private final class ScrollViewKeyNSView: NSView {
 
     private static func canScroll(_ scrollView: NSScrollView, by deltaY: CGFloat) -> Bool {
         let clip = scrollView.contentView
-        let maxY = max(0, (scrollView.documentView?.bounds.height ?? 0) - clip.bounds.height)
+        let maxY = max(0, documentContentHeight(of: scrollView) - clip.bounds.height)
         return ReaderKeyboardScroll.canMove(
             originY: clip.bounds.origin.y,
             deltaY: deltaY,
@@ -2340,41 +2605,46 @@ private final class ScrollViewKeyNSView: NSView {
     }
 
     private static var resolvedScrollView: NSScrollView? {
-        readerScrollView ?? activeInstance?.enclosingScrollView
-    }
-
-    private static func discoverScrollView(from view: NSView) -> NSScrollView? {
-        var current: NSView? = view
-        while let node = current {
-            if let scrollView = node as? NSScrollView { return scrollView }
-            current = node.superview
+        if let feed = feedScrollView, feed.window != nil {
+            return feed
         }
-        guard let contentView = view.window?.contentView else { return nil }
-        return findLargestScrollView(in: contentView)
+        guard let active = activeInstance else { return nil }
+        if let enclosed = feedScrollView ?? active.enclosingScrollView {
+            return enclosed
+        }
+        return findPreferredScrollView(in: active.window?.contentView)
     }
 
-    private static func findLargestScrollView(in view: NSView) -> NSScrollView? {
-        if let scrollView = view as? NSScrollView { return scrollView }
+    private static func findPreferredScrollView(in view: NSView?) -> NSScrollView? {
+        guard let view else { return nil }
         var best: NSScrollView?
-        var bestArea: CGFloat = 0
-        for subview in view.subviews {
-            guard let candidate = findLargestScrollView(in: subview) else { continue }
-            let area = candidate.bounds.width * candidate.bounds.height
-            if area > bestArea {
-                bestArea = area
-                best = candidate
+        var bestScore: CGFloat = -1
+        func walk(_ node: NSView) {
+            if let scrollView = node as? NSScrollView {
+                let area = scrollView.bounds.width * scrollView.bounds.height
+                let docH = max(
+                    scrollView.documentView?.frame.height ?? 0,
+                    scrollView.documentView?.bounds.height ?? 0
+                )
+                let overflow = max(0, docH - scrollView.contentView.bounds.height)
+                let score = overflow * 1_000_000 + area
+                if score > bestScore {
+                    bestScore = score
+                    best = scrollView
+                }
             }
+            for sub in node.subviews { walk(sub) }
         }
+        walk(view)
         return best
     }
 
     private static func applyScrollOrigin(_ origin: NSPoint, to scrollView: NSScrollView) {
         let clipView = scrollView.contentView
         var clamped = origin
-        let docHeight = scrollView.documentView?.bounds.height ?? 0
-        let maxY = max(0, docHeight - clipView.bounds.height)
+        let maxY = max(0, documentContentHeight(of: scrollView) - clipView.bounds.height)
         clamped.y = min(max(0, clamped.y), maxY)
-        clipView.setBoundsOrigin(clamped)
+        clipView.scroll(to: clamped)
         scrollView.reflectScrolledClipView(clipView)
     }
 }

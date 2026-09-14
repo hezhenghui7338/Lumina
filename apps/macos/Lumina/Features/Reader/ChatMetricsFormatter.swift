@@ -51,7 +51,7 @@ enum ChatMetricsFormatter {
         case "ollama": return "Ollama"
         case "openai": return "OpenAI"
         case "openrouter": return "OpenRouter"
-        case "aiping": return "Aiping"
+        case "aiping": return "AiPing"
         case "cursor": return "Cursor"
         default: return provider
         }

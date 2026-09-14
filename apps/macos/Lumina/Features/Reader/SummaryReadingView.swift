@@ -6,15 +6,14 @@ struct SummaryBlock: View {
     var rawJSON: String?
     var provider: String?
     var model: String?
-    var charCount: Int?
-    var segmentIndex: Int?
-    var segmentTotal: Int?
     var fallbackAnchor: String?
     var summaryDurationS: Double?
     var summaryLlmAttempts: Int?
     var onFollowUp: ((String) -> Void)?
     var showsBackground: Bool = true
     var showsHeader: Bool = true
+    /// When false, the reader panel footer owns the attribution row (same line as「复制」).
+    var showsAttribution: Bool = true
 
     @EnvironmentObject private var theme: ThemeManager
     @Environment(\.readerPaper) private var paper
@@ -120,7 +119,7 @@ struct SummaryBlock: View {
                 }
             }
 
-            if let attribution = summaryAttribution {
+            if showsAttribution, let attribution = summaryAttribution {
                 Text(attribution)
                     .font(.caption)
                     .foregroundStyle(paper.textSecondary)
@@ -177,60 +176,42 @@ struct SummaryBlock: View {
             return nil
         }()
 
-        VStack(alignment: .leading, spacing: 4) {
-            if let anchorText {
-                Text(anchorText)
-                    .font(.system(size: LuminaTheme.summaryLabelSize, weight: .medium))
-                    .foregroundStyle(paper.textSecondary)
-                    .textSelection(.enabled)
-            }
-
-            if metaLine != nil {
-                Text(metaLine ?? "")
-                    .font(.system(size: LuminaTheme.summaryLabelSize - 1))
-                    .foregroundStyle(paper.textSecondary.opacity(0.85))
-                    .textSelection(.enabled)
-            }
+        if let anchorText {
+            Text(anchorText)
+                .font(.system(size: LuminaTheme.summaryLabelSize, weight: .medium))
+                .foregroundStyle(paper.textSecondary)
+                .textSelection(.enabled)
         }
-    }
-
-    private var metaLine: String? {
-        var parts: [String] = []
-        if let charCount, charCount > 0 {
-            parts.append("约 \(Self.formattedCount(charCount)) 字")
-        }
-        if let segmentIndex, let segmentTotal, segmentTotal > 0 {
-            parts.append("段 \(segmentIndex + 1)/\(segmentTotal)")
-        }
-        return parts.isEmpty ? nil : parts.joined(separator: " · ")
-    }
-
-    private static func formattedCount(_ count: Int) -> String {
-        let formatter = NumberFormatter()
-        formatter.numberStyle = .decimal
-        return formatter.string(from: NSNumber(value: count)) ?? "\(count)"
     }
 
     private var summaryAttribution: String? {
-        guard let provider, !provider.isEmpty,
-              let model, !model.isEmpty else { return nil }
-        var parts = ["摘要 · \(Self.providerLabel(provider)) · \(model)"]
-        if let metrics = SummaryMetricsFormatter.completedMetricsLabel(
+        SummaryAttributionPolicy.label(
+            provider: provider,
+            model: model,
             durationS: summaryDurationS,
             llmAttempts: summaryLlmAttempts
+        )
+    }
+}
+
+/// Shared 「摘要 · Provider · model · metrics」 line for the summary card / panel footer.
+enum SummaryAttributionPolicy {
+    static func label(
+        provider: String?,
+        model: String?,
+        durationS: Double?,
+        llmAttempts: Int?
+    ) -> String? {
+        guard let provider, !provider.isEmpty,
+              let model, !model.isEmpty else { return nil }
+        var parts = ["摘要 · \(ChatMetricsFormatter.providerLabel(provider)) · \(model)"]
+        if let metrics = SummaryMetricsFormatter.completedMetricsLabel(
+            durationS: durationS,
+            llmAttempts: llmAttempts
         ) {
             parts.append(metrics)
         }
         return parts.joined(separator: " · ")
-    }
-
-    private static func providerLabel(_ provider: String) -> String {
-        switch provider {
-        case "ollama": return "Ollama"
-        case "openai": return "OpenAI"
-        case "openrouter": return "OpenRouter"
-        default: return provider
-        }
     }
 }
 

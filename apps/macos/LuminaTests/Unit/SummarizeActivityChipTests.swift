@@ -332,7 +332,7 @@ final class SummarizeActivityChipTests: XCTestCase {
             ),
             encoding: .utf8
         )
-        guard let start = source.range(of: ".scrollPosition(id: $topSegmentIdx, anchor: .top)"),
+        guard let start = source.range(of: ".scrollPosition("),
               let end = source.range(of: "ReaderChromeBarMetrics.height")
         else {
             return XCTFail("could not isolate the summary-progress inset in ReaderView.swift")

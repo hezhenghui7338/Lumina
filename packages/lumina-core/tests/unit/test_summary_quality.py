@@ -684,3 +684,47 @@ def test_clarity_scan_rejects_near_copy_sentences():
     issues = scan_summary_clarity(summary)
     assert any(issue.code == "sentences_redundant" for issue in issues)
     assert quality_should_reject(issues)
+
+
+_WALL_OF_TEXT_SENTENCE = (
+    "我凭借无线电通讯车保持与军部联络，获取前线信息并迅速传达决策。"
+    "随身人员包括优秀通讯官科勒和副官斯佩切特中尉，均是我的得力助手。"
+    "斯佩切特中尉在战斗中表现出机智与勇敢，但不幸在飞机失事中牺牲，令我深感悲痛。"
+    "第4装甲集团军迂回普斯科夫的计划因沼泽和敌军抵抗而失败，我军被迫撤回，"
+    "虽击溃多敌军单位并缴获大量战利品，但敌人主要力量仍在。"
+    "目前装甲集团军计划分兵，我军与第41装甲军任务各异，"
+    "我军转向波科霍夫-诺夫哥罗德，此举恐难有效协同打击敌人。"
+)
+
+_SPLIT_SEMANTIC_SENTENCES = [
+    "我凭通讯车联络军部并传达决策，随员科勒与斯佩切特均为得力助手，后者不幸坠机牺牲。",
+    "第4装甲集团军迂回普斯科夫因沼泽与抵抗失败撤回；现分兵转向波科霍夫-诺夫哥罗德，恐难协同。",
+]
+
+
+def test_clarity_scan_rejects_sentences_wall_of_text():
+    summary = _summary(sentences=[_WALL_OF_TEXT_SENTENCE])
+    issues = scan_summary_clarity(summary)
+    assert any(issue.code == "sentences_wall" for issue in issues)
+    assert quality_should_reject(issues)
+
+
+def test_clarity_scan_allows_semantically_split_sentences():
+    summary = _summary(sentences=_SPLIT_SEMANTIC_SENTENCES)
+    issues = scan_summary_clarity(summary)
+    assert not any(issue.code == "sentences_wall" for issue in issues)
+    assert not any(issue.code == "sentences_redundant" for issue in issues)
+    assert not quality_should_reject(issues)
+
+
+def test_clarity_scan_allows_two_terminators_in_one_sentence():
+    """One or two clause endings in a single item is not a wall; length gate still applies."""
+    text = (
+        "我凭通讯车保持与军部联络并迅速传达决策，随员科勒与斯佩切特均为得力助手。"
+        "后者机智勇敢却不幸在坠机中牺牲，令我深感悲痛。"
+    )
+    assert text.count("。") == 2
+    assert len(text) <= 250
+    summary = _summary(sentences=[text])
+    issues = scan_summary_clarity(summary)
+    assert not any(issue.code == "sentences_wall" for issue in issues)

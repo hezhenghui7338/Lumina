@@ -39,6 +39,8 @@ SENTENCES_TARGET_MIN = 50
 SENTENCES_TARGET_MAX = 200
 SENTENCES_REJECT_MIN = 40
 SENTENCES_REJECT_MAX = 250
+SENTENCES_WALL_MIN_TERMINATORS = 3
+_SENTENCE_TERMINATOR = re.compile(r"[。！？.!?]")
 _ALWAYS_REJECT_CODES = frozenset(
     {
         "wrong_language",
@@ -46,6 +48,7 @@ _ALWAYS_REJECT_CODES = frozenset(
         "summary_too_short",
         "summary_too_long",
         "sentences_redundant",
+        "sentences_wall",
     }
 )
 _SENTENCES_JACCARD_THRESHOLD = 0.28
@@ -236,6 +239,29 @@ def _redundancy_issue(
         "hard",
         0,
     )
+
+
+def scan_sentences_wall(sentences: list[str]) -> list[ClarityIssue]:
+    """Reject a single sentences[] item that packs too many clause endings (wall of text)."""
+    issues: list[ClarityIssue] = []
+    for index, text in enumerate(sentences):
+        stripped = text.strip()
+        if not stripped:
+            continue
+        count = len(_SENTENCE_TERMINATOR.findall(stripped))
+        if count < SENTENCES_WALL_MIN_TERMINATORS:
+            continue
+        issues.append(
+            ClarityIssue(
+                f"sentences[{index}]",
+                "sentences_wall",
+                f"总结第 {index + 1} 项含 {count} 个句末标点，应拆成语义段或压缩",
+                stripped.replace("\n", " ")[:60],
+                "hard",
+                0,
+            )
+        )
+    return issues
 
 
 def scan_sentences_redundancy(sentences: list[str]) -> list[ClarityIssue]:
@@ -458,6 +484,7 @@ def scan_summary_clarity(
                 0,
             )
         )
+    issues.extend(scan_sentences_wall(summary.sentences))
     issues.extend(scan_sentences_redundancy(summary.sentences))
     return _dedupe_exact(issues)
 

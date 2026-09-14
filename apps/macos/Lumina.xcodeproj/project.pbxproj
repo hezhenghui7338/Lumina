@@ -36,6 +36,10 @@
 		A10005D1 /* UsageGuideCopy.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10005D0 /* UsageGuideCopy.swift */; };
 		A10005D3 /* UsageGuideView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10005D2 /* UsageGuideView.swift */; };
 		A10005D5 /* UsageGuideCopyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10005D4 /* UsageGuideCopyTests.swift */; };
+		A1000611 /* ShortcutCatalog.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000610 /* ShortcutCatalog.swift */; };
+		A1000613 /* ShortcutStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000612 /* ShortcutStore.swift */; };
+		A1000615 /* ShortcutsSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000614 /* ShortcutsSettingsView.swift */; };
+		A1000617 /* ShortcutStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000616 /* ShortcutStoreTests.swift */; };
 		A1000585 /* OnboardingTourPolicyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000584 /* OnboardingTourPolicyTests.swift */; };
 		A1000115 /* OllamaSetupHelper.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000215 /* OllamaSetupHelper.swift */; };
 		A1000117 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A1000218 /* Assets.xcassets */; };
@@ -148,6 +152,10 @@
 		A10005D0 /* UsageGuideCopy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UsageGuideCopy.swift; sourceTree = "<group>"; };
 		A10005D2 /* UsageGuideView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UsageGuideView.swift; sourceTree = "<group>"; };
 		A10005D4 /* UsageGuideCopyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UsageGuideCopyTests.swift; sourceTree = "<group>"; };
+		A1000610 /* ShortcutCatalog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShortcutCatalog.swift; sourceTree = "<group>"; };
+		A1000612 /* ShortcutStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShortcutStore.swift; sourceTree = "<group>"; };
+		A1000614 /* ShortcutsSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShortcutsSettingsView.swift; sourceTree = "<group>"; };
+		A1000616 /* ShortcutStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShortcutStoreTests.swift; sourceTree = "<group>"; };
 		A1000584 /* OnboardingTourPolicyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingTourPolicyTests.swift; sourceTree = "<group>"; };
 		A1000215 /* OllamaSetupHelper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OllamaSetupHelper.swift; sourceTree = "<group>"; };
 		A1000217 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
@@ -293,10 +301,21 @@
 				A1000517 /* Shared */,
 				A1000509 /* Search */,
 				A1000510 /* Settings */,
+				A1000519 /* Shortcuts */,
 				A1000518 /* Tasks */,
 				A1000511 /* Onboarding */,
 			);
 			path = Features;
+			sourceTree = "<group>";
+		};
+		A1000519 /* Shortcuts */ = {
+			isa = PBXGroup;
+			children = (
+				A1000610 /* ShortcutCatalog.swift */,
+				A1000612 /* ShortcutStore.swift */,
+				A1000614 /* ShortcutsSettingsView.swift */,
+			);
+			path = Shortcuts;
 			sourceTree = "<group>";
 		};
 		A1000505 /* Services */ = {
@@ -493,6 +512,7 @@
 				A1000550 /* MarkdownExportModeTests.swift */,
 				A1000584 /* OnboardingTourPolicyTests.swift */,
 				A10005D4 /* UsageGuideCopyTests.swift */,
+				A1000616 /* ShortcutStoreTests.swift */,
 				A10005F4 /* ColdStartReadinessTests.swift */,
 				A10005F6 /* BookshelfPageTurnKeyPolicyTests.swift */,
 			);
@@ -708,6 +728,9 @@
 				A1000583 /* OnboardingTourOverlay.swift in Sources */,
 				A10005D1 /* UsageGuideCopy.swift in Sources */,
 				A10005D3 /* UsageGuideView.swift in Sources */,
+				A1000611 /* ShortcutCatalog.swift in Sources */,
+				A1000613 /* ShortcutStore.swift in Sources */,
+				A1000615 /* ShortcutsSettingsView.swift in Sources */,
 				A10005F3 /* ColdStartGateView.swift in Sources */,
 				A1000115 /* OllamaSetupHelper.swift in Sources */,
 			);
@@ -745,6 +768,7 @@
 				A1000551 /* MarkdownExportModeTests.swift in Sources */,
 				A1000585 /* OnboardingTourPolicyTests.swift in Sources */,
 				A10005D5 /* UsageGuideCopyTests.swift in Sources */,
+				A1000617 /* ShortcutStoreTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -807,7 +831,7 @@
 				CODE_SIGN_IDENTITY = "-";
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 1.4.0;
+				CURRENT_PROJECT_VERSION = 1.4.1;
 				DEVELOPMENT_TEAM = "";
 				ENABLE_APP_SANDBOX = NO;
 				ENABLE_HARDENED_RUNTIME = NO;
@@ -818,7 +842,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 1.4.0;
+				MARKETING_VERSION = 1.4.1;
 				PRODUCT_BUNDLE_IDENTIFIER = com.lumina.app;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
@@ -833,7 +857,7 @@
 				CODE_SIGN_IDENTITY = "-";
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 1.4.0;
+				CURRENT_PROJECT_VERSION = 1.4.1;
 				DEVELOPMENT_TEAM = "";
 				ENABLE_APP_SANDBOX = NO;
 				ENABLE_HARDENED_RUNTIME = NO;
@@ -844,7 +868,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 1.4.0;
+				MARKETING_VERSION = 1.4.1;
 				PRODUCT_BUNDLE_IDENTIFIER = com.lumina.app;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
@@ -857,11 +881,11 @@
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1.4.0;
+				CURRENT_PROJECT_VERSION = 1.4.1;
 				DEVELOPMENT_TEAM = "";
 				GENERATE_INFOPLIST_FILE = YES;
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
-				MARKETING_VERSION = 1.4.0;
+				MARKETING_VERSION = 1.4.1;
 				PRODUCT_BUNDLE_IDENTIFIER = com.lumina.app.tests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = NO;
@@ -875,11 +899,11 @@
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1.4.0;
+				CURRENT_PROJECT_VERSION = 1.4.1;
 				DEVELOPMENT_TEAM = "";
 				GENERATE_INFOPLIST_FILE = YES;
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
-				MARKETING_VERSION = 1.4.0;
+				MARKETING_VERSION = 1.4.1;
 				PRODUCT_BUNDLE_IDENTIFIER = com.lumina.app.tests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = NO;

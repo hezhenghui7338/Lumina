@@ -51,6 +51,22 @@ enum SegmentCatalogHeadlineText {
     }
 }
 
+/// Reading-area leading header: chapter · 段 N/total · label (list rows stay without chapter when grouped).
+enum SegmentReadingHeaderTitle {
+    static func title(idx: Int, segmentTotal: Int, chapter: String?, label: String?) -> String {
+        let chapter = SegmentOutlinePolicy.stripSectionMark(chapter ?? "")
+        let label = label?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let ordinal = segmentTotal > 0
+            ? "段 \(idx + 1)/\(segmentTotal)"
+            : "段 \(idx + 1)"
+        var parts: [String] = []
+        if !chapter.isEmpty { parts.append(chapter) }
+        parts.append(ordinal)
+        if !label.isEmpty, label != chapter { parts.append(label) }
+        return parts.joined(separator: " · ")
+    }
+}
+
 enum SegmentCatalogTypography {
     static let headline: Font = .body.weight(.medium)
     static let summary: Font = .body

@@ -236,7 +236,7 @@ struct BookshelfView: View {
             Button(action: onSearch) {
                 Label("搜索", systemImage: "magnifyingglass")
             }
-            .keyboardShortcut("k", modifiers: .command)
+            .help("跨书搜索（\(ShortcutStore.shared.display(for: .globalSearch))）")
 
             Button(action: onShowAllNotes) {
                 Label("全部笔记", systemImage: "note.text")

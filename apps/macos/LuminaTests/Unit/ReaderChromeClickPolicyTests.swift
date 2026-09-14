@@ -700,7 +700,7 @@ final class ReaderChromeClickArchitectureTests: XCTestCase {
         )
         XCTAssertTrue(
             header.contains("SegmentReadingHeaderTitle.title"),
-            "reading header must share segment-list title resolution"
+            "reading header must use chapter · 段 N/total · label resolution"
         )
         XCTAssertFalse(
             header.contains("anchor_label") || header.contains("parsedSummary?.anchor"),
@@ -758,11 +758,37 @@ final class ReaderChromeClickArchitectureTests: XCTestCase {
 
     func testDisableableControlStripsKeepTheirOwnClicks() throws {
         let block = try source("Lumina/Features/Reader/SegmentReadingBlock.swift")
-        XCTAssertEqual(
-            block.components(separatedBy: ".absorbsReaderChromeClicks()").count - 1,
-            2,
-            "the panel toggle strip and the segment turn strip both hold disabled "
-                + "buttons, which are not hit-testable and would leak clicks to the chrome toggle"
+        XCTAssertTrue(
+            block.contains("showsAttribution: false"),
+            "attribution lives on the copy-button row, not inside SummaryBlock"
+        )
+        XCTAssertTrue(
+            block.contains("panelFooterLeadingLabel"),
+            "copy row leading label joins attribution with segment meta"
+        )
+        XCTAssertTrue(
+            block.contains("case .panelToggle:"),
+            "panel toggle lives in the segment header trailing row, left of regenerate"
+        )
+        let copyStrip = block.components(separatedBy: "private var panelCopyButton").last?
+            .components(separatedBy: "private var canCopyCurrentPanel").first ?? ""
+        XCTAssertTrue(
+            copyStrip.contains(".absorbsReaderChromeClicks()"),
+            "disabled copy must not leak clicks through to the chrome toggle"
+        )
+        let turnStrip = block.components(separatedBy: "private var segmentTurnButtons").last?
+            .components(separatedBy: "private func segmentTurnButton").first ?? ""
+        XCTAssertTrue(
+            turnStrip.contains(".absorbsReaderChromeClicks()"),
+            "disabled ← / → must not leak clicks through to the chrome toggle"
+        )
+        XCTAssertTrue(
+            turnStrip.contains("arrow.left") && turnStrip.contains("arrow.right"),
+            "segment turn buttons use SF Symbol arrows, not [ ] glyphs"
+        )
+        XCTAssertFalse(
+            turnStrip.contains("label: \"[\"") || turnStrip.contains("label: \"]\""),
+            "bracket glyphs must not remain as turn-button labels"
         )
     }
 }

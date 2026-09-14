@@ -214,6 +214,19 @@ enum ReaderKeyboardScroll {
     }
 }
 
+/// ↑/↓ continuous reading: prefer a nested segment box when it can move, else
+/// the main feed. Does not decide segment turn (`←` / `→`).
+enum ReaderKeyboardScrollRouting {
+    enum Target: Equatable {
+        case nested
+        case main
+    }
+
+    static func target(nestedCanMove: Bool) -> Target {
+        nestedCanMove ? .nested : .main
+    }
+}
+
 /// Height reserved for a segment that does not yet have a summary, so
 /// `pending` → `running` → `ready` does not explode the feed and yank
 /// `scrollPosition` back to the pinned segment's top.
@@ -252,7 +265,7 @@ enum ReaderSegmentPanelHeight {
     }
 }
 
-/// Prev/next segment by sorted idx, used by [ ] buttons and keyboard.
+/// Prev/next segment by sorted idx, used by arrow buttons and keyboard.
 enum SegmentTurnNavigation {
     static func targetIdx(current: Int, delta: Int, sortedIdxs: [Int]) -> Int? {
         guard let pos = sortedIdxs.firstIndex(of: current) else { return nil }
@@ -262,13 +275,12 @@ enum SegmentTurnNavigation {
     }
 }
 
-/// Hardware `[` / `]` (keyCode 33 / 30). Chinese IME types 【】 on the same keys.
-/// Character `onKeyPress` only fires while the SwiftUI reader view is first
-/// responder; after a turn, selectable body text steals focus and the second
-/// press dies. Key codes keep working.
+/// Hardware `←` / `→` (keyCode 123 / 124). Character `onKeyPress` only fires
+/// while the SwiftUI reader view is first responder; after a turn, selectable
+/// body text steals focus and the second press dies. Key codes keep working.
 enum SegmentTurnKeyPolicy {
-    static let openBracketKeyCode: UInt16 = 33
-    static let closeBracketKeyCode: UInt16 = 30
+    static let leftArrowKeyCode: UInt16 = 123
+    static let rightArrowKeyCode: UInt16 = 124
 
     static func delta(
         keyCode: UInt16,
@@ -279,15 +291,21 @@ enum SegmentTurnKeyPolicy {
         if isRepeat { return nil }
         if shift { return nil }
         switch keyCode {
-        case openBracketKeyCode: return -1
-        case closeBracketKeyCode: return 1
+        case leftArrowKeyCode: return -1
+        case rightArrowKeyCode: return 1
         default:
             break
         }
-        switch characters {
-        case "[", "【": return -1
-        case "]", "】": return 1
-        default: return nil
+        if characters.count == 1, let scalar = characters.unicodeScalars.first {
+            switch scalar.value {
+            case 0xF702: // NSLeftArrowFunctionKey
+                return -1
+            case 0xF703: // NSRightArrowFunctionKey
+                return 1
+            default:
+                break
+            }
         }
+        return nil
     }
 }

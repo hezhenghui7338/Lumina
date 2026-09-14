@@ -149,9 +149,23 @@ struct SettingsView: View {
         )
         promptsSection(settings: settings)
         appearanceSection
+        shortcutsSection
         newsSection
         advancedSection(settings: settings)
         aboutSection
+    }
+
+    @ViewBuilder
+    private var shortcutsSection: some View {
+        Section {
+            NavigationLink("快捷键") {
+                ShortcutsSettingsView()
+            }
+        } header: {
+            Text("快捷键")
+        } footer: {
+            Text("查看与修改全局、阅读器快捷键；可检测冲突并恢复默认。")
+        }
     }
 
     @ViewBuilder

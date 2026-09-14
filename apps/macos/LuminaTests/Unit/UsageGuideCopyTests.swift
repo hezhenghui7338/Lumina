@@ -14,8 +14,9 @@ final class UsageGuideCopyTests: XCTestCase {
     func testUsageGuide_macChromeMentionsBlankClickAndShortcuts() {
         let bodies = UsageGuideCopy.items.map(\.body).joined(separator: "\n")
         XCTAssertTrue(bodies.contains("点空白"))
-        XCTAssertTrue(bodies.contains("⌘F"))
-        XCTAssertTrue(bodies.contains("⌘K"))
+        XCTAssertTrue(bodies.contains(ShortcutCatalog.defaultChord(for: .originalSearch).display))
+        XCTAssertTrue(bodies.contains(ShortcutCatalog.defaultChord(for: .globalSearch).display))
+        XCTAssertTrue(bodies.contains("设置中修改"))
         XCTAssertFalse(bodies.contains("不复刻浮栏"))
     }
 

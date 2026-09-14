@@ -679,6 +679,69 @@ final class ReaderKeyboardScrollTests: XCTestCase {
         XCTAssertFalse(ReaderKeyboardScroll.canMove(originY: 800, deltaY: 80, maxY: 800))
         XCTAssertFalse(ReaderKeyboardScroll.canMove(originY: 100, deltaY: 0, maxY: 800))
     }
+
+    func testRoutingPrefersNestedWhenItCanMove() {
+        XCTAssertEqual(
+            ReaderKeyboardScrollRouting.target(nestedCanMove: true),
+            .nested
+        )
+    }
+
+    func testRoutingFallsBackToMainAtNestedEdge() {
+        XCTAssertEqual(
+            ReaderKeyboardScrollRouting.target(nestedCanMove: false),
+            .main
+        )
+    }
+}
+
+final class ReaderKeyboardScrollWireupTests: XCTestCase {
+    private func readerSource() throws -> String {
+        let macosRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        return try String(
+            contentsOf: macosRoot.appendingPathComponent("Lumina/Features/Reader/ReaderView.swift"),
+            encoding: .utf8
+        )
+    }
+
+    func testUpDownArrowsScrollContentNotTurnSegment() throws {
+        let reader = try readerSource()
+        XCTAssertTrue(
+            reader.contains("case .scrollUp:") || reader.contains("defaultChord(for: .scrollUp)"),
+            "↑ must be wired as scrollUp"
+        )
+        XCTAssertTrue(
+            reader.contains("case .scrollDown:") || reader.contains("defaultChord(for: .scrollDown)"),
+            "↓ must be wired as scrollDown"
+        )
+        XCTAssertTrue(
+            reader.contains("ReaderFeedScrollAnchor"),
+            "feed ScrollView must register enclosing NSScrollView from inside content"
+        )
+        XCTAssertTrue(
+            reader.contains("feedScrollView"),
+            "↑/↓ must prefer the in-feed registered NSScrollView"
+        )
+        XCTAssertTrue(
+            reader.contains("freeKeyboardScroll"),
+            "↑/↓ must detach scrollPosition pin without clearing the segment idx"
+        )
+        XCTAssertTrue(
+            reader.contains("performReaderKeyboardScroll")
+                || reader.contains("performKeyboardScroll"),
+            "scroll shortcuts must invoke continuous reading scroll"
+        )
+        // handleShortcut must not no-op scroll actions
+        XCTAssertFalse(
+            reader.contains(
+                "case .globalSearch, .importBooks, .scrollUp, .scrollDown, .pageUp, .pageDown, .dismissOverlay:\n            break"
+            ),
+            "scrollUp/Down must not be a no-op in handleShortcut"
+        )
+    }
 }
 
 final class SegmentTurnNavigationTests: XCTestCase {
@@ -714,11 +777,11 @@ final class SegmentTurnNavigationTests: XCTestCase {
 }
 
 final class SegmentTurnKeyPolicyTests: XCTestCase {
-    func testUnshiftedBracketsTurnEveryPress() {
+    func testUnshiftedArrowsTurnEveryPress() {
         XCTAssertEqual(
             SegmentTurnKeyPolicy.delta(
-                keyCode: SegmentTurnKeyPolicy.openBracketKeyCode,
-                characters: "[",
+                keyCode: SegmentTurnKeyPolicy.leftArrowKeyCode,
+                characters: "",
                 shift: false,
                 isRepeat: false
             ),
@@ -726,27 +789,8 @@ final class SegmentTurnKeyPolicyTests: XCTestCase {
         )
         XCTAssertEqual(
             SegmentTurnKeyPolicy.delta(
-                keyCode: SegmentTurnKeyPolicy.closeBracketKeyCode,
-                characters: "]",
-                shift: false,
-                isRepeat: false
-            ),
-            1
-        )
-        XCTAssertEqual(
-            SegmentTurnKeyPolicy.delta(
-                keyCode: SegmentTurnKeyPolicy.openBracketKeyCode,
-                characters: "【",
-                shift: false,
-                isRepeat: false
-            ),
-            -1,
-            "Chinese IME 【 is the same key as [ and must keep turning on later presses"
-        )
-        XCTAssertEqual(
-            SegmentTurnKeyPolicy.delta(
-                keyCode: SegmentTurnKeyPolicy.closeBracketKeyCode,
-                characters: "】",
+                keyCode: SegmentTurnKeyPolicy.rightArrowKeyCode,
+                characters: "",
                 shift: false,
                 isRepeat: false
             ),
@@ -757,27 +801,29 @@ final class SegmentTurnKeyPolicyTests: XCTestCase {
     func testShiftAndRepeatDoNotTurn() {
         XCTAssertNil(
             SegmentTurnKeyPolicy.delta(
-                keyCode: SegmentTurnKeyPolicy.openBracketKeyCode,
-                characters: "{",
+                keyCode: SegmentTurnKeyPolicy.leftArrowKeyCode,
+                characters: "",
                 shift: true,
                 isRepeat: false
             )
         )
         XCTAssertNil(
             SegmentTurnKeyPolicy.delta(
-                keyCode: SegmentTurnKeyPolicy.closeBracketKeyCode,
-                characters: "]",
+                keyCode: SegmentTurnKeyPolicy.rightArrowKeyCode,
+                characters: "",
                 shift: false,
                 isRepeat: true
             )
         )
     }
 
-    func testFullwidthCharactersStillTurnWithoutKnownKeyCode() {
+    func testArrowFunctionKeyUnicodeFallback() {
+        let leftUnicode = String(UnicodeScalar(0xF702)!)
+        let rightUnicode = String(UnicodeScalar(0xF703)!)
         XCTAssertEqual(
             SegmentTurnKeyPolicy.delta(
                 keyCode: 0,
-                characters: "【",
+                characters: leftUnicode,
                 shift: false,
                 isRepeat: false
             ),
@@ -786,11 +832,38 @@ final class SegmentTurnKeyPolicyTests: XCTestCase {
         XCTAssertEqual(
             SegmentTurnKeyPolicy.delta(
                 keyCode: 0,
-                characters: "】",
+                characters: rightUnicode,
                 shift: false,
                 isRepeat: false
             ),
             1
+        )
+    }
+
+    func testBracketsNoLongerTurn() {
+        XCTAssertNil(
+            SegmentTurnKeyPolicy.delta(
+                keyCode: 33,
+                characters: "[",
+                shift: false,
+                isRepeat: false
+            )
+        )
+        XCTAssertNil(
+            SegmentTurnKeyPolicy.delta(
+                keyCode: 30,
+                characters: "]",
+                shift: false,
+                isRepeat: false
+            )
+        )
+        XCTAssertNil(
+            SegmentTurnKeyPolicy.delta(
+                keyCode: 0,
+                characters: "【",
+                shift: false,
+                isRepeat: false
+            )
         )
     }
 
@@ -804,12 +877,12 @@ final class SegmentTurnKeyPolicyTests: XCTestCase {
             encoding: .utf8
         )
         XCTAssertFalse(
-            reader.contains(".onKeyPress(\"[\")") || reader.contains(".onKeyPress(\"【\")"),
+            reader.contains(".onKeyPress(.leftArrow)") || reader.contains(".onKeyPress(.rightArrow)"),
             "character onKeyPress dies after selectable body text steals first responder"
         )
         XCTAssertTrue(
             reader.contains("SegmentTurnKeyPolicy.delta"),
-            "hardware [ ] / 【】 must be handled in the existing keyDown monitor so every press turns"
+            "hardware ← → must be handled in the existing keyDown monitor so every press turns"
         )
         XCTAssertTrue(
             reader.contains("onTurnSegment"),
@@ -817,7 +890,7 @@ final class SegmentTurnKeyPolicyTests: XCTestCase {
         )
         XCTAssertTrue(
             reader.contains("LuminaSelectableTextView { return false }"),
-            "selectable body text must not be treated as an editor or [ ] would be ignored"
+            "selectable body text must not be treated as an editor or ← → would be ignored"
         )
     }
 }

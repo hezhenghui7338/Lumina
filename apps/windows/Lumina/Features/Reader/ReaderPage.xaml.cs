@@ -84,7 +84,6 @@ public sealed partial class ReaderPage : Page
         _listen.HighlightSegment += idx => JumpToSegment(idx, flash: false);
         ChatList.ItemsSource = _chat;
         KeyDown += ReaderPage_KeyDown;
-        CharacterReceived += ReaderPage_CharacterReceived;
     }
 
     internal FrameworkElement? TourTarget(OnboardingTourAnchor anchor) => anchor switch
@@ -112,6 +111,21 @@ public sealed partial class ReaderPage : Page
 
         if (e.Handled) return;
         if (ShouldIgnoreReaderScrollKey(e.OriginalSource as DependencyObject)) return;
+
+        if (!ctrl && !shift)
+        {
+            switch (e.Key)
+            {
+                case VirtualKey.Left:
+                    if (TurnSegment(-1))
+                        e.Handled = true;
+                    return;
+                case VirtualKey.Right:
+                    if (TurnSegment(1))
+                        e.Handled = true;
+                    return;
+            }
+        }
 
         const double lineDelta = 80;
         var offset = ContentScroll.VerticalOffset;
@@ -149,20 +163,6 @@ public sealed partial class ReaderPage : Page
             current = VisualTreeHelper.GetParent(current);
         }
         return false;
-    }
-
-    private void ReaderPage_CharacterReceived(UIElement sender, CharacterReceivedRoutedEventArgs e)
-    {
-        if (ShouldIgnoreReaderScrollKey(e.OriginalSource as DependencyObject)) return;
-        var delta = e.Character switch
-        {
-            '[' or '【' => -1,
-            ']' or '】' => 1,
-            _ => 0,
-        };
-        if (delta == 0) return;
-        if (TurnSegment(delta))
-            e.Handled = true;
     }
 
     private void PrevSegment_Click(object sender, RoutedEventArgs e) => TurnSegment(-1);
