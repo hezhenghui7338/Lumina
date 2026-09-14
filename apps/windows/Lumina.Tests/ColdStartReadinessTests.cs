@@ -19,26 +19,31 @@ public class ColdStartReadinessTests
     }
 
     [Fact]
-    public void Gate_rows_exclude_news()
+    public void Detail_reveal_policy()
     {
-        Assert.Equal(new[] { "engine", "data", "cache" }, ColdStartReadiness.GateRowKinds);
+        Assert.Equal(TimeSpan.FromSeconds(10), ColdStartReadiness.DetailRevealAfter);
+        Assert.False(ColdStartReadiness.ShouldRevealTechnicalDetail(TimeSpan.FromSeconds(9.9)));
+        Assert.True(ColdStartReadiness.ShouldRevealTechnicalDetail(TimeSpan.FromSeconds(10)));
     }
 
     [Fact]
-    public void CacheProgress_and_detail_in_merge_and_row_label()
+    public void TechnicalDetail_derives_from_internal_phase()
     {
-        var snap = ColdStartReadiness.Merge(
+        var engine = ColdStartReadiness.Merge(false, "pending", "pending", "pending", null);
+        Assert.Equal("正在启动引擎", ColdStartReadiness.TechnicalDetail(engine));
+
+        var data = ColdStartReadiness.Merge(true, "running", "pending", "pending", null);
+        Assert.Equal("正在准备阅读数据", ColdStartReadiness.TechnicalDetail(data));
+
+        var cache = ColdStartReadiness.Merge(
             true, "done", "running", "pending", null, 0.45, "恢复书籍状态 (12/48)");
-        Assert.Equal(ColdStartPhaseState.Running, snap.Cache);
-        Assert.Equal(0.45, snap.CacheProgress);
-        Assert.Equal("恢复书籍状态 (12/48)", snap.CacheDetail);
+        Assert.Equal("恢复书籍状态 (12/48)", ColdStartReadiness.TechnicalDetail(cache));
 
-        var labelWithDetail = ColdStartReadiness.RowLabel(
-            "cache", ColdStartPhaseState.Running, snap.CacheDetail);
-        Assert.Equal("缓存加载中 · 恢复书籍状态 (12/48)", labelWithDetail);
+        var cachePlain = ColdStartReadiness.Merge(true, "done", "running", "pending", null);
+        Assert.Equal("正在加载缓存", ColdStartReadiness.TechnicalDetail(cachePlain));
 
-        var labelWithoutDetail = ColdStartReadiness.RowLabel(
-            "cache", ColdStartPhaseState.Running, null);
-        Assert.Equal("缓存加载中", labelWithoutDetail);
+        Assert.Equal(
+            "无法连接",
+            ColdStartReadiness.TechnicalDetail(cachePlain, "无法连接"));
     }
 }

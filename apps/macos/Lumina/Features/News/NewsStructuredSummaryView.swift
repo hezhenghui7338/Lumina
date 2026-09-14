@@ -4,6 +4,7 @@ import SwiftUI
 struct NewsStructuredSummaryView: View {
     let markdown: String
     var scale: Double = 1.0
+    var lineSpacingScale: Double = ThemeManager.defaultReadingLineSpacingScale
     var onFollowUp: ((String) -> Void)?
     var showsBackground: Bool = true
 
@@ -36,7 +37,7 @@ struct NewsStructuredSummaryView: View {
                             Text(sentence)
                                 .font(.system(size: scaled(LuminaTheme.summaryLeadSize), weight: .regular))
                                 .foregroundStyle(LuminaTheme.textPrimary)
-                                .lineSpacing(scaled(LuminaTheme.summaryLeadLineSpacing))
+                                .lineSpacing(scaled(LuminaTheme.summaryLeadLineSpacing) * CGFloat(lineSpacingScale))
                                 .fixedSize(horizontal: false, vertical: true)
                                 .textSelection(.enabled)
                         }
@@ -48,7 +49,12 @@ struct NewsStructuredSummaryView: View {
                 summarySection(title: "主要内容") {
                     VStack(alignment: .leading, spacing: LuminaTheme.summaryBulletItemSpacing) {
                         ForEach(Array(parsed.bullets.enumerated()), id: \.offset) { index, bullet in
-                            NewsStructuredBulletRow(index: index + 1, bullet: bullet, scale: scale)
+                            NewsStructuredBulletRow(
+                                index: index + 1,
+                                bullet: bullet,
+                                scale: scale,
+                                lineSpacingScale: lineSpacingScale
+                            )
                         }
                     }
                 }
@@ -65,7 +71,7 @@ struct NewsStructuredSummaryView: View {
                                 Text(note)
                                     .font(.system(size: scaled(LuminaTheme.summaryBulletSize), weight: .regular))
                                     .foregroundStyle(LuminaTheme.textSecondary)
-                                    .lineSpacing(scaled(LuminaTheme.summaryBulletLineSpacing))
+                                    .lineSpacing(scaled(LuminaTheme.summaryBulletLineSpacing) * CGFloat(lineSpacingScale))
                                     .fixedSize(horizontal: false, vertical: true)
                                     .textSelection(.enabled)
                             }
@@ -140,6 +146,7 @@ private struct NewsStructuredBulletRow: View {
     let index: Int
     let bullet: ParsedBullet
     var scale: Double = 1.0
+    var lineSpacingScale: Double = ThemeManager.defaultReadingLineSpacingScale
 
     private func scaled(_ base: CGFloat) -> CGFloat {
         base * CGFloat(scale)
@@ -168,7 +175,7 @@ private struct NewsStructuredBulletRow: View {
                             ? LuminaTheme.textPrimary
                             : LuminaTheme.textSecondary
                     )
-                    .lineSpacing(scaled(LuminaTheme.summaryBulletLineSpacing))
+                    .lineSpacing(scaled(LuminaTheme.summaryBulletLineSpacing) * CGFloat(lineSpacingScale))
                     .fixedSize(horizontal: false, vertical: true)
                     .textSelection(.enabled)
             }

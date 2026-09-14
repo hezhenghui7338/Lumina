@@ -466,6 +466,8 @@ def test_news_brief_matches_swift_news_brief(client):
     brief = client.get("/news/brief").json()
     assert isinstance(brief["date"], str)
     assert isinstance(brief["count"], int)
+    assert "last_synced_at" in brief
+    assert brief["last_synced_at"] is None or isinstance(brief["last_synced_at"], str)
     assert isinstance(brief["articles"], list)
     for article in brief["articles"]:
         assert isinstance(article["id"], str)

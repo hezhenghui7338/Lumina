@@ -140,48 +140,40 @@ final class SegmentSidebarTests: XCTestCase {
         XCTAssertEqual(SegmentCatalogHeadlineText.joined(idx: 4, title: "学而"), "段 5 · 学而")
     }
 
-    func testReadingHeaderTitle_includesChapterSegmentTotalAndLabel() {
+    func testReadingHeaderTitle_includesChapterAndLabelWithoutOrdinal() {
         XCTAssertEqual(
             SegmentReadingHeaderTitle.title(
-                idx: 129,
-                segmentTotal: 369,
                 chapter: "第九章 克里米亚战役",
                 label: "克里米亚优先部署"
             ),
-            "第九章 克里米亚战役 · 段 130/369 · 克里米亚优先部署"
+            "第九章 克里米亚战役 · 克里米亚优先部署"
         )
         XCTAssertEqual(
             SegmentReadingHeaderTitle.title(
-                idx: 108,
-                segmentTotal: 4163,
                 chapter: "第八章 装甲军长驱直入",
                 label: "迪纳斯克的突破"
             ),
-            "第八章 装甲军长驱直入 · 段 109/4163 · 迪纳斯克的突破"
+            "第八章 装甲军长驱直入 · 迪纳斯克的突破"
         )
         XCTAssertEqual(
-            SegmentReadingHeaderTitle.title(idx: 0, segmentTotal: 10, chapter: "§第一章", label: "引子"),
-            "第一章 · 段 1/10 · 引子"
+            SegmentReadingHeaderTitle.title(chapter: "§第一章", label: "引子"),
+            "第一章 · 引子"
         )
         XCTAssertEqual(
-            SegmentReadingHeaderTitle.title(idx: 2, segmentTotal: 50, chapter: "第二章", label: nil),
-            "第二章 · 段 3/50"
+            SegmentReadingHeaderTitle.title(chapter: "第二章", label: nil),
+            "第二章"
         )
         XCTAssertEqual(
-            SegmentReadingHeaderTitle.title(idx: 0, segmentTotal: 10, chapter: nil, label: "引子"),
-            "段 1/10 · 引子"
+            SegmentReadingHeaderTitle.title(chapter: nil, label: "引子"),
+            "引子"
         )
         XCTAssertEqual(
-            SegmentReadingHeaderTitle.title(idx: 0, segmentTotal: 10, chapter: nil, label: nil),
-            "段 1/10"
+            SegmentReadingHeaderTitle.title(chapter: nil, label: nil),
+            ""
         )
         XCTAssertEqual(
-            SegmentReadingHeaderTitle.title(idx: 0, segmentTotal: 10, chapter: "第一章", label: "第一章"),
-            "第一章 · 段 1/10"
-        )
-        XCTAssertEqual(
-            SegmentReadingHeaderTitle.title(idx: 0, segmentTotal: 0, chapter: nil, label: nil),
-            "段 1"
+            SegmentReadingHeaderTitle.title(chapter: "第一章", label: "第一章"),
+            "第一章"
         )
     }
 

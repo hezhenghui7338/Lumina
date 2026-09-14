@@ -136,6 +136,33 @@ final class SegmentReadyEventTests: XCTestCase {
     func testParsedSummary_invalidJSON_returnsNil() {
         XCTAssertNil(ParsedSummary(json: "not json"))
     }
+
+    func testParsedSummary_collapsesBlankLinesInProseFields() {
+        let json = """
+        {"sentences":["第一句概述。\\n\\n","第二句\\n\\n继续写完。","   \\n\\n   "],"bullets":[{"label":"寒门\\n\\n出身","body":"主角生于\\n\\n贫苦农家，细节充实。"},{"label":"赴考之志","body":"段末誓要\\n金榜题名，细节充实。"},{"label":"邻里期望","body":"乡邻视为\\n\\n\\n村庄的希望，细节充实。"}],"notes":["注意：后文\\n\\n有伏笔。"],"follow_ups":["主角与邻里\\n\\n期望之间有何张力？"],"anchor":"§第一章\\n\\n· 段 1"}
+        """
+        let parsed = ParsedSummary(json: json)
+        XCTAssertNotNil(parsed)
+        XCTAssertEqual(parsed?.sentences, ["第一句概述。", "第二句继续写完。"])
+        XCTAssertEqual(parsed?.bullets.first?.label, "寒门出身")
+        XCTAssertEqual(parsed?.bullets.first?.body, "主角生于贫苦农家，细节充实。")
+        XCTAssertFalse(parsed?.bullets.last?.body.contains("\n") ?? true)
+        XCTAssertEqual(parsed?.notes, ["注意：后文有伏笔。"])
+        XCTAssertEqual(parsed?.followUps, ["主角与邻里期望之间有何张力？"])
+        XCTAssertEqual(parsed?.anchor, "§第一章 · 段 1")
+        XCTAssertEqual(
+            ParsedSummary.collapseProseWhitespace("hello\n\nworld"),
+            "hello world"
+        )
+        XCTAssertEqual(
+            ParsedSummary.collapseProseWhitespace("甲\n\n乙"),
+            "甲乙"
+        )
+        XCTAssertEqual(
+            ParsedSummary.collapseProseWhitespace("甲  乙  \t 丙"),
+            "甲 乙 丙"
+        )
+    }
 }
 
 @MainActor

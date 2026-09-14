@@ -15,6 +15,7 @@ import sqlite3
 from lumina_core.config import (
     PromptsConfig,
     SUMMARY_JOB_MAX_RETRIES,
+    SUMMARY_RELAX_QUALITY_AFTER_FAILURES,
     SUMMARY_SEGMENT_TIMEOUT_SECONDS,
     load_prompts_config,
 )
@@ -131,6 +132,8 @@ class JobQueue:
         self._startup_deferred_task: asyncio.Task[None] | None = None
         # Backward-compatible alias used by older tests / call sites.
         self._catalog_backfill_task: asyncio.Task[None] | None = None
+        # Background summarize/start finishers (HTTP ack returns before these).
+        self._start_tasks: set[asyncio.Task[None]] = set()
 
     def startup_data_phase(self) -> str:
         return self._startup_data_phase
@@ -797,7 +800,13 @@ class JobQueue:
                 summary_tier=tier,
             )
             return
+        # No pending/error work: repair drifted summary_ready_count and promote.
+        promoted = await self._run_db(
+            lambda: self._books_repo.maybe_mark_summarized(book_id)
+        )
         await self._set_intent_async(book_id, "idle")
+        if promoted:
+            self._intent_cache[book_id] = "idle"
 
     async def recover_on_startup(self) -> None:
         """Fast path for time-to-read; defer cleanup and summarize resume.
@@ -948,6 +957,39 @@ class JobQueue:
                     continue
                 await self._enqueue_next_book_summary(book_id)
             self.ensure_workers()
+
+    def schedule_resume_orphaned_active(self) -> None:
+        """Fire-and-forget resume so GET /books never waits on enqueue work."""
+        if (
+            self._shutting_down
+            or self._startup_recovering
+            or self._resume_lock.locked()
+        ):
+            return
+        task = asyncio.create_task(
+            self.resume_orphaned_active(),
+            name="lumina-resume-orphaned-active",
+        )
+        self._start_tasks.add(task)
+        task.add_done_callback(self._start_tasks.discard)
+
+    @staticmethod
+    def _book_needs_summarize_start(book: dict[str, Any]) -> bool:
+        """True when start_all should touch this shelf row."""
+        if book.get("status") in ("processing", "error"):
+            return False
+        ready = book.get("summary_ready_count")
+        total = book.get("summary_total_count")
+        segment_count = int(book.get("segment_count") or 0)
+        if ready is None or total is None:
+            total = segment_count
+            ready = 0
+        else:
+            ready = int(ready or 0)
+            total = int(total or 0)
+            if total != segment_count:
+                total = segment_count
+        return total > 0 and ready < total
 
     async def _recover_stale_index(self, book: dict[str, Any]) -> None:
         """Reset a 'building' index with no active rollup (crash/restart orphan).
@@ -1137,14 +1179,26 @@ class JobQueue:
 
         Ready summaries are kept even if the user switches to advanced/normal.
         Use enqueue_book_regenerate to overwrite the whole book.
+
+        Ack path sets intent + emits immediately so the shelf can show 排队中
+        before restore/reset/enqueue finish.
         """
+        await self._ack_start_book(book_id, summary_tier=summary_tier)
+        await self._complete_start_book(book_id, summary_tier=summary_tier)
+
+    async def begin_start_book(
+        self, book_id: str, *, summary_tier: str = "normal"
+    ) -> None:
+        """HTTP ack: intent + emit now; finish restore/reset/enqueue in background."""
+        await self._ack_start_book(book_id, summary_tier=summary_tier)
+        self._schedule_complete_start(book_id, summary_tier=summary_tier)
+
+    async def _ack_start_book(
+        self, book_id: str, *, summary_tier: str = "normal"
+    ) -> None:
         await self._supersede_book_tier(book_id, summary_tier)
         await self.unpause_book_async(book_id)
         await self._set_intent_async(book_id, "active")
-        await self._restore_suspended(book_id)
-        await self._apply_tier_to_incomplete_segments(book_id, summary_tier)
-        await self._reset_segments_for_user_resume(book_id)
-        await self.enqueue_book_prefetch(book_id, summary_tier=summary_tier)
         await self.emit(
             book_id,
             {
@@ -1155,12 +1209,79 @@ class JobQueue:
             },
         )
 
+    async def _complete_start_book(
+        self, book_id: str, *, summary_tier: str = "normal"
+    ) -> None:
+        # start_all ack only stamps intent; supersede runs here for tier switches.
+        await self._supersede_book_tier(book_id, summary_tier)
+        await self._restore_suspended(book_id)
+        await self._apply_tier_to_incomplete_segments(book_id, summary_tier)
+        await self._reset_segments_for_user_resume(book_id)
+        await self.enqueue_book_prefetch(book_id, summary_tier=summary_tier)
+
+    def _schedule_complete_start(
+        self, book_id: str, *, summary_tier: str = "normal"
+    ) -> None:
+        task = asyncio.create_task(
+            self._complete_start_book_safe(book_id, summary_tier=summary_tier),
+            name=f"lumina-start-book-{book_id}",
+        )
+        self._start_tasks.add(task)
+        task.add_done_callback(self._start_tasks.discard)
+
+    async def _complete_start_book_safe(
+        self, book_id: str, *, summary_tier: str = "normal"
+    ) -> None:
+        try:
+            await self._complete_start_book(book_id, summary_tier=summary_tier)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("background start_book failed book_id=%s", book_id)
+
     async def start_all(self, *, summary_tier: str = "normal") -> None:
+        """Start every incomplete book (awaits finishers — used by recover/tests)."""
+        targets = await self.ack_start_all(summary_tier=summary_tier)
+        for book_id in targets:
+            await self._complete_start_book(book_id, summary_tier=summary_tier)
+
+    async def begin_start_all(self, *, summary_tier: str = "normal") -> list[str]:
+        """HTTP ack for library-wide start: mark queued now, finish in background."""
+        targets = await self.ack_start_all(summary_tier=summary_tier)
+        for book_id in targets:
+            self._schedule_complete_start(book_id, summary_tier=summary_tier)
+        return targets
+
+    async def ack_start_all(self, *, summary_tier: str = "normal") -> list[str]:
+        """Clear global pause, stamp active intent on startable books, emit resumed."""
         self._user_paused_all = False
         self._user_paused_books.clear()
         books = await self._run_db(self._books_repo.list_books)
-        for book in books:
-            await self.start_book(book["id"], summary_tier=summary_tier)
+        targets = [
+            book["id"]
+            for book in books
+            if self._book_needs_summarize_start(book)
+        ]
+        if not targets:
+            return []
+        for book_id in targets:
+            await self._supersede_book_tier(book_id, summary_tier)
+            self._intent_cache[book_id] = "active"
+            self._user_paused_books.discard(book_id)
+        await self._run_db(
+            lambda: self._books_repo.bulk_set_summarize_intent(targets, "active")
+        )
+        for book_id in targets:
+            await self.emit(
+                book_id,
+                {
+                    "type": "summarize_resumed",
+                    "scope": "all",
+                    "book_id": book_id,
+                    "summary_tier": summary_tier,
+                },
+            )
+        return targets
 
     def _queue_for(self, item: JobItem) -> asyncio.PriorityQueue[JobItem]:
         return self._rollup_queue if item.kind == JobKind.ROLLUP else self._queue
@@ -1231,19 +1352,14 @@ class JobQueue:
             )
 
     async def _reset_segments_for_user_resume(self, book_id: str) -> None:
-        """Reset failed/error segments so start_summarize gets a fresh retry budget."""
-        segments = await self._run_db(
-            lambda: self._segments_repo.reset_failed_segments(book_id)
+        """Reset failed/error segments so start_summarize gets a fresh retry budget.
+
+        Uses a single UPDATE (no per-row SELECT/SSE). Shelf state already flipped
+        via summarize_resumed; workers emit segment_status when they pick up work.
+        """
+        await self._run_db(
+            lambda: self._segments_repo.reset_failed_segments_count(book_id)
         )
-        for seg in segments:
-            await self._emit_segment_event(
-                book_id,
-                {
-                    "type": "segment_status",
-                    "idx": seg["idx"],
-                    "status": "pending",
-                },
-            )
 
     async def _apply_tier_to_incomplete_segments(
         self, book_id: str, summary_tier: str
@@ -1403,6 +1519,7 @@ class JobQueue:
         summary_tier: str,
         summary_duration_s: float,
         summary_llm_attempts: int,
+        summary_quality_relaxed: bool = False,
     ) -> bool:
         self._segments_repo.update_summary(
             segment_id,
@@ -1415,6 +1532,7 @@ class JobQueue:
             summary_tier=summary_tier,
             summary_duration_s=summary_duration_s,
             summary_llm_attempts=summary_llm_attempts,
+            summary_quality_relaxed=summary_quality_relaxed,
         )
         book = self._books_repo.get(book_id)
         if book:
@@ -1474,6 +1592,8 @@ class JobQueue:
 
         await _mark_running()
         job_timeout = summarize_job_timeout_seconds(self.router, self.prompts)
+        failure_total = int(seg.get("summary_failure_total") or 0)
+        relaxed_quality = failure_total >= SUMMARY_RELAX_QUALITY_AFTER_FAILURES
         try:
             async def _on_progress(payload: dict[str, Any]) -> None:
                 payload.setdefault("idx", item.segment_idx)
@@ -1507,6 +1627,7 @@ class JobQueue:
                     prompts=self.prompts,
                     background_context=background_context,
                     target_language=target_language,
+                    relaxed_quality=relaxed_quality,
                 ),
                 timeout=job_timeout,
             )
@@ -1547,6 +1668,7 @@ class JobQueue:
                     summary_tier=item.summary_tier,
                     summary_duration_s=summary_duration_s,
                     summary_llm_attempts=result.llm_attempts,
+                    summary_quality_relaxed=relaxed_quality,
                 )
             )
             self._clear_active_summarize(
@@ -1554,18 +1676,17 @@ class JobQueue:
                 item.segment_idx,
                 summary_tier=item.summary_tier,
             )
-            await self._emit_segment_event(
-                item.book_id,
-                segment_ready_event_payload(
-                    result.summary,
-                    idx=item.segment_idx,
-                    resource_id=resource_id,
-                    model=model,
-                    summary_tier=item.summary_tier,
-                    summary_duration_s=summary_duration_s,
-                    summary_llm_attempts=result.llm_attempts,
-                ),
+            ready_payload = segment_ready_event_payload(
+                result.summary,
+                idx=item.segment_idx,
+                resource_id=resource_id,
+                model=model,
+                summary_tier=item.summary_tier,
+                summary_duration_s=summary_duration_s,
+                summary_llm_attempts=result.llm_attempts,
             )
+            ready_payload["summary_quality_relaxed"] = relaxed_quality
+            await self._emit_segment_event(item.book_id, ready_payload)
             if self._task_registry:
                 self._task_registry.update_progress_by_job_key(
                     job_key,
@@ -1607,7 +1728,10 @@ class JobQueue:
                 err_msg = str(exc)[:300] or type(exc).__name__
             await self._run_db(
                 lambda: self._segments_repo.set_status(
-                    seg["id"], status, retry_count=retry
+                    seg["id"],
+                    status,
+                    retry_count=retry,
+                    increment_failure_total=True,
                 )
             )
             await self._emit_segment_event(

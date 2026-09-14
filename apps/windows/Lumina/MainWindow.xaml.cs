@@ -11,6 +11,7 @@ using Lumina.Services;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Input;
+using Microsoft.UI.Xaml.Media.Animation;
 using Windows.System;
 
 namespace Lumina;
@@ -28,6 +29,8 @@ public sealed partial class MainWindow : Window
     private BookSummary? _firstBook;
     private bool _suppressTipClosed;
     private int _tourGen;
+    private DispatcherQueueTimer? _coldStartTick;
+    private Storyboard? _coldStartBounce;
 
     public MainWindow()
     {
@@ -311,105 +314,104 @@ public sealed partial class MainWindow : Window
         if (App.Sidecar.ProductReady)
         {
             ColdStartOverlay.Visibility = Visibility.Collapsed;
+            StopColdStartTick();
+            StopColdStartBounce();
             return;
         }
 
         ColdStartOverlay.Visibility = Visibility.Visible;
-        var elapsed = (int)Math.Max(0, (DateTime.UtcNow - App.Sidecar.ColdStartStartedAt).TotalSeconds);
+        EnsureColdStartTick();
+        EnsureColdStartBounce();
+
+        var elapsedSpan = DateTime.UtcNow - App.Sidecar.ColdStartStartedAt;
+        var elapsed = (int)Math.Max(0, elapsedSpan.TotalSeconds);
         ColdStartElapsedText.Text = $"已用时 {elapsed} 秒";
 
-        ColdStartRowsPanel.Children.Clear();
         var phases = App.Sidecar.ColdStartPhases;
-        AddColdStartRow("engine", phases.Engine, phases);
-        AddColdStartRow("data", phases.Data, phases);
-        AddColdStartRow("cache", phases.Cache, phases);
+        var launchError = App.Sidecar.UserStopped ? null : App.Sidecar.LaunchError;
+        var failed = !string.IsNullOrEmpty(launchError);
+        var showDetail = failed || ColdStartReadiness.ShouldRevealTechnicalDetail(elapsedSpan);
+
+        ColdStartDetailPanel.Visibility = showDetail ? Visibility.Visible : Visibility.Collapsed;
+        ColdStartRetryButton.Visibility = failed ? Visibility.Visible : Visibility.Collapsed;
+        if (showDetail)
+        {
+            ColdStartDetailText.Text = ColdStartReadiness.TechnicalDetail(phases, launchError);
+        }
     }
 
-    private void AddColdStartRow(string kind, ColdStartPhaseState state, ColdStartPhaseSnapshot phases)
+    private void EnsureColdStartTick()
     {
-        var done = state == ColdStartPhaseState.Done;
-        var label = ColdStartReadiness.RowLabel(kind, state, phases.CacheDetail);
+        if (_coldStartTick != null) return;
+        _coldStartTick = DispatcherQueue.CreateTimer();
+        _coldStartTick.Interval = TimeSpan.FromSeconds(1);
+        _coldStartTick.IsRepeating = true;
+        _coldStartTick.Tick += (_, _) => UpdateColdStartOverlay();
+        _coldStartTick.Start();
+    }
 
-        var rowContainer = new StackPanel { Spacing = 6, Width = 360 };
+    private void StopColdStartTick()
+    {
+        if (_coldStartTick == null) return;
+        _coldStartTick.Stop();
+        _coldStartTick = null;
+    }
 
-        var headerGrid = new Grid();
-        headerGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        headerGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        headerGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+    private void EnsureColdStartBounce()
+    {
+        if (_coldStartBounce != null) return;
 
-        var icon = new FontIcon
+        var bounce = new DoubleAnimation
         {
-            Glyph = done ? "\uE73E" : "\uEA3A",
-            FontSize = 14,
-            VerticalAlignment = VerticalAlignment.Center,
-            Margin = new Thickness(0, 0, 10, 0),
+            From = 0,
+            To = -18,
+            Duration = TimeSpan.FromMilliseconds(620),
+            AutoReverse = true,
+            RepeatBehavior = RepeatBehavior.Forever,
+            EasingFunction = new SineEase { EasingMode = EasingMode.EaseInOut },
         };
-        if (done && Application.Current.Resources.TryGetValue("AccentFillColorDefaultBrush", out var accentBrush) && accentBrush is Microsoft.UI.Xaml.Media.Brush bAccent)
-        {
-            icon.Foreground = bAccent;
-        }
-        else if (Application.Current.Resources.TryGetValue("TextFillColorSecondaryBrush", out var secBrush) && secBrush is Microsoft.UI.Xaml.Media.Brush bSec)
-        {
-            icon.Foreground = bSec;
-        }
-        Grid.SetColumn(icon, 0);
-        headerGrid.Children.Add(icon);
+        Storyboard.SetTarget(bounce, ColdStartBrandOffset);
+        Storyboard.SetTargetProperty(bounce, "Y");
 
-        var text = new TextBlock
+        var glowWidth = new DoubleAnimation
         {
-            Text = label,
-            FontSize = 13,
-            FontWeight = done ? Microsoft.UI.Text.FontWeights.Normal : Microsoft.UI.Text.FontWeights.Medium,
-            VerticalAlignment = VerticalAlignment.Center,
+            From = 96,
+            To = 56,
+            Duration = TimeSpan.FromMilliseconds(620),
+            AutoReverse = true,
+            RepeatBehavior = RepeatBehavior.Forever,
+            EasingFunction = new SineEase { EasingMode = EasingMode.EaseInOut },
         };
-        Grid.SetColumn(text, 1);
-        headerGrid.Children.Add(text);
+        Storyboard.SetTarget(glowWidth, ColdStartLandingGlow);
+        Storyboard.SetTargetProperty(glowWidth, "Width");
 
-        if (state == ColdStartPhaseState.Running)
+        var glowOpacity = new DoubleAnimation
         {
-            if (kind == "cache" && phases.CacheProgress.HasValue)
-            {
-                var percent = (int)(Math.Clamp(phases.CacheProgress.Value, 0.0, 1.0) * 100);
-                var percentText = new TextBlock
-                {
-                    Text = $"{percent}%",
-                    FontSize = 12,
-                    VerticalAlignment = VerticalAlignment.Center,
-                };
-                if (Application.Current.Resources.TryGetValue("TextFillColorSecondaryBrush", out var pSecBrush) && pSecBrush is Microsoft.UI.Xaml.Media.Brush bPSec)
-                    percentText.Foreground = bPSec;
-                Grid.SetColumn(percentText, 2);
-                headerGrid.Children.Add(percentText);
-            }
-            else
-            {
-                var ring = new ProgressRing
-                {
-                    Width = 14,
-                    Height = 14,
-                    IsActive = true,
-                    VerticalAlignment = VerticalAlignment.Center,
-                };
-                Grid.SetColumn(ring, 2);
-                headerGrid.Children.Add(ring);
-            }
-        }
-        rowContainer.Children.Add(headerGrid);
+            From = 0.45,
+            To = 0.12,
+            Duration = TimeSpan.FromMilliseconds(620),
+            AutoReverse = true,
+            RepeatBehavior = RepeatBehavior.Forever,
+            EasingFunction = new SineEase { EasingMode = EasingMode.EaseInOut },
+        };
+        Storyboard.SetTarget(glowOpacity, ColdStartLandingGlow);
+        Storyboard.SetTargetProperty(glowOpacity, "Opacity");
 
-        if (kind == "cache" && state == ColdStartPhaseState.Running && phases.CacheProgress.HasValue)
-        {
-            var bar = new ProgressBar
-            {
-                Value = Math.Clamp(phases.CacheProgress.Value, 0.0, 1.0) * 100,
-                Maximum = 100,
-                Height = 4,
-                IsIndeterminate = false,
-                Margin = new Thickness(24, 2, 0, 0),
-            };
-            rowContainer.Children.Add(bar);
-        }
+        _coldStartBounce = new Storyboard();
+        _coldStartBounce.Children.Add(bounce);
+        _coldStartBounce.Children.Add(glowWidth);
+        _coldStartBounce.Children.Add(glowOpacity);
+        _coldStartBounce.Begin();
+    }
 
-        ColdStartRowsPanel.Children.Add(rowContainer);
+    private void StopColdStartBounce()
+    {
+        if (_coldStartBounce == null) return;
+        _coldStartBounce.Stop();
+        _coldStartBounce = null;
+        ColdStartBrandOffset.Y = 0;
+        ColdStartLandingGlow.Width = 88;
+        ColdStartLandingGlow.Opacity = 0.35;
     }
 
     private void UpdateEngineStatus()
@@ -432,5 +434,11 @@ public sealed partial class MainWindow : Window
         App.Sidecar.ClearUserStopped();
         await App.Sidecar.EnsureRunningAsync();
         UpdateEngineStatus();
+        UpdateColdStartOverlay();
+    }
+
+    private void ColdStartExit_Click(object sender, RoutedEventArgs e)
+    {
+        Application.Current.Exit();
     }
 }

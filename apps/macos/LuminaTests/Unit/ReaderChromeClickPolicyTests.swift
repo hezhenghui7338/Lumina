@@ -680,6 +680,11 @@ final class ReaderChromeClickArchitectureTests: XCTestCase {
         )
         XCTAssertTrue(reader.contains("theme.readerPaper.page"))
         XCTAssertTrue(reader.contains("fontScale: theme.readingFontScale"))
+        XCTAssertTrue(reader.contains("lineSpacingScale: theme.readingLineSpacingScale"))
+        XCTAssertFalse(
+            reader.contains("letterSpacing: theme.readingLetterSpacing"),
+            "display panel adjusts line spacing, not letter spacing"
+        )
         XCTAssertFalse(
             reader.contains("preferredColorScheme"),
             "paper is not the app appearance; the window color scheme stays in LuminaApp"

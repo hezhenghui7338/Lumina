@@ -29,11 +29,14 @@ enum SegmentHeaderLayoutPolicy {
     }
 }
 
-/// Segment header meta left of「切换原文」: source char count only (no segment index).
+/// Segment header meta left of「切换原文」: 段 N/total · optional char count.
 enum SegmentContentMetaPolicy {
-    static func label(charCount: Int?) -> String? {
-        guard let charCount, charCount > 0 else { return nil }
-        return "原文 · 约 \(formatCount(charCount)) 字"
+    static func label(idx: Int, segmentTotal: Int, charCount: Int?) -> String {
+        let ordinal = segmentTotal > 0
+            ? "段 \(idx + 1)/\(segmentTotal)"
+            : "段 \(idx + 1)"
+        guard let charCount, charCount > 0 else { return ordinal }
+        return "\(ordinal) · 约 \(formatCount(charCount)) 字"
     }
 
     static func formatCount(_ count: Int) -> String {
@@ -69,6 +72,7 @@ struct SegmentReadingBlock: View, Equatable {
     var summaryProgressMessage: String?
     var runningMetrics: SegmentRunningMetrics?
     var fontScale: Double = 1.0
+    var lineSpacingScale: Double = ThemeManager.defaultReadingLineSpacingScale
     var paper: ReaderPaper = .white
     var onToggleSource: () -> Void
     var onToggleSummary: () -> Void
@@ -88,6 +92,10 @@ struct SegmentReadingBlock: View, Equatable {
 
     private func scaled(_ base: CGFloat) -> CGFloat {
         base * CGFloat(fontScale)
+    }
+
+    private func lineSpaced(_ base: CGFloat) -> CGFloat {
+        scaled(base) * CGFloat(lineSpacingScale)
     }
 
     var body: some View {
@@ -358,6 +366,7 @@ struct SegmentReadingBlock: View, Equatable {
                 fallbackAnchor: segment.anchor_label,
                 summaryDurationS: segment.summary_duration_s,
                 summaryLlmAttempts: segment.summary_llm_attempts,
+                qualityRelaxed: segment.summary_quality_relaxed == true,
                 onFollowUp: onFollowUp,
                 showsBackground: showsBackground,
                 showsHeader: false,
@@ -388,15 +397,19 @@ struct SegmentReadingBlock: View, Equatable {
 
     private var trailingHeaderItems: [SegmentHeaderTrailingItem] {
         SegmentHeaderLayoutPolicy.trailingItems(
-            showsContentMeta: segmentContentMetaLabel != nil,
+            showsContentMeta: true,
             isSummaryInProgress: isSummaryInProgress,
             showsRegenerate: showsRegenerateSummaryButton,
             showsTurnButtons: showsSegmentTurnButtons
         )
     }
 
-    private var segmentContentMetaLabel: String? {
-        SegmentContentMetaPolicy.label(charCount: effectiveCharCount)
+    private var segmentContentMetaLabel: String {
+        SegmentContentMetaPolicy.label(
+            idx: segment.idx,
+            segmentTotal: segmentTotal,
+            charCount: effectiveCharCount
+        )
     }
 
     /// Bottom-left of the panel: summary attribution only (char meta lives in the header).
@@ -417,8 +430,6 @@ struct SegmentReadingBlock: View, Equatable {
     private var segmentHeaderRow: some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
             Text(SegmentReadingHeaderTitle.title(
-                idx: segment.idx,
-                segmentTotal: segmentTotal,
                 chapter: segment.chapter,
                 label: segment.label
             ))
@@ -439,14 +450,12 @@ struct SegmentReadingBlock: View, Equatable {
     private func trailingHeaderItemView(_ item: SegmentHeaderTrailingItem) -> some View {
         switch item {
         case .contentMeta:
-            if let meta = segmentContentMetaLabel {
-                Text(meta)
-                    .font(.system(size: LuminaTheme.summaryLabelSize - 1))
-                    .foregroundStyle(paper.textSecondary.opacity(0.85))
-                    .textSelection(.enabled)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.8)
-            }
+            Text(segmentContentMetaLabel)
+                .font(.system(size: LuminaTheme.summaryLabelSize - 1))
+                .foregroundStyle(paper.textSecondary.opacity(0.85))
+                .textSelection(.enabled)
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
         case .panelToggle:
             panelToggleButton
         case .progress:
@@ -654,8 +663,12 @@ struct SegmentReadingBlock: View, Equatable {
 
     @ViewBuilder
     private func sourceBodyContent(showHeader: Bool) -> some View {
-        if showHeader, let meta = SegmentContentMetaPolicy.label(charCount: effectiveCharCount) {
-            Text(meta)
+        if showHeader {
+            Text(SegmentContentMetaPolicy.label(
+                idx: segment.idx,
+                segmentTotal: segmentTotal,
+                charCount: effectiveCharCount
+            ))
                 .font(.system(size: LuminaTheme.summaryLabelSize - 1))
                 .foregroundStyle(paper.textSecondary.opacity(0.85))
                 .textSelection(.enabled)
@@ -669,7 +682,7 @@ struct SegmentReadingBlock: View, Equatable {
                 LuminaSelectableText(
                     text: body.rawText,
                     fontSize: scaled(LuminaTheme.summaryBulletSize),
-                    lineSpacing: scaled(LuminaTheme.summaryBulletLineSpacing),
+                    lineSpacing: lineSpaced(LuminaTheme.summaryBulletLineSpacing),
                     foreground: paper.textSecondary,
                     highlightUTF16: originalHighlightUTF16
                 )
@@ -682,7 +695,7 @@ struct SegmentReadingBlock: View, Equatable {
                     LuminaSelectableText(
                         text: body.translation,
                         fontSize: scaled(LuminaTheme.summaryBulletSize),
-                        lineSpacing: scaled(LuminaTheme.summaryBulletLineSpacing),
+                        lineSpacing: lineSpaced(LuminaTheme.summaryBulletLineSpacing),
                         foreground: paper.textSecondary.opacity(0.85)
                     )
                 }
@@ -726,6 +739,7 @@ struct SegmentReadingBlock: View, Equatable {
             && lhs.summaryProgressMessage == rhs.summaryProgressMessage
             && lhs.runningMetrics == rhs.runningMetrics
             && lhs.fontScale == rhs.fontScale
+            && lhs.lineSpacingScale == rhs.lineSpacingScale
             && lhs.paper == rhs.paper
             && lhs.canGoPrev == rhs.canGoPrev
             && lhs.canGoNext == rhs.canGoNext

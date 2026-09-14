@@ -71,17 +71,30 @@ final class SegmentHeaderLayoutPolicyTests: XCTestCase {
         XCTAssertEqual(items, [.panelToggle, .progress, .regenerateSummary, .turnButtons])
     }
 
-    func testContentMeta_formatsCharCountWithOriginalPrefix() {
+    func testContentMeta_joinsOrdinalAndCharCount() {
         XCTAssertEqual(
-            SegmentContentMetaPolicy.label(charCount: 2494),
-            "原文 · 约 \(SegmentContentMetaPolicy.formatCount(2494)) 字"
+            SegmentContentMetaPolicy.label(idx: 149, segmentTotal: 369, charCount: 977),
+            "段 150/369 · 约 \(SegmentContentMetaPolicy.formatCount(977)) 字"
+        )
+        XCTAssertEqual(
+            SegmentContentMetaPolicy.label(idx: 0, segmentTotal: 10, charCount: 100),
+            "段 1/10 · 约 100 字"
         )
     }
 
-    func testContentMeta_omitsWhenCharCountMissingOrZero() {
-        XCTAssertNil(SegmentContentMetaPolicy.label(charCount: nil))
-        XCTAssertNil(SegmentContentMetaPolicy.label(charCount: 0))
-        XCTAssertEqual(SegmentContentMetaPolicy.label(charCount: 100), "原文 · 约 100 字")
+    func testContentMeta_ordinalOnlyWhenCharCountMissingOrZero() {
+        XCTAssertEqual(
+            SegmentContentMetaPolicy.label(idx: 0, segmentTotal: 10, charCount: nil),
+            "段 1/10"
+        )
+        XCTAssertEqual(
+            SegmentContentMetaPolicy.label(idx: 0, segmentTotal: 10, charCount: 0),
+            "段 1/10"
+        )
+        XCTAssertEqual(
+            SegmentContentMetaPolicy.label(idx: 0, segmentTotal: 0, charCount: nil),
+            "段 1"
+        )
     }
 
     func testSummaryAttribution_formatsProviderModelAndMetrics() {

@@ -9,6 +9,7 @@ struct SummaryBlock: View {
     var fallbackAnchor: String?
     var summaryDurationS: Double?
     var summaryLlmAttempts: Int?
+    var qualityRelaxed: Bool = false
     var onFollowUp: ((String) -> Void)?
     var showsBackground: Bool = true
     var showsHeader: Bool = true
@@ -48,17 +49,26 @@ struct SummaryBlock: View {
 
             if !summary.sentences.isEmpty {
                 VStack(alignment: .leading, spacing: 8) {
-                    Text("总结")
-                        .font(.system(size: LuminaTheme.summaryLabelSize, weight: .semibold))
-                        .foregroundStyle(paper.textSecondary)
-                        .tracking(0.6)
+                    HStack(spacing: 6) {
+                        Text("总结")
+                            .font(.system(size: LuminaTheme.summaryLabelSize, weight: .semibold))
+                            .foregroundStyle(paper.textSecondary)
+                            .tracking(0.6)
+                        if qualityRelaxed {
+                            Image(systemName: "exclamationmark.circle")
+                                .font(.system(size: LuminaTheme.summaryLabelSize))
+                                .foregroundStyle(.orange)
+                                .accessibilityLabel("本段摘要经多次失败后放宽质量检查生成")
+                                .accessibilityIdentifier("lumina.reader.summary.qualityRelaxed")
+                        }
+                    }
 
                     VStack(alignment: .leading, spacing: LuminaTheme.summaryLeadParagraphSpacing) {
                         ForEach(Array(summary.sentences.enumerated()), id: \.offset) { _, sentence in
                             LuminaSelectableText(
                                 text: sentence,
                                 fontSize: theme.scaled(LuminaTheme.summaryLeadSize),
-                                lineSpacing: theme.scaled(LuminaTheme.summaryLeadLineSpacing),
+                                lineSpacing: theme.lineSpaced(LuminaTheme.summaryLeadLineSpacing),
                                 foreground: paper.textPrimary
                             )
                         }
@@ -90,7 +100,7 @@ struct SummaryBlock: View {
                                 LuminaSelectableText(
                                     text: note,
                                     fontSize: theme.scaled(LuminaTheme.summaryBulletSize),
-                                    lineSpacing: theme.scaled(LuminaTheme.summaryBulletLineSpacing),
+                                    lineSpacing: theme.lineSpaced(LuminaTheme.summaryBulletLineSpacing),
                                     foreground: paper.textSecondary
                                 )
                             }
@@ -238,14 +248,14 @@ private struct StructuredBulletRow: View {
                         text: label,
                         fontSize: theme.scaled(LuminaTheme.summaryBulletSize),
                         fontWeight: .semibold,
-                        lineSpacing: theme.scaled(LuminaTheme.summaryBulletLineSpacing),
+                        lineSpacing: theme.lineSpaced(LuminaTheme.summaryBulletLineSpacing),
                         foreground: paper.textPrimary
                     )
                 }
                 LuminaSelectableText(
                     text: bullet.body,
                     fontSize: theme.scaled(LuminaTheme.summaryBulletSize),
-                    lineSpacing: theme.scaled(LuminaTheme.summaryBulletLineSpacing),
+                    lineSpacing: theme.lineSpaced(LuminaTheme.summaryBulletLineSpacing),
                     foreground: bullet.label == nil
                         ? paper.textPrimary
                         : paper.textSecondary
@@ -336,7 +346,7 @@ struct ParsedSummary: Equatable {
 
         let anchorRaw = (obj["anchor"] as? String) ?? (obj["锚点"] as? String)
         if let a = anchorRaw {
-            let trimmed = a.trimmingCharacters(in: .whitespacesAndNewlines)
+            let trimmed = Self.collapseProseWhitespace(a)
             anchor = trimmed.isEmpty ? nil : trimmed
         } else {
             anchor = nil
@@ -396,7 +406,7 @@ struct ParsedSummary: Equatable {
 
     private static func parseStringArray(_ value: Any?) -> [String] {
         (value as? [String] ?? [])
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .map { collapseProseWhitespace($0) }
             .filter { !$0.isEmpty }
     }
 
@@ -407,7 +417,7 @@ struct ParsedSummary: Equatable {
                 return parseBulletObject(dict)
             }
             if let text = item as? String {
-                let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+                let trimmed = collapseProseWhitespace(text)
                 guard !trimmed.isEmpty else { return nil }
                 return parseBullet(trimmed)
             }
@@ -416,17 +426,16 @@ struct ParsedSummary: Equatable {
     }
 
     private static func parseBulletObject(_ dict: [String: Any]) -> ParsedBullet? {
-        let label = (dict["label"] as? String)?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        let body = (dict["body"] as? String ?? dict["content"] as? String ?? dict["text"] as? String)?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        if let body, !body.isEmpty {
-            if let label, !label.isEmpty {
+        let labelRaw = (dict["label"] as? String).map { collapseProseWhitespace($0) }
+        let bodyRaw = (dict["body"] as? String ?? dict["content"] as? String ?? dict["text"] as? String)
+            .map { collapseProseWhitespace($0) }
+        if let body = bodyRaw, !body.isEmpty {
+            if let label = labelRaw, !label.isEmpty {
                 return ParsedBullet(label: label, body: body)
             }
             return ParsedBullet(label: nil, body: body)
         }
-        if let label, !label.isEmpty {
+        if let label = labelRaw, !label.isEmpty {
             return ParsedBullet(label: label, body: label)
         }
         return nil
@@ -434,18 +443,19 @@ struct ParsedSummary: Equatable {
 
     /// Parse `**标签**：内容` / `标签：内容` / plain body.
     static func parseBullet(_ raw: String) -> ParsedBullet {
-        var text = raw
+        var text = collapseProseWhitespace(raw)
         while text.hasPrefix("- ") || text.hasPrefix("• ") || text.hasPrefix("* ") {
-            text = String(text.dropFirst(2)).trimmingCharacters(in: .whitespaces)
+            text = collapseProseWhitespace(String(text.dropFirst(2)))
         }
 
         if text.hasPrefix("**"),
            let close = text.range(of: "**", range: text.index(text.startIndex, offsetBy: 2)..<text.endIndex) {
-            let label = String(text[text.index(text.startIndex, offsetBy: 2)..<close.lowerBound])
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            var rest = String(text[close.upperBound...]).trimmingCharacters(in: .whitespacesAndNewlines)
+            let label = collapseProseWhitespace(
+                String(text[text.index(text.startIndex, offsetBy: 2)..<close.lowerBound])
+            )
+            var rest = collapseProseWhitespace(String(text[close.upperBound...]))
             if rest.hasPrefix("：") || rest.hasPrefix(":") {
-                rest = String(rest.dropFirst()).trimmingCharacters(in: .whitespacesAndNewlines)
+                rest = collapseProseWhitespace(String(rest.dropFirst()))
             }
             if !label.isEmpty, !rest.isEmpty {
                 return ParsedBullet(label: label, body: rest)
@@ -454,8 +464,8 @@ struct ParsedSummary: Equatable {
 
         for sep in ["：", ":"] {
             if let range = text.range(of: sep) {
-                let label = String(text[..<range.lowerBound]).trimmingCharacters(in: .whitespacesAndNewlines)
-                let body = String(text[range.upperBound...]).trimmingCharacters(in: .whitespacesAndNewlines)
+                let label = collapseProseWhitespace(String(text[..<range.lowerBound]))
+                let body = collapseProseWhitespace(String(text[range.upperBound...]))
                 if !label.isEmpty, !body.isEmpty, label.count <= 12, !label.contains("。") {
                     return ParsedBullet(label: label, body: body)
                 }
@@ -463,5 +473,28 @@ struct ParsedSummary: Equatable {
         }
 
         return ParsedBullet(label: nil, body: text)
+    }
+
+    /// Reader summary fields are single-line prose; collapse embedded blank lines.
+    /// Between CJK characters, newlines are removed (no Latin word space).
+    static func collapseProseWhitespace(_ text: String) -> String {
+        var value = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !value.isEmpty else { return "" }
+        value = value.replacingOccurrences(
+            of: #"(?<=[\u3400-\u9FFF\u3000-\u303F\uff00-\uffef])[ \t]*\n+[ \t]*(?=[\u3400-\u9FFF\u3000-\u303F\uff00-\uffef])"#,
+            with: "",
+            options: .regularExpression
+        )
+        value = value.replacingOccurrences(
+            of: #"[ \t]*\n+[ \t]*"#,
+            with: " ",
+            options: .regularExpression
+        )
+        value = value.replacingOccurrences(
+            of: #"[ \t]+"#,
+            with: " ",
+            options: .regularExpression
+        )
+        return value.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }

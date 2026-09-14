@@ -664,6 +664,8 @@ public sealed class SegmentRow
     public string? SummaryTier { get; set; }
     public int? CharCount { get; set; }
     public int? RetryCount { get; set; }
+    public int? SummaryFailureTotal { get; set; }
+    public bool? SummaryQualityRelaxed { get; set; }
     public double? SummaryDurationS { get; set; }
     public int? SummaryLlmAttempts { get; set; }
     public string? SummaryPreview { get; set; }
@@ -738,6 +740,8 @@ public sealed class SegmentSummaryDetail
     public string? Label { get; set; }
     public string? AnchorLabel { get; set; }
     public string? SummaryStatus { get; set; }
+    public int? SummaryFailureTotal { get; set; }
+    public bool? SummaryQualityRelaxed { get; set; }
     public string? SummaryProvider { get; set; }
     public string? SummaryModel { get; set; }
     public string? SummaryTier { get; set; }
@@ -981,6 +985,7 @@ public sealed class NewsBrief
 {
     public string Date { get; set; } = "";
     public int Count { get; set; }
+    public string? LastSyncedAt { get; set; }
     public List<NewsArticleCard> Articles { get; set; } = [];
 }
 

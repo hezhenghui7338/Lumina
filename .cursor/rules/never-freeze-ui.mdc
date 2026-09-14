@@ -7,11 +7,11 @@ alwaysApply: true
 
 PRD 章程 0：**任何导入、摘要、OCR、联网、切书、深聊都不得冻结 UI**。后台可慢，前台必须可点、可取消、可离开。
 
-**例外（仅冷启动 / 引擎重启）**：产品就绪门闩允许全屏三阶段进度（引擎→数据→缓存）；进入主界面后仍禁止 blocking spinner。`GET /health` 不得被 `recover_on_startup` / 资讯 boot sync `await` 阻塞；资讯启动 sync 为后台任务，不挡门闩。
+**例外（仅冷启动 / 引擎重启）**：产品就绪前允许品牌 Splash 轻遮罩短暂挡住依赖引擎的操作；主 Tab 壳须立刻可见，禁止运维式多步 checklist。产品就绪后仍禁止 blocking spinner。`GET /health` 不得被 `recover_on_startup` / 资讯 boot sync `await` 阻塞；资讯启动 sync 为后台任务，不挡就绪。
 
 ## 每次改动自检
 
-改完后问自己：**用户此刻还能点别的吗？** 若不能，改法错误（冷启动门闩页除外）。
+改完后问自己：**用户此刻还能点别的吗？** 若不能，改法错误（冷启动品牌遮罩挡住引擎依赖操作除外；壳须仍可见）。
 
 ## 禁止
 
@@ -32,12 +32,14 @@ PRD 章程 0：**任何导入、摘要、OCR、联网、切书、深聊都不得
 - 阅读器为摘要去拉含 `raw_text` 的段详情（须 `GET .../segments/{idx}/summary`）
 - NSTextView 在 `layout`/`setFrameSize` 里无条件 `invalidateIntrinsicContentSize`；宽度未稳定时对无空格 CJK `ensureLayout`
 - 在 MainActor 上解码大体量 JSON 或做同步重 I/O
-- 全屏 blocking spinner；不可取消的长任务占死 UI（冷启动 / 重启引擎的产品就绪门闩除外）
+- 全屏 blocking spinner；不可取消的长任务占死 UI（冷启动 / 重启引擎的品牌就绪遮罩除外；且不得用多步 checklist 取代）
 - 在 lifespan 里 `await recover_on_startup` 或 boot news sync，导致 `/health` 在 recover 完成前不可达
 - 书架因另一本「分段中」而拒绝打开已就绪的书，或对分段中的书静默吞掉点击（应进入阅读器进度页；仅导入失败需提示）
 - 书架卡片使用不定进度 `ProgressView()`（macOS NSProgressIndicator 会抢走同屏其他书的点击）
 - 每本 processing 书的 SSE 与打开书 REST 共用 `URLSession.shared`（HTTP/1.1 连接池耗尽后切书挂起）
 - GET /books 在事件循环上跑 `summarize_state_by_book()`，或对每本书 `COUNT(segments)` / 线性扫 `_queued_keys`（须用 `books.summary_*` 落库计数 + `_summarize_queued_by_book`；分段中每 3s 轮询会卡住 open）
+- `GET /books` / `GET /books/summarize/overview` `await resume_orphaned_active()`（须 `schedule_resume_orphaned_active` 火后不管；列表轮询不得被入队工作堵住）
+- `POST .../summarize/start`（单本 / 批量 / 全部）在 HTTP 里 `await` 完整 restore/reset/enqueue（须先 ack：intent + `summarize_resumed`，再后台 `_complete_start_book`；`start_all` 跳过已摘要/分段中/导入失败；failed 重置禁止 N× `summary_progress` SSE）
 - `recover_on_startup` 的 catalog/label backfill 或每次 `GET /books` 的 `drop_stored_document_trees` 长时间占着 `db_lock`，导致 `/health` 已绿后书架仍空数十秒（backfill 须延后；document_tree 清理挂 recover 一次，不挂列表热路径）
 - `recover` / `start_book` / `enqueue_book_prefetch` / `resume_orphaned_active` 对全书 `list_for_book`（须定点 SQL：下一 pending、`running` 行）；`POST /open` 不得 `await` prefetch（大段数书启动后开书会到数十秒）
 

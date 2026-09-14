@@ -243,8 +243,8 @@ public static class ListenScriptBuilder
         {
             if (item.ValueKind == JsonValueKind.String)
             {
-                var value = item.GetString()?.Trim();
-                if (!string.IsNullOrEmpty(value)) outList.Add(value);
+                var value = SummaryJsonParser.CollapseProseWhitespace(item.GetString());
+                if (value.Length > 0) outList.Add(value);
             }
         }
         return outList;
@@ -272,8 +272,8 @@ public static class ListenScriptBuilder
             }
             else if (item.ValueKind == JsonValueKind.String)
             {
-                var value = item.GetString()?.Trim();
-                if (!string.IsNullOrEmpty(value)) outList.Add(("", value));
+                var value = SummaryJsonParser.CollapseProseWhitespace(item.GetString());
+                if (value.Length > 0) outList.Add(("", value));
             }
         }
         return outList;
@@ -282,7 +282,9 @@ public static class ListenScriptBuilder
     private static string Prop(JsonElement obj, string name)
     {
         if (!obj.TryGetProperty(name, out var el)) return "";
-        return el.ValueKind == JsonValueKind.String ? (el.GetString() ?? "").Trim() : "";
+        return el.ValueKind == JsonValueKind.String
+            ? SummaryJsonParser.CollapseProseWhitespace(el.GetString())
+            : "";
     }
 }
 

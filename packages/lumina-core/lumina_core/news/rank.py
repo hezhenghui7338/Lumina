@@ -1,4 +1,4 @@
-"""Interest ranking for news brief (score_hint + freshness; empty profile by default)."""
+"""News article time ordering helpers (published_at, else synced_at)."""
 
 from __future__ import annotations
 
@@ -28,44 +28,27 @@ def _parse_ts(raw: str | None) -> datetime | None:
         return None
 
 
-def _freshness_boost(article: dict[str, Any], *, now: datetime | None = None) -> float:
-    now = now or datetime.now(timezone.utc)
+def article_time(article: dict[str, Any]) -> datetime | None:
+    """Effective article time: published_at, else synced_at."""
     ts = _parse_ts(article.get("published_at")) or _parse_ts(article.get("synced_at"))
-    if not ts:
-        return 0.0
+    if ts is None:
+        return None
     if ts.tzinfo is None:
         ts = ts.replace(tzinfo=timezone.utc)
-    hours = max(0.0, (now - ts).total_seconds() / 3600.0)
-    if hours <= 24:
-        return 3.0
-    if hours <= 72:
-        return 1.5
-    if hours <= 168:
-        return 0.5
-    return 0.0
+    return ts
+
+
+def article_sort_key(article: dict[str, Any]) -> tuple[float, str]:
+    """Newest-first sort key (timestamp, title)."""
+    ts = article_time(article)
+    epoch = ts.timestamp() if ts is not None else 0.0
+    return (epoch, article.get("title") or "")
 
 
 def score_article(article: dict[str, Any], *, now: datetime | None = None) -> RankedArticle:
-    score = 0.0
-    reasons: list[str] = []
-
-    fresh = _freshness_boost(article, now=now)
-    if fresh:
-        score += fresh
-        reasons.append("新鲜")
-
-    hint = article.get("score_hint")
-    if hint is not None:
-        try:
-            score += float(hint) / 50.0
-            reasons.append(f"质量提示:{int(float(hint))}")
-        except (TypeError, ValueError):
-            pass
-
-    if not reasons:
-        reasons.append("默认候选")
-
-    return RankedArticle(article=article, score=score, reasons=reasons)
+    """Legacy score helper kept for tests; brief no longer ranks by score."""
+    del now  # unused; freshness ranking removed from product sort
+    return RankedArticle(article=article, score=0.0, reasons=[])
 
 
 def rank_articles(
@@ -74,14 +57,7 @@ def rank_articles(
     limit: int | None = None,
 ) -> list[RankedArticle]:
     ranked = [score_article(a) for a in articles]
-    ranked.sort(
-        key=lambda r: (
-            r.score,
-            r.article.get("published_at") or "",
-            r.article.get("title") or "",
-        ),
-        reverse=True,
-    )
+    ranked.sort(key=lambda r: article_sort_key(r.article), reverse=True)
     if limit is not None:
         return ranked[: max(0, limit)]
     return ranked

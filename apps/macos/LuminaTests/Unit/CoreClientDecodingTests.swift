@@ -275,12 +275,14 @@ final class CoreClientDecodingTests: XCTestCase {
         XCTAssertEqual(brief.count, 0)
         XCTAssertTrue(brief.articles.isEmpty)
         XCTAssertEqual(brief.date, "2026-07-28")
+        XCTAssertNil(brief.last_synced_at)
     }
 
     func testNewsBrief_decodesSourceFields() throws {
         let data = try loadFixture("news_brief_sample")
         let brief = try JSONDecoder().decode(NewsBrief.self, from: data)
         XCTAssertEqual(brief.count, 2)
+        XCTAssertEqual(brief.last_synced_at, "2026-07-28T12:30:00+00:00")
         XCTAssertEqual(brief.articles[0].source_id, "src-hn")
         XCTAssertEqual(brief.articles[0].source_title, "Hacker News")
         XCTAssertEqual(brief.articles[0].source, "Hacker News")

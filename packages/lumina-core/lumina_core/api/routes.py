@@ -281,6 +281,7 @@ async def _queue_segment_retry(
         seg["id"],
         "pending",
         retry_count=0,
+        clear_failure_budget=True,
     )
     await state.job_queue.enqueue_summarize(
         book_id,
@@ -802,7 +803,7 @@ async def list_books(
     state = _state(request)
     conn = state.conn
     try:
-        await state.job_queue.resume_orphaned_active()
+        state.job_queue.schedule_resume_orphaned_active()
         live_ids = set(state.ingest_tasks) | set(state.resegment_tasks)
         active_by_book = state.job_queue.summarize_active_by_book()
 
@@ -1440,7 +1441,7 @@ async def update_reading_progress(
 @router.get("/books/summarize/overview")
 async def summarize_overview(request: Request) -> dict[str, Any]:
     state = _state(request)
-    await state.job_queue.resume_orphaned_active()
+    state.job_queue.schedule_resume_orphaned_active()
     return await asyncio.to_thread(state.job_queue.summarize_overview)
 
 
@@ -1453,12 +1454,12 @@ async def start_summarize_batch(
     book_ids = body.book_ids if body else []
     summary_tier = body.summary_tier if body else "normal"
     if not book_ids:
-        await state.job_queue.start_all(summary_tier=summary_tier)
+        affected = await state.job_queue.begin_start_all(summary_tier=summary_tier)
         return {
             "status": "started",
             "scope": "all",
-            "book_ids": [],
-            "affected_count": 0,
+            "book_ids": affected,
+            "affected_count": len(affected),
             "summary_tier": summary_tier,
         }
 
@@ -1469,7 +1470,7 @@ async def start_summarize_batch(
         if not await asyncio.to_thread(repo.get, book_id):
             skipped.append(book_id)
             continue
-        await state.job_queue.start_book(book_id, summary_tier=summary_tier)
+        await state.job_queue.begin_start_book(book_id, summary_tier=summary_tier)
         affected.append(book_id)
     return {
         "status": "started",
@@ -1521,7 +1522,7 @@ async def start_summarize_book(
         raise HTTPException(404, "Book not found")
     _wire_job_events(state)
     summary_tier = body.summary_tier if body else "normal"
-    await state.job_queue.start_book(book_id, summary_tier=summary_tier)
+    await state.job_queue.begin_start_book(book_id, summary_tier=summary_tier)
     return {
         "status": "started",
         "scope": "book",

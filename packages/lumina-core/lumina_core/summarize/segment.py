@@ -238,6 +238,7 @@ async def summarize_segment(
     prompts: PromptsConfig | None = None,
     background_context: str | None = None,
     target_language: str = "zh-CN",
+    relaxed_quality: bool = False,
 ) -> SummarizeResult:
     resolved = prompts or load_prompts_config()
     prompt_template, text_limit, default_retries, min_body_chars, text_only, use_minimal_parse, provider_kind = (
@@ -312,11 +313,12 @@ async def summarize_segment(
                 review_prompt=resolved.segment_quality or DEFAULT_SEGMENT_QUALITY,
                 summary_tier=summary_tier,
                 target_language=target_language,
+                relaxed=relaxed_quality,
             )
             if quality.review_duration_s:
                 llm_duration = round(llm_duration + quality.review_duration_s, 2)
                 total_llm_duration += quality.review_duration_s
-            if quality_should_reject(quality.issues):
+            if quality_should_reject(quality.issues, relaxed=relaxed_quality):
                 raise SummaryQualityError(quality.issues)
             return SummarizeResult(
                 summary=summary,
@@ -332,25 +334,16 @@ async def summarize_segment(
             )
         if attempt + 1 < retries and last_err is not None:
             if isinstance(last_err, SummaryQualityError):
-                quality_hints = ""
+                redundant_hint = ""
                 if any(issue.code == "sentences_redundant" for issue in last_err.issues):
-                    quality_hints += (
-                        "上次 sentences 句间重复。请去重后按互不重叠语义线分项（最多 3 项），"
-                        "合计仍约 50～200 字；细节写入 bullets，勿拆段复述。"
-                    )
-                if any(issue.code == "sentences_wall" for issue in last_err.issues):
-                    quality_hints += (
-                        "上次 sentences 单项墙文（句末标点过多）。请按语义线拆成 ≤3 项并压缩到合计 50～200 字，"
-                        "禁止把多条语义线堆进同一项。"
-                    )
-                if any(issue.code == "summary_too_long" for issue in last_err.issues):
-                    quality_hints += (
-                        "上次总结合计过长。请压缩各段，合计落在约 50～200 字（硬上限 250）。"
+                    redundant_hint = (
+                        "上次 sentences 句间重复。请改为默认 1 句概括本段全部主线；"
+                        "若确有两条互不重叠主线才用 2 句；细节写入 bullets，勿拆句复述。"
                     )
                 prompt = (
                     base_prompt
                     + f"\n\n上次摘要未通过质量检查：{last_err}。"
-                    + quality_hints
+                    + redundant_hint
                     + "请逐项重写有问题的句子或要点，确保文字完整、清晰、无乱码；"
                     "仍须严格输出规定的单个 JSON 对象，不要解释。"
                 )

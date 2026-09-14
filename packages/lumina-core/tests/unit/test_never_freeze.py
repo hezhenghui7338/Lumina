@@ -1220,6 +1220,52 @@ def test_list_books_does_not_call_summarize_state_by_book(client):
     assert client.get("/books").status_code == 200
 
 
+def test_list_books_does_not_await_resume_orphaned_active(client, monkeypatch):
+    """Shelf refresh must not block on resume_orphaned_active enqueue work."""
+    queue = client.app.state.lumina.job_queue
+    scheduled = {"n": 0}
+
+    def counting_schedule() -> None:
+        scheduled["n"] += 1
+
+    async def boom_resume() -> None:
+        raise AssertionError("GET /books must not await resume_orphaned_active")
+
+    monkeypatch.setattr(queue, "schedule_resume_orphaned_active", counting_schedule)
+    monkeypatch.setattr(queue, "resume_orphaned_active", boom_resume)
+    assert client.get("/books").status_code == 200
+    assert scheduled["n"] == 1
+
+
+def test_summarize_start_ack_shows_queued_immediately(client):
+    """POST summarize/start must return with shelf state queued before work finishes."""
+    import asyncio
+    import time
+
+    book_id = import_sample_book(client)
+    assert client.post(f"/books/{book_id}/summarize/stop").status_code == 200
+    queue = client.app.state.lumina.job_queue
+    gate = threading.Event()
+    original = queue._complete_start_book
+
+    async def blocked(bid, *, summary_tier="normal"):
+        assert await asyncio.to_thread(gate.wait, 5)
+        return await original(bid, summary_tier=summary_tier)
+
+    queue._complete_start_book = blocked  # type: ignore[method-assign]
+    try:
+        t0 = time.perf_counter()
+        resp = client.post(f"/books/{book_id}/summarize/start")
+        assert resp.status_code == 200
+        assert time.perf_counter() - t0 < 1.0
+        listed = client.get("/books").json()["books"]
+        row = next(b for b in listed if b["id"] == book_id)
+        assert row["summarize_state"] == "queued"
+    finally:
+        gate.set()
+        queue._complete_start_book = original  # type: ignore[method-assign]
+
+
 def test_open_book_does_not_await_prefetch(client, monkeypatch):
     """POST /open must return before auto-start prefetch finishes."""
     import asyncio

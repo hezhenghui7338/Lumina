@@ -39,8 +39,6 @@ SENTENCES_TARGET_MIN = 50
 SENTENCES_TARGET_MAX = 200
 SENTENCES_REJECT_MIN = 40
 SENTENCES_REJECT_MAX = 250
-SENTENCES_WALL_MIN_TERMINATORS = 3
-_SENTENCE_TERMINATOR = re.compile(r"[。！？.!?]")
 _ALWAYS_REJECT_CODES = frozenset(
     {
         "wrong_language",
@@ -48,7 +46,14 @@ _ALWAYS_REJECT_CODES = frozenset(
         "summary_too_short",
         "summary_too_long",
         "sentences_redundant",
-        "sentences_wall",
+    }
+)
+# Soft gates skipped after SUMMARY_RELAX_QUALITY_AFTER_FAILURES job failures.
+_RELAXED_SKIP_CODES = frozenset(
+    {
+        "summary_too_short",
+        "summary_too_long",
+        "sentences_redundant",
     }
 )
 _SENTENCES_JACCARD_THRESHOLD = 0.28
@@ -149,11 +154,27 @@ class SummaryQualityError(ValueError):
         super().__init__(f"摘要存在 {len(self.issues)} 处乱码、串语或表意不清：{details}")
 
 
-def quality_should_reject(issues: tuple[ClarityIssue, ...] | list[ClarityIssue]) -> bool:
-    """Always-reject codes fail alone; other defects still need more than one."""
-    if any(issue.code in _ALWAYS_REJECT_CODES for issue in issues):
+def quality_should_reject(
+    issues: tuple[ClarityIssue, ...] | list[ClarityIssue],
+    *,
+    relaxed: bool = False,
+) -> bool:
+    """Always-reject codes fail alone; other defects still need more than one.
+
+    In relaxed mode only severe always-reject codes (excluding length/redundancy
+    soft gates) cause rejection.
+    """
+    effective = _ALWAYS_REJECT_CODES - _RELAXED_SKIP_CODES if relaxed else _ALWAYS_REJECT_CODES
+    filtered = (
+        [issue for issue in issues if issue.code not in _RELAXED_SKIP_CODES]
+        if relaxed
+        else list(issues)
+    )
+    if any(issue.code in effective for issue in filtered):
         return True
-    return len(issues) > 1
+    if relaxed:
+        return False
+    return len(filtered) > 1
 
 
 def sentences_char_count(summary: SegmentSummary) -> int:
@@ -241,29 +262,6 @@ def _redundancy_issue(
     )
 
 
-def scan_sentences_wall(sentences: list[str]) -> list[ClarityIssue]:
-    """Reject a single sentences[] item that packs too many clause endings (wall of text)."""
-    issues: list[ClarityIssue] = []
-    for index, text in enumerate(sentences):
-        stripped = text.strip()
-        if not stripped:
-            continue
-        count = len(_SENTENCE_TERMINATOR.findall(stripped))
-        if count < SENTENCES_WALL_MIN_TERMINATORS:
-            continue
-        issues.append(
-            ClarityIssue(
-                f"sentences[{index}]",
-                "sentences_wall",
-                f"总结第 {index + 1} 项含 {count} 个句末标点，应拆成语义段或压缩",
-                stripped.replace("\n", " ")[:60],
-                "hard",
-                0,
-            )
-        )
-    return issues
-
-
 def scan_sentences_redundancy(sentences: list[str]) -> list[ClarityIssue]:
     """Detect overlapping or paraphrased summary sentences."""
     cleaned = [sentence.strip() for sentence in sentences if sentence.strip()]
@@ -329,6 +327,7 @@ def scan_summary_clarity(
     *,
     raw_text: str | None = None,
     target_language: str | None = "zh-CN",
+    relaxed: bool = False,
 ) -> list[ClarityIssue]:
     """Return conservative local quality signals without calling a model."""
     issues: list[ClarityIssue] = []
@@ -457,35 +456,35 @@ def scan_summary_clarity(
                 )
             )
 
-    total = sentences_char_count(summary)
-    joined = "".join(summary.sentences)
-    source_len = len(raw_text.strip()) if raw_text is not None else None
-    if total > SENTENCES_REJECT_MAX:
-        issues.append(
-            ClarityIssue(
-                "sentences",
-                "summary_too_long",
-                f"总结合计约 {total} 字，明显超过目标上限 {SENTENCES_TARGET_MAX} 字",
-                joined[:60],
-                "hard",
-                0,
+    if not relaxed:
+        total = sentences_char_count(summary)
+        joined = "".join(summary.sentences)
+        source_len = len(raw_text.strip()) if raw_text is not None else None
+        if total > SENTENCES_REJECT_MAX:
+            issues.append(
+                ClarityIssue(
+                    "sentences",
+                    "summary_too_long",
+                    f"总结合计约 {total} 字，明显超过目标上限 {SENTENCES_TARGET_MAX} 字",
+                    joined[:60],
+                    "hard",
+                    0,
+                )
             )
-        )
-    elif total < SENTENCES_REJECT_MIN and (
-        source_len is None or source_len >= SENTENCES_TARGET_MIN
-    ):
-        issues.append(
-            ClarityIssue(
-                "sentences",
-                "summary_too_short",
-                f"总结合计约 {total} 字，明显短于目标下限 {SENTENCES_TARGET_MIN} 字",
-                joined[:60] if joined else "（空）",
-                "hard",
-                0,
+        elif total < SENTENCES_REJECT_MIN and (
+            source_len is None or source_len >= SENTENCES_TARGET_MIN
+        ):
+            issues.append(
+                ClarityIssue(
+                    "sentences",
+                    "summary_too_short",
+                    f"总结合计约 {total} 字，明显短于目标下限 {SENTENCES_TARGET_MIN} 字",
+                    joined[:60] if joined else "（空）",
+                    "hard",
+                    0,
+                )
             )
-        )
-    issues.extend(scan_sentences_wall(summary.sentences))
-    issues.extend(scan_sentences_redundancy(summary.sentences))
+        issues.extend(scan_sentences_redundancy(summary.sentences))
     return _dedupe_exact(issues)
 
 
@@ -573,11 +572,34 @@ async def inspect_summary_quality(
     review_prompt: str,
     summary_tier: Literal["normal", "advanced"] = "normal",
     target_language: str = "zh-CN",
+    relaxed: bool = False,
 ) -> QualityCheckResult:
-    """Apply local gates, then use a separate model call only for suspicious output."""
+    """Apply local gates, then use a separate model call only for suspicious output.
+
+    Relaxed mode skips model review and soft length/redundancy gates so a
+    chronically failing segment can still become ready.
+    """
     local_issues = scan_summary_clarity(
-        summary, raw_text=raw_text, target_language=target_language
+        summary, raw_text=raw_text, target_language=target_language, relaxed=relaxed
     )
+    if relaxed:
+        # Still surface garbled / wrong-language / narrator hard failures.
+        severe = [
+            issue
+            for issue in local_issues
+            if issue.code
+            in {
+                "wrong_language",
+                "first_person_as_narrator",
+                "replacement_char",
+                "control_char",
+                "template_leak",
+                "placeholder",
+                "symbol_noise",
+            }
+        ]
+        return QualityCheckResult(tuple(severe), False, 0.0)
+
     hard_issues = [issue for issue in local_issues if issue.severity == "hard"]
     always_reject = [issue for issue in local_issues if issue.code in _ALWAYS_REJECT_CODES]
     if always_reject:

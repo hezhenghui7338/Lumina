@@ -104,6 +104,9 @@ def _fast_boot_news_sync(monkeypatch):
     from lumina_core.news.sync import SyncResult
 
     def _noop_sync(conn):
+        from lumina_core.news.store import NewsStore
+
+        NewsStore(conn).set_last_synced_at()
         return [
             SyncResult(source_url=s["url"], fetched=0, inserted=0)
             for s in NewsSourceRepo(conn).list_sources()

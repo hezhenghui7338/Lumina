@@ -53,6 +53,8 @@ CREATE TABLE IF NOT EXISTS segments (
   summary_tier     TEXT DEFAULT 'normal',
   summary_duration_s REAL,
   summary_llm_attempts INTEGER,
+  summary_failure_total INTEGER DEFAULT 0,
+  summary_quality_relaxed INTEGER DEFAULT 0,
   UNIQUE(book_id, idx)
 );
 
@@ -158,6 +160,11 @@ CREATE TABLE IF NOT EXISTS news_chat_messages (
   web_refs_json TEXT,
   created_at    TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS news_sync_meta (
+  id              INTEGER PRIMARY KEY CHECK (id = 1),
+  last_synced_at  TEXT NOT NULL
+);
 """
 
 
@@ -209,6 +216,10 @@ _SEGMENT_COLUMNS = (
     ("char_count", "INTEGER"),
     ("summary_duration_s", "REAL"),
     ("summary_llm_attempts", "INTEGER"),
+    # Cumulative job failures across start_book resets; drives relaxed quality gate.
+    ("summary_failure_total", "INTEGER DEFAULT 0"),
+    # 1 when the ready summary was accepted under the relaxed quality gate.
+    ("summary_quality_relaxed", "INTEGER DEFAULT 0"),
     # Optional catalog cache; always decoded to a JSON array (never raw TEXT) in API.
     ("summary_preview", "TEXT"),
     ("bullet_labels", "TEXT"),

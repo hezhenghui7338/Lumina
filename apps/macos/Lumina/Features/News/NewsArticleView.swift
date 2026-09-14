@@ -86,7 +86,7 @@ struct NewsArticleView: View {
                     Text(body)
                         .font(.system(size: theme.scaled(LuminaTheme.summaryBulletSize), weight: .regular))
                         .foregroundStyle(LuminaTheme.textPrimary)
-                        .lineSpacing(theme.scaled(LuminaTheme.summaryBulletLineSpacing))
+                        .lineSpacing(theme.lineSpaced(LuminaTheme.summaryBulletLineSpacing))
                         .fixedSize(horizontal: false, vertical: true)
                         .textSelection(.enabled)
                 } else if !viewModel.isRefreshingSummary {
@@ -94,7 +94,7 @@ struct NewsArticleView: View {
                         Text(excerpt)
                             .font(.system(size: theme.scaled(LuminaTheme.summaryBulletSize), weight: .regular))
                             .foregroundStyle(LuminaTheme.textSecondary)
-                            .lineSpacing(theme.scaled(LuminaTheme.summaryBulletLineSpacing))
+                            .lineSpacing(theme.lineSpaced(LuminaTheme.summaryBulletLineSpacing))
                             .fixedSize(horizontal: false, vertical: true)
                             .textSelection(.enabled)
                     }
@@ -132,12 +132,17 @@ struct NewsArticleView: View {
             NewsSummarySection(
                 markdown: md,
                 scale: theme.readingFontScale,
+                lineSpacingScale: theme.readingLineSpacingScale,
                 onFollowUp: { question in
                     Task { await viewModel.sendChat(question, service: core) }
                 }
             )
         } else if let skim {
-            NewsSkimSummaryBlock(article: skim, scale: theme.readingFontScale)
+            NewsSkimSummaryBlock(
+                article: skim,
+                scale: theme.readingFontScale,
+                lineSpacingScale: theme.readingLineSpacingScale
+            )
         }
     }
 
@@ -227,12 +232,14 @@ struct NewsArticleView: View {
 struct NewsSummarySection: View {
     let markdown: String
     var scale: Double = 1.0
+    var lineSpacingScale: Double = ThemeManager.defaultReadingLineSpacingScale
     var onFollowUp: ((String) -> Void)?
 
     var body: some View {
         NewsStructuredSummaryView(
             markdown: markdown,
             scale: scale,
+            lineSpacingScale: lineSpacingScale,
             onFollowUp: onFollowUp,
             showsBackground: true
         )
@@ -243,6 +250,7 @@ struct NewsSummarySection: View {
 struct NewsSkimSummaryBlock: View {
     let article: NewsArticleCard
     var scale: Double = 1.0
+    var lineSpacingScale: Double = ThemeManager.defaultReadingLineSpacingScale
 
     private func scaled(_ base: CGFloat) -> CGFloat {
         base * CGFloat(scale)
@@ -259,7 +267,7 @@ struct NewsSkimSummaryBlock: View {
                 Text(one)
                     .font(.system(size: scaled(LuminaTheme.summaryLeadSize), weight: .regular))
                     .foregroundStyle(LuminaTheme.textPrimary)
-                    .lineSpacing(scaled(LuminaTheme.summaryLeadLineSpacing))
+                    .lineSpacing(scaled(LuminaTheme.summaryLeadLineSpacing) * CGFloat(lineSpacingScale))
                     .fixedSize(horizontal: false, vertical: true)
                     .textSelection(.enabled)
             }
@@ -267,7 +275,12 @@ struct NewsSkimSummaryBlock: View {
             if !article.viewpoints.isEmpty {
                 VStack(alignment: .leading, spacing: LuminaTheme.summaryBulletItemSpacing) {
                     ForEach(Array(article.viewpoints.prefix(5).enumerated()), id: \.offset) { _, vp in
-                        NewsSkimBulletRow(text: vp, italic: false, scale: scale)
+                        NewsSkimBulletRow(
+                            text: vp,
+                            italic: false,
+                            scale: scale,
+                            lineSpacingScale: lineSpacingScale
+                        )
                     }
                 }
             }

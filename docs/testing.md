@@ -128,7 +128,7 @@ Lumina/
 | ID | PRD | 场景 | 断言 | 层 | LLM |
 |----|-----|------|------|-----|-----|
 | **E2E-BOOT-01** | §3.4 | 启动时书库/设置/资讯三接口 JSON 契约 | `is_favorite` 为 JSON bool；Swift `BookSummary`/`AppSettings`/`NewsBrief` 可解码 | API unit + XCTest | Mock |
-| **E2E-BOOT-02** | §3.4 / §3.5 / §5.9 | Sidecar 启动就绪、冷启动门闩、退出必停、设置可停/重启 | `/health` 即时响应；`GET /startup/status` 引擎/数据/缓存至 product-ready（不等资讯）；资讯 boot sync 后台进行，失败/超时资讯 Tab 可重试；`POST /shutdown` 结束 uvicorn；卡死/复用孤儿退出时仍杀端口监听；Swift 连接错误中文 fallback；Release sidecar 冒烟 | API unit + XCTest + release smoke | Mock |
+| **E2E-BOOT-02** | §3.4 / §3.5 / §5.9 | Sidecar 启动就绪、冷启动品牌遮罩、退出必停、设置可停/重启 | `/health` 即时响应；`GET /startup/status` 引擎/数据/缓存至 product-ready（不等资讯）；壳立刻可见 + 品牌 Splash（无 checklist）；资讯 boot sync 后台进行，失败/超时资讯 Tab 可重试；`POST /shutdown` 结束 uvicorn；卡死/复用孤儿退出时仍杀端口监听；Swift 连接错误中文 fallback；Release sidecar 冒烟 | API unit + XCTest + release smoke | Mock |
 
 实现：`tests/unit/test_api_swift_contract.py` · `LuminaTests/Unit/CoreClientDecodingTests.swift`
 
@@ -176,7 +176,7 @@ Lumina/
 | **E2E-ingest-ocr** | §5.2 | 扫描 PDF OCR → 摘要 | API | Mock |
 | **E2E-ingest-ocr-cloud** | §5.2 | 云端配置完整 → 优先云端 OCR；失败不回退 | API | Mock HTTP |
 | **E2E-N1** | §5.8 N1 | sync 50 篇 RSS ≤60s | API | Mock |
-| **E2E-N2** | §5.8 N2 | 简报列表 | API | Mock |
+| **E2E-N2** | §5.8 N2 | 简报列表（时间倒序 + `last_synced_at`） | API | Mock |
 | **E2E-N3** | §5.8 N3 | 单篇精读 + 深聊 | API | Mock |
 | **E2E-settings** | §5.9 | Ollama 状态 + 三 Profile | API | Mock |
 | **E2E-summary-tier** | §5.3 | 正常/高级模型选择、默认正常、空高级模型回退、切档覆盖 | unit + API + 双端契约 | Mock |

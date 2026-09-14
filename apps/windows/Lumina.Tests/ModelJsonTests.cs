@@ -32,9 +32,10 @@ public class ModelJsonTests
         Assert.Equal(10, original.Hits[0].StartUtf16);
         Assert.False(original.Truncated);
 
-        var briefJson = """{"date":"2026-08-10","count":1,"articles":[{"id":"a1","title":"News","url":"https://x","viewpoints":[],"quotes":[],"meta":{},"reasons":[]}]}""";
+        var briefJson = """{"date":"2026-08-10","count":1,"last_synced_at":"2026-08-10T08:00:00+00:00","articles":[{"id":"a1","title":"News","url":"https://x","viewpoints":[],"quotes":[],"meta":{},"reasons":[]}]}""";
         var brief = JsonSerializer.Deserialize<NewsBrief>(briefJson, Opts)!;
         Assert.Equal(1, brief.Count);
+        Assert.Equal("2026-08-10T08:00:00+00:00", brief.LastSyncedAt);
         Assert.Equal("a1", brief.Articles[0].Id);
 
         var settingsJson = """{"target_language":"zh-CN","web_search_provider":"ddgs","web_search_enabled":true,"debug_mode":true,"auto_start_summary":false,"models":{"resources":[{"id":"ollama","provider":"ollama","base_url":"http://127.0.0.1:11434","model":"qwen3.5:4b","advanced_model":"qwen3.5:9b"}],"chat":{"priority":["ollama"]},"summarize":{"priority":["ollama"]}},"prompts":{"segment":"s","document":"d","chat":"c","news_chat":"nc","translate":"t","classify":"cl"},"prompts_defaults":{"segment":"","document":"","chat":"","news_chat":"","translate":"","classify":""}}""";
@@ -73,6 +74,21 @@ public class ModelJsonTests
         Assert.Equal(["p1"], parsed.KeyPoints);
         Assert.Equal(["w1"], parsed.WatchOuts);
         Assert.Equal(["q1"], parsed.FollowUps);
+    }
+
+    [Fact]
+    public void SummaryJsonParser_reads_sentences_bullets_and_collapses_blank_lines()
+    {
+        var parsed = SummaryJsonParser.Parse(
+            """{"sentences":["第一句概述。\n\n","第二句\n\n继续写完。"],"bullets":[{"label":"寒门\n\n出身","body":"主角生于\n\n贫苦农家，细节充实。"},{"label":"赴考之志","body":"段末誓要金榜题名，细节充实。"},{"label":"邻里期望","body":"乡邻视为\n\n\n村庄的希望，细节充实。"}],"notes":["注意：后文\n\n有伏笔。"],"follow_ups":["主角与邻里\n\n期望之间有何张力？"]}""");
+        Assert.Equal("第一句概述。\n第二句继续写完。", parsed.ThreeSentence);
+        Assert.Equal("寒门出身：主角生于贫苦农家，细节充实。", parsed.KeyPoints[0]);
+        Assert.DoesNotContain("\n\n", parsed.KeyPoints[2]);
+        Assert.Equal(["注意：后文有伏笔。"], parsed.WatchOuts);
+        Assert.Equal(["主角与邻里期望之间有何张力？"], parsed.FollowUps);
+        Assert.Equal("hello world", SummaryJsonParser.CollapseProseWhitespace("hello\n\nworld"));
+        Assert.Equal("甲乙", SummaryJsonParser.CollapseProseWhitespace("甲\n\n乙"));
+        Assert.Equal("甲 乙 丙", SummaryJsonParser.CollapseProseWhitespace("甲  乙  \t 丙"));
     }
 
     [Fact]

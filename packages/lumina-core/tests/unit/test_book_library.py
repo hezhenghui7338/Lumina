@@ -385,6 +385,75 @@ def test_maybe_mark_summarized_promotes_stale_reading(db_conn):
     assert [b["id"] for b in summarized] == [book["id"]]
 
 
+def test_maybe_mark_summarized_repairs_ready_count_drift(db_conn):
+    """All segments ready but books.summary_ready_count stuck at N-1 → recount + promote."""
+    repo = BookRepo(db_conn)
+    book = _insert_book(db_conn, status="reading", segment_count=3)
+    seg_repo = SegmentRepo(db_conn)
+    for idx in range(3):
+        seg_repo.insert_many(
+            [
+                {
+                    "id": str(uuid.uuid4()),
+                    "book_id": book["id"],
+                    "idx": idx,
+                    "raw_text": "text",
+                    "summary_status": "ready",
+                }
+            ]
+        )
+    # Simulate denormalized drift: shelf shows 2/3 while every segment is ready.
+    with db_conn:
+        db_conn.execute(
+            """
+            UPDATE books
+            SET summary_ready_count = 2, summary_total_count = 3, segment_count = 3
+            WHERE id = ?
+            """,
+            (book["id"],),
+        )
+
+    assert repo.maybe_mark_summarized(book["id"]) is True
+    row = repo.get(book["id"])
+    assert row["status"] == "summarized"
+    assert int(row["summary_ready_count"]) == 3
+    assert int(row["summary_total_count"]) == 3
+
+
+def test_maybe_mark_summarized_skips_recount_while_incomplete(db_conn, monkeypatch):
+    """Mid-book mismatch must not pay for a full COUNT when a non-ready row exists."""
+    repo = BookRepo(db_conn)
+    book = _insert_book(db_conn, status="reading", segment_count=2)
+    seg_repo = SegmentRepo(db_conn)
+    for idx, status in enumerate(["ready", "pending"]):
+        seg_repo.insert_many(
+            [
+                {
+                    "id": str(uuid.uuid4()),
+                    "book_id": book["id"],
+                    "idx": idx,
+                    "raw_text": "text",
+                    "summary_status": status,
+                }
+            ]
+        )
+    with db_conn:
+        db_conn.execute(
+            """
+            UPDATE books
+            SET summary_ready_count = 0, summary_total_count = 2, segment_count = 2
+            WHERE id = ?
+            """,
+            (book["id"],),
+        )
+
+    def boom(self, book_id: str):
+        raise AssertionError("must not recount while incomplete segments remain")
+
+    monkeypatch.setattr(BookRepo, "refresh_summary_progress", boom)
+    assert repo.maybe_mark_summarized(book["id"]) is False
+
+
 def test_init_db_does_not_clear_in_flight_processing(tmp_path):
     db_path = tmp_path / "lumina.db"
     conn = init_db(db_path)

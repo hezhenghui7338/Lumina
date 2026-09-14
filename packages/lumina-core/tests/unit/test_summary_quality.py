@@ -686,45 +686,44 @@ def test_clarity_scan_rejects_near_copy_sentences():
     assert quality_should_reject(issues)
 
 
-_WALL_OF_TEXT_SENTENCE = (
-    "我凭借无线电通讯车保持与军部联络，获取前线信息并迅速传达决策。"
-    "随身人员包括优秀通讯官科勒和副官斯佩切特中尉，均是我的得力助手。"
-    "斯佩切特中尉在战斗中表现出机智与勇敢，但不幸在飞机失事中牺牲，令我深感悲痛。"
-    "第4装甲集团军迂回普斯科夫的计划因沼泽和敌军抵抗而失败，我军被迫撤回，"
-    "虽击溃多敌军单位并缴获大量战利品，但敌人主要力量仍在。"
-    "目前装甲集团军计划分兵，我军与第41装甲军任务各异，"
-    "我军转向波科霍夫-诺夫哥罗德，此举恐难有效协同打击敌人。"
-)
+def test_relaxed_quality_skips_length_and_redundancy_gates():
+    short = _summary(sentences=[_len_text(20)])
+    short_issues = scan_summary_clarity(short, raw_text=_len_text(80), relaxed=True)
+    assert not any(issue.code == "summary_too_short" for issue in short_issues)
+    assert not quality_should_reject(short_issues, relaxed=True)
 
-_SPLIT_SEMANTIC_SENTENCES = [
-    "我凭通讯车联络军部并传达决策，随员科勒与斯佩切特均为得力助手，后者不幸坠机牺牲。",
-    "第4装甲集团军迂回普斯科夫因沼泽与抵抗失败撤回；现分兵转向波科霍夫-诺夫哥罗德，恐难协同。",
-]
+    redundant = _summary(sentences=_BUENDIA_REDUNDANT_SENTENCES)
+    red_issues = scan_summary_clarity(redundant, relaxed=True)
+    assert not any(issue.code == "sentences_redundant" for issue in red_issues)
+    assert not quality_should_reject(red_issues, relaxed=True)
 
 
-def test_clarity_scan_rejects_sentences_wall_of_text():
-    summary = _summary(sentences=[_WALL_OF_TEXT_SENTENCE])
-    issues = scan_summary_clarity(summary)
-    assert any(issue.code == "sentences_wall" for issue in issues)
-    assert quality_should_reject(issues)
-
-
-def test_clarity_scan_allows_semantically_split_sentences():
-    summary = _summary(sentences=_SPLIT_SEMANTIC_SENTENCES)
-    issues = scan_summary_clarity(summary)
-    assert not any(issue.code == "sentences_wall" for issue in issues)
-    assert not any(issue.code == "sentences_redundant" for issue in issues)
-    assert not quality_should_reject(issues)
-
-
-def test_clarity_scan_allows_two_terminators_in_one_sentence():
-    """One or two clause endings in a single item is not a wall; length gate still applies."""
-    text = (
-        "我凭通讯车保持与军部联络并迅速传达决策，随员科勒与斯佩切特均为得力助手。"
-        "后者机智勇敢却不幸在坠机中牺牲，令我深感悲痛。"
+def test_relaxed_quality_still_rejects_wrong_language():
+    summary = _summary(
+        sentences=["これは日本語の要約で、中国語の目標言語には合わない内容です。"]
     )
-    assert text.count("。") == 2
-    assert len(text) <= 250
-    summary = _summary(sentences=[text])
-    issues = scan_summary_clarity(summary)
-    assert not any(issue.code == "sentences_wall" for issue in issues)
+    issues = scan_summary_clarity(summary, target_language="zh-CN", relaxed=True)
+    assert any(issue.code == "wrong_language" for issue in issues)
+    assert quality_should_reject(issues, relaxed=True)
+
+
+@pytest.mark.asyncio
+async def test_relaxed_inspect_skips_model_review():
+    router = _ReviewRouter({"issues": []})
+    # Soft truncation alone would normally trigger model review.
+    summary = _summary(
+        sentences=[
+            "本段交代主角离乡赴考启程上路，并说明家人对他的期望与族人看重功名，以及途中陌生来信留下的冲突伏笔线索，因为"
+        ]
+    )
+    result = await inspect_summary_quality(
+        router,
+        raw_text=_len_text(80),
+        summary=summary,
+        review_prompt="review {summary_json}",
+        relaxed=True,
+    )
+    assert router.calls == []
+    assert result.review_attempted is False
+    assert not quality_should_reject(result.issues, relaxed=True)
+

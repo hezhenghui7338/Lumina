@@ -44,31 +44,65 @@
 
         <Frame x:Name="ContentFrame" Grid.Row="1"/>
 
-        <!-- Cold Start Gate Overlay -->
+        <!-- Brand splash overlay (PRD §3.5): bouncing logo only -->
         <Grid x:Name="ColdStartOverlay"
               Grid.Row="0"
               Grid.RowSpan="2"
-              Background="{ThemeResource ApplicationPageBackgroundThemeBrush}"
               Visibility="Collapsed">
+            <Grid.Background>
+                <SolidColorBrush Color="{ThemeResource SolidBackgroundFillColorBase}" Opacity="0.72"/>
+            </Grid.Background>
             <StackPanel HorizontalAlignment="Center"
                         VerticalAlignment="Center"
                         MaxWidth="420"
-                        Spacing="16">
-                <TextBlock Text="Lumina 准备就绪中"
-                           FontSize="24"
-                           FontWeight="SemiBold"
-                           HorizontalAlignment="Center"/>
-                <TextBlock Text="首次启动或加载大书库时需要一点时间，请稍候…"
-                           FontSize="13"
-                           Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                           HorizontalAlignment="Center"/>
-                <TextBlock x:Name="ColdStartElapsedText"
-                           Text="已用时 0 秒"
-                           FontSize="12"
-                           Foreground="{ThemeResource TextFillColorTertiaryBrush}"
-                           HorizontalAlignment="Center"
-                           Margin="0,0,0,12"/>
-                <StackPanel x:Name="ColdStartRowsPanel" Spacing="12"/>
+                        Spacing="20"
+                        Padding="24">
+                <Grid Width="200" Height="90" HorizontalAlignment="Center">
+                    <Ellipse x:Name="ColdStartLandingGlow"
+                             Width="88" Height="14"
+                             VerticalAlignment="Bottom"
+                             Margin="0,0,0,4"
+                             Opacity="0.35">
+                        <Ellipse.Fill>
+                            <SolidColorBrush Color="{ThemeResource SystemAccentColor}" Opacity="0.45"/>
+                        </Ellipse.Fill>
+                    </Ellipse>
+                    <TextBlock x:Name="ColdStartBrand"
+                               Text="Lumina"
+                               FontSize="36"
+                               FontWeight="SemiBold"
+                               HorizontalAlignment="Center"
+                               VerticalAlignment="Center"
+                               RenderTransformOrigin="0.5,1">
+                        <TextBlock.RenderTransform>
+                            <TranslateTransform x:Name="ColdStartBrandOffset" Y="0"/>
+                        </TextBlock.RenderTransform>
+                    </TextBlock>
+                </Grid>
+                <StackPanel x:Name="ColdStartDetailPanel"
+                            Spacing="10"
+                            Visibility="Collapsed">
+                    <TextBlock x:Name="ColdStartDetailText"
+                               Text=""
+                               FontSize="12"
+                               Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                               HorizontalAlignment="Center"
+                               TextWrapping="WrapWholeWords"/>
+                    <TextBlock x:Name="ColdStartElapsedText"
+                               Text="已用时 0 秒"
+                               FontSize="11"
+                               Foreground="{ThemeResource TextFillColorTertiaryBrush}"
+                               HorizontalAlignment="Center"/>
+                    <StackPanel Orientation="Horizontal"
+                                HorizontalAlignment="Center"
+                                Spacing="8">
+                        <Button x:Name="ColdStartRetryButton"
+                                Content="重试"
+                                Click="RetryEngine_Click"
+                                Visibility="Collapsed"/>
+                        <Button Content="退出" Click="ColdStartExit_Click"/>
+                    </StackPanel>
+                </StackPanel>
             </StackPanel>
         </Grid>
 

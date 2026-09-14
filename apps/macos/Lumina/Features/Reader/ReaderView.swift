@@ -743,7 +743,7 @@ struct ReaderView: View {
             .popover(isPresented: $showAppearancePopover, arrowEdge: .top) {
                 ReaderAppearancePanel(theme: theme)
             }
-            .help("字号与纸色")
+            .help("字号、行间距与纸色")
         }
         .font(ReaderChromeBarMetrics.labelFont)
         .imageScale(.medium)
@@ -1442,6 +1442,7 @@ struct ReaderView: View {
             summaryProgressMessage: viewModel.segmentProgressMessage(for: idx),
             runningMetrics: viewModel.segmentRunningMetrics[idx],
             fontScale: theme.readingFontScale,
+            lineSpacingScale: theme.readingLineSpacingScale,
             paper: theme.readerPaper,
             onToggleSource: { toggleSource(for: idx) },
             onToggleSummary: { toggleSummary(for: idx) },
@@ -3279,6 +3280,8 @@ final class ReaderViewModel: ObservableObject {
         if let value = detail.summary_tier { updated.summary_tier = value }
         if let value = detail.summary_duration_s { updated.summary_duration_s = value }
         if let value = detail.summary_llm_attempts { updated.summary_llm_attempts = value }
+        if let value = detail.summary_failure_total { updated.summary_failure_total = value }
+        if let value = detail.summary_quality_relaxed { updated.summary_quality_relaxed = value }
         if let status = detail.summary_status { updated.summary_status = status }
         fillCatalogPreviewIfNeeded(&updated)
         segments[i] = updated
@@ -3939,6 +3942,11 @@ final class ReaderViewModel: ObservableObject {
         }
         if let attempts = event["summary_llm_attempts"] as? Int {
             updated.summary_llm_attempts = attempts
+        }
+        if let relaxed = event["summary_quality_relaxed"] as? Bool {
+            updated.summary_quality_relaxed = relaxed
+        } else if let relaxed = event["summary_quality_relaxed"] as? Int {
+            updated.summary_quality_relaxed = relaxed != 0
         }
         fillCatalogPreviewIfNeeded(&updated)
         segments[i] = updated

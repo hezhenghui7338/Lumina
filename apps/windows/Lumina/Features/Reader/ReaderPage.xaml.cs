@@ -979,6 +979,8 @@ public sealed partial class ReaderPage : Page
         if (!string.IsNullOrEmpty(sum.SummaryTier)) detail.SummaryTier = sum.SummaryTier;
         if (!string.IsNullOrEmpty(sum.SummaryStatus)) detail.SummaryStatus = sum.SummaryStatus;
         if (!string.IsNullOrEmpty(sum.AnchorLabel)) detail.AnchorLabel = sum.AnchorLabel;
+        if (sum.SummaryFailureTotal.HasValue) detail.SummaryFailureTotal = sum.SummaryFailureTotal;
+        if (sum.SummaryQualityRelaxed.HasValue) detail.SummaryQualityRelaxed = sum.SummaryQualityRelaxed;
     }
 
     private async Task PrefetchNeighborsAsync(int idx)

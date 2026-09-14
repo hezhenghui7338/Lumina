@@ -78,8 +78,10 @@ struct LuminaSelectableText: NSViewRepresentable {
         let textChanged = textView.textStorage?.string != text
             || textView.font?.pointSize != fontSize
             || textView.textColor != NSColor(foreground)
+            || abs(textView.appliedLineSpacing - lineSpacing) > 0.001
         if textChanged {
             textView.textStorage?.setAttributedString(attributed)
+            textView.appliedLineSpacing = lineSpacing
             textView.invalidateIntrinsicContentSize()
             textView.superview?.invalidateIntrinsicContentSize()
         }
@@ -140,6 +142,7 @@ struct LuminaSelectableText: NSViewRepresentable {
 final class LuminaSelectableTextView: NSTextView {
     private var lastLayoutWidth: CGFloat = -1
     var appliedHighlightUTF16: NSRange?
+    var appliedLineSpacing: CGFloat = 0
 
     var appliedLayoutWidth: CGFloat { lastLayoutWidth }
 

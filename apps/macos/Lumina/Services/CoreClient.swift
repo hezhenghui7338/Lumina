@@ -784,6 +784,10 @@ struct SegmentRow: Codable, Identifiable, Hashable {
     var retry_count: Int?
     var summary_duration_s: Double?
     var summary_llm_attempts: Int?
+    /// Cumulative summarize job failures; drives relaxed quality gate after threshold.
+    var summary_failure_total: Int? = nil
+    /// True when the ready summary was accepted under the relaxed quality gate.
+    var summary_quality_relaxed: Bool? = nil
     /// Slim catalog line from GET /segments. Not the full summary_json.
     var summary_preview: String? = nil
     /// Structured-point titles from GET /segments. Not bullet bodies.
@@ -830,6 +834,8 @@ struct SegmentSummaryDetail: Codable {
     var label: String?
     var anchor_label: String?
     var summary_status: String?
+    var summary_failure_total: Int?
+    var summary_quality_relaxed: Bool?
     var summary_provider: String?
     var summary_model: String?
     var summary_tier: String?
@@ -1282,7 +1288,20 @@ struct NewsSource: Codable, Identifiable, Hashable {
 struct NewsBrief: Codable {
     let date: String
     let count: Int
+    let last_synced_at: String?
     let articles: [NewsArticleCard]
+
+    enum CodingKeys: String, CodingKey {
+        case date, count, last_synced_at, articles
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        date = try c.decode(String.self, forKey: .date)
+        count = try c.decode(Int.self, forKey: .count)
+        last_synced_at = try c.decodeIfPresent(String.self, forKey: .last_synced_at)
+        articles = try c.decodeIfPresent([NewsArticleCard].self, forKey: .articles) ?? []
+    }
 }
 
 /// HTTP client for lumina-core. Not MainActor-isolated: network I/O and JSON

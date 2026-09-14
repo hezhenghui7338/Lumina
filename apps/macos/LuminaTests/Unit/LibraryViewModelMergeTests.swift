@@ -306,6 +306,35 @@ final class LibraryViewModelMergeTests: XCTestCase {
         )
     }
 
+    func testToolbarSummarizeRefreshesLibraryImmediately() throws {
+        let macosRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let content = try String(
+            contentsOf: macosRoot.appendingPathComponent("Lumina/ContentView.swift"),
+            encoding: .utf8
+        )
+        let startBlock = content
+            .components(separatedBy: "private func startSummarizeAction")
+            .last?
+            .components(separatedBy: "private func stopSummarizeAction")
+            .first ?? ""
+        XCTAssertTrue(
+            startBlock.contains("NotificationCenter.default.post(name: .luminaLibraryRefresh"),
+            "toolbar 全部开始摘要 must refresh shelf state without waiting for 3s poll"
+        )
+        let stopBlock = content
+            .components(separatedBy: "private func stopSummarizeAction")
+            .last?
+            .components(separatedBy: "}\n}")
+            .first ?? ""
+        XCTAssertTrue(
+            stopBlock.contains("NotificationCenter.default.post(name: .luminaLibraryRefresh"),
+            "toolbar stop summarize must also refresh shelf"
+        )
+    }
+
     func testApplyReadingProgress_setsOpenedAtWhenUnread() {
         let viewModel = LibraryViewModel()
         viewModel.books = [book(id: "unread", lastOpenedAt: nil, currentSegmentIndex: 0)]

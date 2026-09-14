@@ -101,7 +101,8 @@ def test_news_brief_structured_fields(conn):
     assert isinstance(card["quotes"], list)
     assert isinstance(card["meta"], dict)
     assert "ai_score" in card["meta"] or card["score_hint"] == 88.0
-    assert isinstance(card["reasons"], list) and card["reasons"]
+    assert isinstance(card["reasons"], list) and card["reasons"] == []
+    assert brief.get("last_synced_at") is None
     assert card["source_id"] == source["id"]
     assert card["source_title"] == "Example"
     assert card["source"] == "Example"

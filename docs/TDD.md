@@ -623,8 +623,8 @@ Swift：`SearchView` → `GET /search?q=…` → 跳转 `ReaderView(bookId, segm
 |------|------|--------|
 | sync | `news/sync.py` + `rss.py` | `POST /news/sync` |
 | store | `news/store.py` | `news_articles` 表 |
-| rank | `news/rank.py` | 规则排序，无 LLM |
-| brief | `news/brief.py` | `GET /news/brief` — **标题 + RSS excerpt 规则截取**，不用 LLM |
+| rank / 排序 | `news/rank.py` + store 查询 | 简报按 `published_at`（缺则 `synced_at`）倒序；无兴趣分排序 |
+| brief | `news/brief.py` | `GET /news/brief` — **标题 + RSS excerpt 规则截取** + `last_synced_at`，不用 LLM |
 | 精读 | `news/read.py` + trafilatura | 单篇 → 临时 segment + 复用 Chat |
 
 **不做**：`schedule` 定时 sync（v1.1）
@@ -691,7 +691,7 @@ Sidecar 绑定 `127.0.0.1` only；无认证（本机进程）。
 |--------|------|------|
 | GET/POST | `/news/sources` | RSS 源管理 |
 | POST | `/news/sync` | 手动同步 |
-| GET | `/news/brief` | 今日简报 |
+| GET | `/news/brief` | 今日简报（时间倒序；含 `last_synced_at`） |
 | POST | `/news/articles/{id}/chat` | 单篇深聊 |
 
 ### 5.5 设置

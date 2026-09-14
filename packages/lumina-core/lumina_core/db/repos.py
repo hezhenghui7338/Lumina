@@ -230,6 +230,17 @@ class BookRepo:
                 (*fields.values(), book_id),
             )
 
+    def bulk_set_summarize_intent(self, book_ids: list[str], intent: str) -> None:
+        """Stamp summarize_intent for many books in one transaction (start-all ack)."""
+        if not book_ids:
+            return
+        now = _now()
+        with db_transaction(self.conn):
+            self.conn.executemany(
+                "UPDATE books SET summarize_intent = ?, updated_at = ? WHERE id = ?",
+                [(intent, now, book_id) for book_id in book_ids],
+            )
+
     def repair_stale_imports(
         self,
         live_ids: set[str] | frozenset[str] | None = None,
@@ -342,12 +353,26 @@ class BookRepo:
             self.conn.execute("DELETE FROM books WHERE id = ?", (book_id,))
 
     def maybe_mark_summarized(self, book_id: str) -> bool:
-        """If every segment is ready, promote book status to summarized."""
+        """If every segment is ready, promote book status to summarized.
+
+        Denormalized ``summary_ready_count`` can drift by ±1 under concurrent
+        status transitions. When the cached ready/total disagree, probe for any
+        non-ready row (cheap) and only then recount before giving up — otherwise
+        a fully-summarized book stays stuck at N-1/N on the shelf forever.
+        """
         progress = self.summary_progress(book_id)
         ready = int(progress["summary_ready_count"])
         total = int(progress["summary_total_count"])
-        if total <= 0 or ready != total:
+        if total <= 0:
             return False
+        if ready != total:
+            if SegmentRepo(self.conn).has_incomplete_summary(book_id):
+                return False
+            progress = self.refresh_summary_progress(book_id)
+            ready = int(progress["summary_ready_count"])
+            total = int(progress["summary_total_count"])
+            if total <= 0 or ready != total:
+                return False
         self.update(book_id, status="summarized", summarize_intent="idle")
         return True
 
@@ -404,7 +429,7 @@ class BookRepo:
 # List API / UI sidebar: slim meta — no raw_text, translation, or summary_json.
 _SEGMENT_LIST_COLUMNS = (
     "id, book_id, idx, chapter, heading_path, page_range, anchor_label, char_count, "
-    "label, summary_status, retry_count, "
+    "label, summary_status, retry_count, summary_failure_total, summary_quality_relaxed, "
     "summary_provider, summary_model, summary_tier, summary_duration_s, summary_llm_attempts, "
     "summary_preview, bullet_labels"
 )
@@ -416,6 +441,7 @@ _SEGMENT_META_COLUMNS = (
 
 _SEGMENT_SUMMARY_COLUMNS = (
     "idx, summary_json, label, anchor_label, summary_status, "
+    "summary_failure_total, summary_quality_relaxed, "
     "summary_provider, summary_model, summary_tier, summary_duration_s, summary_llm_attempts"
 )
 
@@ -491,6 +517,10 @@ def _segment_public(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
     # for bullet_labels — Swift/Windows SegmentRow decode as [String]?.
     if "bullet_labels" in item:
         item["bullet_labels"] = _decode_bullet_labels(item.get("bullet_labels"))
+    if "summary_quality_relaxed" in item:
+        item["summary_quality_relaxed"] = bool(item.get("summary_quality_relaxed") or 0)
+    if "summary_failure_total" in item:
+        item["summary_failure_total"] = int(item.get("summary_failure_total") or 0)
     return item
 
 
@@ -578,6 +608,17 @@ class SegmentRepo:
             ).fetchone()
         return _segment_public(row) if row else None
 
+    def has_incomplete_summary(self, book_id: str) -> bool:
+        """True if any segment is not ready (LIMIT 1 probe, not a full COUNT)."""
+        with db_lock(self.conn):
+            row = self.conn.execute(
+                "SELECT 1 AS ok FROM segments "
+                "WHERE book_id = ? AND COALESCE(summary_status, '') != 'ready' "
+                "LIMIT 1",
+                (book_id,),
+            ).fetchone()
+        return row is not None
+
     def list_running_segments(self, book_id: str) -> list[dict[str, Any]]:
         """Running rows only (crash orphans); never the full book catalog."""
         with db_lock(self.conn):
@@ -627,6 +668,19 @@ class SegmentRepo:
                 (book_id,),
             )
         return [_segment_public(r) for r in rows]
+
+    def reset_failed_segments_count(self, book_id: str) -> int:
+        """failed/error → pending; return rowcount only (no O(n) SSE fan-out)."""
+        with db_transaction(self.conn):
+            cur = self.conn.execute(
+                """
+                UPDATE segments
+                SET summary_status = 'pending', retry_count = 0
+                WHERE book_id = ? AND summary_status IN ('failed', 'error')
+                """,
+                (book_id,),
+            )
+            return int(cur.rowcount or 0)
 
     def apply_summary_tier_to_incomplete(
         self, book_id: str, summary_tier: str
@@ -1221,6 +1275,7 @@ class SegmentRepo:
         summary_tier: str = "normal",
         summary_duration_s: float | None = None,
         summary_llm_attempts: int | None = None,
+        summary_quality_relaxed: bool = False,
     ) -> None:
         summary_preview, bullet_labels = segment_list_fields(summary_json)
         try:
@@ -1246,7 +1301,8 @@ class SegmentRepo:
                 summary_status = ?, retry_count = 0,
                 summary_provider = ?, summary_model = ?, summary_tier = ?,
                 summary_duration_s = ?, summary_llm_attempts = ?,
-                summary_preview = ?, bullet_labels = ?
+                summary_preview = ?, bullet_labels = ?,
+                summary_quality_relaxed = ?
                 WHERE id = ?
                 """,
                 (
@@ -1261,6 +1317,7 @@ class SegmentRepo:
                     summary_llm_attempts,
                     summary_preview or "",
                     json.dumps(bullet_labels, ensure_ascii=False),
+                    1 if summary_quality_relaxed else 0,
                     segment_id,
                 ),
             )
@@ -1296,7 +1353,7 @@ class SegmentRepo:
                     summary_provider = NULL, summary_model = NULL,
                     summary_tier = ?, summary_duration_s = NULL,
                     summary_llm_attempts = NULL, summary_preview = NULL,
-                    bullet_labels = NULL
+                    bullet_labels = NULL, summary_quality_relaxed = 0
                 WHERE id = ?
                 """,
                 (summary_tier, segment_id),
@@ -1412,22 +1469,37 @@ class SegmentRepo:
             ),
         )
 
-    def set_status(self, segment_id: str, status: str, retry_count: int | None = None) -> None:
+    def set_status(
+        self,
+        segment_id: str,
+        status: str,
+        retry_count: int | None = None,
+        *,
+        increment_failure_total: bool = False,
+        clear_failure_budget: bool = False,
+    ) -> None:
         with db_transaction(self.conn):
             prev = self.conn.execute(
                 "SELECT book_id, summary_status FROM segments WHERE id = ?",
                 (segment_id,),
             ).fetchone()
-            if retry_count is None:
-                self.conn.execute(
-                    "UPDATE segments SET summary_status = ? WHERE id = ?",
-                    (status, segment_id),
+            sets = ["summary_status = ?"]
+            params: list[Any] = [status]
+            if retry_count is not None:
+                sets.append("retry_count = ?")
+                params.append(retry_count)
+            if increment_failure_total:
+                sets.append(
+                    "summary_failure_total = COALESCE(summary_failure_total, 0) + 1"
                 )
-            else:
-                self.conn.execute(
-                    "UPDATE segments SET summary_status = ?, retry_count = ? WHERE id = ?",
-                    (status, retry_count, segment_id),
-                )
+            if clear_failure_budget:
+                sets.append("summary_failure_total = 0")
+                sets.append("summary_quality_relaxed = 0")
+            params.append(segment_id)
+            self.conn.execute(
+                f"UPDATE segments SET {', '.join(sets)} WHERE id = ?",
+                params,
+            )
             if prev is not None:
                 was_ready = (prev["summary_status"] or "") == "ready"
                 now_ready = status == "ready"

@@ -17,7 +17,7 @@ public sealed class ColdStartPhaseSnapshot
     public ColdStartPhaseState Cache { get; set; } = ColdStartPhaseState.Pending;
     public double? CacheProgress { get; set; }
     public string? CacheDetail { get; set; }
-    /// Background boot news (not part of the gate).
+    /// Background boot news (not part of product-ready).
     public ColdStartPhaseState News { get; set; } = ColdStartPhaseState.Pending;
     public string? NewsDetail { get; set; }
 
@@ -27,8 +27,8 @@ public sealed class ColdStartPhaseSnapshot
 public static class ColdStartReadiness
 {
     public static readonly TimeSpan StatusPollInterval = TimeSpan.FromMilliseconds(100);
-
-    public static readonly string[] GateRowKinds = ["engine", "data", "cache"];
+    /// After this many seconds, reveal one soft technical line (PRD §3.5).
+    public static readonly TimeSpan DetailRevealAfter = TimeSpan.FromSeconds(10);
 
     public static ColdStartPhaseState PhaseState(string? raw) =>
         (raw ?? "").ToLowerInvariant() switch
@@ -67,20 +67,24 @@ public static class ColdStartReadiness
     public static bool IsBootNewsTerminal(ColdStartPhaseState state) =>
         state is ColdStartPhaseState.Done or ColdStartPhaseState.Failed;
 
-    public static string RowLabel(
-        string kind,
-        ColdStartPhaseState state,
-        string? cacheDetail = null) =>
-        kind switch
-        {
-            "engine" => state == ColdStartPhaseState.Done ? "启动完毕" : "引擎启动中",
-            "data" => state == ColdStartPhaseState.Done ? "准备完毕" : "数据准备中",
-            "cache" when state == ColdStartPhaseState.Done => "加载完毕",
-            "cache" when state == ColdStartPhaseState.Running && !string.IsNullOrWhiteSpace(cacheDetail) =>
-                $"缓存加载中 · {cacheDetail}",
-            "cache" => "缓存加载中",
-            _ => "",
-        };
+    public static bool ShouldRevealTechnicalDetail(TimeSpan elapsed) =>
+        elapsed >= DetailRevealAfter;
+
+    /// One soft line derived from the current internal phase (never a multi-step list).
+    public static string TechnicalDetail(
+        ColdStartPhaseSnapshot snapshot,
+        string? launchError = null)
+    {
+        if (!string.IsNullOrWhiteSpace(launchError))
+            return launchError;
+        if (snapshot.Engine != ColdStartPhaseState.Done)
+            return "正在启动引擎";
+        if (snapshot.Data != ColdStartPhaseState.Done)
+            return "正在准备阅读数据";
+        if (!string.IsNullOrWhiteSpace(snapshot.CacheDetail))
+            return snapshot.CacheDetail!;
+        return "正在加载缓存";
+    }
 }
 
 public sealed class StartupStatusDto

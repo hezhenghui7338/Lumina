@@ -128,7 +128,7 @@ public sealed partial class NewsPage : Page
                 SourceFilterBox.Items.Add(new ComboBoxItem { Content = s.DisplayTitle, Tag = s.Id });
 
             ApplyFilter();
-            StatusText.Text = $"{briefTask.Result.Date} · {briefTask.Result.Count} 篇";
+            StatusText.Text = FormatBriefStatus(briefTask.Result);
         }
         catch (OperationCanceledException) { }
         catch (Exception ex)
@@ -144,6 +144,21 @@ public sealed partial class NewsPage : Page
             ? _articles
             : _articles.Where(a => a.SourceId == sid).ToList();
         ArticlesList.ItemsSource = list;
+    }
+
+    private static string FormatBriefStatus(NewsBrief brief)
+    {
+        var baseLabel = $"{brief.Date} · {brief.Count} 篇";
+        var synced = FormatLastSynced(brief.LastSyncedAt);
+        return string.IsNullOrEmpty(synced) ? baseLabel : $"{baseLabel} · {synced}";
+    }
+
+    private static string? FormatLastSynced(string? raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw)) return null;
+        if (DateTimeOffset.TryParse(raw, out var dto))
+            return $"最近同步于 {dto.ToLocalTime():yyyy-MM-dd HH:mm}";
+        return $"最近同步于 {raw}";
     }
 
     private void SourceFilter_Changed(object sender, SelectionChangedEventArgs e) => ApplyFilter();
