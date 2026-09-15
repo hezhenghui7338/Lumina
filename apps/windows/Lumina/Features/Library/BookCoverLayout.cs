@@ -15,4 +15,7 @@ public static class BookCoverLayout
 
     public static Visibility AuthorVisibility(string? author) =>
         string.IsNullOrWhiteSpace(author) ? Visibility.Collapsed : Visibility.Visible;
+
+    public static Visibility CoverImageVisibility(string? coverUrl) =>
+        string.IsNullOrWhiteSpace(coverUrl) ? Visibility.Collapsed : Visibility.Visible;
 }

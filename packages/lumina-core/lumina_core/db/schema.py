@@ -165,6 +165,34 @@ CREATE TABLE IF NOT EXISTS news_sync_meta (
   id              INTEGER PRIMARY KEY CHECK (id = 1),
   last_synced_at  TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS book_assets (
+  id            TEXT PRIMARY KEY,
+  book_id       TEXT NOT NULL REFERENCES books(id) ON DELETE CASCADE,
+  sha256        TEXT NOT NULL,
+  rel_path      TEXT NOT NULL,
+  mime          TEXT,
+  width         INTEGER,
+  height        INTEGER,
+  byte_size     INTEGER,
+  source_href   TEXT,
+  role          TEXT NOT NULL DEFAULT 'illustration',
+  UNIQUE(book_id, sha256)
+);
+
+CREATE TABLE IF NOT EXISTS segment_illustrations (
+  id            TEXT PRIMARY KEY,
+  book_id       TEXT NOT NULL REFERENCES books(id) ON DELETE CASCADE,
+  segment_id    TEXT NOT NULL REFERENCES segments(id) ON DELETE CASCADE,
+  segment_idx   INTEGER NOT NULL,
+  asset_id      TEXT NOT NULL REFERENCES book_assets(id) ON DELETE CASCADE,
+  char_offset   INTEGER NOT NULL,
+  sort_key      INTEGER NOT NULL DEFAULT 0,
+  alt_text      TEXT,
+  UNIQUE(segment_id, char_offset, asset_id)
+);
+CREATE INDEX IF NOT EXISTS idx_segment_illustrations_book_idx
+  ON segment_illustrations(book_id, segment_idx);
 """
 
 
@@ -201,6 +229,8 @@ _BOOK_COLUMNS = (
     # GET /books never N+1 COUNT(segments) per book.
     ("summary_ready_count", "INTEGER DEFAULT 0"),
     ("summary_total_count", "INTEGER DEFAULT 0"),
+    # EPUB inline illustrations: pending|ready|none|skipped_ocr|error
+    ("illustrations_status", "TEXT"),
 )
 
 _SEGMENT_COLUMNS = (
@@ -476,6 +506,47 @@ def migrate_search_fts_map(conn: sqlite3.Connection) -> None:
         )
 
 
+def _migrate_illustration_tables(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS book_assets (
+          id            TEXT PRIMARY KEY,
+          book_id       TEXT NOT NULL REFERENCES books(id) ON DELETE CASCADE,
+          sha256        TEXT NOT NULL,
+          rel_path      TEXT NOT NULL,
+          mime          TEXT,
+          width         INTEGER,
+          height        INTEGER,
+          byte_size     INTEGER,
+          source_href   TEXT,
+          role          TEXT NOT NULL DEFAULT 'illustration',
+          UNIQUE(book_id, sha256)
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS segment_illustrations (
+          id            TEXT PRIMARY KEY,
+          book_id       TEXT NOT NULL REFERENCES books(id) ON DELETE CASCADE,
+          segment_id    TEXT NOT NULL REFERENCES segments(id) ON DELETE CASCADE,
+          segment_idx   INTEGER NOT NULL,
+          asset_id      TEXT NOT NULL REFERENCES book_assets(id) ON DELETE CASCADE,
+          char_offset   INTEGER NOT NULL,
+          sort_key      INTEGER NOT NULL DEFAULT 0,
+          alt_text      TEXT,
+          UNIQUE(segment_id, char_offset, asset_id)
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_segment_illustrations_book_idx
+          ON segment_illustrations(book_id, segment_idx)
+        """
+    )
+
+
 def connect_db(db_path: Path) -> sqlite3.Connection:
     """Open an existing database with the runtime concurrency settings."""
     from lumina_core.perf import instrument_connection
@@ -497,6 +568,7 @@ def init_db(db_path: Path) -> sqlite3.Connection:
     _migrate_books(conn)
     _migrate_segments(conn)
     _migrate_summary_nodes(conn)
+    _migrate_illustration_tables(conn)
     migrate_search_fts_map(conn)
     _migrate_notes_require_segment(conn)
     conn.commit()

@@ -46,6 +46,52 @@ enum SegmentContentMetaPolicy {
     }
 }
 
+/// Split original text at illustration char offsets (Python/Unicode scalar offsets).
+enum OriginalTextIllustrationLayout {
+    enum Part: Equatable {
+        case text(String)
+        case image(SegmentIllustration)
+    }
+
+    static func parts(
+        text: String,
+        illustrations: [SegmentIllustration]
+    ) -> [Part] {
+        let sorted = illustrations.sorted {
+            if $0.char_offset != $1.char_offset {
+                return $0.char_offset < $1.char_offset
+            }
+            return $0.asset_id < $1.asset_id
+        }
+        guard !sorted.isEmpty else { return [.text(text)] }
+
+        var result: [Part] = []
+        var cursor = 0
+        let scalarCount = text.unicodeScalars.count
+        for illustration in sorted {
+            let offset = max(0, min(illustration.char_offset, scalarCount))
+            if offset > cursor {
+                result.append(.text(substring(text, from: cursor, to: offset)))
+            }
+            result.append(.image(illustration))
+            cursor = offset
+        }
+        if cursor < scalarCount {
+            result.append(.text(substring(text, from: cursor, to: scalarCount)))
+        }
+        return result.isEmpty ? [.text(text)] : result
+    }
+
+    private static func substring(_ text: String, from: Int, to: Int) -> String {
+        let scalars = text.unicodeScalars
+        guard from < to, from < scalars.count else { return "" }
+        let start = scalars.index(scalars.startIndex, offsetBy: from)
+        let endOffset = min(to, scalars.count)
+        let end = scalars.index(scalars.startIndex, offsetBy: endOffset)
+        return String(String.UnicodeScalarView(scalars[start..<end]))
+    }
+}
+
 private struct SegmentPanelContentHeightKey: PreferenceKey {
     static var defaultValue: CGFloat = 0
 
@@ -86,6 +132,10 @@ struct SegmentReadingBlock: View, Equatable {
     var onSourceAppear: (() -> Void)?
     var onSummaryAppear: (() -> Void)?
     var originalHighlightUTF16: NSRange? = nil
+    /// Active listen follow-along target for this segment (nil when inactive / other segment).
+    var listenHighlight: ListenHighlightAnchor? = nil
+    /// Resolve EPUB asset id → sidecar URL for inline illustrations.
+    var illustrationURL: ((String) -> URL)? = nil
 
     @State private var lockedViewportHeight: CGFloat?
     @State private var measuredContentHeight: CGFloat = LuminaTheme.segmentContentMinHeight
@@ -370,7 +420,8 @@ struct SegmentReadingBlock: View, Equatable {
                 onFollowUp: onFollowUp,
                 showsBackground: showsBackground,
                 showsHeader: false,
-                showsAttribution: false
+                showsAttribution: false,
+                listenHighlight: listenHighlight
             )
         } else if isSummaryLoading || segment.summary_status == "running" {
             summaryLoadingSkeleton
@@ -437,6 +488,7 @@ struct SegmentReadingBlock: View, Equatable {
             .foregroundStyle(paper.textSecondary)
             .lineLimit(1)
             .textSelection(.enabled)
+            .listenFollowHighlight(listenHighlight == .segmentTitle)
 
             Spacer(minLength: 8)
 
@@ -679,13 +731,7 @@ struct SegmentReadingBlock: View, Equatable {
                 if needsTranslation {
                     sourceTextLabel("原文")
                 }
-                LuminaSelectableText(
-                    text: body.rawText,
-                    fontSize: scaled(LuminaTheme.summaryBulletSize),
-                    lineSpacing: lineSpaced(LuminaTheme.summaryBulletLineSpacing),
-                    foreground: paper.textSecondary,
-                    highlightUTF16: originalHighlightUTF16
-                )
+                originalTextWithIllustrations(body)
             }
             if needsTranslation {
                 if isSourceRefreshing && body.translation.isEmpty {
@@ -714,12 +760,100 @@ struct SegmentReadingBlock: View, Equatable {
         }
     }
 
+    @ViewBuilder
+    private func originalTextWithIllustrations(_ body: SegmentSourceBody) -> some View {
+        let parts = OriginalTextIllustrationLayout.parts(
+            text: body.rawText,
+            illustrations: body.illustrations
+        )
+        if parts.count == 1, let first = parts.first, case .text(let only) = first {
+            LuminaSelectableText(
+                text: only,
+                fontSize: scaled(LuminaTheme.summaryBulletSize),
+                lineSpacing: lineSpaced(LuminaTheme.summaryBulletLineSpacing),
+                foreground: paper.textSecondary,
+                highlightUTF16: resolvedOriginalHighlight.range,
+                highlightStyle: resolvedOriginalHighlight.style
+            )
+        } else {
+            VStack(alignment: .leading, spacing: scaled(10)) {
+                ForEach(Array(parts.enumerated()), id: \.offset) { _, part in
+                    switch part {
+                    case .text(let chunk):
+                        if !chunk.isEmpty {
+                            LuminaSelectableText(
+                                text: chunk,
+                                fontSize: scaled(LuminaTheme.summaryBulletSize),
+                                lineSpacing: lineSpaced(LuminaTheme.summaryBulletLineSpacing),
+                                foreground: paper.textSecondary,
+                                highlightUTF16: nil,
+                                highlightStyle: .search
+                            )
+                        }
+                    case .image(let illustration):
+                        inlineIllustration(illustration)
+                    }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func inlineIllustration(_ illustration: SegmentIllustration) -> some View {
+        let url = illustrationURL?(illustration.asset_id)
+        Group {
+            if let url {
+                AsyncImage(url: url) { phase in
+                    switch phase {
+                    case .success(let image):
+                        image
+                            .resizable()
+                            .scaledToFit()
+                            .frame(maxWidth: .infinity)
+                            .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                    case .failure:
+                        illustrationPlaceholder(illustration.alt)
+                    case .empty:
+                        ProgressView()
+                            .controlSize(.small)
+                            .frame(maxWidth: .infinity, minHeight: 48)
+                    @unknown default:
+                        illustrationPlaceholder(illustration.alt)
+                    }
+                }
+            } else {
+                illustrationPlaceholder(illustration.alt)
+            }
+        }
+        .accessibilityLabel(illustration.alt?.isEmpty == false ? illustration.alt! : "插图")
+    }
+
+    private func illustrationPlaceholder(_ alt: String?) -> some View {
+        Text(alt?.isEmpty == false ? alt! : "插图")
+            .font(.system(size: scaled(LuminaTheme.summaryLabelSize)))
+            .foregroundStyle(paper.textSecondary.opacity(0.7))
+            .frame(maxWidth: .infinity, minHeight: 48)
+            .background(paper.card.opacity(0.4))
+            .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+    }
+
     private func sourceTextLabel(_ title: String) -> some View {
         Text(title)
             .font(.system(size: LuminaTheme.summaryLabelSize, weight: .semibold))
             .foregroundStyle(paper.textSecondary)
             .tracking(0.6)
             .padding(.top, 4)
+    }
+
+    /// Search highlight wins when both are present; otherwise listen follow-along.
+    private var resolvedOriginalHighlight: (range: NSRange?, style: LuminaSelectableText.TextHighlightStyle) {
+        if let originalHighlightUTF16 {
+            return (originalHighlightUTF16, .search)
+        }
+        if let range = listenHighlight?.originalNSRange {
+            return (range, .listen)
+        }
+        return (nil, .search)
     }
 
     static func == (lhs: SegmentReadingBlock, rhs: SegmentReadingBlock) -> Bool {
@@ -744,5 +878,6 @@ struct SegmentReadingBlock: View, Equatable {
             && lhs.canGoPrev == rhs.canGoPrev
             && lhs.canGoNext == rhs.canGoNext
             && lhs.originalHighlightUTF16 == rhs.originalHighlightUTF16
+            && lhs.listenHighlight == rhs.listenHighlight
     }
 }

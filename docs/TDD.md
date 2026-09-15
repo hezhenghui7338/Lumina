@@ -339,7 +339,7 @@ sequenceDiagram
 |------|-----|------|
 | PDF（文本层） | **PyMuPDF 优先**，`pypdf` 回退 | 页码锚点；Identity-H/CID 无 ToUnicode 时 pypdf 会乱码 |
 | PDF（扫描 / 乱码层） | **PyMuPDF + OpenAI 兼容视觉 API / RapidOCR PP-OCRv6** | 覆盖率 < 15% 或文本层判定为 CID 乱码时触发；云端配置完整时优先 |
-| EPUB | **`ebooklib` 为核心**，自建解析 Pipeline（spine → 章节 → 纯文本 + § 锚点）；正文以页面图片为主且文字不足时按 spine/DOM 图片顺序 OCR | 不用 epub2txt；图片页复用 PDF OCR provider 路由与页级进度 |
+| EPUB | **`ebooklib` 为核心**，自建解析 Pipeline（spine → 章节 → 纯文本 + § 锚点）；正文以页面图片为主且文字不足时按 spine/DOM 图片顺序 OCR；**文本型 EPUB** 另旁路抽取正文插图到 `book_assets` / `segment_illustrations`（不写入 `raw_text`；启动 deferred 静默补抽） | 不用 epub2txt；图片页复用 PDF OCR provider 路由与页级进度；装饰/背景/封面重复过滤 |
 | MOBI | `mobi` | 同 LA |
 | TXT/Markdown | 内置 | `.txt/.text/.md/.markdown/.mdown/.mkd/.log`。**字节抽样**识别编码（BOM → UTF-8 合法且非乱码 → GB18030/Big5 → replace 评分汉字+中文标点 → charset-normalizer）。抽样用 IncrementalDecoder（`final=False`），64KiB 截在多字节中间不得判失败。抽样中段遇非法字节（电子书残留二进制，如 `0xd0 0x14`）不得整书报「无法识别文本编码」：用 `errors=replace` 按汉字与 `。，、` 密度认 UTF-8/GB18030/Big5。UTF-8 能解开不算数：Latin-1 误解的 GBK 再存成 UTF-8 须恢复为汉字。latin-1 不得作为中文成功路径；认不出则导入失败。锁定 codec 后 **IncrementalDecoder 滑窗**解码（`replace`，去掉 NUL），禁止 `read_bytes()` 全书。 |
 | HTML/XHTML | 内置 `HTMLParser` | 去除脚本/样式，保留标题锚点与元数据 |
@@ -726,7 +726,7 @@ final class ReaderViewModel: ObservableObject {
 }
 ```
 
-听文本：`ListenSession`（macOS `ObservableObject` / Windows 会话对象）管连播、倍速与离开即停；系统引擎本地拼稿并调用本机语音包。设置可打开 VoiceOver Utility（macOS 15+）或 `ms-settings:speech`（Windows）引导下载系统语音包；客户端**不代下**音库。切书走 `cancelAllTasks()` / `OnNavigatedFrom` 时必须 `stop()`。 sidecar **不发起**外网 TTS。
+听文本：`ListenSession`（macOS `ObservableObject` / Windows 会话对象）管连播、倍速与离开即停；系统引擎本地拼稿并调用本机语音包。设置可打开 VoiceOver Utility（macOS 15+）或 `ms-settings:speech`（Windows）引导下载系统语音包；客户端**不代下**音库。切书走 `cancelAllTasks()` / `OnNavigatedFrom` 时必须 `stop()`。 sidecar **不发起**外网 TTS。每条 utterance 带 `ListenHighlightAnchor`（段标题 / 总结句序 / 主要内容标题或要点序 / 原文 UTF-16 范围）；引擎开念一条即发布 `activeHighlight`，UI 轻量跟读底色；**禁止**因跟读高亮 `luminaRevealTextRect` / 滚视口（会与连播 `navigateToSegment` 打架导致下一段卡住）。暂停保留、`stop()` 清空。会话跟踪上一已播段章名：起播或章变更时拼稿先插入章名（去 `§`），再 `label`，再正文；章名与段标题 utterance 均高亮段顶标题行。
 
 ### 6.1a 阅读定位与内容 hydrate（PRD §3.2 / §5.3）
 
@@ -1035,10 +1035,11 @@ JobQueue：`asyncio.PriorityQueue` + worker pool；每书一个摘要链锁，�
 
 | 决策 | 状态 | 结论 |
 |------|------|------|
-| 朗读稿 | ✅ | Python `build_listen_script` 为真源；简要=sentences；完整=总结+要点，不含 notes / follow_ups |
+| 朗读稿 | ✅ | Python `build_listen_script` 为真源；起播/章变更先读章名再读 `label`；简要=sentences；完整=总结+要点，不含 notes / follow_ups |
 | 引擎 | ✅ | 仅系统离线语音包（macOS Premium/增强，Windows Neural）；设置引导系统下载页，不代下、不接云端 TTS |
 | 摘要听读 | ✅ | 只走 summary 列 / `GET .../summary`，禁止为听简要/完整摘要拉 `raw_text` |
 | 离开即停 | ✅ | 切书 / 离开阅读器取消合成 |
+| 跟读高亮 | ✅ | 客户端拼稿附带 `ListenHighlightAnchor`；按 utterance 轻量高亮；暂停保持、停止清除；**禁止**跟读自动滚视口 |
 
 ### B3 自动翻译
 

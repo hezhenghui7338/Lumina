@@ -49,8 +49,12 @@ ScheduleClassify = Callable[[str], None]
 
 def slim_book_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
     """Drop the unused document_tree blob so GET /books stays small."""
-    out = dict(metadata)
+    from lumina_core.ingest.cover import strip_cover_payload
+
+    out = strip_cover_payload(dict(metadata))
     out.pop("document_tree", None)
+    # Illustration hits are persisted to book_assets; never store blobs in metadata.
+    out.pop("illustrations", None)
     return out
 
 
@@ -183,6 +187,7 @@ def _persist_ingest_sync(
     target_language: str,
     segments: list[dict[str, Any]],
     ingest_meta: dict[str, Any],
+    chunks: list | None = None,
 ) -> None:
     """Persist through a dedicated WAL connection so library reads stay available."""
     conn = connect_db(db_path)
@@ -202,6 +207,21 @@ def _persist_ingest_sync(
             target_language=target_language,
             metadata_json=persist_meta,
         )
+        _persist_cover_if_any(
+            books_repo,
+            book_id,
+            library_file=Path(str(book["file_path"])),
+            fmt=str(book.get("format") or ""),
+        )
+        _persist_illustrations_if_any(
+            conn,
+            book_id=book_id,
+            library_file=Path(str(book["file_path"])),
+            fmt=str(book.get("format") or ""),
+            metadata=metadata,
+            segments=segments,
+            chunks=chunks,
+        )
         book_row = books_repo.get(book_id)
         if book_row:
             index_book(conn, book_row)
@@ -209,6 +229,108 @@ def _persist_ingest_sync(
     finally:
         conn.close()
         detach_db_lock(conn)
+
+
+def _persist_cover_if_any(
+    books_repo: BookRepo,
+    book_id: str,
+    *,
+    library_file: Path,
+    fmt: str,
+) -> None:
+    """Best-effort cover extract after segments land; never fail ingest."""
+    if not fmt or fmt == "txt":
+        return
+    try:
+        from lumina_core.ingest.cover import save_book_cover
+
+        rel = save_book_cover(library_file, library_file.parent, fmt)
+        if rel:
+            books_repo.update(book_id, cover_path=rel)
+    except Exception:
+        logging.getLogger(__name__).debug(
+            "cover extract skipped for %s", book_id, exc_info=True
+        )
+
+
+def _persist_illustrations_if_any(
+    conn,
+    *,
+    book_id: str,
+    library_file: Path,
+    fmt: str,
+    metadata: dict[str, Any],
+    segments: list[dict[str, Any]],
+    chunks: list | None,
+) -> None:
+    """Best-effort EPUB illustration index; never fail ingest."""
+    fmt_l = (fmt or "").lower()
+    if fmt_l not in {"epub", "mobi", "azw", "azw3"}:
+        return
+    status = metadata.get("illustrations_status")
+    if status == "skipped_ocr":
+        try:
+            BookRepo(conn).update(book_id, illustrations_status="skipped_ocr")
+        except Exception:
+            pass
+        return
+    hits = list(metadata.get("illustrations") or [])
+    if not hits:
+        try:
+            BookRepo(conn).update(book_id, illustrations_status="none")
+        except Exception:
+            pass
+        return
+    epub_path = library_file
+    if fmt_l != "epub":
+        sibling = library_file.with_suffix(".epub")
+        if sibling.is_file():
+            epub_path = sibling
+        else:
+            try:
+                BookRepo(conn).update(book_id, illustrations_status="none")
+            except Exception:
+                pass
+            return
+    try:
+        from lumina_core.ingest.illustrations import (
+            map_illustrations_to_chunks,
+            persist_epub_illustrations,
+        )
+
+        if chunks:
+            mapped = map_illustrations_to_chunks(hits, chunks)
+        else:
+            from lumina_core.ingest.illustrations import (
+                map_illustrations_to_joined_segments,
+            )
+
+            mapped = map_illustrations_to_joined_segments(
+                hits,
+                extracted_text="".join(str(s.get("raw_text") or "") for s in segments),
+                segments=segments,
+            )
+        cover = None
+        book_row = BookRepo(conn).get(book_id)
+        if book_row:
+            cover = book_row.get("cover_path")
+        persist_epub_illustrations(
+            conn,
+            book_id=book_id,
+            epub_path=epub_path,
+            book_dir=library_file.parent,
+            mapped=mapped,
+            cover_path=str(cover) if cover else None,
+            segments_by_idx={int(s["idx"]): s for s in segments},
+        )
+    except Exception:
+        logging.getLogger(__name__).debug(
+            "illustration persist skipped for %s", book_id, exc_info=True
+        )
+        try:
+            BookRepo(conn).update(book_id, illustrations_status="error")
+        except Exception:
+            pass
 
 
 async def run_ingest_job(
@@ -442,6 +564,7 @@ async def run_ingest_job(
             target_language=target_language,
             segments=segments,
             ingest_meta=ingest_meta,
+            chunks=chunks,
         )
 
         if job_queue.auto_start_summary:

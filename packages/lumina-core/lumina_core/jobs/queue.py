@@ -878,6 +878,11 @@ class JobQueue:
             await asyncio.sleep(0)
             if self._shutting_down:
                 return
+            self.set_cache_progress(0.13, "补抽书籍插图…")
+            await self._backfill_epub_illustrations()
+            await asyncio.sleep(0)
+            if self._shutting_down:
+                return
             await self._resume_summarize_after_startup()
         except asyncio.CancelledError:
             raise
@@ -887,6 +892,42 @@ class JobQueue:
             if self._startup_cache_phase != "done":
                 self._startup_cache_phase = "done"
             self.set_cache_progress(1.0, None)
+
+    async def _backfill_epub_illustrations(self) -> None:
+        """Silent illustration index for already-imported EPUBs (never blocks /health)."""
+
+        def _candidates() -> list[dict]:
+            from lumina_core.db.connection import db_lock
+
+            with db_lock(self.conn):
+                rows = self.conn.execute(
+                    """
+                    SELECT * FROM books
+                    WHERE lower(format) IN ('epub', 'mobi', 'azw', 'azw3')
+                      AND (
+                        illustrations_status IS NULL
+                        OR illustrations_status = ''
+                        OR illustrations_status = 'pending'
+                      )
+                    ORDER BY updated_at DESC
+                    """
+                ).fetchall()
+            return [dict(r) for r in rows]
+
+        books = await self._run_db(_candidates)
+        if not books:
+            return
+        from lumina_core.ingest.illustrations import backfill_book_illustrations
+
+        for book in books:
+            if self._shutting_down:
+                return
+
+            def _one(b=book) -> None:
+                backfill_book_illustrations(self.conn, b)
+
+            await asyncio.to_thread(_one)
+            await asyncio.sleep(0)
 
     async def _resume_summarize_after_startup(self) -> None:
         """Rehydrate intent cache and re-enqueue active summarize books.

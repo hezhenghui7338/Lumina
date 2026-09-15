@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException, Query, Request
-from fastapi.responses import PlainTextResponse, StreamingResponse
+from fastapi.responses import FileResponse, PlainTextResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from lumina_core.app_state import AppState, default_rss_sources
@@ -405,6 +405,13 @@ def book_public_dict(
         out["summary_tier"] = summary_tier or "normal"
 
     out.pop("metadata_json", None)
+    cover_path = out.pop("cover_path", None)
+    if cover_path == "":
+        out["has_cover"] = False
+    elif cover_path:
+        out["has_cover"] = True
+    else:
+        out["has_cover"] = None
     return out
 
 
@@ -1023,6 +1030,48 @@ async def get_book(book_id: str, request: Request) -> dict[str, Any]:
     )
 
 
+@router.get("/books/{book_id}/cover")
+async def get_book_cover(book_id: str, request: Request) -> FileResponse:
+    """Serve the library-grid cover image (extract on demand if needed)."""
+    state = _state(request)
+
+    def _resolve() -> Path | None:
+        from lumina_core.ingest.cover import ensure_book_cover, resolve_cover_file
+
+        repo = BookRepo(state.conn)
+        book = repo.get(book_id)
+        if not book:
+            return None
+        # Empty string = previously probed, no cover.
+        if book.get("cover_path") == "":
+            return None
+        existing = resolve_cover_file(book, state.books_dir)
+        if existing is not None:
+            return existing
+        path = ensure_book_cover(book, books_dir=state.books_dir)
+        try:
+            repo.update(book_id, cover_path=path.name if path is not None else "")
+        except Exception:
+            logging.getLogger(__name__).debug(
+                "cover_path cache failed for %s", book_id, exc_info=True
+            )
+        return path
+
+    cover = await asyncio.to_thread(_resolve)
+    if cover is None:
+        raise HTTPException(404, "Cover not found")
+    media = {
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".png": "image/png",
+        ".gif": "image/gif",
+        ".webp": "image/webp",
+        ".bmp": "image/bmp",
+        ".svg": "image/svg+xml",
+    }.get(cover.suffix.lower(), "application/octet-stream")
+    return FileResponse(cover, media_type=media, filename=cover.name)
+
+
 @router.get("/books/{book_id}/segments")
 async def list_segments(
     book_id: str,
@@ -1132,12 +1181,53 @@ async def search_book_original(
 
 @router.get("/books/{book_id}/segments/{idx}")
 async def get_segment(book_id: str, idx: int, request: Request) -> dict[str, Any]:
-    seg = await asyncio.to_thread(
-        SegmentRepo(_state(request).conn).get_by_index, book_id, idx
-    )
+    state = _state(request)
+
+    def _load() -> dict[str, Any] | None:
+        seg = SegmentRepo(state.conn).get_by_index(book_id, idx)
+        if not seg:
+            return None
+        from lumina_core.ingest.illustrations import list_segment_illustrations
+
+        seg["illustrations"] = list_segment_illustrations(state.conn, book_id, idx)
+        return seg
+
+    seg = await asyncio.to_thread(_load)
     if not seg:
         raise HTTPException(404, "Segment not found")
     return seg
+
+
+@router.get("/books/{book_id}/assets/{asset_id}")
+async def get_book_asset(
+    book_id: str, asset_id: str, request: Request
+) -> FileResponse:
+    """Serve a persisted EPUB illustration asset."""
+    state = _state(request)
+
+    def _resolve() -> tuple[Path, str] | None:
+        row = state.conn.execute(
+            """
+            SELECT rel_path, mime FROM book_assets
+            WHERE id = ? AND book_id = ? AND role = 'illustration'
+            """,
+            (asset_id, book_id),
+        ).fetchone()
+        if not row:
+            return None
+        book = BookRepo(state.conn).get(book_id)
+        if not book or not book.get("file_path"):
+            return None
+        path = Path(str(book["file_path"])).parent / str(row["rel_path"])
+        if not path.is_file():
+            return None
+        return path, str(row["mime"] or "application/octet-stream")
+
+    resolved = await asyncio.to_thread(_resolve)
+    if resolved is None:
+        raise HTTPException(404, "Asset not found")
+    path, media = resolved
+    return FileResponse(path, media_type=media, filename=path.name)
 
 
 @router.get("/books/{book_id}/segments/{idx}/summary")

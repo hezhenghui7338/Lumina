@@ -43,6 +43,12 @@ public sealed class BookSummary
     public string? ProcessingKind { get; set; }
     public string? IndexStatus { get; set; }
     public string? IngestError { get; set; }
+    /// <summary>null = unknown (may probe); false = none; true = saved cover.</summary>
+    public bool? HasCover { get; set; }
+
+    /// <summary>Local overlay only — not decoded from the API.</summary>
+    [JsonIgnore]
+    public string? CoverUrl { get; set; }
 
     /// <summary>Local overlay from ingest SSE — not decoded from the API.</summary>
     [JsonIgnore]

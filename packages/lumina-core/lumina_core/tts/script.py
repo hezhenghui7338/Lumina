@@ -175,25 +175,95 @@ def _format_bullet(index: int, label: str, body: str) -> str:
     return f"{index}. {body}"
 
 
+def _segment_title(segment_label: str | None) -> str | None:
+    """Condensed segment title only; blank means skip (no 段 N fallback)."""
+    cleaned = (segment_label or "").strip()
+    return cleaned or None
+
+
+def normalize_chapter(chapter: str | None) -> str | None:
+    """Strip surrounding § / whitespace; empty → None."""
+    text = (chapter or "").strip()
+    while text.startswith("§"):
+        text = text[1:].strip()
+    while text.endswith("§"):
+        text = text[:-1].strip()
+    return text or None
+
+
+def should_announce_chapter(
+    *,
+    chapter: str | None,
+    previous_spoken_chapter: str | None,
+    session_start: bool,
+) -> bool:
+    """Announce chapter on session start or when chapter changes vs last spoken."""
+    current = normalize_chapter(chapter)
+    if not current:
+        return False
+    if session_start:
+        return True
+    return normalize_chapter(previous_spoken_chapter) != current
+
+
+def _title_prefix_lines(
+    *,
+    segment_label: str | None,
+    chapter: str | None,
+    previous_spoken_chapter: str | None,
+    session_start: bool,
+) -> list[str]:
+    """Ordered speakable titles: optional chapter, then label (skip dup of chapter)."""
+    lines: list[str] = []
+    chapter_name = normalize_chapter(chapter)
+    announce = should_announce_chapter(
+        chapter=chapter,
+        previous_spoken_chapter=previous_spoken_chapter,
+        session_start=session_start,
+    )
+    if announce and chapter_name:
+        lines.append(chapter_name)
+    title = _segment_title(segment_label)
+    if title and title != chapter_name:
+        lines.append(title)
+    elif title and not announce:
+        lines.append(title)
+    return lines
+
+
 def build_listen_script(
     *,
     mode: str,
     summary_json: str | dict[str, Any] | None = None,
     raw_text: str | None = None,
     language_hint: str | None = None,
+    segment_label: str | None = None,
+    chapter: str | None = None,
+    previous_spoken_chapter: str | None = None,
+    session_start: bool = True,
 ) -> ListenScript:
-    """Build speakable utterances. Never includes follow_ups or notes."""
+    """Build speakable utterances. Never includes follow_ups or notes.
+
+    Title order: chapter (session start / chapter change) → segment ``label`` → body.
+    """
     normalized = (mode or "").strip().lower()
     if normalized not in LISTEN_MODES:
         raise ValueError(f"unsupported listen mode: {mode}")
     typed_mode: ListenMode = normalized  # type: ignore[assignment]
+    prefix = _title_prefix_lines(
+        segment_label=segment_label,
+        chapter=chapter,
+        previous_spoken_chapter=previous_spoken_chapter,
+        session_start=session_start,
+    )
 
     if typed_mode == "original":
         text = (raw_text or "").strip()
         if not text:
             return _not_ready(typed_mode, "empty_text", language_hint or "zh")
-        sentences = _split_sentences(text)
-        utterances = _utterances_from_texts(sentences)
+        lines: list[str] = list(prefix)
+        lines.extend(_split_sentences(text))
+        utterances = _utterances_from_texts(lines)
         language = language_hint or detect_language(text)
         if not utterances:
             return _not_ready(typed_mode, "empty_text", language)
@@ -206,10 +276,15 @@ def build_listen_script(
     sentences = _string_list(payload.get("sentences"))
     bullets = _bullets(payload.get("bullets"))
     notes = _string_list(payload.get("notes"))
-    sample = " ".join(sentences + [body for _, body in bullets] + notes)
+    sample = " ".join(
+        prefix
+        + sentences
+        + [body for _, body in bullets]
+        + notes
+    )
     language = language_hint or detect_language(sample)
 
-    lines: list[str] = []
+    lines = list(prefix)
     lines.extend(sentences)
 
     if typed_mode == "detailed":

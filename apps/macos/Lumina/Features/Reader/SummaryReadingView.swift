@@ -15,6 +15,8 @@ struct SummaryBlock: View {
     var showsHeader: Bool = true
     /// When false, the reader panel footer owns the attribution row (same line as「复制」).
     var showsAttribution: Bool = true
+    /// Active listen follow-along target for this summary panel (nil = none).
+    var listenHighlight: ListenHighlightAnchor? = nil
 
     @EnvironmentObject private var theme: ThemeManager
     @Environment(\.readerPaper) private var paper
@@ -64,26 +66,28 @@ struct SummaryBlock: View {
                     }
 
                     VStack(alignment: .leading, spacing: LuminaTheme.summaryLeadParagraphSpacing) {
-                        ForEach(Array(summary.sentences.enumerated()), id: \.offset) { _, sentence in
+                        ForEach(Array(summary.sentences.enumerated()), id: \.offset) { index, sentence in
                             LuminaSelectableText(
                                 text: sentence,
                                 fontSize: theme.scaled(LuminaTheme.summaryLeadSize),
                                 lineSpacing: theme.lineSpaced(LuminaTheme.summaryLeadLineSpacing),
                                 foreground: paper.textPrimary
                             )
+                            .listenFollowHighlight(listenHighlight == .summarySentence(index))
                         }
                     }
                 }
             }
 
             if !summary.bullets.isEmpty {
-                summarySection(title: "主要内容") {
+                summarySection(title: "主要内容", highlightTitle: listenHighlight == .sectionBullets) {
                     VStack(alignment: .leading, spacing: LuminaTheme.summaryBulletItemSpacing) {
                         ForEach(Array(summary.bullets.enumerated()), id: \.offset) { index, bullet in
                             StructuredBulletRow(
                                 index: index + 1,
                                 bullet: bullet
                             )
+                            .listenFollowHighlight(listenHighlight == .bullet(index))
                         }
                     }
                 }
@@ -160,7 +164,11 @@ struct SummaryBlock: View {
     }
 
     @ViewBuilder
-    private func summarySection<Content: View>(title: String, @ViewBuilder content: () -> Content) -> some View {
+    private func summarySection<Content: View>(
+        title: String,
+        highlightTitle: Bool = false,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             Divider()
                 .background(paper.border)
@@ -169,6 +177,7 @@ struct SummaryBlock: View {
                 .font(.system(size: LuminaTheme.summaryLabelSize, weight: .semibold))
                 .foregroundStyle(paper.textSecondary)
                 .tracking(0.6)
+                .listenFollowHighlight(highlightTitle)
 
             content()
         }

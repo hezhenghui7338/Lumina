@@ -100,6 +100,43 @@ final class LibraryViewModelMergeTests: XCTestCase {
         XCTAssertEqual(prioritized.map(\.id), ["running", "queued", "idle", "recent"])
     }
 
+    func testNeedsSummarizePolling_ignoresIdleIncompleteBooks() {
+        let viewModel = LibraryViewModel()
+        viewModel.books = [
+            book(
+                id: "partial",
+                summaryReady: 3,
+                summaryTotal: 10,
+                summarizeState: "idle"
+            )
+        ]
+        viewModel.summarizeOverview = nil
+        XCTAssertFalse(
+            viewModel.needsSummarizePolling,
+            "idle partial progress must not keep a 3s bookshelf refresh loop"
+        )
+
+        viewModel.books = [
+            book(
+                id: "running",
+                summaryReady: 3,
+                summaryTotal: 10,
+                summarizeState: "running"
+            )
+        ]
+        XCTAssertTrue(viewModel.needsSummarizePolling)
+
+        viewModel.books = [
+            book(id: "queued", summarizeState: "queued")
+        ]
+        XCTAssertTrue(viewModel.needsSummarizePolling)
+
+        viewModel.books = [
+            book(id: "segmenting", status: "processing", summarizeState: "segmenting")
+        ]
+        XCTAssertTrue(viewModel.needsSummarizePolling)
+    }
+
     /// `displayedBooks` sorts by recency first and only then lifts summarize
     /// activity, so the books that are neither running nor queued must stay in
     /// recency order — not in the order they happened to arrive in.

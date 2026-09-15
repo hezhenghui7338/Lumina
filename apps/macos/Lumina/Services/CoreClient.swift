@@ -25,6 +25,8 @@ struct BookSummary: Codable, Identifiable, Hashable {
     var processing_kind: String?
     var index_status: String?
     var ingest_error: String?
+    /// nil = unknown (may probe); false = confirmed none; true = saved cover.
+    var has_cover: Bool?
     /// Local overlay only — not decoded from the API.
     var readingPercent: Double? = nil
 
@@ -34,6 +36,7 @@ struct BookSummary: Codable, Identifiable, Hashable {
         case total_char_count, chunk_target_chars, summary_ready_count, summary_total_count, chunker_version
         case language, target_language, summarize_active, summarize_state
         case summarize_queued_count, summary_tier, processing_kind, index_status, ingest_error
+        case has_cover
     }
 
     init(
@@ -61,6 +64,7 @@ struct BookSummary: Codable, Identifiable, Hashable {
         processing_kind: String? = nil,
         index_status: String? = nil,
         ingest_error: String? = nil,
+        has_cover: Bool? = nil,
         readingPercent: Double? = nil
     ) {
         self.id = id
@@ -87,6 +91,7 @@ struct BookSummary: Codable, Identifiable, Hashable {
         self.processing_kind = processing_kind
         self.index_status = index_status
         self.ingest_error = ingest_error
+        self.has_cover = has_cover
         self.readingPercent = readingPercent
     }
 
@@ -124,6 +129,7 @@ struct BookSummary: Codable, Identifiable, Hashable {
         processing_kind = try c.decodeIfPresent(String.self, forKey: .processing_kind)
         index_status = try c.decodeIfPresent(String.self, forKey: .index_status)
         ingest_error = try c.decodeIfPresent(String.self, forKey: .ingest_error)
+        has_cover = try c.decodeIfPresent(Bool.self, forKey: .has_cover)
         readingPercent = nil
     }
 
@@ -767,6 +773,18 @@ struct SegmentCatalogPage: Codable {
     let has_more_after: Bool?
 }
 
+struct SegmentIllustration: Codable, Hashable, Identifiable {
+    let asset_id: String
+    let char_offset: Int
+    let alt: String?
+    let url: String?
+    let width: Int?
+    let height: Int?
+    let mime: String?
+
+    var id: String { asset_id }
+}
+
 struct SegmentRow: Codable, Identifiable, Hashable {
     let id: String
     let idx: Int
@@ -794,6 +812,8 @@ struct SegmentRow: Codable, Identifiable, Hashable {
     var bullet_labels: [String]? = nil
     /// Part/chapter titles for the catalog tree. At most two items.
     var heading_path: [String]? = nil
+    /// EPUB inline illustrations for original-text mode (offsets into raw_text).
+    var illustrations: [SegmentIllustration]? = nil
 }
 
 struct SegmentBoundaryCandidate: Codable, Hashable {
@@ -1409,6 +1429,16 @@ final class CoreClient: ObservableObject {
             author: nil,
             created_at: nil
         )
+    }
+
+    /// Cover image for grid cards. nil has_cover still probes (legacy imports).
+    func coverURL(for book: BookSummary) -> URL? {
+        if book.has_cover == false { return nil }
+        return url(path: "/books/\(book.id)/cover")
+    }
+
+    func assetURL(bookId: String, assetId: String) -> URL {
+        url(path: "/books/\(bookId)/assets/\(assetId)")
     }
 
     private func postAllowingConflict(path: String, body: Data, importPath: String) async throws -> Data {

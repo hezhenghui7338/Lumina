@@ -59,7 +59,9 @@ public sealed class CoreClient : IDisposable
     {
         var data = await GetAsync($"/books?filter={Uri.EscapeDataString(filter)}&sort={Uri.EscapeDataString(sort)}", ct)
             .ConfigureAwait(false);
-        return Deserialize<BooksResp>(data)?.Books ?? [];
+        var books = Deserialize<BooksResp>(data)?.Books ?? [];
+        AttachCoverUrls(books);
+        return books;
     }
 
     public async Task<IReadOnlyList<string>> ListBookCategoriesAsync(CancellationToken ct = default)
@@ -71,7 +73,9 @@ public sealed class CoreClient : IDisposable
     public async Task<BookSummary> FetchBookAsync(string id, CancellationToken ct = default)
     {
         var data = await GetAsync($"/books/{id}", ct).ConfigureAwait(false);
-        return Deserialize<BookSummary>(data) ?? new BookSummary { Id = id };
+        var book = Deserialize<BookSummary>(data) ?? new BookSummary { Id = id };
+        AttachCoverUrls([book]);
+        return book;
     }
 
     public async Task<BookSummary> UpdateBookAsync(
@@ -779,6 +783,19 @@ public sealed class CoreClient : IDisposable
     }
 
     private Uri Url(string path) => new(_baseUrl, path);
+
+    private void AttachCoverUrls(IEnumerable<BookSummary> books)
+    {
+        foreach (var book in books)
+        {
+            if (book.HasCover == false || string.IsNullOrEmpty(book.Id))
+            {
+                book.CoverUrl = null;
+                continue;
+            }
+            book.CoverUrl = Url($"/books/{book.Id}/cover").ToString();
+        }
+    }
 
     private async Task<byte[]> GetAsync(string path, CancellationToken ct)
     {

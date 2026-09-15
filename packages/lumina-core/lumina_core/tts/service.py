@@ -33,6 +33,9 @@ def load_listen_script(
             mode=mode,
             raw_text=row.get("raw_text") or "",
             language_hint=language_hint,
+            segment_label=row.get("label"),
+            chapter=row.get("chapter"),
+            session_start=True,
         )
         return script, row
 
@@ -63,5 +66,8 @@ def load_listen_script(
         mode=mode,
         summary_json=json_blob,
         language_hint=language_hint,
+        segment_label=row.get("label"),
+        chapter=row.get("chapter"),
+        session_start=True,
     )
     return script, row

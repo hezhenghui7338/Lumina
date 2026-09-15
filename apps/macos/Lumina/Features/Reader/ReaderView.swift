@@ -495,14 +495,19 @@ struct ReaderView: View {
         listenSession.configure(
             bookId: bookId,
             segmentCount: viewModel.segments.count,
-            resolve: { [viewModel, core] idx, listenMode in
-                await viewModel.listenScript(idx: idx, mode: listenMode, core: core)
+            resolve: { [viewModel, core] idx, listenMode, chapterContext in
+                await viewModel.listenScript(
+                    idx: idx, mode: listenMode, core: core, chapterContext: chapterContext
+                )
             },
             labelFor: { [viewModel] idx in
                 if let seg = viewModel.segments.first(where: { $0.idx == idx }) {
                     return seg.label ?? seg.anchor_label ?? "段 \(idx + 1)"
                 }
                 return "段 \(idx + 1)"
+            },
+            chapterFor: { [viewModel] idx in
+                viewModel.segments.first(where: { $0.idx == idx })?.chapter
             },
             makeEngine: {
                 SystemNeuralEngine()
@@ -1474,7 +1479,11 @@ struct ReaderView: View {
             onSourceAppear: contentMode == .original
                 ? { viewModel.fetchSource(idx: idx, core: core) }
                 : nil,
-            originalHighlightUTF16: originalHighlightRange(for: idx, source: cachedSource)
+            originalHighlightUTF16: originalHighlightRange(for: idx, source: cachedSource),
+            listenHighlight: listenSession.isActive && listenSession.currentIdx == idx
+                ? listenSession.activeHighlight
+                : nil,
+            illustrationURL: { assetId in core.assetURL(bookId: bookId, assetId: assetId) }
         )
         .equatable()
         .readerSelectionNoteAnchor(
@@ -2658,6 +2667,7 @@ struct SegmentSourceBody: Equatable {
     let idx: Int
     let rawText: String
     let translation: String
+    var illustrations: [SegmentIllustration] = []
 }
 
 enum BookLanguageMatcher {
@@ -2868,20 +2878,34 @@ final class ReaderViewModel: ObservableObject {
         parsedSummaryCache[idx]
     }
 
-    func listenScript(idx: Int, mode: ListenMode, core: CoreClient) async -> ListenScript {
+    func listenScript(
+        idx: Int,
+        mode: ListenMode,
+        core: CoreClient,
+        chapterContext: ListenChapterSpeakContext = .sessionStart
+    ) async -> ListenScript {
+        let seg = segments.first(where: { $0.idx == idx })
+        let segmentLabel = seg?.label
+        let chapter = seg?.chapter
         switch mode {
         case .summary, .detailed:
             if let parsed = parsedSummary(for: idx), parsed.hasContent {
-                return ListenScript.build(mode: mode, summary: parsed, rawText: nil)
+                return ListenScript.build(
+                    mode: mode, summary: parsed, rawText: nil,
+                    segmentLabel: segmentLabel, chapter: chapter, chapterContext: chapterContext
+                )
             }
-            if let json = segments.first(where: { $0.idx == idx })?.summary_json,
+            if let json = seg?.summary_json,
                !json.isEmpty,
                let parsed = ParsedSummary(json: json),
                parsed.hasContent
             {
-                return ListenScript.build(mode: mode, summary: parsed, rawText: nil)
+                return ListenScript.build(
+                    mode: mode, summary: parsed, rawText: nil,
+                    segmentLabel: segmentLabel, chapter: chapter, chapterContext: chapterContext
+                )
             }
-            let status = segments.first(where: { $0.idx == idx })?.summary_status ?? ""
+            let status = seg?.summary_status ?? ""
             if status != "ready" && status != "done" {
                 return .notReady(mode, reason: "summary_not_ready")
             }
@@ -2889,25 +2913,43 @@ final class ReaderViewModel: ObservableObject {
                 return .notReady(mode, reason: "summary_not_ready")
             }
             mergeSummaryDetail(detail, at: idx)
+            let label = segments.first(where: { $0.idx == idx })?.label ?? segmentLabel
+            let ch = segments.first(where: { $0.idx == idx })?.chapter ?? chapter
             if let json = detail.summary_json, let parsed = ParsedSummary(json: json), parsed.hasContent {
-                return ListenScript.build(mode: mode, summary: parsed, rawText: nil)
+                return ListenScript.build(
+                    mode: mode, summary: parsed, rawText: nil,
+                    segmentLabel: label, chapter: ch, chapterContext: chapterContext
+                )
             }
             return .notReady(mode, reason: "summary_not_ready")
         case .original:
             if let cached = cachedSource(for: idx), !cached.rawText.isEmpty {
-                return ListenScript.build(mode: .original, summary: nil, rawText: cached.rawText)
+                return ListenScript.build(
+                    mode: .original, summary: nil, rawText: cached.rawText,
+                    segmentLabel: segmentLabel, chapter: chapter, chapterContext: chapterContext
+                )
             }
             guard let fresh = try? await core.getSegment(bookId: bookId, idx: idx) else {
                 return .notReady(.original, reason: "empty_text")
             }
             let raw = fresh.raw_text ?? ""
             storeSourceCache(
-                SegmentSourceBody(idx: idx, rawText: raw, translation: fresh.translation ?? "")
+                SegmentSourceBody(
+                    idx: idx,
+                    rawText: raw,
+                    translation: fresh.translation ?? "",
+                    illustrations: fresh.illustrations ?? []
+                )
             )
             if raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 return .notReady(.original, reason: "empty_text")
             }
-            return ListenScript.build(mode: .original, summary: nil, rawText: raw)
+            let label = fresh.label ?? segmentLabel
+            let ch = fresh.chapter ?? chapter
+            return ListenScript.build(
+                mode: .original, summary: nil, rawText: raw,
+                segmentLabel: label, chapter: ch, chapterContext: chapterContext
+            )
         }
     }
 
@@ -3490,10 +3532,16 @@ final class ReaderViewModel: ObservableObject {
                     body = SegmentSourceBody(
                         idx: idx,
                         rawText: existing.rawText,
-                        translation: translation
+                        translation: translation,
+                        illustrations: existing.illustrations
                     )
                 } else {
-                    body = SegmentSourceBody(idx: idx, rawText: rawText, translation: translation)
+                    body = SegmentSourceBody(
+                        idx: idx,
+                        rawText: rawText,
+                        translation: translation,
+                        illustrations: fresh.illustrations ?? []
+                    )
                 }
                 self.storeSourceCache(body)
             }
@@ -4112,7 +4160,12 @@ final class ReaderViewModel: ObservableObject {
             guard let idx = SegmentReadyEventParser.eventIndex(from: event) else { return }
             if let translation = event["translation"] as? String {
                 let rawText = sourceCache[idx]?.rawText ?? ""
-                let body = SegmentSourceBody(idx: idx, rawText: rawText, translation: translation)
+                let body = SegmentSourceBody(
+                    idx: idx,
+                    rawText: rawText,
+                    translation: translation,
+                    illustrations: sourceCache[idx]?.illustrations ?? []
+                )
                 storeSourceCache(body)
                 refreshingSourceIndices.remove(idx)
             } else if loadingSourceIndices.contains(idx) || sourceCache[idx] != nil {

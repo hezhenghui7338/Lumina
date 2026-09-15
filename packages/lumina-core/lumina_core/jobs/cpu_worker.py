@@ -425,6 +425,7 @@ def execute_ingest_cpu(job: dict[str, Any]) -> None:
         target_language=str(job["target_language"]),
         segments=segments,
         ingest_meta=ingest_meta,
+        chunks=chunks,
     )
     _emit({"type": "done", "segment_count": len(segments)})
 

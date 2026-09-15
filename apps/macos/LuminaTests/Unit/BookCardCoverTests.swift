@@ -22,8 +22,20 @@ final class BookCardCoverTests: XCTestCase {
 
         let cover = coverBlock(card)
         XCTAssertTrue(
+            cover.contains("BookCoverImage(url: coverURL)"),
+            "grid cover must load the book cover image when available"
+        )
+        XCTAssertTrue(
+            card.contains("enum BookCoverImageCache"),
+            "cover loads must be cached so bookshelf redraws do not flash"
+        )
+        XCTAssertFalse(
+            cover.contains("AsyncImage(url:"),
+            "AsyncImage remounts on parent refresh and flashes empty→image"
+        )
+        XCTAssertTrue(
             cover.contains("Text(book.title)"),
-            "typographic cover must show the full title"
+            "typographic cover must show the full title as fallback"
         )
         XCTAssertTrue(cover.contains(".lineLimit(5)"))
         XCTAssertTrue(cover.contains(".minimumScaleFactor(0.75)"))
@@ -55,9 +67,13 @@ final class BookCardCoverTests: XCTestCase {
         XCTAssertTrue(libraryXaml.contains("Text=\"{x:Bind Title}\""))
         XCTAssertTrue(libraryXaml.contains("BookCoverLayout.BrushFor(Category)"))
         XCTAssertTrue(libraryXaml.contains("BookCoverLayout.AuthorVisibility(Author)"))
+        XCTAssertTrue(libraryXaml.contains("CoverUrl"))
+        XCTAssertTrue(libraryXaml.contains("BookCoverLayout.CoverImageVisibility(CoverUrl)"))
         XCTAssertFalse(libraryXaml.contains("CoverInitial"))
         XCTAssertFalse(models.contains("CoverInitial"))
         XCTAssertTrue(models.contains("class BookCoverPalette"))
+        XCTAssertTrue(models.contains("HasCover"))
+        XCTAssertTrue(models.contains("CoverUrl"))
     }
 
     private func coverBlock(_ source: String) -> String {
