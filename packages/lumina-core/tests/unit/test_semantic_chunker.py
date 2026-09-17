@@ -672,3 +672,46 @@ def test_paragraph_cut_offsets_do_not_rescan_prefix():
     assert time.monotonic() - started < 0.2
     assert all(mid < point <= mid + 8_000 for point in window_cuts)
 
+
+def test_merge_noise_pack_emits_progress_heartbeats():
+    """Post-pack merge must keep bumping so cpu-worker stall watchdog stays alive."""
+    from lumina_core.chunker.coop import GilYielder
+    from lumina_core.chunker.semantic import TextAtom, _pack_synthetic_fragments
+
+    atoms: list[TextAtom] = []
+    spans: list[tuple[int, int]] = []
+    offset = 0
+    for index in range(96):
+        piece = f"短句{index}。"
+        start, end = offset, offset + len(piece)
+        atoms.append(
+            TextAtom(
+                start,
+                end,
+                piece,
+                TextStyle.PROSE,
+                BoundaryStrength.STRONG if index else BoundaryStrength.NORMAL,
+            )
+        )
+        spans.append((start, end))
+        offset = end
+    reports: list[tuple[int, int, str]] = []
+    yielder = GilYielder(
+        every=1,
+        on_progress=lambda page, total, message: reports.append((page, total, message)),
+        progress_total=offset,
+        progress_message="正在合并阅读单元…",
+    )
+    yielder._last_report = 0.0
+    packed = _pack_synthetic_fragments(
+        spans,
+        atoms,
+        hard_starts=set(),
+        max_chars=6000,
+        min_chars=200,
+        yielder=yielder,
+    )
+    assert packed
+    assert yielder._progressed >= 3
+    assert any("合并阅读单元" in message for _, _, message in reports)
+

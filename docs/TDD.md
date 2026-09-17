@@ -398,7 +398,7 @@ RapidOCR(params={
 
 **配置与探活 API**：`GET/PUT /settings` 管理非敏感配置与掩码 Key；`GET /settings/ocr/status` 检查本地依赖或云端 `/models` 连通性。macOS 与 Windows 设置页均提示“扫描页会上传云端”。
 
-**进度 UX**：OCR 经 SSE 推送 `{book_id, page, total, message}`，消息区分本地/云端；App 显示局部进度，不 blocking 全屏。PDF 渲染、EPUB 图片解码和云端同步 HTTP 均位于 ingest 的 CPU worker / 工作线程。TXT / 非 OCR 导入同样走 `ingest_progress`：`page/total` 为已处理字数（或文件字节）与总量；结构扫描不得等整步结束才发第一帧。CPU 队列占用时先发「排队等待分段…」。`--cpu-worker` 父进程看门狗：无进度 180s 杀子进程；单本墙钟 `max(1800s, pages×60s, MiB×30s)` 硬顶 8h（PDF 或图片型 EPUB 探测到页数后按页数，否则按文件体积；TXT 字数进度不得当页数）。`ingest_error` 写清阶段与实际上限。
+**进度 UX**：OCR 经 SSE 推送 `{book_id, page, total, message}`，消息区分本地/云端；App 显示局部进度，不 blocking 全屏。PDF 渲染、EPUB 图片解码和云端同步 HTTP 均位于 ingest 的 CPU worker / 工作线程。TXT / 非 OCR 导入同样走 `ingest_progress`：`page/total` 为已处理字数（或文件字节）与总量；结构扫描不得等整步结束才发第一帧。CPU 队列占用时先发「排队等待分段…」。`--cpu-worker` 父进程看门狗：无进度 1800s 杀子进程；单本墙钟 `max(1800s, pages×60s, MiB×30s)` 硬顶 8h（PDF 或图片型 EPUB 探测到页数后按页数，否则按文件体积；TXT 字数进度不得当页数）。`ingest_error` 写清阶段与实际上限。
 
 ### 4.2 智能分段（Chunker）
 
@@ -870,7 +870,7 @@ class ModelRouter:
 - `async` HTTP handler **禁止**同步 CPU / 网络 / 大文件 I/O；必须 `asyncio.to_thread` 或投递 JobQueue。
 - 大文件 ingest/resegment 的 decode / chunk / persist **须在 sidecar 子进程**执行（`--cpu-worker`）。`to_thread` + 协作式 `sleep` 不能让出 CPython `decode`、`re.finditer`、FTS 的 GIL；导入期间 `/health`、书库、资讯、设置必须可响应。
 - 章标（`BARE_CHAPTER`）只对短行 `match`；禁止对超长正文行或全书跑嵌套装饰符正则。换行扫描不得对每个 `\n` 从文件头 `rfind`。
-- cpu-worker 子进程无进度 180s，或单本墙钟 `max(1800s, pages×60s, MiB×30s)`（顶 8h）必须失败，不得停在「分段中」。PDF/OCR 按页数拉长墙钟；TXT 字数进度不得当成页数。
+- cpu-worker 子进程无进度 1800s，或单本墙钟 `max(1800s, pages×60s, MiB×30s)`（顶 8h）必须失败，不得停在「分段中」。PDF/OCR 按页数拉长墙钟；TXT 字数进度不得当成页数。
 - TXT 解码与分段 **禁止全书 `str` 常驻**：峰值 RAM = 窗口 + 当前段 + 一批 INSERT；覆盖校验用偏移首尾相接，禁止 `join(raw_text)` 全书。
 - `GET /books/{id}/segments` **默认不含** `raw_text`；原文仅 `GET .../segments/{idx}`。目录含 `heading_path`（0–2 个标题）；客户端用已加载瘦段表组最多 3 层树。禁止把全书 `document_tree` 放进书列表/详情。旧段无 `heading_path` 时从 `chapter` 按 ` · ` 拆并去掉 `§`，不强制重新分段。
 - `GET /books/{id}/original-search` **禁止**同步扫库；**禁止**在 hits 中返回 `raw_text`。

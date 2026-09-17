@@ -28,7 +28,7 @@ CPU_PROCESS_MIN_BYTES = 256 * 1024
 INLINE_ENV = "LUMINA_CPU_INLINE"
 STALL_ENV = "LUMINA_CPU_STALL_SECONDS"
 JOB_MAX_ENV = "LUMINA_CPU_JOB_MAX_SECONDS"
-CPU_STALL_SECONDS = 180.0
+CPU_STALL_SECONDS = 1800.0
 CPU_JOB_MAX_FLOOR_SECONDS = 1800.0
 CPU_JOB_MAX_CEILING_SECONDS = 8 * 3600.0
 CPU_JOB_SECONDS_PER_PAGE = 60.0
@@ -178,6 +178,12 @@ def _job_max_timeout_message(max_job: float) -> str:
     return f"分段超时：单本处理超过 {minutes} 分钟"
 
 
+def _stall_timeout_message(stall: float, stage: str) -> str:
+    minutes = max(1, int(round(stall / 60.0)))
+    label = stage or "未知"
+    return f"分段超时：超过 {minutes} 分钟没有进度（阶段：{label}）"
+
+
 def _emit(payload: dict[str, Any]) -> None:
     sys.stdout.write(json.dumps(payload, ensure_ascii=False) + "\n")
     sys.stdout.flush()
@@ -270,8 +276,7 @@ def run_cpu_worker_sync(
                 proc.kill()
                 return
             if now - last_progress_at[0] >= stall:
-                stage = last_message[0] or "未知"
-                timeout_reason[0] = f"分段超时：超过 3 分钟没有进度（阶段：{stage}）"
+                timeout_reason[0] = _stall_timeout_message(stall, last_message[0])
                 timed_out.set()
                 proc.kill()
                 return

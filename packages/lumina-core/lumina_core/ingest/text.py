@@ -4,7 +4,10 @@ UTF-8 succeeding is not proof the file was meant as UTF-8: GBK mis-decoded as
 Latin-1 and re-saved as UTF-8 is still valid UTF-8 (¡¡¡¡Ë«·½…). Never treat
 latin-1 as a successful guess for Chinese prose.
 
-GBK/UTF-8 novels may still contain illegal bytes (converter junk). Strict
+Shift-JIS / CP932 Japanese often decodes as "valid" GB18030 into Han garbage with
+no kana. Score CP932 / GB18030 / Big5 together (punctuation + kana + Han).
+
+GBK/UTF-8/CP932 novels may still contain illegal bytes (converter junk). Strict
 decode of the 64KiB sample then fails the whole book; score replace-decoded
 CJK prose instead, and decode with errors='replace'.
 """
@@ -21,8 +24,11 @@ _UTF8_BOM = b"\xef\xbb\xbf"
 _UTF16_LE_BOM = b"\xff\xfe"
 _UTF16_BE_BOM = b"\xfe\xff"
 # Never pass "utf-8-sig" to codecs: frozen sidecars may omit encodings.utf_8_sig.
-_CANDIDATE_ENCODINGS = ("utf-8", "gb18030", "gbk", "big5", "utf-16", "latin-1")
+_CANDIDATE_ENCODINGS = ("utf-8", "gb18030", "gbk", "big5", "cp932", "utf-16", "latin-1")
+# Prefer cp932 over shift_jis: Windows Japanese covers vendor extensions common in TXT dumps.
+_CJK_LEGACY_ENCODINGS = ("cp932", "gb18030", "big5")
 _CJK_RE = re.compile(r"[\u3400-\u9fff]")
+_KANA_RE = re.compile(r"[\u3040-\u30ff]")
 _LATIN1_SUPP_RE = re.compile(r"[\u00a0-\u00ff]")
 _SAMPLE_BYTES = 64 * 1024
 _SAMPLE_CHARS = 12_000
@@ -59,46 +65,93 @@ def _decode_prefix(data: bytes, encoding: str, *, errors: str = "strict") -> str
         return None
 
 
-def _cjk_prose_stats(text: str) -> tuple[int, int, int]:
-    cjk = len(_CJK_RE.findall(text))
-    punct = text.count("。") + text.count("，") + text.count("、")
-    repl = text.count("\ufffd")
-    return cjk, punct, repl
+def _cjk_prose_stats(text: str) -> tuple[int, int, int, int]:
+    sample = text[:_SAMPLE_CHARS]
+    cjk = len(_CJK_RE.findall(sample))
+    kana = len(_KANA_RE.findall(sample))
+    punct = sample.count("。") + sample.count("，") + sample.count("、")
+    repl = sample.count("\ufffd")
+    return cjk, kana, punct, repl
 
 
 def _is_cjk_prose(cjk: int, punct: int) -> bool:
     return cjk >= 40 and punct >= 2
 
 
-def _lossy_prose_stats(text: str) -> tuple[int, int, int] | None:
+def _is_japanese_prose(kana: int, punct: int) -> bool:
+    """Hiragana/katakana plus JP/CJK punctuation — Shift-JIS must beat GB18030 mojibake."""
+    return kana >= 40 and punct >= 2
+
+
+def _accept_cjk_stats(cjk: int, kana: int, punct: int) -> bool:
+    if _is_japanese_prose(kana, punct) or _is_cjk_prose(cjk, punct):
+        return True
+    # Short titles (e.g. 「金阁寺」) after UTF-8 failed.
+    return cjk >= 1
+
+
+def _rank_key(cjk: int, kana: int, punct: int, repl: int) -> tuple[int, int, int, int]:
+    """Punctuation first so Big5 prose beats GB18030 false-kana mojibake."""
+    return (punct, kana, cjk, -repl)
+
+
+def _lossy_prose_stats(text: str) -> tuple[int, int, int, int] | None:
     """Score replace-decoded text. Prefer the first window; fall back to the full prefix."""
     head = text[:_SAMPLE_CHARS]
     stats = _cjk_prose_stats(head)
-    if _is_cjk_prose(stats[0], stats[1]):
+    cjk, kana, punct, repl = stats
+    if _accept_cjk_stats(cjk, kana, punct) and (kana >= 40 or punct >= 2 or cjk >= 40):
         return stats
     if head != text:
         stats = _cjk_prose_stats(text)
-        if _is_cjk_prose(stats[0], stats[1]):
+        cjk, kana, punct, repl = stats
+        if _accept_cjk_stats(cjk, kana, punct) and (kana >= 40 or punct >= 2 or cjk >= 40):
             return stats
     return None
 
 
+def _best_cjk_plan(
+    sample: bytes,
+    encodings: tuple[str, ...],
+    *,
+    errors: str = "strict",
+) -> EncodingPlan | None:
+    """Pick the legacy CJK codec whose decode looks most like real prose."""
+    best: EncodingPlan | None = None
+    best_score: tuple[int, int, int, int] | None = None
+    for enc in encodings:
+        text = _decode_prefix(sample, enc, errors=errors)
+        if not text:
+            continue
+        cjk, kana, punct, repl = _cjk_prose_stats(text)
+        if not _accept_cjk_stats(cjk, kana, punct):
+            continue
+        if errors == "replace":
+            # Lossy path: require prose signal so binary junk does not win on raw CJK count.
+            if not (_is_japanese_prose(kana, punct) or _is_cjk_prose(cjk, punct)):
+                continue
+        score = _rank_key(cjk, kana, punct, repl)
+        if best_score is None or score > best_score:
+            best_score = score
+            best = EncodingPlan(enc, label=enc)
+    return best
+
+
 def _lossy_cjk_plan(sample: bytes) -> EncodingPlan | None:
-    """GBK/UTF-8 ebooks often embed binary junk. Strict decode then fails the whole book."""
-    ranked: list[tuple[int, int, int, EncodingPlan]] = []
-    for enc in ("utf-8", "gb18030", "big5"):
+    """GBK/UTF-8/CP932 ebooks often embed binary junk. Strict decode then fails the whole book."""
+    ranked: list[tuple[tuple[int, int, int, int], EncodingPlan]] = []
+    for enc in ("utf-8", *_CJK_LEGACY_ENCODINGS):
         text = _decode_prefix(sample, enc, errors="replace")
         if not text:
             continue
         stats = _lossy_prose_stats(text)
         if stats is None:
             continue
-        cjk, punct, repl = stats
-        ranked.append((punct, cjk, -repl, EncodingPlan(enc, label=enc)))
+        ranked.append((_rank_key(*stats), EncodingPlan(enc, label=enc)))
     if not ranked:
         return None
-    ranked.sort(key=lambda item: (item[0], item[1], item[2]), reverse=True)
-    return ranked[0][3]
+    ranked.sort(key=lambda item: item[0], reverse=True)
+    return ranked[0][1]
 
 
 def _scrub_decoded(text: str) -> str:
@@ -123,8 +176,8 @@ def _looks_like_gbk_mojibake(text: str) -> bool:
 
 
 def _looks_like_cjk_prose(text: str) -> bool:
-    cjk, punct, _repl = _cjk_prose_stats(text[:_SAMPLE_CHARS])
-    return _is_cjk_prose(cjk, punct)
+    cjk, _kana, punct, _repl = _cjk_prose_stats(text)
+    return _is_cjk_prose(cjk, punct) or _is_japanese_prose(_kana, punct)
 
 
 def _recover_sample(text: str) -> str | None:
@@ -134,7 +187,7 @@ def _recover_sample(text: str) -> str | None:
             raw = sample.encode(source)
         except UnicodeEncodeError:
             continue
-        for target in ("gb18030", "gbk", "cp936"):
+        for target in ("gb18030", "gbk", "cp936", "cp932"):
             try:
                 recovered = raw.decode(target)
             except (UnicodeDecodeError, LookupError):
@@ -165,6 +218,14 @@ def _normalize_codec(name: str) -> str:
         "gb2312": "gb18030",
         "big5": "big5",
         "big5hkscs": "big5",
+        "shift_jis": "cp932",
+        "shift_jis_2004": "cp932",
+        "shift_jisx0213": "cp932",
+        "csshiftjis": "cp932",
+        "sjis": "cp932",
+        "cp932": "cp932",
+        "ms932": "cp932",
+        "windows_31j": "cp932",
         "utf_16": "utf-16",
         "utf_16_le": "utf-16-le",
         "utf_16_be": "utf-16-be",
@@ -175,25 +236,6 @@ def _normalize_codec(name: str) -> str:
         "windows_1252": "cp1252",
     }
     return aliases.get(key, name.lower())
-
-
-def _gb18030_if_cjk(sample: bytes) -> EncodingPlan | None:
-    text = _decode_prefix(sample, "gb18030")
-    if text is None:
-        return None
-    # UTF-8 already failed. Any Han is enough — titles like 「金阁寺」 are short.
-    if _cjk_count(text) >= 1:
-        return EncodingPlan("gb18030", label="gb18030")
-    return None
-
-
-def _big5_if_cjk(sample: bytes) -> EncodingPlan | None:
-    text = _decode_prefix(sample, "big5")
-    if text is None:
-        return None
-    if _cjk_count(text) >= 1:
-        return EncodingPlan("big5", label="big5")
-    return None
 
 
 def detect_encoding_plan(data: bytes) -> EncodingPlan:
@@ -214,16 +256,12 @@ def detect_encoding_plan(data: bytes) -> EncodingPlan:
             )
         return EncodingPlan("utf-8", label="utf-8")
 
-    gb = _gb18030_if_cjk(sample)
-    big5 = _big5_if_cjk(sample)
-    if gb is not None and big5 is not None:
-        gb_n = _cjk_count(_decode_prefix(sample, "gb18030") or "")
-        big5_n = _cjk_count(_decode_prefix(sample, "big5") or "")
-        return gb if gb_n >= big5_n else big5
-    if gb is not None:
-        return gb
-    if big5 is not None:
-        return big5
+    # After UTF-8 fails: score CP932 / GB18030 / Big5 together. Shift-JIS Japanese
+    # bytes often "succeed" as GB18030 into Han garbage with zero kana — never pick
+    # that over a decode that has real ひらがな/カタカナ + 。、.
+    legacy = _best_cjk_plan(sample, _CJK_LEGACY_ENCODINGS)
+    if legacy is not None:
+        return legacy
 
     lossy = _lossy_cjk_plan(sample)
     if lossy is not None:
@@ -238,15 +276,23 @@ def detect_encoding_plan(data: bytes) -> EncodingPlan:
     if best is not None and best.encoding:
         enc = _normalize_codec(str(best.encoding))
         if enc in {"latin-1", "cp1252"}:
-            gb = _gb18030_if_cjk(sample)
-            if gb is not None:
-                return gb
+            legacy = _best_cjk_plan(sample, _CJK_LEGACY_ENCODINGS)
+            if legacy is not None:
+                return legacy
             return EncodingPlan(enc, label=enc)
-        if enc in {"gb18030", "big5", "utf-8", "utf-16", "utf-16-le", "utf-16-be"}:
+        if enc in {
+            "gb18030",
+            "big5",
+            "cp932",
+            "utf-8",
+            "utf-16",
+            "utf-16-le",
+            "utf-16-be",
+        }:
             return EncodingPlan(enc, label=enc)
-        gb = _gb18030_if_cjk(sample)
-        if gb is not None:
-            return gb
+        legacy = _best_cjk_plan(sample, _CJK_LEGACY_ENCODINGS)
+        if legacy is not None:
+            return legacy
         if _decode_prefix(sample, enc) is not None:
             return EncodingPlan(enc, label=enc)
 

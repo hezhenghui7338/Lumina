@@ -448,11 +448,16 @@ public sealed class CoreClient : IDisposable
     public async Task<OriginalSearchResponse> SearchOriginalAsync(
         string bookId,
         string query,
+        int? afterSegment = null,
+        int? afterStart = null,
         CancellationToken ct = default)
     {
-        var data = await GetAsync(
-            $"/books/{bookId}/original-search?q={Uri.EscapeDataString(query)}",
-            ct).ConfigureAwait(false);
+        var url = $"/books/{bookId}/original-search?q={Uri.EscapeDataString(query)}";
+        if (afterSegment is int seg)
+            url += $"&after_segment={seg}";
+        if (afterStart is int start)
+            url += $"&after_start={start}";
+        var data = await GetAsync(url, ct).ConfigureAwait(false);
         return Deserialize<OriginalSearchResponse>(data) ?? new OriginalSearchResponse();
     }
 

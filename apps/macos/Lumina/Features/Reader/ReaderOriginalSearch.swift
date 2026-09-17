@@ -17,6 +17,13 @@ struct OriginalSearchResponse: Codable, Equatable {
     let truncated: Bool
 }
 
+enum OriginalSearchNav: Equatable {
+    /// Move highlight within already-loaded hits (may wrap).
+    case step(to: Int)
+    /// Hits were truncated; fetch the next page after the last loaded hit.
+    case loadMore
+}
+
 enum OriginalSearchHighlight {
     static func nsRange(
         startUTF16: Int,
@@ -41,6 +48,24 @@ enum OriginalSearchHighlight {
         guard count > 0 else { return nil }
         let next = (current + delta) % count
         return next < 0 ? next + count : next
+    }
+
+    /// Truncated result sets must not wrap forward: wrapping jumps from a late
+    /// hit back to the first and freezes the full-ForEach reader. Load more instead.
+    static func navigate(
+        current: Int,
+        delta: Int,
+        count: Int,
+        truncated: Bool
+    ) -> OriginalSearchNav? {
+        guard count > 0 else { return nil }
+        if delta > 0, current >= count - 1, truncated {
+            return .loadMore
+        }
+        guard let next = steppedIndex(current: current, delta: delta, count: count) else {
+            return nil
+        }
+        return .step(to: next)
     }
 
     static func statusLabel(index: Int, count: Int, truncated: Bool) -> String {

@@ -38,6 +38,7 @@ public sealed partial class ReaderPage : Page
     private List<OriginalSearchHit> _originalHits = [];
     private int _originalHitIndex;
     private string _originalLastQuery = "";
+    private bool _originalTruncated;
     private List<string> _listenSentenceLines = [];
     private List<string> _listenKeyPointLines = [];
     private static readonly SolidColorBrush ListenFollowBrush =
@@ -1174,7 +1175,7 @@ public sealed partial class ReaderPage : Page
         OriginalSearchNext.IsEnabled = count > 0;
         OriginalSearchStatus.Text = count == 0
             ? (string.IsNullOrEmpty(_originalLastQuery) ? "" : "无匹配")
-            : $"{_originalHitIndex + 1}/{count}";
+            : $"{_originalHitIndex + 1}/{count}{(_originalTruncated ? "+" : "")}";
     }
 
     private void OriginalSearch_Accelerator(KeyboardAccelerator sender, KeyboardAcceleratorInvokedEventArgs args)
@@ -1203,9 +1204,10 @@ public sealed partial class ReaderPage : Page
         _originalLastQuery = query;
         try
         {
-            var result = await App.Core.SearchOriginalAsync(_bookId, query, ct).ConfigureAwait(true);
+            var result = await App.Core.SearchOriginalAsync(_bookId, query, ct: ct).ConfigureAwait(true);
             if (ct.IsCancellationRequested) return;
             _originalHits = result.Hits;
+            _originalTruncated = result.Truncated;
             _originalHitIndex = 0;
             UpdateOriginalSearchChrome();
             if (_originalHits.Count == 0) return;
@@ -1227,10 +1229,56 @@ public sealed partial class ReaderPage : Page
     private void StepOriginalSearch(int delta)
     {
         if (_originalHits.Count == 0) return;
+        if (delta > 0 && _originalHitIndex >= _originalHits.Count - 1 && _originalTruncated)
+        {
+            _ = LoadMoreOriginalSearchAsync();
+            return;
+        }
         _originalHitIndex = (_originalHitIndex + delta) % _originalHits.Count;
         if (_originalHitIndex < 0) _originalHitIndex += _originalHits.Count;
         UpdateOriginalSearchChrome();
         _ = LocateOriginalSearchHitAsync();
+    }
+
+    private async Task LoadMoreOriginalSearchAsync()
+    {
+        if (string.IsNullOrEmpty(_bookId) || string.IsNullOrEmpty(_originalLastQuery)) return;
+        if (_originalHits.Count == 0) return;
+        var last = _originalHits[^1];
+        _originalSearchCts?.Cancel();
+        _originalSearchCts = new CancellationTokenSource();
+        var ct = _originalSearchCts.Token;
+        var priorCount = _originalHits.Count;
+        try
+        {
+            var result = await App.Core.SearchOriginalAsync(
+                _bookId,
+                _originalLastQuery,
+                afterSegment: last.SegmentIndex,
+                afterStart: last.Start,
+                ct: ct).ConfigureAwait(true);
+            if (ct.IsCancellationRequested) return;
+            if (result.Hits.Count == 0)
+            {
+                _originalTruncated = false;
+                _originalHitIndex = (_originalHitIndex + 1) % Math.Max(_originalHits.Count, 1);
+                UpdateOriginalSearchChrome();
+                await LocateOriginalSearchHitAsync();
+                return;
+            }
+            _originalHits.AddRange(result.Hits);
+            _originalTruncated = result.Truncated;
+            _originalHitIndex = priorCount;
+            UpdateOriginalSearchChrome();
+            await LocateOriginalSearchHitAsync();
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch (Exception ex)
+        {
+            OriginalSearchStatus.Text = ex.Message;
+        }
     }
 
     private async Task LocateOriginalSearchHitAsync()

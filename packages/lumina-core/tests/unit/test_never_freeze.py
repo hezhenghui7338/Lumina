@@ -1096,10 +1096,14 @@ def test_cpu_worker_parent_kills_stalled_child(tmp_path, monkeypatch):
 
 def test_cpu_job_max_seconds_scales_with_pages_and_file_size():
     from lumina_core.jobs.cpu_worker import (
+        CPU_STALL_SECONDS,
+        _stall_timeout_message,
         cpu_job_max_seconds,
         page_count_from_progress,
     )
 
+    assert CPU_STALL_SECONDS == 1800.0
+    assert "超过 30 分钟没有进度" in _stall_timeout_message(1800.0, "正在合并阅读单元…")
     mib = 1024 * 1024
     assert cpu_job_max_seconds(file_bytes=1024, page_count=None) == 1800.0
     assert cpu_job_max_seconds(file_bytes=5 * mib, page_count=200) == 200 * 60

@@ -1995,10 +1995,22 @@ final class CoreClient: ObservableObject {
         return try await Self.decode(Resp.self, from: data).results
     }
 
-    func searchOriginal(bookId: String, query: String) async throws -> OriginalSearchResponse {
+    func searchOriginal(
+        bookId: String,
+        query: String,
+        afterSegment: Int? = nil,
+        afterStart: Int? = nil
+    ) async throws -> OriginalSearchResponse {
+        var items = [URLQueryItem(name: "q", value: query)]
+        if let afterSegment {
+            items.append(URLQueryItem(name: "after_segment", value: String(afterSegment)))
+        }
+        if let afterStart {
+            items.append(URLQueryItem(name: "after_start", value: String(afterStart)))
+        }
         let data = try await get(
             path: "/books/\(bookId)/original-search",
-            queryItems: [URLQueryItem(name: "q", value: query)]
+            queryItems: items
         )
         return try await Self.decode(OriginalSearchResponse.self, from: data)
     }

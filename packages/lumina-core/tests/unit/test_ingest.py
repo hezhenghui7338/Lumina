@@ -188,6 +188,50 @@ def test_detect_plan_gbk_bytes():
     assert plan.recover_gbk_mojibake is False
 
 
+def _aozora_japanese_prose() -> str:
+    """青空文庫-style Japanese with ruby markers (Shift-JIS / CP932 dumps)."""
+    return (
+        "新書太閤記\r\n第五分冊\r\n吉川英治\r\n\r\n"
+        "　湖畔の城は、日にまし重きをなした。長浜《ながはま》の町には、"
+        "灯のかずが夜ごとのように増《ふ》えてゆく。\r\n"
+        "　風土はよし、天産にはめぐまれている。しかも、城主に人を得て、"
+        "安業楽土《あんぎょうらくど》の国とは、おれたちのことなれと、"
+        "謳歌《おうか》せぬ領民はなかった。\r\n"
+    ) * 12
+
+
+def test_detect_plan_cp932_japanese_not_gb18030():
+    """Shift-JIS Japanese must not be mistaken for GB18030 Han garbage."""
+    from lumina_core.ingest.text import detect_encoding_plan
+
+    raw = _aozora_japanese_prose().encode("cp932")
+    # Same bytes often decode as "valid" GB18030 with zero kana.
+    assert raw.decode("gb18030")
+    plan = detect_encoding_plan(raw)
+    assert plan.encoding == "cp932"
+    assert plan.recover_gbk_mojibake is False
+
+
+def test_load_txt_cp932_japanese_roundtrip(tmp_path):
+    p = tmp_path / "shinsho_taikoki.txt"
+    original = _aozora_japanese_prose()
+    p.write_bytes(original.encode("cp932"))
+    text, _meta = load_document(p, "txt")
+    assert "新書太閤記" in text
+    assert "長浜《ながはま》" in text
+    assert "謳歌《おうか》" in text
+    assert "怴彂懢峿婰" not in text
+    assert "ながはま" in text
+
+
+def test_detect_plan_big5_not_beaten_by_gb18030_false_kana():
+    from lumina_core.ingest.text import detect_encoding_plan
+
+    prose = ("這是一段繁體中文測試。內容包含足夠的漢字與標點符號以便偵測編碼。\n" * 20)
+    plan = detect_encoding_plan(prose.encode("big5"))
+    assert plan.encoding == "big5"
+
+
 def test_detect_plan_utf8_mojibake_recovers():
     from lumina_core.ingest.text import detect_encoding_plan
 

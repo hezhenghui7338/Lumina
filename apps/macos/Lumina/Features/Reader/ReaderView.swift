@@ -2131,13 +2131,63 @@ struct ReaderView: View {
     }
 
     private func stepOriginalSearch(_ delta: Int) {
-        guard let next = OriginalSearchHighlight.steppedIndex(
+        guard let action = OriginalSearchHighlight.navigate(
             current: originalSearchIndex,
             delta: delta,
-            count: originalSearchHits.count
+            count: originalSearchHits.count,
+            truncated: originalSearchTruncated
         ) else { return }
-        originalSearchIndex = next
-        locateOriginalSearchHit()
+        switch action {
+        case .loadMore:
+            loadMoreOriginalSearch()
+        case .step(let next):
+            originalSearchIndex = next
+            locateOriginalSearchHit()
+        }
+    }
+
+    private func loadMoreOriginalSearch() {
+        let q = originalSearchLastQuery
+        guard !q.isEmpty, let last = originalSearchHits.last else { return }
+        originalSearchTask?.cancel()
+        originalSearching = true
+        let book = bookId
+        let afterSegment = last.segment_index
+        let afterStart = last.start
+        let priorCount = originalSearchHits.count
+        originalSearchTask = Task {
+            defer {
+                if !Task.isCancelled { originalSearching = false }
+            }
+            do {
+                let result = try await core.searchOriginal(
+                    bookId: book,
+                    query: q,
+                    afterSegment: afterSegment,
+                    afterStart: afterStart
+                )
+                guard !Task.isCancelled else { return }
+                if result.hits.isEmpty {
+                    originalSearchTruncated = false
+                    if let next = OriginalSearchHighlight.steppedIndex(
+                        current: originalSearchIndex,
+                        delta: 1,
+                        count: originalSearchHits.count
+                    ) {
+                        originalSearchIndex = next
+                        locateOriginalSearchHit()
+                    }
+                    return
+                }
+                originalSearchHits.append(contentsOf: result.hits)
+                originalSearchTruncated = result.truncated
+                originalSearchIndex = priorCount
+                locateOriginalSearchHit()
+            } catch {
+                guard !Task.isCancelled else { return }
+                actionError = error.localizedDescription
+            }
+        }
     }
 
     private func locateOriginalSearchHit() {

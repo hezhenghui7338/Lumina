@@ -1163,6 +1163,8 @@ async def search_book_original(
     book_id: str,
     request: Request,
     q: str = Query(""),
+    after_segment: int | None = Query(None, ge=0),
+    after_start: int | None = Query(None, ge=0),
 ) -> dict[str, Any]:
     state = _state(request)
 
@@ -1170,7 +1172,13 @@ async def search_book_original(
         book = BookRepo(state.conn).get(book_id)
         if not book:
             return {"missing_book": True}
-        result = search_original(state.conn, book_id, q)
+        result = search_original(
+            state.conn,
+            book_id,
+            q,
+            after_segment_index=after_segment,
+            after_start=after_start,
+        )
         return result
 
     payload = await asyncio.to_thread(_run)

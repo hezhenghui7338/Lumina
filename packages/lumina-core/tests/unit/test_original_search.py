@@ -147,6 +147,82 @@ def test_search_original_multiple_hits_and_limit(tmp_path):
     assert result["hits"][1]["start"] == 1
 
 
+def test_search_original_after_cursor_pages_past_limit(tmp_path):
+    """Clients must continue past the 80-hit window without wrapping to hit 0."""
+    conn = init_db(tmp_path / "t.db")
+    _seed_book(conn, segment_count=2)
+    SegmentRepo(conn).insert_many(
+        [
+            {
+                "id": "s0",
+                "book_id": "b1",
+                "idx": 0,
+                "raw_text": "甲" * 5,
+                "summary_status": "pending",
+            },
+            {
+                "id": "s1",
+                "book_id": "b1",
+                "idx": 1,
+                "raw_text": "甲甲尾",
+                "summary_status": "pending",
+            },
+        ]
+    )
+    # seg0: starts 0..4; seg1: starts 0,1 → 7 hits total
+    first = search_original(conn, "b1", "甲", limit=3)
+    assert [(h["segment_index"], h["start"]) for h in first["hits"]] == [(0, 0), (0, 1), (0, 2)]
+    assert first["truncated"] is True
+
+    page2 = search_original(
+        conn,
+        "b1",
+        "甲",
+        limit=3,
+        after_segment_index=0,
+        after_start=2,
+    )
+    assert [(h["segment_index"], h["start"]) for h in page2["hits"]] == [(0, 3), (0, 4), (1, 0)]
+    assert page2["truncated"] is True
+
+    page3 = search_original(
+        conn,
+        "b1",
+        "甲",
+        limit=3,
+        after_segment_index=1,
+        after_start=0,
+    )
+    assert [(h["segment_index"], h["start"]) for h in page3["hits"]] == [(1, 1)]
+    assert page3["truncated"] is False
+
+
+def test_original_search_api_accepts_after_cursor(client):
+    conn = client.app.state.lumina.conn  # type: ignore[attr-defined]
+    _seed_book(conn, "ob", segment_count=1)
+    SegmentRepo(conn).insert_many(
+        [
+            {
+                "id": "os",
+                "book_id": "ob",
+                "idx": 0,
+                "raw_text": "甲" * 5,
+                "summary_status": "pending",
+            }
+        ]
+    )
+    with db_transaction(conn):
+        pass
+    first = client.get(
+        "/books/ob/original-search",
+        params={"q": "甲", "after_segment": 0, "after_start": 1},
+    )
+    assert first.status_code == 200
+    body = first.json()
+    assert body["hits"][0]["start"] == 2
+    assert "raw_text" not in body["hits"][0]
+
+
 def test_search_original_empty_query(tmp_path):
     conn = init_db(tmp_path / "t.db")
     _seed_book(conn)
