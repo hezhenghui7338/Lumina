@@ -18,6 +18,7 @@ struct LuminaApp: App {
                 .onAppear {
                     appDelegate.sidecar = sidecar
                     ReadingProgressStore.shared.attach(core: core)
+                    ShortcutKeyMonitor.install()
                 }
         }
         .defaultSize(width: 1200, height: 800)
@@ -26,7 +27,7 @@ struct LuminaApp: App {
                 Button("导入书籍…") {
                     NotificationCenter.default.post(name: .luminaImportBook, object: nil)
                 }
-                .keyboardShortcut("o", modifiers: .command)
+                // Shortcut: ShortcutStore / ShortcutKeyMonitor (default ⌘O; settings 可改)
             }
             CommandGroup(replacing: .help) {
                 Button("Lumina 使用指南") {

@@ -20,7 +20,7 @@
 | `Lumina-{version}-macOS.dmg` | ≤ 300 MB | UDZO 压缩安装包 |
 | `Lumina.app` | ≤ 520 MB | 安装后磁盘占用（含 sidecar） |
 
-Sidecar 已裁剪：冗余 OCR small 模型、非中英文 Babel 语言包、onnxruntime 推理用不到的 `transformers` / `quantization` / `tools` / `datasets`。OpenCV（`cv2/.dylibs`）**不得**手动删除，否则扫描 PDF OCR 会失败。构建脚本会在体积超限时失败，并在 prune 后运行 `--smoke-ocr` 校验。Cursor provider 已改为 OpenAI 兼容 HTTP 路径，不再依赖 `cursor-sdk`；`prune-sidecar.sh` 仍会校验 sidecar 不含历史残留的 `cursor_sdk/` 目录。
+Sidecar 已裁剪：冗余 OCR small 模型、非中英文 Babel 语言包、onnxruntime 推理用不到的 `transformers` / `quantization` / `tools` / `datasets`。OpenCV（`cv2/.dylibs`）**不得**手动删除，否则扫描 PDF OCR 会失败。构建脚本会在体积超限时失败，并在 prune 后运行 `--smoke-ocr` 校验。Cursor 走官方 SDK，**不**打进 sidecar；用户在设置中按需下载到 Application Support / 用户数据目录。`prune-sidecar.sh` 仍校验 sidecar `_internal/` 不含 `cursor_sdk/`（防误打包）。
 
 ## 前置条件
 
@@ -66,7 +66,7 @@ GitHub Actions：`Release Windows` workflow（`windows-latest`）。
 0. `scripts/sync-release-identity.py`：以 `packages/lumina-core/pyproject.toml` 的 version（或 `LUMINA_VERSION`）为真源，同步 `CORE_VERSION`、`__version__`、Xcode `MARKETING_VERSION` / `CURRENT_PROJECT_VERSION`、Windows `<Version>`、Swift/C# `CHUNKER_VERSION` 握手常量；随后按该版本号命名产物并传给 `xcodebuild` / `dotnet publish`
 1. `pytest -m "not perf"`（单元 + e2e + live；失败则中止，不进入打包）
 2. `uv sync --extra release` + PyInstaller → `packages/lumina-core/dist/lumina-core/`
-3. `scripts/prune-sidecar.sh` 裁剪冗余 sidecar 文件并校验不含历史残留的 `cursor_sdk/`
+3. `scripts/prune-sidecar.sh` 裁剪冗余 sidecar 文件并校验 `_internal/` 不含误打包的 `cursor_sdk/`（Cursor SDK 仅允许装到用户数据目录）
 4. `xcodebuild -configuration Release` → `Lumina.app`
 5. 复制 sidecar 到 `Lumina.app/Contents/Resources/lumina-core/`
 6. 打包 ZIP + DMG；断言 App ≤ 500 MB、DMG ≤ 300 MB
@@ -75,7 +75,7 @@ GitHub Actions：`Release Windows` workflow（`windows-latest`）。
 
 - [ ] 在未克隆仓库的 Mac 上，双击 DMG 安装后能打开 App
 - [ ] `Lumina.app` ≤ 500 MB，`Lumina-*-macOS.dmg` ≤ 300 MB
-- [ ] `Lumina.app/Contents/Resources/lumina-core/_internal/` 不含历史残留的 `cursor_sdk/`
+- [ ] `Lumina.app/Contents/Resources/lumina-core/_internal/` 不含 `cursor_sdk/`（SDK 由用户在设置中按需下载）
 - [ ] 活动监视器中出现 `lumina-core` 进程（来自 App Resources）
 - [ ] `curl http://127.0.0.1:17432/health` 返回 `ok`
 - [ ] 安装 Ollama + 模型后可导入 TXT 并完成首段摘要

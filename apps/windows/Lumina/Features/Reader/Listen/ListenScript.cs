@@ -11,7 +11,23 @@ public enum ListenMode
     Original,
 }
 
-public sealed record ListenUtterance(string Text);
+public abstract record ListenHighlightAnchor
+{
+    public sealed record SegmentTitle : ListenHighlightAnchor;
+    public sealed record SummarySentence(int Index) : ListenHighlightAnchor;
+    public sealed record SectionBullets : ListenHighlightAnchor;
+    public sealed record Bullet(int Index) : ListenHighlightAnchor;
+    public sealed record OriginalUtf16(int Start, int Length) : ListenHighlightAnchor;
+}
+
+public sealed record ListenUtterance(string Text, ListenHighlightAnchor Anchor);
+
+/// Policy for listen follow-along UI side effects.
+public static class ListenFollowHighlightPolicy
+{
+    /// Must stay false: auto-scrolling spoken lines fights continuous play advance.
+    public const bool ScrollsUtteranceIntoView = false;
+}
 
 public sealed record ListenScript(
     ListenMode Mode,
@@ -20,7 +36,7 @@ public sealed record ListenScript(
     bool Ready,
     string? SkipReason)
 {
-    public const string SectionBullets = "结构化要点";
+    public const string SectionBullets = "主要内容";
     public const string SectionNotes = "需要注意";
     public const int MaxUtteranceChars = 800;
 
@@ -28,6 +44,56 @@ public sealed record ListenScript(
 
     public static ListenScript NotReady(ListenMode mode, string reason, string language = "zh") =>
         new(mode, language, [], false, reason);
+}
+
+/// Whether / how to announce chapter before segment label (PRD §5.3.1).
+public abstract record ListenChapterSpeakContext
+{
+    public sealed record SessionStart : ListenChapterSpeakContext;
+    public sealed record Continuing(string? PreviousSpokenChapter) : ListenChapterSpeakContext;
+}
+
+public static class ListenChapterAnnouncePolicy
+{
+    public static string? NormalizedChapter(string? raw)
+    {
+        var cleaned = SegmentCatalogPolicy.StripSectionMark(raw ?? "");
+        return cleaned.Length == 0 ? null : cleaned;
+    }
+
+    public static bool ShouldAnnounce(string? chapter, ListenChapterSpeakContext context)
+    {
+        var current = NormalizedChapter(chapter);
+        if (current is null) return false;
+        return context switch
+        {
+            ListenChapterSpeakContext.SessionStart => true,
+            ListenChapterSpeakContext.Continuing cont =>
+                NormalizedChapter(cont.PreviousSpokenChapter) != current,
+            _ => false,
+        };
+    }
+
+    public static List<string> TitlePrefix(
+        string? segmentLabel,
+        string? chapter,
+        ListenChapterSpeakContext context)
+    {
+        var lines = new List<string>();
+        var chapterName = NormalizedChapter(chapter);
+        var announce = ShouldAnnounce(chapter, context);
+        if (announce && chapterName is not null)
+            lines.Add(chapterName);
+        var title = ListenScriptBuilder.SegmentTitle(segmentLabel);
+        if (title is not null)
+        {
+            if (title != chapterName)
+                lines.Add(title);
+            else if (!announce)
+                lines.Add(title);
+        }
+        return lines;
+    }
 }
 
 public static class ListenScriptBuilder
@@ -74,14 +140,23 @@ public static class ListenScriptBuilder
         ListenMode mode,
         string? summaryJson,
         string? rawText,
-        string? languageHint = null)
+        string? languageHint = null,
+        string? segmentLabel = null,
+        string? chapter = null,
+        ListenChapterSpeakContext? chapterContext = null)
     {
+        chapterContext ??= new ListenChapterSpeakContext.SessionStart();
+        var prefix = ListenChapterAnnouncePolicy.TitlePrefix(segmentLabel, chapter, chapterContext);
         if (mode == ListenMode.Original)
         {
-            var text = (rawText ?? "").Trim();
+            var source = rawText ?? "";
+            var text = source.Trim();
             if (text.Length == 0)
                 return ListenScript.NotReady(ListenMode.Original, "empty_text", languageHint ?? "zh");
-            var utterances = UtterancesFrom(SplitSentences(text));
+            var utterances = new List<ListenUtterance>();
+            foreach (var line in prefix)
+                utterances.AddRange(AnchoredChunks(line, new ListenHighlightAnchor.SegmentTitle()));
+            utterances.AddRange(OriginalUtterances(source));
             var language = languageHint ?? DetectLanguage(text);
             if (utterances.Count == 0)
                 return ListenScript.NotReady(ListenMode.Original, "empty_text", language);
@@ -91,23 +166,54 @@ public static class ListenScriptBuilder
         if (!TryParseSummary(summaryJson, out var sentences, out var bullets, out var notes))
             return ListenScript.NotReady(mode, "summary_not_ready", languageHint ?? "zh");
 
-        var lines = new List<string>(sentences);
+        var utterancesSummary = new List<ListenUtterance>();
+        foreach (var line in prefix)
+            utterancesSummary.AddRange(AnchoredChunks(line, new ListenHighlightAnchor.SegmentTitle()));
+        for (var i = 0; i < sentences.Count; i++)
+        {
+            var sentence = sentences[i].Trim();
+            if (sentence.Length == 0) continue;
+            utterancesSummary.AddRange(AnchoredChunks(sentence, new ListenHighlightAnchor.SummarySentence(i)));
+        }
         if (mode == ListenMode.Detailed)
         {
-            if (bullets.Count > 0)
+            var kept = new List<(int SourceIndex, (string Label, string Body) Bullet)>();
+            for (var i = 0; i < bullets.Count; i++)
             {
-                lines.Add(ListenScript.SectionBullets);
-                for (var i = 0; i < bullets.Count; i++)
-                    lines.Add(FormatBullet(i + 1, bullets[i].Label, bullets[i].Body));
+                if (bullets[i].Body.Trim().Length == 0) continue;
+                kept.Add((i, bullets[i]));
+            }
+            if (kept.Count > 0)
+            {
+                utterancesSummary.AddRange(AnchoredChunks(
+                    ListenScript.SectionBullets, new ListenHighlightAnchor.SectionBullets()));
+                for (var display = 0; display < kept.Count; display++)
+                {
+                    var (sourceIndex, bullet) = kept[display];
+                    var line = FormatBullet(display + 1, bullet.Label, bullet.Body);
+                    utterancesSummary.AddRange(AnchoredChunks(
+                        line, new ListenHighlightAnchor.Bullet(sourceIndex)));
+                }
             }
         }
 
-        var sample = string.Join(" ", sentences.Concat(bullets.Select(b => b.Body)).Concat(notes));
+        var sampleParts = new List<string>();
+        sampleParts.AddRange(prefix);
+        sampleParts.AddRange(sentences);
+        sampleParts.AddRange(bullets.Select(b => b.Body));
+        sampleParts.AddRange(notes);
+        var sample = string.Join(" ", sampleParts);
         var lang = languageHint ?? DetectLanguage(sample);
-        var built = UtterancesFrom(lines);
-        if (built.Count == 0)
+        if (utterancesSummary.Count == 0)
             return ListenScript.NotReady(mode, "summary_not_ready", lang);
-        return new ListenScript(mode, lang, built, true, null);
+        return new ListenScript(mode, lang, utterancesSummary, true, null);
+    }
+
+    /// Condensed segment title only; blank means skip (no 段 N fallback).
+    public static string? SegmentTitle(string? segmentLabel)
+    {
+        var cleaned = (segmentLabel ?? "").Trim();
+        return cleaned.Length == 0 ? null : cleaned;
     }
 
     public static string FormatBullet(int index, string? label, string body)
@@ -182,15 +288,41 @@ public static class ListenScriptBuilder
         return chunks;
     }
 
-    private static List<ListenUtterance> UtterancesFrom(IEnumerable<string> lines)
+    private static List<ListenUtterance> AnchoredChunks(string text, ListenHighlightAnchor anchor)
+    {
+        return ChunkLong(text).Select(chunk => new ListenUtterance(chunk, anchor)).ToList();
+    }
+
+    private static List<ListenUtterance> OriginalUtterances(string source)
     {
         var outList = new List<ListenUtterance>();
-        foreach (var line in lines)
+        var searchFrom = 0;
+        foreach (var piece in SplitSentences(source))
         {
-            foreach (var chunk in ChunkLong(line))
-                outList.Add(new ListenUtterance(chunk));
+            var located = LocateRange(piece, source, ref searchFrom);
+            var chunks = ChunkLong(piece);
+            if (located is null)
+            {
+                outList.AddRange(AnchoredChunks(piece, new ListenHighlightAnchor.OriginalUtf16(0, 0)));
+                continue;
+            }
+            var (start, length) = located.Value;
+            foreach (var chunk in chunks)
+                outList.Add(new ListenUtterance(chunk, new ListenHighlightAnchor.OriginalUtf16(start, length)));
         }
         return outList;
+    }
+
+    private static (int Start, int Length)? LocateRange(string needle, string haystack, ref int searchFrom)
+    {
+        if (searchFrom < 0) searchFrom = 0;
+        if (searchFrom > haystack.Length) searchFrom = 0;
+        var idx = haystack.IndexOf(needle, searchFrom, StringComparison.Ordinal);
+        if (idx < 0)
+            idx = haystack.IndexOf(needle, StringComparison.Ordinal);
+        if (idx < 0) return null;
+        searchFrom = idx + needle.Length;
+        return (idx, needle.Length);
     }
 
     private static int? LastBreak(string window)
@@ -243,8 +375,8 @@ public static class ListenScriptBuilder
         {
             if (item.ValueKind == JsonValueKind.String)
             {
-                var value = item.GetString()?.Trim();
-                if (!string.IsNullOrEmpty(value)) outList.Add(value);
+                var value = SummaryJsonParser.CollapseProseWhitespace(item.GetString());
+                if (value.Length > 0) outList.Add(value);
             }
         }
         return outList;
@@ -272,8 +404,8 @@ public static class ListenScriptBuilder
             }
             else if (item.ValueKind == JsonValueKind.String)
             {
-                var value = item.GetString()?.Trim();
-                if (!string.IsNullOrEmpty(value)) outList.Add(("", value));
+                var value = SummaryJsonParser.CollapseProseWhitespace(item.GetString());
+                if (value.Length > 0) outList.Add(("", value));
             }
         }
         return outList;
@@ -282,7 +414,9 @@ public static class ListenScriptBuilder
     private static string Prop(JsonElement obj, string name)
     {
         if (!obj.TryGetProperty(name, out var el)) return "";
-        return el.ValueKind == JsonValueKind.String ? (el.GetString() ?? "").Trim() : "";
+        return el.ValueKind == JsonValueKind.String
+            ? SummaryJsonParser.CollapseProseWhitespace(el.GetString())
+            : "";
     }
 }
 

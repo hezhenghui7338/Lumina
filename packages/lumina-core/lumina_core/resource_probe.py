@@ -4,12 +4,17 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import asdict, dataclass, field
+from pathlib import Path
 from typing import Any
 
 import httpx
 
-from lumina_core.config import ModelResource, Settings
+from lumina_core.config import ModelResource, Settings, default_data_dir
 from lumina_core.ingest.ocr import ocr_cloud_configured, ocr_dependency_warning
+from lumina_core.models.cursor_sdk_adapter import (
+    get_install_state,
+    list_cursor_models,
+)
 from lumina_core.models.openai_compat import (
     openai_compat_client_base,
     openai_compat_paths,
@@ -17,7 +22,7 @@ from lumina_core.models.openai_compat import (
 from lumina_core.ollama_setup import check_ollama_status, is_local_base_url
 from lumina_core.ollama_setup import recommended_tiers as ollama_recommended_tiers
 
-_CLOUD_PROVIDERS = frozenset({"openai", "openrouter", "cursor", "aiping", "custom"})
+_CLOUD_PROVIDERS = frozenset({"openai", "openrouter", "aiping", "custom"})
 _KEY_REQUIRED_PROVIDERS = frozenset({"openai", "openrouter", "cursor", "aiping", "custom"})
 
 
@@ -120,13 +125,24 @@ def _model_configured(resource: ModelResource) -> bool:
     return bool((resource.model or "").strip())
 
 
-async def probe_resource(resource: ModelResource) -> ResourceProbeResult:
+async def probe_resource(
+    resource: ModelResource,
+    *,
+    data_dir: Path | None = None,
+) -> ResourceProbeResult:
     provider = (resource.provider or "").strip().lower()
     key_ok = _key_configured(resource)
     model_ok = _model_configured(resource)
 
     if provider == "ollama":
         return await _probe_ollama(resource)
+    if provider == "cursor":
+        return await _probe_cursor(
+            resource,
+            key_ok=key_ok,
+            model_ok=model_ok,
+            data_dir=data_dir if data_dir is not None else default_data_dir(),
+        )
     if provider in _CLOUD_PROVIDERS:
         return await _probe_openai_compatible(resource, key_ok=key_ok, model_ok=model_ok)
 
@@ -139,6 +155,72 @@ async def probe_resource(resource: ModelResource) -> ResourceProbeResult:
         model_ready=model_ok,
         message=f"未知 provider：{provider}",
         base_url=resource.base_url or "",
+    )
+
+
+async def _probe_cursor(
+    resource: ModelResource,
+    *,
+    key_ok: bool,
+    model_ok: bool,
+    data_dir: Path,
+) -> ResourceProbeResult:
+    sdk = get_install_state(data_dir)
+    if not sdk.importable:
+        return ResourceProbeResult(
+            resource_id=resource.id,
+            provider="cursor",
+            ready=False,
+            probe_ok=False,
+            key_configured=key_ok,
+            model_ready=model_ok,
+            message=sdk.message or "未安装 Cursor SDK（请在设置中下载）",
+            available_models=[],
+            base_url="",
+            installed=sdk.installed,
+        )
+    if not key_ok:
+        return ResourceProbeResult(
+            resource_id=resource.id,
+            provider="cursor",
+            ready=False,
+            probe_ok=True,
+            key_configured=False,
+            model_ready=model_ok,
+            message="API Key 未配置",
+            base_url="",
+            installed=True,
+        )
+    if not model_ok:
+        return ResourceProbeResult(
+            resource_id=resource.id,
+            provider="cursor",
+            ready=False,
+            probe_ok=True,
+            key_configured=True,
+            model_ready=False,
+            message="未设置模型",
+            base_url="",
+            installed=True,
+        )
+
+    available = await list_cursor_models(resource.api_key or "")
+    # Soft-fail catalog: SDK importable + key is enough for ready when list fails.
+    probe_ok = True
+    message = "Cursor SDK 已就绪（cloud 无仓库）"
+    if available and resource.model and resource.model not in available:
+        message = f"已连通；当前模型 {resource.model} 可能不在账号可用列表中"
+    return ResourceProbeResult(
+        resource_id=resource.id,
+        provider="cursor",
+        ready=True,
+        probe_ok=probe_ok,
+        key_configured=True,
+        model_ready=True,
+        message=message,
+        available_models=available,
+        base_url="",
+        installed=True,
     )
 
 

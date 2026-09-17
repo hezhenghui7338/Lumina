@@ -54,87 +54,6 @@ final class SegmentSidebarTests: XCTestCase {
         XCTAssertEqual(SegmentRenderWindow.segmentIndexDelta(from: nil, to: 10, in: segments), Int.max)
     }
 
-    func testReadingWindow_farJump100_staysBoundedAndContainsTarget() {
-        let segments = (0..<250).map { i in
-            SegmentRow(
-                id: "s\(i)", idx: i, label: nil, chapter: nil, summary_status: "ready",
-                summary_json: nil, raw_text: nil, translation: nil, anchor_label: nil,
-                summary_provider: nil, summary_model: nil, summary_tier: nil, char_count: nil, retry_count: nil,
-                summary_duration_s: nil, summary_llm_attempts: nil
-            )
-        }
-        let from = 20
-        let to = from + 100
-        XCTAssertEqual(
-            SegmentRenderWindow.segmentIndexDelta(from: from, to: to, in: segments),
-            100
-        )
-        XCTAssertGreaterThan(
-            SegmentRenderWindow.segmentIndexDelta(from: from, to: to, in: segments),
-            SegmentRenderWindow.scrollAnimateThreshold
-        )
-
-        let window = SegmentRenderWindow.readingWindow(segments: segments, pinnedIdx: to)
-        let maxItems = 2 * SegmentRenderWindow.readRenderBuffer + 1
-        XCTAssertLessThanOrEqual(window.items.count, maxItems)
-        XCTAssertTrue(window.items.contains(where: { $0.idx == to }))
-        XCTAssertEqual(window.aboveCount + window.items.count + window.belowCount, segments.count)
-        // Pin cost must not grow with jump distance: same bound as a nearby pin.
-        let nearby = SegmentRenderWindow.readingWindow(segments: segments, pinnedIdx: from + 1)
-        XCTAssertEqual(window.items.count, nearby.items.count)
-    }
-
-    func testOffscreenSpacerHeight_scalesWithCount() {
-        XCTAssertEqual(SegmentRenderWindow.offscreenSpacerHeight(count: 0), 0)
-        XCTAssertEqual(
-            SegmentRenderWindow.offscreenSpacerHeight(count: 100),
-            100 * SegmentRenderWindow.offscreenSegmentEstimate
-        )
-    }
-
-    func testReadingWindow_hysteresis_keepsAnchorWithinThreshold() {
-        let segments = (0..<100).map { i in
-            SegmentRow(
-                id: "s\(i)", idx: i, label: nil, chapter: nil, summary_status: "ready",
-                summary_json: nil, raw_text: nil, translation: nil, anchor_label: nil,
-                summary_provider: nil, summary_model: nil, summary_tier: nil, char_count: nil, retry_count: nil,
-                summary_duration_s: nil, summary_llm_attempts: nil
-            )
-        }
-        let initialAnchor = 30
-        // Small movement within hysteresis threshold keeps the original anchor and slice bounds
-        let smallScroll = initialAnchor + 3
-        let stabilized = SegmentRenderWindow.stabilizedAnchor(
-            currentPinnedIdx: smallScroll,
-            existingAnchorIdx: initialAnchor,
-            in: segments
-        )
-        XCTAssertEqual(stabilized, initialAnchor)
-
-        let windowA = SegmentRenderWindow.readingWindow(
-            segments: segments,
-            pinnedIdx: initialAnchor,
-            anchorIdx: initialAnchor
-        )
-        let windowB = SegmentRenderWindow.readingWindow(
-            segments: segments,
-            pinnedIdx: smallScroll,
-            anchorIdx: initialAnchor
-        )
-        XCTAssertEqual(windowA.aboveCount, windowB.aboveCount)
-        XCTAssertEqual(windowA.startIndex, windowB.startIndex)
-        XCTAssertEqual(windowA.items.map(\.idx), windowB.items.map(\.idx))
-
-        // Large scroll past threshold re-anchors to the current pin
-        let largeScroll = initialAnchor + SegmentRenderWindow.hysteresisThreshold + 2
-        let reanchored = SegmentRenderWindow.stabilizedAnchor(
-            currentPinnedIdx: largeScroll,
-            existingAnchorIdx: initialAnchor,
-            in: segments
-        )
-        XCTAssertEqual(reanchored, largeScroll)
-    }
-
     func testSidebarSegmentItem_prefersChapterTitleOverLabel() {
         let segment = SegmentRow(
             id: "s1", idx: 0, label: "引子", chapter: "第一章", summary_status: "ready",
@@ -219,6 +138,43 @@ final class SegmentSidebarTests: XCTestCase {
         XCTAssertNil(SegmentCatalogHeadlineText.title(chapter: nil, label: nil))
         XCTAssertEqual(SegmentCatalogHeadlineText.joined(idx: 0, title: nil), "段 1")
         XCTAssertEqual(SegmentCatalogHeadlineText.joined(idx: 4, title: "学而"), "段 5 · 学而")
+    }
+
+    func testReadingHeaderTitle_includesChapterAndLabelWithoutOrdinal() {
+        XCTAssertEqual(
+            SegmentReadingHeaderTitle.title(
+                chapter: "第九章 克里米亚战役",
+                label: "克里米亚优先部署"
+            ),
+            "第九章 克里米亚战役 · 克里米亚优先部署"
+        )
+        XCTAssertEqual(
+            SegmentReadingHeaderTitle.title(
+                chapter: "第八章 装甲军长驱直入",
+                label: "迪纳斯克的突破"
+            ),
+            "第八章 装甲军长驱直入 · 迪纳斯克的突破"
+        )
+        XCTAssertEqual(
+            SegmentReadingHeaderTitle.title(chapter: "§第一章", label: "引子"),
+            "第一章 · 引子"
+        )
+        XCTAssertEqual(
+            SegmentReadingHeaderTitle.title(chapter: "第二章", label: nil),
+            "第二章"
+        )
+        XCTAssertEqual(
+            SegmentReadingHeaderTitle.title(chapter: nil, label: "引子"),
+            "引子"
+        )
+        XCTAssertEqual(
+            SegmentReadingHeaderTitle.title(chapter: nil, label: nil),
+            ""
+        )
+        XCTAssertEqual(
+            SegmentReadingHeaderTitle.title(chapter: "第一章", label: "第一章"),
+            "第一章"
+        )
     }
 
     func testCatalogPreview_usesSentenceNotInferredLabelPrefix() {

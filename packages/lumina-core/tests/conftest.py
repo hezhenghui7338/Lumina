@@ -104,12 +104,32 @@ def _fast_boot_news_sync(monkeypatch):
     from lumina_core.news.sync import SyncResult
 
     def _noop_sync(conn):
+        from lumina_core.news.store import NewsStore
+
+        NewsStore(conn).set_last_synced_at()
         return [
             SyncResult(source_url=s["url"], fetched=0, inserted=0)
             for s in NewsSourceRepo(conn).list_sources()
         ]
 
     monkeypatch.setattr("lumina_core.news.sync.sync_all", _noop_sync)
+
+
+@pytest.fixture(autouse=True)
+def _stub_chat_web_fetch(monkeypatch):
+    """Deep chat must not download URLs in mock suite (lxml/trafilatura flakes under xdist)."""
+    from lumina_core.news.fetch import FetchResult
+
+    def _stub(url: str, **kwargs):
+        return FetchResult(
+            url=url or "",
+            title="",
+            text="",
+            error="fetch disabled in tests",
+            strategy="direct",
+        )
+
+    monkeypatch.setattr("lumina_core.search.evidence.fetch_article", _stub)
 
 
 # Eigen/ORT thread pools can deadlock xdist session teardown. Only force-exit

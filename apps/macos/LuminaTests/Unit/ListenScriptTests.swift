@@ -26,6 +26,28 @@ final class ListenScriptTests: XCTestCase {
         XCTAssertFalse(joined.contains("你可以接着问"))
         XCTAssertFalse(joined.contains("主角与邻里期望之间有何张力？"))
         XCTAssertFalse(joined.contains(ListenScript.sectionBullets))
+        // summary JSON label is not spoken unless passed as segmentLabel
+        XCTAssertFalse(script.texts.contains("引子"))
+    }
+
+    func testSummaryModePrependsSegmentLabel() {
+        let parsed = ParsedSummary(json: sampleJSON)!
+        let script = ListenScript.build(
+            mode: .summary, summary: parsed, rawText: nil, segmentLabel: "引子"
+        )
+        XCTAssertEqual(script.texts, [
+            "引子",
+            "本段交代主角出身寒门。",
+            "邻里敬其向学却无力资助。",
+        ])
+    }
+
+    func testBlankSegmentLabelIsSkipped() {
+        let parsed = ParsedSummary(json: sampleJSON)!
+        let script = ListenScript.build(
+            mode: .summary, summary: parsed, rawText: nil, segmentLabel: "   "
+        )
+        XCTAssertEqual(script.texts.first, "本段交代主角出身寒门。")
     }
 
     func testDetailedModeIncludesBulletsNotNotesOrFollowUps() {
@@ -43,6 +65,16 @@ final class ListenScriptTests: XCTestCase {
         XCTAssertFalse(joined.contains("主角与邻里期望之间有何张力？"))
     }
 
+    func testDetailedPrependsSegmentLabel() {
+        let parsed = ParsedSummary(json: sampleJSON)!
+        let script = ListenScript.build(
+            mode: .detailed, summary: parsed, rawText: nil, segmentLabel: "引子"
+        )
+        XCTAssertEqual(script.texts.first, "引子")
+        XCTAssertEqual(script.texts[1], "本段交代主角出身寒门。")
+        XCTAssertTrue(script.texts.contains(ListenScript.sectionBullets))
+    }
+
     func testOriginalSplitsSentences() {
         let script = ListenScript.build(
             mode: .original,
@@ -53,6 +85,18 @@ final class ListenScriptTests: XCTestCase {
         XCTAssertEqual(script.texts.first, "第一句。")
         XCTAssertTrue(script.texts.contains("第二句！"))
         XCTAssertTrue(script.texts.contains("第三句？"))
+    }
+
+    func testOriginalPrependsSegmentLabel() {
+        let script = ListenScript.build(
+            mode: .original,
+            summary: nil,
+            rawText: "第一句。第二句！",
+            segmentLabel: "开篇"
+        )
+        XCTAssertEqual(script.texts.first, "开篇")
+        XCTAssertEqual(script.texts[1], "第一句。")
+        XCTAssertTrue(script.texts.contains("第二句！"))
     }
 
     func testMissingSummaryIsNotReady() {
@@ -71,6 +115,102 @@ final class ListenScriptTests: XCTestCase {
     func testDetectLanguage() {
         XCTAssertEqual(ListenScript.detectLanguage("本段交代主角出身寒门。"), "zh")
         XCTAssertEqual(ListenScript.detectLanguage("The hero leaves home at dawn."), "en")
+    }
+
+    func testSummaryAnchorsMatchUtterances() {
+        let parsed = ParsedSummary(json: sampleJSON)!
+        let script = ListenScript.build(
+            mode: .summary, summary: parsed, rawText: nil, segmentLabel: "引子"
+        )
+        XCTAssertEqual(script.utterances.map(\.anchor), [
+            .segmentTitle,
+            .summarySentence(0),
+            .summarySentence(1),
+        ])
+    }
+
+    func testDetailedAnchorsIncludeSectionAndBullets() {
+        let parsed = ParsedSummary(json: sampleJSON)!
+        let script = ListenScript.build(
+            mode: .detailed, summary: parsed, rawText: nil, segmentLabel: "引子"
+        )
+        XCTAssertEqual(script.utterances.first?.anchor, .segmentTitle)
+        XCTAssertTrue(script.utterances.contains { $0.anchor == .sectionBullets })
+        XCTAssertTrue(script.utterances.contains { $0.anchor == .bullet(0) })
+        XCTAssertTrue(script.utterances.contains { $0.anchor == .bullet(2) })
+    }
+
+    func testOriginalAnchorsCarryUTF16Ranges() {
+        let raw = "第一句。第二句！"
+        let script = ListenScript.build(mode: .original, summary: nil, rawText: raw)
+        XCTAssertEqual(script.utterances.count, 2)
+        guard case let .originalUTF16(loc0, len0) = script.utterances[0].anchor else {
+            return XCTFail("expected originalUTF16")
+        }
+        let first = (raw as NSString).substring(with: NSRange(location: loc0, length: len0))
+        XCTAssertEqual(first, "第一句。")
+        guard case let .originalUTF16(loc1, len1) = script.utterances[1].anchor else {
+            return XCTFail("expected originalUTF16")
+        }
+        let second = (raw as NSString).substring(with: NSRange(location: loc1, length: len1))
+        XCTAssertEqual(second, "第二句！")
+    }
+
+    func testFollowHighlightDoesNotAutoScroll() {
+        // Auto-scrolling spoken lines fights continuous play advance (bc-listen-follow-no-autoscroll).
+        XCTAssertFalse(ListenFollowHighlightPolicy.scrollsUtteranceIntoView)
+    }
+
+    func testAnnounceChapterOnSessionStartAndChange() {
+        XCTAssertTrue(
+            ListenChapterAnnouncePolicy.shouldAnnounce(
+                chapter: "§第十三章 1942年南俄冬季战役",
+                context: .sessionStart
+            )
+        )
+        XCTAssertFalse(
+            ListenChapterAnnouncePolicy.shouldAnnounce(
+                chapter: "第十三章 1942年南俄冬季战役",
+                context: .continuing(previousSpokenChapter: "第十三章 1942年南俄冬季战役")
+            )
+        )
+        XCTAssertTrue(
+            ListenChapterAnnouncePolicy.shouldAnnounce(
+                chapter: "第十三章 1942年南俄冬季战役",
+                context: .continuing(previousSpokenChapter: "第十二章 斯大林格勒的悲剧")
+            )
+        )
+    }
+
+    func testChapterThenLabelPrefixOnSessionStart() {
+        let parsed = ParsedSummary(json: sampleJSON)!
+        let script = ListenScript.build(
+            mode: .summary,
+            summary: parsed,
+            rawText: nil,
+            segmentLabel: "南翼战役新动向",
+            chapter: "§第十三章 1942年南俄冬季战役",
+            chapterContext: .sessionStart
+        )
+        XCTAssertEqual(Array(script.texts.prefix(2)), [
+            "第十三章 1942年南俄冬季战役",
+            "南翼战役新动向",
+        ])
+        XCTAssertEqual(script.utterances[0].anchor, .segmentTitle)
+    }
+
+    func testSameChapterSkipsChapterAnnouncement() {
+        let parsed = ParsedSummary(json: sampleJSON)!
+        let script = ListenScript.build(
+            mode: .summary,
+            summary: parsed,
+            rawText: nil,
+            segmentLabel: "南翼战役新动向",
+            chapter: "第十三章 1942年南俄冬季战役",
+            chapterContext: .continuing(previousSpokenChapter: "第十三章 1942年南俄冬季战役")
+        )
+        XCTAssertEqual(script.texts.first, "南翼战役新动向")
+        XCTAssertFalse(script.texts[0].contains("第十三章"))
     }
 }
 

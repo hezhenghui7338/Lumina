@@ -58,3 +58,54 @@ def test_build_brief_includes_skim_rich_and_summary_status(tmp_path):
     assert by_id["sparse1"]["summary_status"] == "idle"
     assert by_id["ready1"]["skim_rich"] is False
     assert by_id["ready1"]["summary_status"] == "ready"
+    assert brief["last_synced_at"] is None
+
+
+def test_build_brief_orders_by_published_then_synced(tmp_path):
+    conn = init_db(tmp_path / "brief_order.db")
+    store = NewsStore(conn)
+    store.upsert(
+        NewsArticle(
+            id="old_pub",
+            source_id="src1",
+            url="https://example.com/old",
+            title="Old published",
+            excerpt="x",
+            published_at="2026-01-01T00:00:00Z",
+        )
+    )
+    store.upsert(
+        NewsArticle(
+            id="new_pub",
+            source_id="src1",
+            url="https://example.com/new",
+            title="New published",
+            excerpt="x",
+            published_at="2026-03-01T00:00:00Z",
+        )
+    )
+    store.upsert(
+        NewsArticle(
+            id="sync_only",
+            source_id="src1",
+            url="https://example.com/sync",
+            title="Sync only",
+            excerpt="x",
+            published_at="",
+        )
+    )
+    # Force synced_at for sync_only newer than old_pub but older than new_pub.
+    with conn:
+        conn.execute(
+            "UPDATE news_articles SET synced_at = ? WHERE id = ?",
+            ("2026-02-01T00:00:00+00:00", "sync_only"),
+        )
+        conn.execute(
+            "UPDATE news_articles SET synced_at = ? WHERE id = ?",
+            ("2026-01-15T00:00:00+00:00", "old_pub"),
+        )
+
+    stamp = store.set_last_synced_at("2026-03-15T12:00:00+00:00")
+    brief = build_brief(conn, limit=10)
+    assert [a["id"] for a in brief["articles"]] == ["new_pub", "sync_only", "old_pub"]
+    assert brief["last_synced_at"] == stamp

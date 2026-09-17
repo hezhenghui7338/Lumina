@@ -40,12 +40,32 @@ final class ColdStartReadinessTests: XCTestCase {
         XCTAssertEqual(ready.cache, .running)
     }
 
-    func testGateRowsExcludeNews() {
-        XCTAssertEqual(ColdStartRowKind.allCases, [.engine, .data, .cache])
+    func testDetailRevealPolicy() {
+        XCTAssertEqual(ColdStartReadiness.detailRevealAfterSeconds, 10)
+        XCTAssertFalse(ColdStartReadiness.shouldRevealTechnicalDetail(elapsedSeconds: 9.9))
+        XCTAssertTrue(ColdStartReadiness.shouldRevealTechnicalDetail(elapsedSeconds: 10))
     }
 
-    func testCacheProgressAndDetailInMergeAndRowLabel() {
-        let snap = ColdStartReadiness.merge(
+    func testTechnicalDetailDerivesFromInternalPhase() {
+        let engine = ColdStartReadiness.merge(
+            engineDone: false,
+            data: "pending",
+            cache: "pending",
+            news: "pending",
+            newsDetail: nil
+        )
+        XCTAssertEqual(ColdStartReadiness.technicalDetail(engine), "正在启动引擎")
+
+        let data = ColdStartReadiness.merge(
+            engineDone: true,
+            data: "running",
+            cache: "pending",
+            news: "pending",
+            newsDetail: nil
+        )
+        XCTAssertEqual(ColdStartReadiness.technicalDetail(data), "正在准备阅读数据")
+
+        let cache = ColdStartReadiness.merge(
             engineDone: true,
             data: "done",
             cache: "running",
@@ -54,22 +74,23 @@ final class ColdStartReadinessTests: XCTestCase {
             news: "pending",
             newsDetail: nil
         )
-        XCTAssertEqual(snap.cache, .running)
-        XCTAssertEqual(snap.cacheProgress, 0.45)
-        XCTAssertEqual(snap.cacheDetail, "恢复书籍状态 (12/48)")
-
-        let labelWithDetail = ColdStartReadiness.rowLabel(
-            kind: .cache,
-            state: .running,
-            cacheDetail: snap.cacheDetail
+        XCTAssertEqual(
+            ColdStartReadiness.technicalDetail(cache),
+            "恢复书籍状态 (12/48)"
         )
-        XCTAssertEqual(labelWithDetail, "缓存加载中 · 恢复书籍状态 (12/48)")
 
-        let labelWithoutDetail = ColdStartReadiness.rowLabel(
-            kind: .cache,
-            state: .running,
-            cacheDetail: nil
+        let cachePlain = ColdStartReadiness.merge(
+            engineDone: true,
+            data: "done",
+            cache: "running",
+            news: "pending",
+            newsDetail: nil
         )
-        XCTAssertEqual(labelWithoutDetail, "缓存加载中")
+        XCTAssertEqual(ColdStartReadiness.technicalDetail(cachePlain), "正在加载缓存")
+
+        XCTAssertEqual(
+            ColdStartReadiness.technicalDetail(cachePlain, launchError: "无法连接"),
+            "无法连接"
+        )
     }
 }

@@ -25,6 +25,8 @@ struct BookSummary: Codable, Identifiable, Hashable {
     var processing_kind: String?
     var index_status: String?
     var ingest_error: String?
+    /// nil = unknown (may probe); false = confirmed none; true = saved cover.
+    var has_cover: Bool?
     /// Local overlay only — not decoded from the API.
     var readingPercent: Double? = nil
 
@@ -34,6 +36,7 @@ struct BookSummary: Codable, Identifiable, Hashable {
         case total_char_count, chunk_target_chars, summary_ready_count, summary_total_count, chunker_version
         case language, target_language, summarize_active, summarize_state
         case summarize_queued_count, summary_tier, processing_kind, index_status, ingest_error
+        case has_cover
     }
 
     init(
@@ -61,6 +64,7 @@ struct BookSummary: Codable, Identifiable, Hashable {
         processing_kind: String? = nil,
         index_status: String? = nil,
         ingest_error: String? = nil,
+        has_cover: Bool? = nil,
         readingPercent: Double? = nil
     ) {
         self.id = id
@@ -87,6 +91,7 @@ struct BookSummary: Codable, Identifiable, Hashable {
         self.processing_kind = processing_kind
         self.index_status = index_status
         self.ingest_error = ingest_error
+        self.has_cover = has_cover
         self.readingPercent = readingPercent
     }
 
@@ -124,6 +129,7 @@ struct BookSummary: Codable, Identifiable, Hashable {
         processing_kind = try c.decodeIfPresent(String.self, forKey: .processing_kind)
         index_status = try c.decodeIfPresent(String.self, forKey: .index_status)
         ingest_error = try c.decodeIfPresent(String.self, forKey: .ingest_error)
+        has_cover = try c.decodeIfPresent(Bool.self, forKey: .has_cover)
         readingPercent = nil
     }
 
@@ -150,6 +156,7 @@ struct BookSummary: Codable, Identifiable, Hashable {
         summaryTotal > 0 && summaryReady >= summaryTotal
     }
 
+    /// Progress restore/record total — segment rows only.
     var readingTotal: Int {
         max(segment_count ?? 0, 0)
     }
@@ -766,6 +773,18 @@ struct SegmentCatalogPage: Codable {
     let has_more_after: Bool?
 }
 
+struct SegmentIllustration: Codable, Hashable, Identifiable {
+    let asset_id: String
+    let char_offset: Int
+    let alt: String?
+    let url: String?
+    let width: Int?
+    let height: Int?
+    let mime: String?
+
+    var id: String { asset_id }
+}
+
 struct SegmentRow: Codable, Identifiable, Hashable {
     let id: String
     let idx: Int
@@ -783,12 +802,18 @@ struct SegmentRow: Codable, Identifiable, Hashable {
     var retry_count: Int?
     var summary_duration_s: Double?
     var summary_llm_attempts: Int?
+    /// Cumulative summarize job failures; drives relaxed quality gate after threshold.
+    var summary_failure_total: Int? = nil
+    /// True when the ready summary was accepted under the relaxed quality gate.
+    var summary_quality_relaxed: Bool? = nil
     /// Slim catalog line from GET /segments. Not the full summary_json.
     var summary_preview: String? = nil
     /// Structured-point titles from GET /segments. Not bullet bodies.
     var bullet_labels: [String]? = nil
     /// Part/chapter titles for the catalog tree. At most two items.
     var heading_path: [String]? = nil
+    /// EPUB inline illustrations for original-text mode (offsets into raw_text).
+    var illustrations: [SegmentIllustration]? = nil
 }
 
 struct SegmentBoundaryCandidate: Codable, Hashable {
@@ -829,6 +854,8 @@ struct SegmentSummaryDetail: Codable {
     var label: String?
     var anchor_label: String?
     var summary_status: String?
+    var summary_failure_total: Int?
+    var summary_quality_relaxed: Bool?
     var summary_provider: String?
     var summary_model: String?
     var summary_tier: String?
@@ -1048,6 +1075,15 @@ struct ResourceStatus: Codable {
         let trimmed = message?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         return trimmed.isEmpty ? (ready ? "已就绪" : "未就绪") : trimmed
     }
+}
+
+struct CursorSdkStatus: Codable {
+    let installed: Bool
+    let importable: Bool
+    let status: String
+    let message: String
+    let vendor_dir: String
+    let progress: String?
 }
 
 struct ContextProbeStep: Codable, Equatable {
@@ -1272,7 +1308,20 @@ struct NewsSource: Codable, Identifiable, Hashable {
 struct NewsBrief: Codable {
     let date: String
     let count: Int
+    let last_synced_at: String?
     let articles: [NewsArticleCard]
+
+    enum CodingKeys: String, CodingKey {
+        case date, count, last_synced_at, articles
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        date = try c.decode(String.self, forKey: .date)
+        count = try c.decode(Int.self, forKey: .count)
+        last_synced_at = try c.decodeIfPresent(String.self, forKey: .last_synced_at)
+        articles = try c.decodeIfPresent([NewsArticleCard].self, forKey: .articles) ?? []
+    }
 }
 
 /// HTTP client for lumina-core. Not MainActor-isolated: network I/O and JSON
@@ -1380,6 +1429,16 @@ final class CoreClient: ObservableObject {
             author: nil,
             created_at: nil
         )
+    }
+
+    /// Cover image for grid cards. nil has_cover still probes (legacy imports).
+    func coverURL(for book: BookSummary) -> URL? {
+        if book.has_cover == false { return nil }
+        return url(path: "/books/\(book.id)/cover")
+    }
+
+    func assetURL(bookId: String, assetId: String) -> URL {
+        url(path: "/books/\(bookId)/assets/\(assetId)")
     }
 
     private func postAllowingConflict(path: String, body: Data, importPath: String) async throws -> Data {
@@ -1783,6 +1842,16 @@ final class CoreClient: ObservableObject {
         return try await Self.decode(ResourceStatus.self, from: data)
     }
 
+    func fetchCursorSdkStatus() async throws -> CursorSdkStatus {
+        let data = try await get(path: "/settings/cursor-sdk/status")
+        return try await Self.decode(CursorSdkStatus.self, from: data)
+    }
+
+    func installCursorSdk() async throws -> CursorSdkStatus {
+        let data = try await post(path: "/settings/cursor-sdk/install", body: Data("{}".utf8))
+        return try await Self.decode(CursorSdkStatus.self, from: data)
+    }
+
     func startContextProbe(
         resourceId: String,
         model: String? = nil,
@@ -1926,10 +1995,22 @@ final class CoreClient: ObservableObject {
         return try await Self.decode(Resp.self, from: data).results
     }
 
-    func searchOriginal(bookId: String, query: String) async throws -> OriginalSearchResponse {
+    func searchOriginal(
+        bookId: String,
+        query: String,
+        afterSegment: Int? = nil,
+        afterStart: Int? = nil
+    ) async throws -> OriginalSearchResponse {
+        var items = [URLQueryItem(name: "q", value: query)]
+        if let afterSegment {
+            items.append(URLQueryItem(name: "after_segment", value: String(afterSegment)))
+        }
+        if let afterStart {
+            items.append(URLQueryItem(name: "after_start", value: String(afterStart)))
+        }
         let data = try await get(
             path: "/books/\(bookId)/original-search",
-            queryItems: [URLQueryItem(name: "q", value: query)]
+            queryItems: items
         )
         return try await Self.decode(OriginalSearchResponse.self, from: data)
     }

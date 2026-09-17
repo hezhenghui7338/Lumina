@@ -35,4 +35,6 @@ def sync_all(conn: sqlite3.Connection) -> list[SyncResult]:
             results.append(
                 SyncResult(source_url=url, fetched=0, inserted=0, error=str(exc))
             )
+    # Wall-clock of this sync attempt (success or partial failure); powers Tab UI.
+    store.set_last_synced_at()
     return results

@@ -104,7 +104,7 @@ def test_test_macos_recipe_cannot_launch_two_app_hosts():
 
 
 def test_windows_reader_avoids_missing_winui_symbols():
-    """WinUI VirtualKey has no Oem*Brackets; SliderSnapsTo lives in Primitives."""
+    """WinUI VirtualKey has no Oem*Brackets; turn uses ←/→; SliderSnapsTo in Primitives."""
     text = (
         ROOT
         / "apps"
@@ -116,8 +116,10 @@ def test_windows_reader_avoids_missing_winui_symbols():
     ).read_text(encoding="utf-8")
     assert "OemOpenBrackets" not in text
     assert "OemCloseBrackets" not in text
+    assert "CharacterReceived" not in text
     assert "Microsoft.UI.Xaml.Controls.Primitives" in text
-    assert "CharacterReceived" in text
+    assert "VirtualKey.Left" in text
+    assert "VirtualKey.Right" in text
 
 
 def test_windows_probe_overrides_switch_has_semicolon():

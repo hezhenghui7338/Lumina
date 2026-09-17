@@ -46,6 +46,7 @@ _CONTEXT_GUIDANCE = """以下是当前段之前的摘要背景，用于消解人
 背景使用规则：
 - 只总结当前待摘要段落；不能把背景中的事件当作当前段新发生的内容
 - sentences 应承接最近前文的叙事线程（语气、未决线索、情节走向），使相邻段摘要连读更顺；有背景时避免机械起笔「本段交代…」
+- sentences 承接前文语气即可，不得把背景里已写过的情节再拆成多段复述；本段新事实单线优先 1 段，多语义线再分项
 - bullets / notes / follow_ups 仍只写本段新信息，不得用背景凑条数
 - 不得仅因段首出现某个人名，就把后文的“我”或其他代词认定为此人
 - 第一人称「我」须用「我」转述，禁止写成「叙述者」「阅读助手」或任何系统身份
@@ -237,6 +238,7 @@ async def summarize_segment(
     prompts: PromptsConfig | None = None,
     background_context: str | None = None,
     target_language: str = "zh-CN",
+    relaxed_quality: bool = False,
 ) -> SummarizeResult:
     resolved = prompts or load_prompts_config()
     prompt_template, text_limit, default_retries, min_body_chars, text_only, use_minimal_parse, provider_kind = (
@@ -311,11 +313,12 @@ async def summarize_segment(
                 review_prompt=resolved.segment_quality or DEFAULT_SEGMENT_QUALITY,
                 summary_tier=summary_tier,
                 target_language=target_language,
+                relaxed=relaxed_quality,
             )
             if quality.review_duration_s:
                 llm_duration = round(llm_duration + quality.review_duration_s, 2)
                 total_llm_duration += quality.review_duration_s
-            if quality_should_reject(quality.issues):
+            if quality_should_reject(quality.issues, relaxed=relaxed_quality):
                 raise SummaryQualityError(quality.issues)
             return SummarizeResult(
                 summary=summary,
@@ -331,10 +334,17 @@ async def summarize_segment(
             )
         if attempt + 1 < retries and last_err is not None:
             if isinstance(last_err, SummaryQualityError):
+                redundant_hint = ""
+                if any(issue.code == "sentences_redundant" for issue in last_err.issues):
+                    redundant_hint = (
+                        "上次 sentences 句间重复。请改为默认 1 句概括本段全部主线；"
+                        "若确有两条互不重叠主线才用 2 句；细节写入 bullets，勿拆句复述。"
+                    )
                 prompt = (
                     base_prompt
                     + f"\n\n上次摘要未通过质量检查：{last_err}。"
-                    "请逐项重写有问题的句子或要点，确保文字完整、清晰、无乱码；"
+                    + redundant_hint
+                    + "请逐项重写有问题的句子或要点，确保文字完整、清晰、无乱码；"
                     "仍须严格输出规定的单个 JSON 对象，不要解释。"
                 )
             elif use_minimal_parse:

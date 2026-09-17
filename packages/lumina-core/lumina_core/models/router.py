@@ -7,6 +7,7 @@ import logging
 import re
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
+from pathlib import Path
 from typing import Any, Literal
 
 import httpx
@@ -17,8 +18,14 @@ from lumina_core.config import (
     OLLAMA_KEEP_ALIVE,
     ProfileRoute,
     SUMMARY_SEGMENT_TIMEOUT_SECONDS,
+    default_data_dir,
 )
 from lumina_core.models.concurrency import ResourceBusyError, ResourceConcurrencyGate
+from lumina_core.models.cursor_sdk_adapter import (
+    cursor_chat,
+    cursor_chat_stream,
+    cursor_complete,
+)
 from lumina_core.models.openai_compat import openai_compat_client_base, openai_compat_paths
 from lumina_core.ollama_setup import is_local_base_url
 
@@ -50,10 +57,12 @@ def _format_chain_failure(
         detail = str(last_error) if last_error else "未知错误"
     hints: list[str] = []
 
-    if "cursor base_url not set" in detail:
-        hints.append("Cursor 需配置 OpenAI 兼容 Base URL（官方暂无原生 chat/completions endpoint）")
+    if "cursor sdk not installed" in detail.lower() or "cursor_sdk" in detail.lower():
+        hints.append("请在设置中下载 Cursor SDK（不随安装包分发，按需安装到用户数据目录）")
     if "cursor api_key not set" in detail:
         hints.append("Cursor API Key 未配置")
+    if "cursor base_url not set" in detail:
+        hints.append("Cursor 已改用官方 SDK，无需 Base URL；请配置 API Key 并下载 SDK")
     if "base_url not set" in detail and "cursor base_url" not in detail:
         hints.append("请在设置中配置对应资源的 Base URL")
     if "api_key not set" in detail and "cursor api_key" not in detail:
@@ -85,8 +94,10 @@ class ProfileModelRouter:
         models: ModelsConfig,
         *,
         gate: ResourceConcurrencyGate | None = None,
+        data_dir: Path | None = None,
     ) -> None:
         self.models = models
+        self._data_dir = data_dir
         self._clients: dict[str, httpx.AsyncClient] = {}
         self._gate = gate if gate is not None else ResourceConcurrencyGate(models.resources)
         self.last_resource_id: str | None = None
@@ -96,6 +107,11 @@ class ProfileModelRouter:
         self.last_usage: dict[str, int] | None = None
         self.last_duration_ms: int | None = None
         self.last_tps: float | None = None
+
+    def _cursor_data_dir(self) -> Path:
+        if self._data_dir is not None:
+            return Path(self._data_dir)
+        return default_data_dir()
 
     @property
     def gate(self) -> ResourceConcurrencyGate:
@@ -728,6 +744,12 @@ class ProfileModelRouter:
                     timeout=timeout,
                     profile=profile,
                 )
+            if resource.provider == "cursor":
+                return await self._cursor_complete(
+                    resource,
+                    prompt,
+                    json_mode=json_mode,
+                )
             self._require_base_url(resource)
             self._require_api_key(resource)
             return await self._openai_complete(
@@ -754,6 +776,12 @@ class ProfileModelRouter:
                     json_mode=json_mode,
                     timeout=timeout,
                 )
+            if resource.provider == "cursor":
+                return await self._cursor_chat(
+                    resource,
+                    messages,
+                    json_mode=json_mode,
+                )
             self._require_base_url(resource)
             self._require_api_key(resource)
             return await self._openai_chat(
@@ -779,6 +807,12 @@ class ProfileModelRouter:
                 json_mode=json_mode,
                 timeout=timeout,
             )
+        if resource.provider == "cursor":
+            return self._cursor_chat_stream(
+                resource,
+                messages,
+                json_mode=json_mode,
+            )
         self._require_base_url(resource)
         self._require_api_key(resource)
         return self._openai_chat_stream(
@@ -797,6 +831,76 @@ class ProfileModelRouter:
     def _require_base_url(resource: ModelResource) -> None:
         if not (resource.base_url or "").strip():
             raise RuntimeError(f"{resource.provider} base_url not set")
+
+    async def _cursor_complete(
+        self,
+        resource: ModelResource,
+        prompt: str,
+        *,
+        json_mode: bool,
+    ) -> str:
+        self._require_api_key(resource)
+        text, usage = await cursor_complete(
+            data_dir=self._cursor_data_dir(),
+            api_key=resource.api_key or "",
+            model=resource.model,
+            prompt=prompt,
+            json_mode=json_mode,
+        )
+        if usage:
+            self._set_usage(
+                prompt_tokens=usage.get("prompt_tokens"),
+                completion_tokens=usage.get("completion_tokens"),
+                total_tokens=usage.get("total_tokens"),
+            )
+        return text
+
+    async def _cursor_chat(
+        self,
+        resource: ModelResource,
+        messages: list[dict[str, str]],
+        *,
+        json_mode: bool,
+    ) -> str:
+        self._require_api_key(resource)
+        text, usage = await cursor_chat(
+            data_dir=self._cursor_data_dir(),
+            api_key=resource.api_key or "",
+            model=resource.model,
+            messages=messages,
+            json_mode=json_mode,
+        )
+        if usage:
+            self._set_usage(
+                prompt_tokens=usage.get("prompt_tokens"),
+                completion_tokens=usage.get("completion_tokens"),
+                total_tokens=usage.get("total_tokens"),
+            )
+        return text
+
+    async def _cursor_chat_stream(
+        self,
+        resource: ModelResource,
+        messages: list[dict[str, str]],
+        *,
+        json_mode: bool,
+    ) -> AsyncIterator[str]:
+        self._require_api_key(resource)
+        async for chunk, usage in cursor_chat_stream(
+            data_dir=self._cursor_data_dir(),
+            api_key=resource.api_key or "",
+            model=resource.model,
+            messages=messages,
+            json_mode=json_mode,
+        ):
+            if usage:
+                self._set_usage(
+                    prompt_tokens=usage.get("prompt_tokens"),
+                    completion_tokens=usage.get("completion_tokens"),
+                    total_tokens=usage.get("total_tokens"),
+                )
+            if chunk:
+                yield chunk
 
     def _ollama_payload(
         self,

@@ -74,6 +74,12 @@ struct NewsView: View {
                     Text("\(filteredArticles.count)/\(brief.count) 篇")
                         .font(.caption)
                         .foregroundStyle(LuminaTheme.textSecondary)
+                    if let synced = lastSyncedLabel(from: brief.last_synced_at) {
+                        Text(synced)
+                            .font(.caption)
+                            .foregroundStyle(LuminaTheme.textSecondary)
+                            .help("上次 RSS 同步完成时间")
+                    }
                 }
                 Button {
                     theme.decreaseReadingFont()
@@ -352,6 +358,7 @@ struct NewsView: View {
             NewsSkimPane(
                 article: article,
                 scale: theme.readingFontScale,
+                lineSpacingScale: theme.readingLineSpacingScale,
                 viewModel: skimViewModel,
                 onRetry: {
                     Task {
@@ -381,6 +388,34 @@ struct NewsView: View {
         if let s = article.meta["source"], !s.isEmpty { return s }
         if let s = article.source, !s.isEmpty { return s }
         return nil
+    }
+
+    private func lastSyncedLabel(from raw: String?) -> String? {
+        guard let raw, !raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return nil
+        }
+        if let date = Self.parseNewsTimestamp(raw) {
+            let formatter = DateFormatter()
+            formatter.locale = Locale(identifier: "zh_CN")
+            formatter.dateFormat = "yyyy-MM-dd HH:mm"
+            return "最近同步于 \(formatter.string(from: date))"
+        }
+        return "最近同步于 \(raw)"
+    }
+
+    private static func parseNewsTimestamp(_ raw: String) -> Date? {
+        let iso = ISO8601DateFormatter()
+        iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let d = iso.date(from: raw) { return d }
+        iso.formatOptions = [.withInternetDateTime]
+        if let d = iso.date(from: raw) { return d }
+        let fallback = DateFormatter()
+        fallback.locale = Locale(identifier: "en_US_POSIX")
+        fallback.timeZone = TimeZone(secondsFromGMT: 0)
+        fallback.dateFormat = "yyyy-MM-dd'T'HH:mm:ssXXXXX"
+        if let d = fallback.date(from: raw) { return d }
+        fallback.dateFormat = "yyyy-MM-dd'T'HH:mm:ss"
+        return fallback.date(from: raw)
     }
 
     private func loadSources() async {
@@ -572,6 +607,7 @@ final class NewsSkimViewModel: ObservableObject {
 struct NewsSkimPane: View {
     let article: NewsArticleCard
     let scale: Double
+    var lineSpacingScale: Double = ThemeManager.defaultReadingLineSpacingScale
     @ObservedObject var viewModel: NewsSkimViewModel
     var onRetry: () -> Void
 
@@ -604,16 +640,16 @@ struct NewsSkimPane: View {
            !markdown.isEmpty {
             llmSkimContent(markdown: markdown)
         } else if article.needsLLMSkim, viewModel.loadState == .loading {
-            NewsSkimCard(article: article, scale: scale, includeFooter: false)
+            NewsSkimCard(article: article, scale: scale, lineSpacingScale: lineSpacingScale, includeFooter: false)
             SummarySkimSkeleton(scale: scale)
             skimLoadingRow
             NewsSkimFooter(article: article, scale: scale)
         } else if article.needsLLMSkim, viewModel.loadState == .error {
-            NewsSkimCard(article: article, scale: scale, includeFooter: false)
+            NewsSkimCard(article: article, scale: scale, lineSpacingScale: lineSpacingScale, includeFooter: false)
             skimErrorRow
             NewsSkimFooter(article: article, scale: scale)
         } else {
-            NewsSkimCard(article: article, scale: scale)
+            NewsSkimCard(article: article, scale: scale, lineSpacingScale: lineSpacingScale)
         }
     }
 
@@ -633,6 +669,7 @@ struct NewsSkimPane: View {
         NewsStructuredSummaryView(
             markdown: markdown,
             scale: scale,
+            lineSpacingScale: lineSpacingScale,
             onFollowUp: nil,
             showsBackground: true
         )
@@ -672,6 +709,7 @@ struct NewsSkimPane: View {
 struct NewsSkimCard: View {
     let article: NewsArticleCard
     var scale: Double = 1.0
+    var lineSpacingScale: Double = ThemeManager.defaultReadingLineSpacingScale
     var includeFooter: Bool = true
 
     private func scaled(_ base: CGFloat) -> CGFloat {
@@ -695,7 +733,7 @@ struct NewsSkimCard: View {
                 Text(one)
                     .font(.system(size: scaled(LuminaTheme.summaryLeadSize), weight: .regular))
                     .foregroundStyle(LuminaTheme.textPrimary)
-                    .lineSpacing(scaled(LuminaTheme.summaryLeadLineSpacing))
+                    .lineSpacing(scaled(LuminaTheme.summaryLeadLineSpacing) * CGFloat(lineSpacingScale))
                     .fixedSize(horizontal: false, vertical: true)
                     .textSelection(.enabled)
             }
@@ -705,7 +743,7 @@ struct NewsSkimCard: View {
                     Text(detail)
                         .font(.system(size: scaled(LuminaTheme.summaryBulletSize), weight: .regular))
                         .foregroundStyle(LuminaTheme.textSecondary)
-                        .lineSpacing(scaled(LuminaTheme.summaryBulletLineSpacing))
+                        .lineSpacing(scaled(LuminaTheme.summaryBulletLineSpacing) * CGFloat(lineSpacingScale))
                         .fixedSize(horizontal: false, vertical: true)
                         .textSelection(.enabled)
                 }
@@ -715,7 +753,12 @@ struct NewsSkimCard: View {
                 skimSection("主要观点") {
                     VStack(alignment: .leading, spacing: LuminaTheme.summaryBulletItemSpacing) {
                         ForEach(Array(article.viewpoints.enumerated()), id: \.offset) { _, vp in
-                            NewsSkimBulletRow(text: vp, italic: false, scale: scale)
+                            NewsSkimBulletRow(
+                                text: vp,
+                                italic: false,
+                                scale: scale,
+                                lineSpacingScale: lineSpacingScale
+                            )
                         }
                     }
                 }
@@ -725,7 +768,12 @@ struct NewsSkimCard: View {
                 skimSection("金句") {
                     VStack(alignment: .leading, spacing: LuminaTheme.summaryBulletItemSpacing) {
                         ForEach(Array(article.quotes.enumerated()), id: \.offset) { _, q in
-                            NewsSkimBulletRow(text: q, italic: true, scale: scale)
+                            NewsSkimBulletRow(
+                                text: q,
+                                italic: true,
+                                scale: scale,
+                                lineSpacingScale: lineSpacingScale
+                            )
                         }
                     }
                 }
@@ -808,6 +856,7 @@ struct NewsSkimBulletRow: View {
     let text: String
     var italic: Bool = false
     var scale: Double = 1.0
+    var lineSpacingScale: Double = ThemeManager.defaultReadingLineSpacingScale
 
     private func scaled(_ base: CGFloat) -> CGFloat {
         base * CGFloat(scale)
@@ -824,7 +873,7 @@ struct NewsSkimBulletRow: View {
             Text(text)
                 .font(bulletFont)
                 .foregroundStyle(LuminaTheme.textPrimary)
-                .lineSpacing(scaled(LuminaTheme.summaryBulletLineSpacing))
+                .lineSpacing(scaled(LuminaTheme.summaryBulletLineSpacing) * CGFloat(lineSpacingScale))
                 .fixedSize(horizontal: false, vertical: true)
                 .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)

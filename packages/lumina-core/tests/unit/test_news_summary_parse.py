@@ -138,24 +138,42 @@ def test_parse_feed_prefers_one_liner():
     assert articles[0].score_hint == 88.0
 
 
-def test_rank_prefers_higher_score_hint():
-    low = {
+def test_rank_prefers_newer_published_at():
+    older = {
         "id": "1",
-        "title": "Low",
+        "title": "Older",
         "published_at": "2024-01-01T00:00:00Z",
-        "synced_at": "2024-01-01T00:00:00Z",
-        "score_hint": 40,
+        "synced_at": "2024-01-02T00:00:00Z",
+        "score_hint": 99,
     }
-    high = {
+    newer = {
         "id": "2",
-        "title": "High",
-        "published_at": "2024-01-01T00:00:00Z",
+        "title": "Newer",
+        "published_at": "2024-01-03T00:00:00Z",
         "synced_at": "2024-01-01T00:00:00Z",
-        "score_hint": 90,
+        "score_hint": 10,
     }
-    ranked = rank_articles([low, high])
+    ranked = rank_articles([older, newer])
     assert ranked[0].article["id"] == "2"
-    assert score_article(high).score > score_article(low).score
+    assert ranked[1].article["id"] == "1"
+
+
+def test_rank_falls_back_to_synced_at():
+    with_pub = {
+        "id": "1",
+        "title": "Has pub",
+        "published_at": "2024-01-01T00:00:00Z",
+        "synced_at": "2024-01-10T00:00:00Z",
+    }
+    sync_only = {
+        "id": "2",
+        "title": "Sync only",
+        "published_at": "",
+        "synced_at": "2024-01-05T00:00:00Z",
+    }
+    ranked = rank_articles([with_pub, sync_only])
+    assert [r.article["id"] for r in ranked] == ["2", "1"]
+    assert score_article(with_pub).reasons == []
 
 
 def test_heuristic_summary_has_sections():

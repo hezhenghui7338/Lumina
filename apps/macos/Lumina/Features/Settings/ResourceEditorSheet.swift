@@ -39,6 +39,8 @@ struct ResourceEditorSheet: View {
     @State private var probeFeedback: String?
     @State private var contextProbe: ContextProbeStatus?
     @State private var probingContext = false
+    @State private var cursorSdkStatus: CursorSdkStatus?
+    @State private var installingCursorSdk = false
 
     private var kind: ModelProviderKind {
         ModelProviderKind.from(provider: resource.provider, baseURL: resource.base_url)
@@ -266,7 +268,13 @@ struct ResourceEditorSheet: View {
                     Button(refreshingStatus ? "测试中…" : "测试连通性") {
                         Task { await testConnectivity() }
                     }
-                    .disabled(refreshingStatus || pullingModel)
+                    .disabled(refreshingStatus || pullingModel || installingCursorSdk)
+                    if resource.provider == "cursor" {
+                        Button(installingCursorSdk ? "下载中…" : cursorSdkInstallButtonTitle) {
+                            Task { await installCursorSdk() }
+                        }
+                        .disabled(installingCursorSdk || refreshingStatus)
+                    }
                     if resource.provider == "ollama" {
                         if !OllamaSetupHelper.isInstalled() {
                             Button("安装 Ollama") { OllamaSetupHelper.openDownloadPage() }
@@ -315,9 +323,49 @@ struct ResourceEditorSheet: View {
     private func refreshResourceStatus() async {
         refreshingStatus = true
         defer { refreshingStatus = false }
+        if resource.provider == "cursor" {
+            cursorSdkStatus = try? await core.fetchCursorSdkStatus()
+        }
         if let status = try? await core.fetchResourceStatus(resourceId: resource.id) {
             resourceStatus = status
             if status.ready { pullingModel = false }
+        }
+    }
+
+    private var cursorSdkInstallButtonTitle: String {
+        if cursorSdkStatus?.importable == true {
+            return "更新 Cursor SDK"
+        }
+        return "下载 Cursor SDK"
+    }
+
+    private func installCursorSdk() async {
+        installingCursorSdk = true
+        probeFeedback = nil
+        defer { installingCursorSdk = false }
+        do {
+            _ = try await core.installCursorSdk()
+            await pollCursorSdkInstall()
+            await refreshResourceStatus()
+            if cursorSdkStatus?.importable == true {
+                probeFeedback = "Cursor SDK 已就绪"
+            } else {
+                probeFeedback = cursorSdkStatus?.message ?? "下载未完成"
+            }
+        } catch {
+            probeFeedback = error.localizedDescription
+        }
+    }
+
+    private func pollCursorSdkInstall() async {
+        for _ in 0..<120 {
+            if Task.isCancelled { return }
+            guard let status = try? await core.fetchCursorSdkStatus() else { return }
+            cursorSdkStatus = status
+            if status.status != "installing" {
+                return
+            }
+            try? await Task.sleep(nanoseconds: 500_000_000)
         }
     }
 

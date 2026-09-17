@@ -357,6 +357,7 @@ def adaptive_merge(
         atoms,
         max_chars=max_chars,
         min_chars=min_chars,
+        yielder=coop,
     )
     return _enforce_minimum_spans(
         spans,
@@ -365,6 +366,7 @@ def adaptive_merge(
         text_length=len(text),
         max_chars=max_chars,
         min_chars=min_chars,
+        yielder=coop,
     )
 
 
@@ -821,6 +823,7 @@ def _merge_noise_fragments(
     *,
     max_chars: int,
     min_chars: int,
+    yielder: GilYielder | None = None,
 ) -> list[tuple[int, int]]:
     """Pack TOC/metadata crumbs first, then rebalance leftovers to min_chars."""
     if len(spans) < 2:
@@ -832,6 +835,7 @@ def _merge_noise_fragments(
         hard_starts=hard_starts,
         max_chars=max_chars,
         min_chars=min_chars,
+        yielder=yielder,
     )
     return _rebalance_toc_spans(
         packed,
@@ -839,6 +843,7 @@ def _merge_noise_fragments(
         hard_starts=hard_starts,
         max_chars=max_chars,
         min_chars=min_chars,
+        yielder=yielder,
     )
 
 
@@ -849,11 +854,14 @@ def _pack_synthetic_fragments(
     hard_starts: set[int],
     max_chars: int,
     min_chars: int,
+    yielder: GilYielder | None = None,
 ) -> list[tuple[int, int]]:
     tiny_limit = min(120, max(24, min_chars // 10))
     role_hard = _role_hard_starts(atoms)
     out: list[tuple[int, int]] = []
-    for start, end in spans:
+    for index, (start, end) in enumerate(spans):
+        if yielder is not None and index % 32 == 0:
+            yielder.bump(yielder.every)
         length = end - start
         synthetic_metadata = any(
             atom.text.lstrip().startswith("## [")
@@ -906,10 +914,13 @@ def _rebalance_toc_spans(
     hard_starts: set[int],
     max_chars: int,
     min_chars: int,
+    yielder: GilYielder | None = None,
 ) -> list[tuple[int, int]]:
     atom_starts = sorted({atom.start for atom in atoms})
     balanced: list[tuple[int, int]] = []
-    for start, end in spans:
+    for index, (start, end) in enumerate(spans):
+        if yielder is not None and index % 32 == 0:
+            yielder.bump(yielder.every)
         if (
             balanced
             and end - start < min_chars
@@ -943,6 +954,7 @@ def _enforce_minimum_spans(
     text_length: int,
     max_chars: int,
     min_chars: int,
+    yielder: GilYielder | None = None,
 ) -> list[tuple[int, int]]:
     """Merge short spans to ≥200 (forward, may cross chapter) and rebalance crumbs."""
     packer_floor = _segment_floor(min_chars, max_chars)
@@ -956,7 +968,11 @@ def _enforce_minimum_spans(
 
     out = list(spans)
     i = 0
+    steps = 0
     while i < len(out):
+        steps += 1
+        if yielder is not None and steps % 32 == 0:
+            yielder.bump(yielder.every)
         start, end = out[i]
         floor = packer_floor if _span_has_toc(atoms, start, end) else fragment_floor
         length = end - start
@@ -1145,6 +1161,7 @@ def _enforce_minimum_spans(
             floor=expand_floor,
             max_chars=max_chars,
             hard_starts=None if needs_hard else hard_starts,
+            yielder=yielder,
         )
         current = out[expanded_left : expanded_right + 1]
         if replacement == current:
@@ -1165,6 +1182,7 @@ def _balanced_partition(
     floor: int,
     max_chars: int,
     hard_starts: set[int] | None = None,
+    yielder: GilYielder | None = None,
 ) -> list[tuple[int, int]]:
     interior = sorted(point for point in (hard_starts or ()) if start < point < end)
     if interior:
@@ -1183,6 +1201,7 @@ def _balanced_partition(
                     floor=floor,
                     max_chars=max_chars,
                     hard_starts=None,
+                    yielder=yielder,
                 )
             )
         return out
@@ -1190,7 +1209,9 @@ def _balanced_partition(
         return [(start, end)]
     atom_starts = [atom.start for atom in atoms if start < atom.start < end]
     paragraph_points = {
-        point for point in _paragraph_cut_offsets(text, start, end) if start < point < end
+        point
+        for point in _paragraph_cut_offsets(text, start, end, yielder=yielder)
+        if start < point < end
     }
     sentence_points = {
         point for point in _sentence_cut_offsets(text, start, end) if start < point < end

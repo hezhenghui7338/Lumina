@@ -36,6 +36,10 @@
 		A10005D1 /* UsageGuideCopy.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10005D0 /* UsageGuideCopy.swift */; };
 		A10005D3 /* UsageGuideView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10005D2 /* UsageGuideView.swift */; };
 		A10005D5 /* UsageGuideCopyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10005D4 /* UsageGuideCopyTests.swift */; };
+		A1000611 /* ShortcutCatalog.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000610 /* ShortcutCatalog.swift */; };
+		A1000613 /* ShortcutStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000612 /* ShortcutStore.swift */; };
+		A1000615 /* ShortcutsSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000614 /* ShortcutsSettingsView.swift */; };
+		A1000617 /* ShortcutStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000616 /* ShortcutStoreTests.swift */; };
 		A1000585 /* OnboardingTourPolicyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000584 /* OnboardingTourPolicyTests.swift */; };
 		A1000115 /* OllamaSetupHelper.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000215 /* OllamaSetupHelper.swift */; };
 		A1000117 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A1000218 /* Assets.xcassets */; };
@@ -90,6 +94,8 @@
 		A1000291 /* LibrarySelectionToolbar.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000290 /* LibrarySelectionToolbar.swift */; };
 		A1000293 /* LibrarySidebarVisibilityPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000292 /* LibrarySidebarVisibilityPolicy.swift */; };
 		A1000295 /* LibrarySidebarVisibilityPolicyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000294 /* LibrarySidebarVisibilityPolicyTests.swift */; };
+		A1000591 /* BookshelfGridScrollPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000590 /* BookshelfGridScrollPolicy.swift */; };
+		A1000593 /* BookshelfGridScrollPolicyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000592 /* BookshelfGridScrollPolicyTests.swift */; };
 		A1000320 /* BookCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000310 /* BookCard.swift */; };
 		A1000321 /* BookshelfView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000311 /* BookshelfView.swift */; };
 		A1000322 /* LibraryCollectionSidebar.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000312 /* LibraryCollectionSidebar.swift */; };
@@ -102,7 +108,9 @@
 		A1000391 /* SummarizeActivityChip.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000390 /* SummarizeActivityChip.swift */; };
 		A1000393 /* SummarizeActivityChipTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000392 /* SummarizeActivityChipTests.swift */; };
 		A1000398 /* SegmentHeaderLayoutPolicyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000399 /* SegmentHeaderLayoutPolicyTests.swift */; };
+		A100039A /* OriginalTextIllustrationLayoutTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100039B /* OriginalTextIllustrationLayoutTests.swift */; };
 		A1000461 /* ListenScript.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000460 /* ListenScript.swift */; };
+		A1000463 /* ListenFollowHighlight.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000462 /* ListenFollowHighlight.swift */; };
 		A1000443 /* ListenPreferences.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000442 /* ListenPreferences.swift */; };
 		A1000445 /* TTSEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000444 /* TTSEngine.swift */; };
 		A1000447 /* ListenSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000446 /* ListenSession.swift */; };
@@ -148,6 +156,10 @@
 		A10005D0 /* UsageGuideCopy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UsageGuideCopy.swift; sourceTree = "<group>"; };
 		A10005D2 /* UsageGuideView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UsageGuideView.swift; sourceTree = "<group>"; };
 		A10005D4 /* UsageGuideCopyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UsageGuideCopyTests.swift; sourceTree = "<group>"; };
+		A1000610 /* ShortcutCatalog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShortcutCatalog.swift; sourceTree = "<group>"; };
+		A1000612 /* ShortcutStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShortcutStore.swift; sourceTree = "<group>"; };
+		A1000614 /* ShortcutsSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShortcutsSettingsView.swift; sourceTree = "<group>"; };
+		A1000616 /* ShortcutStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShortcutStoreTests.swift; sourceTree = "<group>"; };
 		A1000584 /* OnboardingTourPolicyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingTourPolicyTests.swift; sourceTree = "<group>"; };
 		A1000215 /* OllamaSetupHelper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OllamaSetupHelper.swift; sourceTree = "<group>"; };
 		A1000217 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
@@ -205,6 +217,8 @@
 		A1000290 /* LibrarySelectionToolbar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibrarySelectionToolbar.swift; sourceTree = "<group>"; };
 		A1000292 /* LibrarySidebarVisibilityPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibrarySidebarVisibilityPolicy.swift; sourceTree = "<group>"; };
 		A1000294 /* LibrarySidebarVisibilityPolicyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibrarySidebarVisibilityPolicyTests.swift; sourceTree = "<group>"; };
+		A1000590 /* BookshelfGridScrollPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BookshelfGridScrollPolicy.swift; sourceTree = "<group>"; };
+		A1000592 /* BookshelfGridScrollPolicyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BookshelfGridScrollPolicyTests.swift; sourceTree = "<group>"; };
 		A1000310 /* BookCard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BookCard.swift; sourceTree = "<group>"; };
 		A1000311 /* BookshelfView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BookshelfView.swift; sourceTree = "<group>"; };
 		A1000312 /* LibraryCollectionSidebar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryCollectionSidebar.swift; sourceTree = "<group>"; };
@@ -217,7 +231,9 @@
 		A1000390 /* SummarizeActivityChip.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SummarizeActivityChip.swift; sourceTree = "<group>"; };
 		A1000392 /* SummarizeActivityChipTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SummarizeActivityChipTests.swift; sourceTree = "<group>"; };
 		A1000399 /* SegmentHeaderLayoutPolicyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SegmentHeaderLayoutPolicyTests.swift; sourceTree = "<group>"; };
+		A100039B /* OriginalTextIllustrationLayoutTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OriginalTextIllustrationLayoutTests.swift; sourceTree = "<group>"; };
 		A1000460 /* ListenScript.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ListenScript.swift; sourceTree = "<group>"; };
+		A1000462 /* ListenFollowHighlight.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ListenFollowHighlight.swift; sourceTree = "<group>"; };
 		A1000442 /* ListenPreferences.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ListenPreferences.swift; sourceTree = "<group>"; };
 		A1000444 /* TTSEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TTSEngine.swift; sourceTree = "<group>"; };
 		A1000446 /* ListenSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ListenSession.swift; sourceTree = "<group>"; };
@@ -293,10 +309,21 @@
 				A1000517 /* Shared */,
 				A1000509 /* Search */,
 				A1000510 /* Settings */,
+				A1000519 /* Shortcuts */,
 				A1000518 /* Tasks */,
 				A1000511 /* Onboarding */,
 			);
 			path = Features;
+			sourceTree = "<group>";
+		};
+		A1000519 /* Shortcuts */ = {
+			isa = PBXGroup;
+			children = (
+				A1000610 /* ShortcutCatalog.swift */,
+				A1000612 /* ShortcutStore.swift */,
+				A1000614 /* ShortcutsSettingsView.swift */,
+			);
+			path = Shortcuts;
 			sourceTree = "<group>";
 		};
 		A1000505 /* Services */ = {
@@ -346,6 +373,7 @@
 			isa = PBXGroup;
 			children = (
 				A1000460 /* ListenScript.swift */,
+				A1000462 /* ListenFollowHighlight.swift */,
 				A1000442 /* ListenPreferences.swift */,
 				A1000444 /* TTSEngine.swift */,
 				A1000446 /* ListenSession.swift */,
@@ -447,6 +475,7 @@
 				A1000223 /* LibraryViewModel.swift */,
 				A1000290 /* LibrarySelectionToolbar.swift */,
 				A1000292 /* LibrarySidebarVisibilityPolicy.swift */,
+				A1000590 /* BookshelfGridScrollPolicy.swift */,
 				A1000314 /* LibraryChromeActionPolicy.swift */,
 				A1000570 /* ImportConflictPolicy.swift */,
 				A1000574 /* LibraryImportPolicy.swift */,
@@ -482,17 +511,20 @@
 				A10005E2 /* SegmentBoundaryOffsetTests.swift */,
 				A1000542 /* BookCardCoverTests.swift */,
 				A1000294 /* LibrarySidebarVisibilityPolicyTests.swift */,
+				A1000592 /* BookshelfGridScrollPolicyTests.swift */,
 				A1000315 /* LibraryChromeActionPolicyTests.swift */,
 				A1000572 /* ImportConflictPolicyTests.swift */,
 				A1000576 /* LibraryImportPolicyTests.swift */,
 				A1000392 /* SummarizeActivityChipTests.swift */,
 				A1000399 /* SegmentHeaderLayoutPolicyTests.swift */,
+				A100039B /* OriginalTextIllustrationLayoutTests.swift */,
 				A1000422 /* ResourceEditorCopyTests.swift */,
 				A1000430 /* NewsSelectionChromeTests.swift */,
 				A1000450 /* ListenScriptTests.swift */,
 				A1000550 /* MarkdownExportModeTests.swift */,
 				A1000584 /* OnboardingTourPolicyTests.swift */,
 				A10005D4 /* UsageGuideCopyTests.swift */,
+				A1000616 /* ShortcutStoreTests.swift */,
 				A10005F4 /* ColdStartReadinessTests.swift */,
 				A10005F6 /* BookshelfPageTurnKeyPolicyTests.swift */,
 			);
@@ -654,6 +686,7 @@
 				A1000531 /* ReaderOriginalSearch.swift in Sources */,
 				A1000441 /* ReaderSelectionActionBar.swift in Sources */,
 				A1000461 /* ListenScript.swift in Sources */,
+				A1000463 /* ListenFollowHighlight.swift in Sources */,
 				A1000443 /* ListenPreferences.swift in Sources */,
 				A1000445 /* TTSEngine.swift in Sources */,
 				A1000447 /* ListenSession.swift in Sources */,
@@ -697,6 +730,7 @@
 				A1000123 /* LibraryViewModel.swift in Sources */,
 				A1000291 /* LibrarySelectionToolbar.swift in Sources */,
 				A1000293 /* LibrarySidebarVisibilityPolicy.swift in Sources */,
+				A1000591 /* BookshelfGridScrollPolicy.swift in Sources */,
 				A1000324 /* LibraryChromeActionPolicy.swift in Sources */,
 				A1000571 /* ImportConflictPolicy.swift in Sources */,
 				A1000575 /* LibraryImportPolicy.swift in Sources */,
@@ -708,6 +742,9 @@
 				A1000583 /* OnboardingTourOverlay.swift in Sources */,
 				A10005D1 /* UsageGuideCopy.swift in Sources */,
 				A10005D3 /* UsageGuideView.swift in Sources */,
+				A1000611 /* ShortcutCatalog.swift in Sources */,
+				A1000613 /* ShortcutStore.swift in Sources */,
+				A1000615 /* ShortcutsSettingsView.swift in Sources */,
 				A10005F3 /* ColdStartGateView.swift in Sources */,
 				A1000115 /* OllamaSetupHelper.swift in Sources */,
 			);
@@ -734,17 +771,20 @@
 				A10005E3 /* SegmentBoundaryOffsetTests.swift in Sources */,
 				A1000543 /* BookCardCoverTests.swift in Sources */,
 				A1000295 /* LibrarySidebarVisibilityPolicyTests.swift in Sources */,
+				A1000593 /* BookshelfGridScrollPolicyTests.swift in Sources */,
 				A1000325 /* LibraryChromeActionPolicyTests.swift in Sources */,
 				A1000573 /* ImportConflictPolicyTests.swift in Sources */,
 				A1000577 /* LibraryImportPolicyTests.swift in Sources */,
 				A1000393 /* SummarizeActivityChipTests.swift in Sources */,
 				A1000398 /* SegmentHeaderLayoutPolicyTests.swift in Sources */,
+				A100039A /* OriginalTextIllustrationLayoutTests.swift in Sources */,
 				A1000423 /* ResourceEditorCopyTests.swift in Sources */,
 				A1000431 /* NewsSelectionChromeTests.swift in Sources */,
 				A1000451 /* ListenScriptTests.swift in Sources */,
 				A1000551 /* MarkdownExportModeTests.swift in Sources */,
 				A1000585 /* OnboardingTourPolicyTests.swift in Sources */,
 				A10005D5 /* UsageGuideCopyTests.swift in Sources */,
+				A1000617 /* ShortcutStoreTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -807,7 +847,7 @@
 				CODE_SIGN_IDENTITY = "-";
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 1.3.0;
+				CURRENT_PROJECT_VERSION = 1.4.3;
 				DEVELOPMENT_TEAM = "";
 				ENABLE_APP_SANDBOX = NO;
 				ENABLE_HARDENED_RUNTIME = NO;
@@ -818,7 +858,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 1.3.0;
+				MARKETING_VERSION = 1.4.3;
 				PRODUCT_BUNDLE_IDENTIFIER = com.lumina.app;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
@@ -833,7 +873,7 @@
 				CODE_SIGN_IDENTITY = "-";
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 1.3.0;
+				CURRENT_PROJECT_VERSION = 1.4.3;
 				DEVELOPMENT_TEAM = "";
 				ENABLE_APP_SANDBOX = NO;
 				ENABLE_HARDENED_RUNTIME = NO;
@@ -844,7 +884,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 1.3.0;
+				MARKETING_VERSION = 1.4.3;
 				PRODUCT_BUNDLE_IDENTIFIER = com.lumina.app;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
@@ -857,11 +897,11 @@
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1.3.0;
+				CURRENT_PROJECT_VERSION = 1.4.3;
 				DEVELOPMENT_TEAM = "";
 				GENERATE_INFOPLIST_FILE = YES;
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
-				MARKETING_VERSION = 1.3.0;
+				MARKETING_VERSION = 1.4.3;
 				PRODUCT_BUNDLE_IDENTIFIER = com.lumina.app.tests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = NO;
@@ -875,11 +915,11 @@
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1.3.0;
+				CURRENT_PROJECT_VERSION = 1.4.3;
 				DEVELOPMENT_TEAM = "";
 				GENERATE_INFOPLIST_FILE = YES;
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
-				MARKETING_VERSION = 1.3.0;
+				MARKETING_VERSION = 1.4.3;
 				PRODUCT_BUNDLE_IDENTIFIER = com.lumina.app.tests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = NO;

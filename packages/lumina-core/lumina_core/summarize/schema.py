@@ -8,6 +8,28 @@ from pydantic import BaseModel, Field, field_validator
 
 from lumina_core.models.router import parse_json_response
 
+# Summary fields are single-line prose in the reader UI; collapse any
+# embedded newlines / runs of whitespace so LLM output cannot invent blank lines.
+_CJK_NEWLINE_RE = re.compile(
+    r"(?<=[\u3400-\u9fff\u3000-\u303f\uff00-\uffef])"
+    r"[ \t]*\n+[ \t]*"
+    r"(?=[\u3400-\u9fff\u3000-\u303f\uff00-\uffef])"
+)
+_NEWLINE_RE = re.compile(r"[ \t]*\n+[ \t]*")
+_HORIZONTAL_WS_RE = re.compile(r"[ \t]+")
+
+
+def collapse_prose_whitespace(text: str) -> str:
+    """Trim and collapse blank lines / whitespace; no space between CJK chars."""
+    value = (text or "").strip()
+    if not value:
+        return ""
+    # 寒门\\n\\n出身 → 寒门出身 (do not invent a Latin-style word space)
+    value = _CJK_NEWLINE_RE.sub("", value)
+    value = _NEWLINE_RE.sub(" ", value)
+    value = _HORIZONTAL_WS_RE.sub(" ", value)
+    return value.strip()
+
 
 class BulletPoint(BaseModel):
     label: str = Field(max_length=8)
@@ -48,7 +70,14 @@ def normalize_summary_data(data: dict) -> dict:
     out = dict(data)
     anchor = out.get("anchor") or out.get("锚点")
     if isinstance(anchor, str) and anchor.strip():
-        out["anchor"] = anchor.strip()
+        out["anchor"] = collapse_prose_whitespace(anchor)
+    sentences = out.get("sentences")
+    if isinstance(sentences, list):
+        out["sentences"] = [
+            cleaned
+            for item in sentences
+            if (cleaned := collapse_prose_whitespace(str(item)))
+        ]
     bullets = out.get("bullets")
     if isinstance(bullets, list):
         out["bullets"] = _normalize_bullets(bullets)
@@ -56,17 +85,22 @@ def normalize_summary_data(data: dict) -> dict:
         out["notes"] = []
     else:
         out["notes"] = [
-            str(n).strip() for n in out["notes"] if isinstance(n, str) and n.strip()
+            cleaned
+            for n in out["notes"]
+            if isinstance(n, str) and (cleaned := collapse_prose_whitespace(n))
         ][:3]
     if "follow_ups" not in out or not isinstance(out.get("follow_ups"), list):
         out["follow_ups"] = []
     else:
         out["follow_ups"] = [
-            str(q).strip() for q in out["follow_ups"] if isinstance(q, str) and q.strip()
+            cleaned
+            for q in out["follow_ups"]
+            if isinstance(q, str) and (cleaned := collapse_prose_whitespace(q))
         ][:3]
     label = out.get("label")
-    if isinstance(label, str) and len(label) > 20:
-        out["label"] = label[:20]
+    if isinstance(label, str):
+        cleaned_label = collapse_prose_whitespace(label)
+        out["label"] = cleaned_label[:20]
     return out
 
 
@@ -82,35 +116,38 @@ def _normalize_bullets(items: list[object]) -> list[dict[str, str]]:
 
 def _coerce_bullet_object(item: object) -> dict[str, str]:
     if isinstance(item, dict):
-        label = str(item.get("label") or item.get("tag") or "").strip()
-        body = str(item.get("body") or item.get("content") or item.get("text") or "").strip()
+        label = collapse_prose_whitespace(str(item.get("label") or item.get("tag") or ""))
+        body = collapse_prose_whitespace(
+            str(item.get("body") or item.get("content") or item.get("text") or "")
+        )
         if label and body:
             return {"label": label[:8], "body": body[:300]}
         if body:
             return {"label": label[:8] if label else _infer_label(body), "body": body[:300]}
         if label:
             return {"label": label[:8], "body": label}
-        return {"label": "要点", "body": str(item)[:300]}
-    text = str(item).strip()
+        return {"label": "要点", "body": collapse_prose_whitespace(str(item))[:300]}
+    text = collapse_prose_whitespace(str(item))
     return _split_bullet_string(text)
 
 
 def _split_bullet_string(text: str) -> dict[str, str]:
-    cleaned = text
+    cleaned = collapse_prose_whitespace(text)
     while cleaned.startswith("- ") or cleaned.startswith("• ") or cleaned.startswith("* "):
-        cleaned = cleaned[2:].strip()
+        cleaned = collapse_prose_whitespace(cleaned[2:])
 
     if cleaned.startswith("**"):
         match = re.match(r"\*\*(.+?)\*\*[：:]\s*(.+)", cleaned, re.DOTALL)
         if match:
-            label, body = match.group(1).strip(), match.group(2).strip()
+            label = collapse_prose_whitespace(match.group(1))
+            body = collapse_prose_whitespace(match.group(2))
             if label and body:
                 return {"label": label[:8], "body": body[:300]}
 
     for sep in ("：", ":"):
         if sep in cleaned:
             label, body = cleaned.split(sep, 1)
-            label, body = label.strip(), body.strip()
+            label, body = collapse_prose_whitespace(label), collapse_prose_whitespace(body)
             if label and body and len(label) <= 12 and "。" not in label:
                 return {"label": label[:8], "body": body[:300]}
 
@@ -120,12 +157,13 @@ def _split_bullet_string(text: str) -> dict[str, str]:
 
 
 def _infer_label(text: str) -> str:
+    cleaned = collapse_prose_whitespace(text)
     for sep in ("，", "。", "；", " "):
-        if sep in text:
-            candidate = text.split(sep, 1)[0].strip()
+        if sep in cleaned:
+            candidate = collapse_prose_whitespace(cleaned.split(sep, 1)[0])
             if 2 <= len(candidate) <= 8:
                 return candidate
-    return text[:8] if text else "要点"
+    return cleaned[:8] if cleaned else "要点"
 
 
 SEGMENT_LABEL_MAX_CHARS = 20
@@ -134,7 +172,7 @@ SEGMENT_LABEL_MAX_CHARS = 20
 def _first_sentence(sentences: object) -> str:
     if not isinstance(sentences, list) or not sentences:
         return ""
-    return str(sentences[0]).strip()
+    return collapse_prose_whitespace(str(sentences[0]))
 
 
 def resolve_segment_label(
@@ -146,13 +184,13 @@ def resolve_segment_label(
 ) -> str:
     """Keep a provided theme label; if missing, take a short head of the first sentence."""
     if isinstance(label, str):
-        cleaned = label.strip()
+        cleaned = collapse_prose_whitespace(label)
         if cleaned:
             return cleaned[:SEGMENT_LABEL_MAX_CHARS]
     first = _first_sentence(sentences)
     if first:
         return _infer_label(first)[:SEGMENT_LABEL_MAX_CHARS]
-    anchor = (fallback_anchor or "").strip()
+    anchor = collapse_prose_whitespace(fallback_anchor or "")
     if anchor:
         cleaned = anchor.lstrip("〔§").rstrip("〕")
         return (cleaned or anchor)[:SEGMENT_LABEL_MAX_CHARS]

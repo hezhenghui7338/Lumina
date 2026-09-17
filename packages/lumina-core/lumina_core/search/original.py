@@ -35,14 +35,38 @@ def make_snippet(text: str, start: int, end: int, *, radius: int = SNIPPET_RADIU
     return f"{prefix}{compact}{suffix}"
 
 
+def _is_after_cursor(
+    segment_index: int,
+    start: int,
+    *,
+    after_segment_index: int | None,
+    after_start: int | None,
+) -> bool:
+    """True when (segment_index, start) is strictly after the exclusive cursor."""
+    if after_segment_index is None:
+        return True
+    if segment_index > after_segment_index:
+        return True
+    if segment_index < after_segment_index:
+        return False
+    cursor_start = 0 if after_start is None else after_start
+    return start > cursor_start
+
+
 def search_original(
     conn: sqlite3.Connection,
     book_id: str,
     query: str,
     *,
     limit: int = DEFAULT_LIMIT,
+    after_segment_index: int | None = None,
+    after_start: int | None = None,
 ) -> dict[str, Any]:
-    """Substring search over one book's raw_text. Empty query → no hits."""
+    """Substring search over one book's raw_text. Empty query → no hits.
+
+    Optional ``after_segment_index`` / ``after_start`` skip hits at or before that
+    exclusive cursor so clients can page past the default 80-hit window.
+    """
     q = (query or "").strip()
     if len(q) > MAX_QUERY_CHARS:
         q = q[:MAX_QUERY_CHARS]
@@ -60,14 +84,24 @@ def search_original(
             (book_id,),
         )
         for row in rows:
+            seg_idx = int(row["idx"])
+            if after_segment_index is not None and seg_idx < after_segment_index:
+                continue
             text = row["raw_text"] or ""
             if not text:
                 continue
             for match in pattern.finditer(text):
                 start, end = match.span()
+                if not _is_after_cursor(
+                    seg_idx,
+                    start,
+                    after_segment_index=after_segment_index,
+                    after_start=after_start,
+                ):
+                    continue
                 hits.append(
                     {
-                        "segment_index": int(row["idx"]),
+                        "segment_index": seg_idx,
                         "start": start,
                         "end": end,
                         "start_utf16": utf16_offset(text, start),

@@ -111,19 +111,24 @@
                                 <Grid Height="176">
                                     <Border CornerRadius="8"
                                             Background="{x:Bind lib:BookCoverLayout.BrushFor(Category)}">
-                                        <Grid Padding="14,12,12,12">
-                                            <TextBlock Text="{x:Bind Title}" FontSize="15" FontWeight="SemiBold"
-                                                       FontFamily="Georgia" Foreground="White"
-                                                       TextWrapping="WrapWholeWords" MaxLines="5"
-                                                       TextTrimming="CharacterEllipsis"
-                                                       VerticalAlignment="Top"
-                                                       AutomationProperties.AccessibilityView="Raw"/>
-                                            <TextBlock Text="{x:Bind Author}" FontSize="11" Foreground="White"
-                                                       Opacity="0.82" TextWrapping="WrapWholeWords" MaxLines="2"
-                                                       TextTrimming="CharacterEllipsis"
-                                                       VerticalAlignment="Bottom"
-                                                       AutomationProperties.AccessibilityView="Raw"
-                                                       Visibility="{x:Bind lib:BookCoverLayout.AuthorVisibility(Author)}"/>
+                                        <Grid>
+                                            <Grid Padding="14,12,12,12">
+                                                <TextBlock Text="{x:Bind Title}" FontSize="15" FontWeight="SemiBold"
+                                                           FontFamily="Georgia" Foreground="White"
+                                                           TextWrapping="WrapWholeWords" MaxLines="5"
+                                                           TextTrimming="CharacterEllipsis"
+                                                           VerticalAlignment="Top"
+                                                           AutomationProperties.AccessibilityView="Raw"/>
+                                                <TextBlock Text="{x:Bind Author}" FontSize="11" Foreground="White"
+                                                           Opacity="0.82" TextWrapping="WrapWholeWords" MaxLines="2"
+                                                           TextTrimming="CharacterEllipsis"
+                                                           VerticalAlignment="Bottom"
+                                                           AutomationProperties.AccessibilityView="Raw"
+                                                           Visibility="{x:Bind lib:BookCoverLayout.AuthorVisibility(Author)}"/>
+                                            </Grid>
+                                            <Image Source="{x:Bind CoverUrl}"
+                                                   Stretch="UniformToFill"
+                                                   Visibility="{x:Bind lib:BookCoverLayout.CoverImageVisibility(CoverUrl)}"/>
                                         </Grid>
                                     </Border>
                                     <Border Width="3" HorizontalAlignment="Left"

@@ -39,6 +39,25 @@ final class ReaderOriginalSearchTests: XCTestCase {
         XCTAssertNil(OriginalSearchHighlight.steppedIndex(current: 0, delta: 1, count: 0))
     }
 
+    func testNavigate_loadsMoreWhenTruncatedAtEnd() {
+        XCTAssertEqual(
+            OriginalSearchHighlight.navigate(current: 79, delta: 1, count: 80, truncated: true),
+            .loadMore
+        )
+        XCTAssertEqual(
+            OriginalSearchHighlight.navigate(current: 79, delta: 1, count: 80, truncated: false),
+            .step(to: 0)
+        )
+        XCTAssertEqual(
+            OriginalSearchHighlight.navigate(current: 0, delta: -1, count: 80, truncated: true),
+            .step(to: 79)
+        )
+        XCTAssertEqual(
+            OriginalSearchHighlight.navigate(current: 10, delta: 1, count: 80, truncated: true),
+            .step(to: 11)
+        )
+    }
+
     func testStatusLabel() {
         XCTAssertEqual(
             OriginalSearchHighlight.statusLabel(index: 0, count: 0, truncated: false),

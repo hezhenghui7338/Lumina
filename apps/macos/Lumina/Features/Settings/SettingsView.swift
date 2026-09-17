@@ -149,9 +149,23 @@ struct SettingsView: View {
         )
         promptsSection(settings: settings)
         appearanceSection
+        shortcutsSection
         newsSection
         advancedSection(settings: settings)
         aboutSection
+    }
+
+    @ViewBuilder
+    private var shortcutsSection: some View {
+        Section {
+            NavigationLink("快捷键") {
+                ShortcutsSettingsView()
+            }
+        } header: {
+            Text("快捷键")
+        } footer: {
+            Text("查看与修改全局、阅读器快捷键；可检测冲突并恢复默认。")
+        }
     }
 
     @ViewBuilder
@@ -1302,7 +1316,7 @@ enum ModelProviderKind: String, CaseIterable, Identifiable {
     }
 
     var showsBaseURL: Bool {
-        self == .ollama || self == .custom || self == .cursor
+        self == .ollama || self == .custom
     }
 
     var needsAPIKey: Bool {
@@ -1330,7 +1344,7 @@ enum ModelProviderKind: String, CaseIterable, Identifiable {
         case .ollama:
             return "并发建议 ≤ 本机 Ollama 的 OLLAMA_NUM_PARALLEL。内存吃紧时调回 1。"
         case .cursor:
-            return "OpenAI 兼容 API 并发；需配置 Cursor 代理 Base URL。"
+            return "Cursor 官方 SDK（cloud 无仓库）并发；只需 API Key，首次使用请下载 SDK。"
         case .openrouter:
             return "OpenRouter 等 OpenAI 兼容 API 的并发上限。摘要建议固定模型；openrouter/free 适合试用，structured outputs 支持不稳定。"
         case .openai, .aiping, .custom:

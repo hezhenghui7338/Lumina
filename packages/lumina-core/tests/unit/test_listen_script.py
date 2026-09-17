@@ -7,6 +7,8 @@ from lumina_core.tts.script import (
     SECTION_NOTES,
     build_listen_script,
     detect_language,
+    normalize_chapter,
+    should_announce_chapter,
 )
 
 SAMPLE_SUMMARY = {
@@ -47,6 +49,26 @@ def test_summary_mode_is_sentences_only():
     assert SAMPLE_SUMMARY["follow_ups"][0] not in joined
     assert SECTION_BULLETS not in joined
     assert "寒门出身" not in joined
+    # summary JSON `label` is not spoken unless passed as segment_label
+    assert SAMPLE_SUMMARY["label"] not in texts
+
+
+def test_summary_mode_prepends_segment_label():
+    script = build_listen_script(
+        mode="summary",
+        summary_json=SAMPLE_SUMMARY,
+        segment_label="引子",
+    )
+    assert _texts(script) == ["引子", *SAMPLE_SUMMARY["sentences"]]
+
+
+def test_blank_segment_label_is_skipped():
+    script = build_listen_script(
+        mode="summary",
+        summary_json=SAMPLE_SUMMARY,
+        segment_label="   ",
+    )
+    assert _texts(script) == SAMPLE_SUMMARY["sentences"]
 
 
 def test_detailed_mode_includes_bullets_not_notes_or_follow_ups():
@@ -63,6 +85,18 @@ def test_detailed_mode_includes_bullets_not_notes_or_follow_ups():
     assert "后文将出现权谋冲突。" not in joined
     assert "你可以接着问" not in joined
     assert "主角与邻里期望之间有何张力？" not in joined
+
+
+def test_detailed_prepends_segment_label():
+    script = build_listen_script(
+        mode="detailed",
+        summary_json=SAMPLE_SUMMARY,
+        segment_label="引子",
+    )
+    texts = _texts(script)
+    assert texts[0] == "引子"
+    assert texts[1] == SAMPLE_SUMMARY["sentences"][0]
+    assert SECTION_BULLETS in texts
 
 
 def test_detailed_skips_empty_optional_sections():
@@ -86,6 +120,18 @@ def test_original_mode_splits_sentences():
     assert texts[0] == "第一句。"
     assert "第二句！" in texts
     assert any("Next sentence." in t or t == "Next sentence." for t in texts)
+
+
+def test_original_prepends_segment_label():
+    script = build_listen_script(
+        mode="original",
+        raw_text="第一句。第二句！",
+        segment_label="开篇",
+    )
+    texts = _texts(script)
+    assert texts[0] == "开篇"
+    assert texts[1] == "第一句。"
+    assert "第二句！" in texts
 
 
 def test_original_empty_is_not_ready():
@@ -125,3 +171,69 @@ def test_unsupported_mode_raises():
         assert "unsupported" in str(exc)
     else:
         raise AssertionError("expected ValueError")
+
+
+def test_normalize_chapter_strips_section_mark():
+    assert normalize_chapter("§第十二章 斯大林格勒的悲剧") == "第十二章 斯大林格勒的悲剧"
+    assert normalize_chapter("  ") is None
+
+
+def test_should_announce_chapter_on_session_start_and_change():
+    assert should_announce_chapter(
+        chapter="第十三章 1942年南俄冬季战役",
+        previous_spoken_chapter=None,
+        session_start=True,
+    )
+    assert not should_announce_chapter(
+        chapter="第十三章 1942年南俄冬季战役",
+        previous_spoken_chapter="第十三章 1942年南俄冬季战役",
+        session_start=False,
+    )
+    assert should_announce_chapter(
+        chapter="第十三章 1942年南俄冬季战役",
+        previous_spoken_chapter="第十二章 斯大林格勒的悲剧",
+        session_start=False,
+    )
+    assert not should_announce_chapter(
+        chapter=None,
+        previous_spoken_chapter=None,
+        session_start=True,
+    )
+
+
+def test_chapter_then_label_on_session_start():
+    script = build_listen_script(
+        mode="summary",
+        summary_json=SAMPLE_SUMMARY,
+        segment_label="南翼战役新动向",
+        chapter="§第十三章 1942年南俄冬季战役",
+        session_start=True,
+    )
+    assert _texts(script)[:2] == [
+        "第十三章 1942年南俄冬季战役",
+        "南翼战役新动向",
+    ]
+
+
+def test_same_chapter_skips_chapter_announcement():
+    script = build_listen_script(
+        mode="summary",
+        summary_json=SAMPLE_SUMMARY,
+        segment_label="南翼战役新动向",
+        chapter="第十三章 1942年南俄冬季战役",
+        previous_spoken_chapter="第十三章 1942年南俄冬季战役",
+        session_start=False,
+    )
+    assert _texts(script)[0] == "南翼战役新动向"
+    assert "第十三章" not in _texts(script)[0]
+
+
+def test_label_equal_chapter_not_duplicated_when_announcing():
+    script = build_listen_script(
+        mode="original",
+        raw_text="第一句。",
+        segment_label="第一章",
+        chapter="第一章",
+        session_start=True,
+    )
+    assert _texts(script) == ["第一章", "第一句。"]

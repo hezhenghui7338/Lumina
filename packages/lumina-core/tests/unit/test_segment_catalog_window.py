@@ -127,22 +127,29 @@ def test_book_events_snapshot_is_progress_only() -> None:
     assert "list_catalog" not in chunk
 
 
-def test_reader_open_uses_windowed_catalog() -> None:
-    """macOS reader must open with around+limit, not unbounded listSegments."""
+def test_reader_open_uses_compat_full_catalog() -> None:
+    """macOS reader open intentionally pulls compat full slim catalog (d383158).
+
+    Backend around/after_idx/before_idx APIs remain; the client open path does
+    not pass around/limit (product rollback — large books may hitch).
+    """
     root = Path(__file__).resolve().parents[4]
     reader = root / "apps" / "macos" / "Lumina" / "Features" / "Reader" / "ReaderView.swift"
     text = reader.read_text(encoding="utf-8")
-    assert "openCatalogWindowLimit" in text
-    assert "fillCatalogInBackground" in text
+    assert "openCatalogWindowLimit" not in text
+    assert "fillCatalogInBackground" not in text
     load_start = text.index("func load(")
-    load_chunk = text[load_start : load_start + 4500]
-    assert "around: preferredIdx" in load_chunk
-    assert "limit: Self.openCatalogWindowLimit" in load_chunk
-    assert "async let listTask" not in load_chunk
+    next_fn = text.find("\n    func ", load_start + 1)
+    load_chunk = text[load_start : next_fn if next_fn != -1 else load_start + 12000]
+    first_list = load_chunk.index("listSegments(")
+    open_list = load_chunk[first_list : first_list + 200]
+    assert "async let listTask = core.listSegments(bookId: bookId)" in load_chunk
+    assert "around:" not in open_list
+    assert "page.segments" in load_chunk
 
 
-def test_reader_feed_uses_bounded_render_window() -> None:
-    """Far sidebar/citation jumps must not ForEach the full catalog."""
+def test_reader_feed_uses_full_foreach() -> None:
+    """macOS main feed is full ForEach(segments) after d383158 rollback."""
     root = Path(__file__).resolve().parents[4]
     reader = root / "apps" / "macos" / "Lumina" / "Features" / "Reader" / "ReaderView.swift"
     models = (
@@ -156,12 +163,16 @@ def test_reader_feed_uses_bounded_render_window() -> None:
     )
     reader_text = reader.read_text(encoding="utf-8")
     models_text = models.read_text(encoding="utf-8")
-    assert "SegmentRenderWindow.readingWindow" in reader_text
-    assert "ForEach(viewModel.segments" not in reader_text
-    assert "readRenderBuffer" in models_text
+    assert "ForEach(viewModel.segments" in reader_text
+    assert "SegmentRenderWindow.readingWindow" not in reader_text
+    assert "readRenderBuffer" not in models_text
+    # Sidebar still has slice() for catalog overlay windowing.
+    assert "static func slice<" in models_text
     feed_start = reader_text.index("private var segmentContent")
-    feed_chunk = reader_text[feed_start : feed_start + 3500]
-    assert "ForEach(window.items" in feed_chunk
+    feed_end = reader_text.index("\n    private func toggleSource", feed_start)
+    feed_chunk = reader_text[feed_start:feed_end]
+    assert "ForEach(viewModel.segments, id: \\.idx)" in feed_chunk
+    assert "readingFeed(window:" not in feed_chunk
 
 
 def test_default_window_constant() -> None:

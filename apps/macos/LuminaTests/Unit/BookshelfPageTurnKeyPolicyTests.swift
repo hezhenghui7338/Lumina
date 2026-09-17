@@ -95,6 +95,28 @@ final class BookshelfPageTurnKeyPolicyTests: XCTestCase {
         }
     }
 
+    func testBlocksPageTurn_emptyEditableField_allowsPaging() {
+        XCTAssertFalse(
+            BookshelfPageTurnKeyPolicy.blocksPageTurn(
+                isEditableTextInput: true,
+                contentIsEmpty: true
+            ),
+            "autofocused empty「筛选书名」must not swallow ←/→"
+        )
+        XCTAssertTrue(
+            BookshelfPageTurnKeyPolicy.blocksPageTurn(
+                isEditableTextInput: true,
+                contentIsEmpty: false
+            )
+        )
+        XCTAssertFalse(
+            BookshelfPageTurnKeyPolicy.blocksPageTurn(
+                isEditableTextInput: false,
+                contentIsEmpty: false
+            )
+        )
+    }
+
     // MARK: - LibraryViewModel paging actions tests
 
     private func makeBooks(count: Int) -> [BookSummary] {
@@ -171,5 +193,29 @@ final class BookshelfPageTurnKeyPolicyTests: XCTestCase {
         XCTAssertTrue(vm.previousPage())
         XCTAssertEqual(vm.pageIndex, 0)
         XCTAssertFalse(vm.canGoPreviousPage)
+    }
+
+    func testBookshelfView_clearsTitleFilterAutofocusAndEmptyFieldAllowsArrows() throws {
+        let macosRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let bookshelf = try String(
+            contentsOf: macosRoot.appendingPathComponent(
+                "Lumina/Features/Library/BookshelfView.swift"
+            ),
+            encoding: .utf8
+        )
+        XCTAssertTrue(bookshelf.contains("@FocusState private var titleFilterFocused"))
+        XCTAssertTrue(bookshelf.contains(".focused($titleFilterFocused)"))
+        XCTAssertTrue(
+            bookshelf.contains("titleFilterFocused = false"),
+            "startup must clear macOS TextField autofocus so ←/→ can page"
+        )
+        XCTAssertTrue(bookshelf.contains("blocksPageTurn("))
+        XCTAssertTrue(
+            bookshelf.contains("contentIsEmpty: textView.string.isEmpty")
+                || bookshelf.contains("contentIsEmpty: field.stringValue.isEmpty")
+        )
     }
 }

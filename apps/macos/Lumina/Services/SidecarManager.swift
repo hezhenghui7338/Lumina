@@ -394,9 +394,17 @@ final class SidecarManager: ObservableObject {
                         news: dto.news,
                         newsDetail: dto.newsDetail
                     )
-                    coldStartPhases = snap
-                    bootNewsPhase = snap.news
-                    bootNewsDetail = snap.newsDetail
+                    // Avoid republishing identical snapshots — every @Published
+                    // tick redraws ContentView (incl. bookshelf covers).
+                    if snap != coldStartPhases {
+                        coldStartPhases = snap
+                    }
+                    if snap.news != bootNewsPhase {
+                        bootNewsPhase = snap.news
+                    }
+                    if snap.newsDetail != bootNewsDetail {
+                        bootNewsDetail = snap.newsDetail
+                    }
                     if !productReady && ColdStartReadiness.isProductReady(snap) {
                         productReady = true
                     }

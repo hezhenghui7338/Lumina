@@ -4,6 +4,7 @@ import pytest
 from lumina_core.summarize.schema import (
     BulletPoint,
     SegmentSummary,
+    collapse_prose_whitespace,
     parse_segment_summary,
     parse_segment_summary_minimal,
     validate_summary_richness,
@@ -185,6 +186,38 @@ def test_parse_segment_summary_minimal_preserves_follow_ups():
         "主角与邻里期望之间有何张力？",
         "赴考之志在后文如何遭遇挫折？",
     ]
+
+
+def test_normalize_summary_collapses_blank_lines_in_prose_fields():
+    """LLM may embed \\n\\n inside sentences/bullets; reader UI must not show blank lines."""
+    raw = {
+        "sentences": [
+            "第一句概述。\n\n",
+            "第二句\n\n继续写完。",
+            "   \n\n   ",
+        ],
+        "bullets": [
+            {"label": "寒门\n\n出身", "body": "主角生于\n\n贫苦农家，细节充实足够。"},
+            {"label": "赴考之志", "body": "段末誓要\n金榜题名，细节充实足够。"},
+            {"label": "邻里期望", "body": "乡邻将其视为\n\n\n村庄的希望，细节充实。"},
+        ],
+        "notes": ["注意：后文\n\n有伏笔。"],
+        "follow_ups": ["主角与邻里\n\n期望之间有何张力？"],
+        "label": "引子\n\n寒门",
+        "anchor": "§第一章\n\n· 段 1",
+    }
+    summary = parse_segment_summary(raw)
+    assert summary.sentences == ["第一句概述。", "第二句继续写完。"]
+    assert all("\n" not in s for s in summary.sentences)
+    assert summary.bullets[0].label == "寒门出身"
+    assert summary.bullets[0].body == "主角生于贫苦农家，细节充实足够。"
+    assert "\n" not in summary.bullets[2].body
+    assert summary.notes == ["注意：后文有伏笔。"]
+    assert summary.follow_ups == ["主角与邻里期望之间有何张力？"]
+    assert "\n" not in summary.label
+    assert "\n" not in summary.anchor
+    assert collapse_prose_whitespace("hello\n\nworld") == "hello world"
+    assert collapse_prose_whitespace("甲\n\n乙") == "甲乙"
 
 
 @pytest.mark.asyncio

@@ -36,5 +36,6 @@
     <Compile Include="..\Lumina\Features\Onboarding\OnboardingTourPolicy.cs" Link="OnboardingTourPolicy.cs" />
     <Compile Include="..\Lumina\Features\Onboarding\UsageGuideCopy.cs" Link="UsageGuideCopy.cs" />
     <Compile Include="..\Lumina\Features\Shared\ExportMarkdownMode.cs" Link="ExportMarkdownMode.cs" />
+    <Compile Include="..\Lumina\Features\Reader\ReaderBodyTypography.cs" Link="ReaderBodyTypography.cs" />
   </ItemGroup>
 </Project>

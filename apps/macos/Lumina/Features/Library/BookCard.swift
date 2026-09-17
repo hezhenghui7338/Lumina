@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 struct BookCard: View {
     let book: BookSummary
@@ -6,6 +7,7 @@ struct BookCard: View {
     var ingestProgress: IngestProgress?
     var isSelectionMode: Bool = false
     var isChecked: Bool = false
+    var coverURL: URL? = nil
     var onToggleCheck: (() -> Void)? = nil
     let onOpen: () -> Void
     let onToggleFavorite: () -> Void
@@ -44,12 +46,14 @@ struct BookCard: View {
                         .font(.caption)
                         .foregroundStyle(LuminaTheme.textSecondary)
                         .lineLimit(2)
-                    if book.isSegmenting {
-                        LibraryIngestMeter(progress: ingestProgress)
-                    } else if book.summaryTotal > 0, !book.hasCompletedSummary {
-                        LibraryIngestMeter(
-                            fraction: Double(book.summaryReady) / Double(book.summaryTotal)
+                        .frame(
+                            maxWidth: .infinity,
+                            minHeight: BookshelfGridCardMetrics.statusReservedHeight,
+                            alignment: .topLeading
                         )
+                    if showsProgressMeter {
+                        progressMeter
+                            .frame(height: BookshelfGridCardMetrics.meterReservedHeight)
                     }
                     HStack(spacing: 6) {
                         BookSummaryStateBadge(book: book)
@@ -67,6 +71,21 @@ struct BookCard: View {
         }
         .buttonStyle(.plain)
         .contextMenu { contextMenu }
+    }
+
+    private var showsProgressMeter: Bool {
+        book.isSegmenting || (book.summaryTotal > 0 && !book.hasCompletedSummary)
+    }
+
+    @ViewBuilder
+    private var progressMeter: some View {
+        if book.isSegmenting {
+            LibraryIngestMeter(progress: ingestProgress)
+        } else {
+            LibraryIngestMeter(
+                fraction: Double(book.summaryReady) / Double(book.summaryTotal)
+            )
+        }
     }
 
     private var statusLine: String {
@@ -92,10 +111,19 @@ struct BookCard: View {
                     .frame(width: 3)
             }
             .overlay {
-                coverTypography
-                    .padding(EdgeInsets(top: 12, leading: 14, bottom: 12, trailing: 12))
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                if let coverURL {
+                    BookCoverImage(url: coverURL) {
+                        coverTypography
+                            .padding(EdgeInsets(top: 12, leading: 14, bottom: 12, trailing: 12))
+                            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                    }
                     .accessibilityHidden(true)
+                } else {
+                    coverTypography
+                        .padding(EdgeInsets(top: 12, leading: 14, bottom: 12, trailing: 12))
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                        .accessibilityHidden(true)
+                }
             }
             .overlay(
                 RoundedRectangle(cornerRadius: 8, style: .continuous)
@@ -187,5 +215,77 @@ struct LibraryIngestMeter: View {
             .controlSize(.small)
             .tint(LuminaTheme.accent)
             .opacity(dimmed ? 0.45 : 1)
+    }
+}
+
+/// Process-wide cover cache so bookshelf poll / EnvironmentObject redraws do not
+/// flash AsyncImage empty→image on every refresh.
+enum BookCoverImageCache {
+    static let images = NSCache<NSURL, NSImage>()
+    private static let lock = NSLock()
+    private static var failed = Set<NSURL>()
+
+    static func image(for url: URL) -> NSImage? {
+        images.object(forKey: url as NSURL)
+    }
+
+    static func store(_ image: NSImage, for url: URL) {
+        images.setObject(image, forKey: url as NSURL)
+        lock.lock()
+        failed.remove(url as NSURL)
+        lock.unlock()
+    }
+
+    static func markFailed(_ url: URL) {
+        lock.lock()
+        failed.insert(url as NSURL)
+        lock.unlock()
+    }
+
+    static func hasFailed(_ url: URL) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return failed.contains(url as NSURL)
+    }
+}
+
+/// Stable cover loader: keeps the last successful image across parent re-renders.
+struct BookCoverImage<Placeholder: View>: View {
+    let url: URL
+    @ViewBuilder var placeholder: () -> Placeholder
+    @State private var image: NSImage?
+
+    var body: some View {
+        ZStack {
+            if let image {
+                Image(nsImage: image)
+                    .resizable()
+                    .scaledToFill()
+            } else {
+                placeholder()
+            }
+        }
+        .task(id: url) {
+            if let cached = BookCoverImageCache.image(for: url) {
+                image = cached
+                return
+            }
+            if BookCoverImageCache.hasFailed(url) { return }
+            do {
+                let (data, response) = try await URLSession.shared.data(from: url)
+                if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+                    BookCoverImageCache.markFailed(url)
+                    return
+                }
+                guard let loaded = NSImage(data: data) else {
+                    BookCoverImageCache.markFailed(url)
+                    return
+                }
+                BookCoverImageCache.store(loaded, for: url)
+                image = loaded
+            } catch {
+                BookCoverImageCache.markFailed(url)
+            }
+        }
     }
 }

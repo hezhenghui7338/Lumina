@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from lumina_core.db.connection import db_lock, db_transaction
+from lumina_core.news.rank import article_sort_key
 
 
 def _now() -> str:
@@ -116,27 +117,37 @@ class NewsStore:
 
     def list_recent(self, *, limit: int = 50) -> list[dict[str, Any]]:
         with db_lock(self.conn):
-            rows = self.conn.execute(
-                """
-                SELECT * FROM news_articles
-                ORDER BY published_at DESC, synced_at DESC
-                LIMIT ?
-                """,
-                (limit,),
-            ).fetchall()
-        return [dict(r) for r in rows]
+            rows = self.conn.execute("SELECT * FROM news_articles").fetchall()
+        items = [dict(r) for r in rows]
+        items.sort(key=article_sort_key, reverse=True)
+        return items[: max(0, limit)]
 
     def list_all(self, *, limit: int = 200) -> list[dict[str, Any]]:
+        """List articles newest-first (published_at, else synced_at)."""
+        return self.list_recent(limit=limit)
+
+    def get_last_synced_at(self) -> str | None:
         with db_lock(self.conn):
-            rows = self.conn.execute(
+            row = self.conn.execute(
+                "SELECT last_synced_at FROM news_sync_meta WHERE id = 1"
+            ).fetchone()
+        if not row:
+            return None
+        ts = (row["last_synced_at"] or "").strip()
+        return ts or None
+
+    def set_last_synced_at(self, ts: str | None = None) -> str:
+        stamp = (ts or _now()).strip() or _now()
+        with db_transaction(self.conn):
+            self.conn.execute(
                 """
-                SELECT * FROM news_articles
-                ORDER BY synced_at DESC
-                LIMIT ?
+                INSERT INTO news_sync_meta (id, last_synced_at)
+                VALUES (1, ?)
+                ON CONFLICT(id) DO UPDATE SET last_synced_at = excluded.last_synced_at
                 """,
-                (limit,),
-            ).fetchall()
-        return [dict(r) for r in rows]
+                (stamp,),
+            )
+        return stamp
 
     def get(self, article_id: str) -> dict[str, Any] | None:
         with db_lock(self.conn):
