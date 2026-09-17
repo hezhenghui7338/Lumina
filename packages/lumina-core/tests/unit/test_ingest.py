@@ -100,6 +100,7 @@ def test_pyinstaller_spec_bundles_text_encodings():
         "encodings.gb18030",
         "encodings.gbk",
         "encodings.cp936",
+        "encodings.cp932",
         "encodings.cp1252",
         "encodings.latin_1",
         "encodings.big5",
