@@ -2,15 +2,25 @@
 
 from __future__ import annotations
 
-import resource
 import sys
 from pathlib import Path
+from typing import Any
+
+import pytest
 
 from lumina_core.chunker.stream import iter_txt_chunks
 from lumina_core.ingest.text import decode_text_bytes, iter_decoded_file
 
+try:
+    import resource as _resource
+except ImportError:  # Windows — stdlib has no `resource`
+    _resource = None
+
+resource: Any = _resource
+
 
 def _rss_bytes() -> int:
+    assert resource is not None
     usage = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
     if sys.platform == "darwin":
         return int(usage)
@@ -51,6 +61,7 @@ def test_iter_decoded_file_does_not_need_full_read_bytes(tmp_path, monkeypatch):
     assert calls == []
 
 
+@pytest.mark.skipif(resource is None, reason="POSIX-only RSS probe")
 def test_stream_window_rss_stays_below_file_multiple(tmp_path):
     """A multi-MB TXT must not produce a 5–10× decoded copy of the whole book."""
     path = tmp_path / "bulky.txt"
