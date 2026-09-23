@@ -114,6 +114,27 @@ final class SummarizeActivityChipTests: XCTestCase {
         )
     }
 
+    func testReaderContentBanner_reservesInsetWhileIncompleteEvenIfListOpen() {
+        XCTAssertTrue(
+            ReaderSummaryProgressPolicy.shouldReserveContentBannerInset(
+                readyCount: 2,
+                totalCount: 10
+            )
+        )
+        XCTAssertFalse(
+            ReaderSummaryProgressPolicy.shouldReserveContentBannerInset(
+                readyCount: 10,
+                totalCount: 10
+            )
+        )
+        XCTAssertFalse(
+            ReaderSummaryProgressPolicy.shouldReserveContentBannerInset(
+                readyCount: 0,
+                totalCount: 0
+            )
+        )
+    }
+
     func testReaderContentBanner_hidesOnCompleteBook() {
         XCTAssertFalse(
             ReaderSummaryProgressPolicy.shouldShowContentBanner(
@@ -332,15 +353,21 @@ final class SummarizeActivityChipTests: XCTestCase {
             ),
             encoding: .utf8
         )
-        guard let start = source.range(of: ".scrollPosition("),
-              let end = source.range(of: "ReaderChromeBarMetrics.height")
-        else {
+        guard let scrollStart = source.range(of: ".scrollPosition(") else {
+            return XCTFail("could not find scrollPosition in ReaderView.swift")
+        }
+        let afterScroll = source[scrollStart.lowerBound...]
+        guard let chromeHeight = afterScroll.range(of: "ReaderChromeBarMetrics.height") else {
             return XCTFail("could not isolate the summary-progress inset in ReaderView.swift")
         }
-        let inset = String(source[start.lowerBound..<end.lowerBound])
+        let inset = String(afterScroll[..<chromeHeight.upperBound])
         XCTAssertTrue(
             inset.contains("SummaryProgressBannerMetrics.reservedHeight"),
             "the feed inset must keep a constant height while summarizing"
+        )
+        XCTAssertTrue(
+            inset.contains("shouldReserveContentSummaryProgressInset"),
+            "incomplete books must keep inset height when the segment list opens"
         )
         XCTAssertFalse(
             inset.contains("padding(.vertical"),

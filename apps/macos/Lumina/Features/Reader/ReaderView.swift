@@ -134,6 +134,13 @@ struct ReaderView: View {
         )
     }
 
+    private var shouldReserveContentSummaryProgressInset: Bool {
+        ReaderSummaryProgressPolicy.shouldReserveContentBannerInset(
+            readyCount: viewModel.summaryReadyCount,
+            totalCount: viewModel.summaryTotalCount
+        )
+    }
+
     private var readerKeyboardScrollEnabled: Bool {
         overlay == .none
             && !chatFocused
@@ -1323,6 +1330,11 @@ struct ReaderView: View {
                     .padding(.horizontal, LuminaTheme.summaryPadding)
                     .frame(height: SummaryProgressBannerMetrics.reservedHeight)
                     .background(theme.readerPaper.page)
+                } else if shouldReserveContentSummaryProgressInset {
+                    Color.clear
+                        .frame(height: SummaryProgressBannerMetrics.reservedHeight)
+                        .allowsHitTesting(false)
+                        .accessibilityHidden(true)
                 }
             }
             .animation(nil, value: shouldShowContentSummaryProgress)
@@ -1615,9 +1627,36 @@ struct ReaderView: View {
             Divider()
 
             segmentSidebar
+                .equatable()
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(LuminaTheme.surface)
+    }
+
+    private var segmentSidebar: SegmentOutlineCatalogList {
+        SegmentOutlineCatalogList(
+            rows: viewModel.outlineRows,
+            selectedIdx: viewModel.selectedIdx,
+            isSelectionMode: viewModel.isSegmentSelectionMode,
+            checkedIndices: viewModel.checkedSegmentIndices,
+            segmentSwitchDuration: segmentSwitchDuration,
+            onRevealSelection: { idx in viewModel.revealOutline(for: idx) },
+            onToggleOutlineKey: { key in viewModel.toggleOutlineKey(key) },
+            onSelect: { idx in selectSidebarSegment(idx) },
+            onToggleCheck: { idx in viewModel.toggleCheck(idx) },
+            onRetrySegment: { idx in
+                Task {
+                    do { try await viewModel.retrySegment(idx, core: core) }
+                    catch { actionError = error.localizedDescription }
+                }
+            },
+            onRetryChecked: {
+                Task {
+                    do { try await viewModel.retryCheckedSegments(core: core) }
+                    catch { actionError = error.localizedDescription }
+                }
+            }
+        )
     }
 
     @ViewBuilder
@@ -1716,147 +1755,6 @@ struct ReaderView: View {
         }
         .shadow(color: .black.opacity(overlay == .chat ? 0.12 : 0), radius: 12, x: 0, y: -2)
         .simultaneousGesture(TapGesture().onEnded { overlayEngaged = true })
-    }
-
-    private var segmentSidebar: some View {
-        let rows = SegmentOutlinePolicy.build(
-            segments: viewModel.segments,
-            collapsed: viewModel.collapsedOutlineKeys
-        )
-        return ScrollViewReader { proxy in
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 0) {
-                    ForEach(rows) { row in
-                        outlineCatalogRow(row)
-                            .id(row.isHeader ? "h:\(row.pathKey)" : "s:\(row.idx ?? 0)")
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                }
-                .frame(maxWidth: .infinity)
-            }
-            .onChange(of: viewModel.selectedIdx) { _, idx in
-                guard let idx else { return }
-                viewModel.revealOutline(for: idx)
-                withAnimation(.easeInOut(duration: segmentSwitchDuration)) {
-                    proxy.scrollTo("s:\(idx)", anchor: .center)
-                }
-            }
-            .onAppear {
-                viewModel.revealOutline(for: viewModel.selectedIdx)
-                guard let idx = viewModel.selectedIdx else { return }
-                Task { @MainActor in
-                    await Task.yield()
-                    proxy.scrollTo("s:\(idx)", anchor: .center)
-                }
-            }
-        }
-    }
-
-    @ViewBuilder
-    private func outlineCatalogRow(_ row: SegmentOutlinePolicy.Row) -> some View {
-        if row.isHeader {
-            outlineHeaderRow(row)
-        } else if let seg = row.segment {
-            segmentSidebarRow(seg, grouped: row.grouped)
-                .padding(.leading, CGFloat(row.depth) * SegmentOutlinePolicy.indentStep)
-        }
-    }
-
-    private func outlineHeaderRow(_ row: SegmentOutlinePolicy.Row) -> some View {
-        Button {
-            viewModel.toggleOutlineKey(row.pathKey)
-        } label: {
-            HStack(spacing: 6) {
-                Image(systemName: row.isCollapsed ? "chevron.right" : "chevron.down")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                    .frame(width: 12)
-                Text(row.title)
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-                Text("\(row.headerCount)")
-                    .font(.caption)
-                    .foregroundStyle(.tertiary)
-                Spacer(minLength: 0)
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 6)
-            .padding(.leading, CGFloat(row.depth) * SegmentOutlinePolicy.indentStep)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-    }
-
-    @ViewBuilder
-    private func segmentSidebarRow(_ seg: SegmentRow, grouped: Bool = false) -> some View {
-        let rowContent = HStack(alignment: .top, spacing: 8) {
-            if viewModel.isSegmentSelectionMode {
-                Toggle(
-                    isOn: Binding(
-                        get: { viewModel.checkedSegmentIndices.contains(seg.idx) },
-                        set: { on in
-                            if on {
-                                viewModel.checkedSegmentIndices.insert(seg.idx)
-                            } else {
-                                viewModel.checkedSegmentIndices.remove(seg.idx)
-                            }
-                        }
-                    )
-                ) {
-                    EmptyView()
-                }
-                .toggleStyle(.checkbox)
-                .labelsHidden()
-            }
-
-            statusIcon(for: seg)
-            SegmentSidebarRow(segment: seg, grouped: grouped)
-        }
-        .contentShape(Rectangle())
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(
-            viewModel.selectedIdx == seg.idx
-                ? LuminaTheme.listSelectionBackground
-                : Color.clear
-        )
-
-        Group {
-            if viewModel.isSegmentSelectionMode {
-                rowContent
-                    .onTapGesture { viewModel.toggleCheck(seg.idx) }
-            } else {
-                Button {
-                    selectSidebarSegment(seg.idx)
-                } label: {
-                    rowContent
-                }
-                .buttonStyle(.plain)
-                .frame(maxWidth: .infinity, alignment: .leading)
-            }
-        }
-        .contextMenu {
-            if viewModel.checkedSegmentIndices.contains(seg.idx),
-               viewModel.checkedSegmentIndices.count > 1 {
-                Button("重新摘要选中 (\(viewModel.checkedSegmentIndices.count))") {
-                    Task {
-                        do { try await viewModel.retryCheckedSegments(core: core) }
-                        catch { actionError = error.localizedDescription }
-                    }
-                }
-            } else {
-                Button("重新摘要") {
-                    Task {
-                        do { try await viewModel.retrySegment(seg.idx, core: core) }
-                        catch { actionError = error.localizedDescription }
-                    }
-                }
-            }
-        }
     }
 
     private var chatPanel: some View {
@@ -2247,28 +2145,6 @@ struct ReaderView: View {
         }
     }
 
-    @ViewBuilder
-    private func statusIcon(for seg: SegmentRow) -> some View {
-        Group {
-            if seg.idx == viewModel.selectedIdx {
-                Image(systemName: "largecircle.fill.circle")
-                    .foregroundStyle(LuminaTheme.accent)
-            } else {
-                switch seg.summary_status {
-                case "ready":
-                    Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
-                case "running":
-                    Image(systemName: "circle.lefthalf.filled").foregroundStyle(LuminaTheme.accent)
-                case "failed", "error":
-                    Image(systemName: "exclamationmark.circle").foregroundStyle(.red)
-                default:
-                    Image(systemName: "circle").foregroundStyle(.secondary)
-                }
-            }
-        }
-        .font(.body)
-        .frame(width: 20, alignment: .center)
-    }
 }
 
 struct SegmentSidebarRow: View {
@@ -2797,6 +2673,13 @@ final class ReaderViewModel: ObservableObject {
     @Published var checkedSegmentIndices: Set<Int> = []
     @Published var isSegmentSelectionMode = false
     @Published var collapsedOutlineKeys: Set<String> = []
+    /// Cached catalog outline. Never rebuild in SwiftUI `body` — summarize SSE
+    /// would otherwise re-run O(n) `SegmentOutlinePolicy.build` on every tick.
+    @Published private(set) var outlineRows: [SegmentOutlinePolicy.Row] = []
+    /// Test hook: full chapter-tree rebuilds (load / collapse / structure change).
+    private(set) var outlineRebuildCount = 0
+    /// Test hook: single-row patches from status/ready (not progress metrics).
+    private(set) var outlinePatchCount = 0
     private var collapsedOutlineByBook: [String: Set<String>] = [:]
     @Published var currentSegment: SegmentRow?
     @Published private(set) var sourceCacheVersion = 0
@@ -3048,6 +2931,9 @@ final class ReaderViewModel: ObservableObject {
             collapsedOutlineByBook[self.bookId] = collapsedOutlineKeys
         }
         segments = []
+        outlineRows = []
+        outlineRebuildCount = 0
+        outlinePatchCount = 0
         selectedIdx = nil
         checkedSegmentIndices = []
         isSegmentSelectionMode = false
@@ -3057,6 +2943,7 @@ final class ReaderViewModel: ObservableObject {
         summaryReadyCount = 0
         summaryTotalCount = 0
         summarizeState = nil
+        segmentRunningMetrics = [:]
         totalCharCount = nil
         chunkTargetChars = nil
         bookLanguage = nil
@@ -3127,6 +3014,7 @@ final class ReaderViewModel: ObservableObject {
             onResume(idx)
 
             segments = list
+            rebuildOutline()
             warmSummaryCache(from: list)
             summaryReadyCount = book.summary_ready_count ?? list.filter { $0.summary_status == "ready" }.count
             summaryTotalCount = book.summary_total_count ?? list.count
@@ -3378,6 +3266,7 @@ final class ReaderViewModel: ObservableObject {
         fillCatalogPreviewIfNeeded(&updated)
         segments[i] = updated
         syncCurrentSegment(from: updated)
+        patchOutlineSegment(updated)
         if let json = updated.summary_json, !json.isEmpty {
             ensureSummaryParsed(idx: idx, json: json)
         }
@@ -3673,13 +3562,45 @@ final class ReaderViewModel: ObservableObject {
         } else {
             collapsedOutlineKeys.insert(key)
         }
+        rebuildOutline()
     }
 
     func revealOutline(for idx: Int?) {
         guard let idx else { return }
-        for key in SegmentOutlinePolicy.keysToReveal(for: idx, in: segments) {
+        let keys = SegmentOutlinePolicy.keysToReveal(for: idx, in: segments)
+        guard !keys.isEmpty else { return }
+        var changed = false
+        for key in keys where collapsedOutlineKeys.contains(key) {
             collapsedOutlineKeys.remove(key)
+            changed = true
         }
+        if changed {
+            rebuildOutline()
+        }
+    }
+
+    func rebuildOutline() {
+        outlineRows = SegmentOutlinePolicy.build(
+            segments: segments,
+            collapsed: collapsedOutlineKeys
+        )
+        outlineRebuildCount += 1
+    }
+
+    /// Update one visible leaf without rebuilding the chapter tree.
+    /// Falls back to full rebuild when chapter/heading identity changed.
+    func patchOutlineSegment(_ segment: SegmentRow) {
+        if let existing = outlineRows.first(where: { $0.segment?.idx == segment.idx })?.segment,
+           SegmentOutlinePolicy.structureChanged(from: existing, to: segment) {
+            rebuildOutline()
+            return
+        }
+        var rows = outlineRows
+        if SegmentOutlinePolicy.replaceSegment(segment, in: &rows) {
+            outlineRows = rows
+            outlinePatchCount += 1
+        }
+        // Collapsed-away leaves stay stale until expand → rebuildOutline.
     }
 
     func enterSegmentSelectionMode() {
@@ -3793,6 +3714,7 @@ final class ReaderViewModel: ObservableObject {
         updated.chapter = chapter
         segments[i] = updated
         syncCurrentSegment(from: updated)
+        patchOutlineSegment(updated)
         invalidateParsedSummary(idx: idx)
         segmentRunningMetrics.removeValue(forKey: idx)
         if let rawText {
@@ -3997,6 +3919,7 @@ final class ReaderViewModel: ObservableObject {
         }
         segments[i] = updated
         syncCurrentSegment(from: updated)
+        patchOutlineSegment(updated)
         if status == "running" {
             let startedAt: Date
             if let startedAtStr = event?["started_at"] as? String,
@@ -4049,6 +3972,7 @@ final class ReaderViewModel: ObservableObject {
         fillCatalogPreviewIfNeeded(&updated)
         segments[i] = updated
         syncCurrentSegment(from: updated)
+        patchOutlineSegment(updated)
         segmentRunningMetrics.removeValue(forKey: idx)
         if let json = updated.summary_json, !json.isEmpty {
             ensureSummaryParsed(idx: idx, json: json)

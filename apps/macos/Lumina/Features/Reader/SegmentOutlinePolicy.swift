@@ -188,4 +188,30 @@ enum SegmentOutlinePolicy {
         }
         return rows
     }
+
+    /// Patch a visible leaf row's segment payload without rebuilding the chapter tree.
+    /// Returns `false` when the segment is not in `rows` (e.g. under a collapsed header).
+    @discardableResult
+    static func replaceSegment(_ segment: SegmentRow, in rows: inout [Row]) -> Bool {
+        guard let index = rows.firstIndex(where: { !$0.isHeader && $0.segment?.idx == segment.idx })
+        else { return false }
+        let old = rows[index]
+        rows[index] = Row(
+            id: old.id,
+            isHeader: false,
+            pathKey: old.pathKey,
+            depth: old.depth,
+            title: old.title,
+            isCollapsed: old.isCollapsed,
+            headerCount: old.headerCount,
+            grouped: old.grouped,
+            segment: segment
+        )
+        return true
+    }
+
+    /// Chapter / heading tree identity — when these change, callers must full-rebuild.
+    static func structureChanged(from old: SegmentRow, to new: SegmentRow) -> Bool {
+        old.chapter != new.chapter || old.heading_path != new.heading_path
+    }
 }

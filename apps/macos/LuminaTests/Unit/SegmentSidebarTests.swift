@@ -256,6 +256,7 @@ final class SegmentCatalogPreviewArchitectureTests: XCTestCase {
     func testCatalogRowsUseSlimPreviewAndFullWidth() throws {
         let reader = try source("Lumina/Features/Reader/ReaderView.swift")
         let models = try source("Lumina/Features/Reader/SegmentSidebarModels.swift")
+        let catalog = try source("Lumina/Features/Reader/SegmentOutlineCatalogList.swift")
         XCTAssertTrue(
             reader.contains("segment.summary_preview"),
             "the catalog must render GET /segments summary_preview for every row, not only hydrated neighbors"
@@ -274,7 +275,7 @@ final class SegmentCatalogPreviewArchitectureTests: XCTestCase {
             "catalog lines must ellipsize at the row width instead of clipping to a few CJK glyphs"
         )
         XCTAssertTrue(
-            reader.contains(".frame(maxWidth: .infinity, alignment: .leading)"),
+            catalog.contains(".frame(maxWidth: .infinity, alignment: .leading)"),
             "catalog rows must take the cover width so LazyVStack does not propose a few-character width"
         )
         XCTAssertFalse(
@@ -292,6 +293,18 @@ final class SegmentCatalogPreviewArchitectureTests: XCTestCase {
         XCTAssertFalse(
             models.contains("TimelineView"),
             "catalog first line must not host live summarize captions"
+        )
+        XCTAssertFalse(
+            reader.contains("SegmentOutlinePolicy.build(segments: viewModel.segments"),
+            "ReaderView body must not rebuild the outline from segments on every paint"
+        )
+        XCTAssertTrue(
+            reader.contains("viewModel.outlineRows"),
+            "segment list must consume the cached outlineRows snapshot"
+        )
+        XCTAssertTrue(
+            catalog.contains("struct SegmentOutlineCatalogList"),
+            "segment list cover must live in an isolated catalog list view"
         )
         let iconSlice = models.components(separatedBy: "private var statusIcon: some View").last ?? ""
         XCTAssertTrue(
@@ -453,12 +466,90 @@ final class ReaderViewModelSidebarTests: XCTestCase {
                 retry_count: nil, summary_duration_s: nil, summary_llm_attempts: nil
             )
         ]
+        vm.rebuildOutline()
         vm.handleEvent(
             ["type": "segment_status", "idx": 0, "status": "running"],
             core: core
         )
         XCTAssertEqual(vm.summarizeState, "running")
         XCTAssertEqual(vm.summarizeActivityLabel, "1 进行中")
+    }
+
+    func testOutlineCache_progressDoesNotRebuild_readyPatchesRow() {
+        let vm = ReaderViewModel()
+        let core = CoreClient(baseURL: URL(string: "http://127.0.0.1:8765")!)
+        vm.segments = [
+            SegmentRow(
+                id: "s0", idx: 0, label: "甲", chapter: "卷一", summary_status: "running",
+                summary_json: nil, raw_text: nil, translation: nil, anchor_label: nil,
+                summary_provider: nil, summary_model: nil, summary_tier: nil, char_count: nil,
+                retry_count: nil, summary_duration_s: nil, summary_llm_attempts: nil,
+                summary_preview: nil, bullet_labels: nil, heading_path: ["卷一"]
+            ),
+            SegmentRow(
+                id: "s1", idx: 1, label: "乙", chapter: "卷一", summary_status: "pending",
+                summary_json: nil, raw_text: nil, translation: nil, anchor_label: nil,
+                summary_provider: nil, summary_model: nil, summary_tier: nil, char_count: nil,
+                retry_count: nil, summary_duration_s: nil, summary_llm_attempts: nil,
+                summary_preview: nil, bullet_labels: nil, heading_path: ["卷一"]
+            ),
+        ]
+        vm.rebuildOutline()
+        let rebuildsAfterLoad = vm.outlineRebuildCount
+        let patchesAfterLoad = vm.outlinePatchCount
+        XCTAssertGreaterThan(rebuildsAfterLoad, 0)
+        XCTAssertFalse(vm.outlineRows.isEmpty)
+
+        vm.handleEvent(
+            [
+                "type": "segment_summarize_progress",
+                "idx": 0,
+                "llm_attempt": 2,
+                "max_llm_attempts": 3,
+            ],
+            core: core
+        )
+        XCTAssertEqual(vm.outlineRebuildCount, rebuildsAfterLoad)
+        XCTAssertEqual(vm.outlinePatchCount, patchesAfterLoad)
+
+        vm.handleEvent(
+            [
+                "type": "segment_ready",
+                "idx": 0,
+                "label": "甲完",
+                "summary_status": "ready",
+                "summary_preview": "首句预览。",
+            ],
+            core: core
+        )
+        XCTAssertEqual(vm.outlineRebuildCount, rebuildsAfterLoad)
+        XCTAssertEqual(vm.outlinePatchCount, patchesAfterLoad + 1)
+        let leaf = vm.outlineRows.first { $0.segment?.idx == 0 }
+        XCTAssertEqual(leaf?.segment?.summary_status, "ready")
+        XCTAssertEqual(leaf?.segment?.label, "甲完")
+
+        vm.collapsedOutlineKeys.insert("卷一")
+        vm.rebuildOutline()
+        XCTAssertEqual(vm.outlineRebuildCount, rebuildsAfterLoad + 1)
+        XCTAssertNil(vm.outlineRows.first { $0.segment?.idx == 0 })
+    }
+
+    func testOutlineCache_toggleCollapseRebuildsOnce() {
+        let vm = ReaderViewModel()
+        vm.segments = [
+            SegmentRow(
+                id: "s0", idx: 0, label: "甲", chapter: "卷一", summary_status: "pending",
+                summary_json: nil, raw_text: nil, translation: nil, anchor_label: nil,
+                summary_provider: nil, summary_model: nil, summary_tier: nil, char_count: nil,
+                retry_count: nil, summary_duration_s: nil, summary_llm_attempts: nil,
+                heading_path: ["卷一"]
+            )
+        ]
+        vm.rebuildOutline()
+        let before = vm.outlineRebuildCount
+        vm.toggleOutlineKey("卷一")
+        XCTAssertEqual(vm.outlineRebuildCount, before + 1)
+        XCTAssertTrue(vm.collapsedOutlineKeys.contains("卷一"))
     }
 
     func testSettingsChunkTargetRange_allows200() {

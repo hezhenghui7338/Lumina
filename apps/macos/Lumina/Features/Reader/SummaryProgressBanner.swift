@@ -33,7 +33,21 @@ enum ReaderSummaryProgressPolicy {
         segmentListVisible: Bool
     ) -> Bool {
         guard !segmentListVisible else { return false }
-        return totalCount > 0 && readyCount < totalCount
+        return isIncomplete(readyCount: readyCount, totalCount: totalCount)
+    }
+
+    /// Keep the feed inset height while the book is incomplete, even when the
+    /// segment list is open and the banner content is hidden — otherwise opening
+    /// the catalog collapses the inset and relayouts the full ForEach feed.
+    static func shouldReserveContentBannerInset(
+        readyCount: Int,
+        totalCount: Int
+    ) -> Bool {
+        isIncomplete(readyCount: readyCount, totalCount: totalCount)
+    }
+
+    static func isIncomplete(readyCount: Int, totalCount: Int) -> Bool {
+        totalCount > 0 && readyCount < totalCount
     }
 
     static func runningCount(in segments: [SegmentRow]) -> Int {
