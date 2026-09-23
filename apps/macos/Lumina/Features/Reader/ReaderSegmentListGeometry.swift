@@ -214,6 +214,19 @@ enum ReaderKeyboardScroll {
     }
 }
 
+/// ↑/↓ continuous reading: prefer a nested segment box when it can move, else
+/// the main feed. Does not decide segment turn (`←` / `→`).
+enum ReaderKeyboardScrollRouting {
+    enum Target: Equatable {
+        case nested
+        case main
+    }
+
+    static func target(nestedCanMove: Bool) -> Target {
+        nestedCanMove ? .nested : .main
+    }
+}
+
 /// Height reserved for a segment that does not yet have a summary, so
 /// `pending` → `running` → `ready` does not explode the feed and yank
 /// `scrollPosition` back to the pinned segment's top.
@@ -252,7 +265,7 @@ enum ReaderSegmentPanelHeight {
     }
 }
 
-/// Prev/next segment by sorted idx, used by [ ] buttons and keyboard.
+/// Prev/next segment by sorted idx, used by arrow buttons and keyboard.
 enum SegmentTurnNavigation {
     static func targetIdx(current: Int, delta: Int, sortedIdxs: [Int]) -> Int? {
         guard let pos = sortedIdxs.firstIndex(of: current) else { return nil }
@@ -260,85 +273,14 @@ enum SegmentTurnNavigation {
         guard sortedIdxs.indices.contains(newPos) else { return nil }
         return sortedIdxs[newPos]
     }
-
-    /// When the user rapidly clicks next/prev before the feed animation finishes,
-    /// advance from `selectedIdx` if it has already moved in the requested direction.
-    static func continuousBaseIdx(
-        clickedIdx: Int,
-        delta: Int,
-        selectedIdx: Int?
-    ) -> Int {
-        guard let selectedIdx else { return clickedIdx }
-        if delta > 0, selectedIdx > clickedIdx {
-            return selectedIdx
-        }
-        if delta < 0, selectedIdx < clickedIdx {
-            return selectedIdx
-        }
-        return clickedIdx
-    }
 }
 
-/// Fast-scroll feed: keep progress live, debounce hydrate/prefetch, and pause
-/// catalog merges so LazyVStack is not rebuilt mid-fling.
-enum ReaderScrollFeedPolicy {
-    static let scrollIdleNanoseconds: UInt64 = 300_000_000
-    static let prefetchDebounceNanoseconds: UInt64 = 90_000_000
-    static let catalogFillInitialDelayNanoseconds: UInt64 = 800_000_000
-    static let sourceFetchConcurrency = 2
-    /// Prefer the direction of travel so the next turn is already warm.
-    static let forwardPrefetchRadius = 4
-    static let backwardPrefetchRadius = 2
-
-    static func directionalRadii(from previous: Int?, to current: Int) -> (back: Int, forward: Int) {
-        guard let previous else {
-            return (backwardPrefetchRadius, forwardPrefetchRadius)
-        }
-        if current > previous {
-            return (backwardPrefetchRadius, forwardPrefetchRadius)
-        }
-        if current < previous {
-            return (forwardPrefetchRadius, backwardPrefetchRadius)
-        }
-        return (backwardPrefetchRadius, forwardPrefetchRadius)
-    }
-
-    static func prefetchWindow(
-        sorted: [Int],
-        center: Int,
-        back: Int,
-        forward: Int
-    ) -> [Int] {
-        guard let pos = sorted.firstIndex(of: center) else { return [] }
-        let start = max(0, pos - back)
-        let end = min(sorted.count - 1, pos + forward)
-        guard start <= end else { return [] }
-        return Array(sorted[start...end])
-    }
-}
-
-/// Progressive catalog pages should append/prepend without a full dictionary rebuild.
-enum ReaderCatalogMergePolicy {
-    static func canAppendAfter(existingMaxIdx: Int?, incomingIdxs: [Int]) -> Bool {
-        guard let maxIdx = existingMaxIdx, !incomingIdxs.isEmpty else { return false }
-        guard incomingIdxs.allSatisfy({ $0 > maxIdx }) else { return false }
-        return zip(incomingIdxs, incomingIdxs.dropFirst()).allSatisfy { $0 < $1 }
-    }
-
-    static func canPrependBefore(existingMinIdx: Int?, incomingIdxs: [Int]) -> Bool {
-        guard let minIdx = existingMinIdx, !incomingIdxs.isEmpty else { return false }
-        guard incomingIdxs.allSatisfy({ $0 < minIdx }) else { return false }
-        return zip(incomingIdxs, incomingIdxs.dropFirst()).allSatisfy { $0 < $1 }
-    }
-}
-
-/// Hardware `[` / `]` (keyCode 33 / 30). Chinese IME types 【】 on the same keys.
-/// Character `onKeyPress` only fires while the SwiftUI reader view is first
-/// responder; after a turn, selectable body text steals focus and the second
-/// press dies. Key codes keep working.
+/// Hardware `←` / `→` (keyCode 123 / 124). Character `onKeyPress` only fires
+/// while the SwiftUI reader view is first responder; after a turn, selectable
+/// body text steals focus and the second press dies. Key codes keep working.
 enum SegmentTurnKeyPolicy {
-    static let openBracketKeyCode: UInt16 = 33
-    static let closeBracketKeyCode: UInt16 = 30
+    static let leftArrowKeyCode: UInt16 = 123
+    static let rightArrowKeyCode: UInt16 = 124
 
     static func delta(
         keyCode: UInt16,
@@ -349,15 +291,21 @@ enum SegmentTurnKeyPolicy {
         if isRepeat { return nil }
         if shift { return nil }
         switch keyCode {
-        case openBracketKeyCode: return -1
-        case closeBracketKeyCode: return 1
+        case leftArrowKeyCode: return -1
+        case rightArrowKeyCode: return 1
         default:
             break
         }
-        switch characters {
-        case "[", "【": return -1
-        case "]", "】": return 1
-        default: return nil
+        if characters.count == 1, let scalar = characters.unicodeScalars.first {
+            switch scalar.value {
+            case 0xF702: // NSLeftArrowFunctionKey
+                return -1
+            case 0xF703: // NSRightArrowFunctionKey
+                return 1
+            default:
+                break
+            }
         }
+        return nil
     }
 }

@@ -108,6 +108,13 @@ enum BookshelfPageTurnKeyPolicy {
 
         return nil
     }
+
+    /// macOS often autofocuses the empty「筛选书名」field; ←/→ must still page
+    /// until the user actually has text to edit (PRD: 输入框焦点时避让).
+    static func blocksPageTurn(isEditableTextInput: Bool, contentIsEmpty: Bool) -> Bool {
+        guard isEditableTextInput else { return false }
+        return !contentIsEmpty
+    }
 }
 
 @MainActor
@@ -540,14 +547,20 @@ final class LibraryViewModel: ObservableObject {
 
     /// Re-apply the store's positions to the rows. Called whenever the reader
     /// records a new position, so the shelf never drifts from what is on screen.
-    func applyLocalProgress(_ positions: [String: ReadingPosition], openedAt: Date = Date()) {
-        books = Self.overlayLocalProgress(books, openedAt: openedAt) { positions[$0] }
+    /// The lookup must be the store's full memory → published → disk chain so
+    /// the shelf shows exactly what the reader will resume from — a row must
+    /// never keep a previously overlaid value the open path would not use.
+    func applyLocalProgress(openedAt: Date = Date(), cached: (String) -> ReadingPosition?) {
+        books = Self.overlayLocalProgress(books, openedAt: openedAt, cached: cached)
     }
 
     var hasIncompleteSummaries: Bool {
         books.contains { $0.summaryTotal > 0 && $0.summaryReady < $0.summaryTotal }
     }
 
+    /// Poll only while work can still change shelf rows. Idle partial
+    /// (`summaryReady < summaryTotal` without running/queued) must not keep a
+    /// 3s full-list refresh alive — that redraws the grid and flashes covers.
     var needsSummarizePolling: Bool {
         if let overview = summarizeOverview, overview.activeCount > 0 {
             return true
@@ -557,8 +570,7 @@ final class LibraryViewModel: ObservableObject {
             if $0.isSegmenting { return true }
             switch $0.summarize_state {
             case "running", "queued", "paused": return true
-            default:
-                return $0.summaryTotal > 0 && $0.summaryReady < $0.summaryTotal
+            default: return false
             }
         }
     }

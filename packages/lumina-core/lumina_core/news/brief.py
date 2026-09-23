@@ -6,7 +6,6 @@ from datetime import datetime, timezone
 
 import sqlite3
 
-from lumina_core.news.rank import rank_articles
 from lumina_core.news.store import NewsSourceRepo, NewsStore
 from lumina_core.news.summary_parse import parse_rss_summary, skim_is_rich
 
@@ -19,17 +18,16 @@ def _truncate_chars(text: str, limit: int) -> str:
 
 
 def build_brief(conn: sqlite3.Connection, *, limit: int = 25) -> dict:
-    # Pull a wider pool then rank by score_hint + freshness.
-    pool = NewsStore(conn).list_all(limit=max(limit * 6, 150))
-    ranked = rank_articles(pool, limit=limit)
+    store = NewsStore(conn)
+    # Newest first: published_at, else synced_at (see NewsStore.list_recent).
+    articles = store.list_recent(limit=limit)
     source_titles = {
         s["id"]: (s.get("title") or s.get("url") or s["id"])
         for s in NewsSourceRepo(conn).list_sources()
     }
     day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     cards = []
-    for r in ranked:
-        a = r.article
+    for a in articles:
         sid = a.get("source_id") or ""
         stitle = source_titles.get(sid, sid) if sid else None
         parsed = parse_rss_summary(a.get("rss_summary") or "")
@@ -56,7 +54,7 @@ def build_brief(conn: sqlite3.Connection, *, limit: int = 25) -> dict:
                 "viewpoints": viewpoints,
                 "quotes": quotes,
                 "meta": meta,
-                "reasons": list(r.reasons),
+                "reasons": [],
                 "score_hint": a.get("score_hint"),
                 "source_id": sid or None,
                 "source_title": stitle,
@@ -67,4 +65,9 @@ def build_brief(conn: sqlite3.Connection, *, limit: int = 25) -> dict:
                 "summary_status": a.get("summary_status") or "idle",
             }
         )
-    return {"date": day, "count": len(cards), "articles": cards}
+    return {
+        "date": day,
+        "count": len(cards),
+        "last_synced_at": store.get_last_synced_at(),
+        "articles": cards,
+    }

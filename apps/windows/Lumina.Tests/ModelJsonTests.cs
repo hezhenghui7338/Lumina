@@ -32,9 +32,10 @@ public class ModelJsonTests
         Assert.Equal(10, original.Hits[0].StartUtf16);
         Assert.False(original.Truncated);
 
-        var briefJson = """{"date":"2026-08-10","count":1,"articles":[{"id":"a1","title":"News","url":"https://x","viewpoints":[],"quotes":[],"meta":{},"reasons":[]}]}""";
+        var briefJson = """{"date":"2026-08-10","count":1,"last_synced_at":"2026-08-10T08:00:00+00:00","articles":[{"id":"a1","title":"News","url":"https://x","viewpoints":[],"quotes":[],"meta":{},"reasons":[]}]}""";
         var brief = JsonSerializer.Deserialize<NewsBrief>(briefJson, Opts)!;
         Assert.Equal(1, brief.Count);
+        Assert.Equal("2026-08-10T08:00:00+00:00", brief.LastSyncedAt);
         Assert.Equal("a1", brief.Articles[0].Id);
 
         var settingsJson = """{"target_language":"zh-CN","web_search_provider":"ddgs","web_search_enabled":true,"debug_mode":true,"auto_start_summary":false,"models":{"resources":[{"id":"ollama","provider":"ollama","base_url":"http://127.0.0.1:11434","model":"qwen3.5:4b","advanced_model":"qwen3.5:9b"}],"chat":{"priority":["ollama"]},"summarize":{"priority":["ollama"]}},"prompts":{"segment":"s","document":"d","chat":"c","news_chat":"nc","translate":"t","classify":"cl"},"prompts_defaults":{"segment":"","document":"","chat":"","news_chat":"","translate":"","classify":""}}""";
@@ -73,6 +74,21 @@ public class ModelJsonTests
         Assert.Equal(["p1"], parsed.KeyPoints);
         Assert.Equal(["w1"], parsed.WatchOuts);
         Assert.Equal(["q1"], parsed.FollowUps);
+    }
+
+    [Fact]
+    public void SummaryJsonParser_reads_sentences_bullets_and_collapses_blank_lines()
+    {
+        var parsed = SummaryJsonParser.Parse(
+            """{"sentences":["第一句概述。\n\n","第二句\n\n继续写完。"],"bullets":[{"label":"寒门\n\n出身","body":"主角生于\n\n贫苦农家，细节充实。"},{"label":"赴考之志","body":"段末誓要金榜题名，细节充实。"},{"label":"邻里期望","body":"乡邻视为\n\n\n村庄的希望，细节充实。"}],"notes":["注意：后文\n\n有伏笔。"],"follow_ups":["主角与邻里\n\n期望之间有何张力？"]}""");
+        Assert.Equal("第一句概述。\n第二句继续写完。", parsed.ThreeSentence);
+        Assert.Equal("寒门出身：主角生于贫苦农家，细节充实。", parsed.KeyPoints[0]);
+        Assert.DoesNotContain("\n\n", parsed.KeyPoints[2]);
+        Assert.Equal(["注意：后文有伏笔。"], parsed.WatchOuts);
+        Assert.Equal(["主角与邻里期望之间有何张力？"], parsed.FollowUps);
+        Assert.Equal("hello world", SummaryJsonParser.CollapseProseWhitespace("hello\n\nworld"));
+        Assert.Equal("甲乙", SummaryJsonParser.CollapseProseWhitespace("甲\n\n乙"));
+        Assert.Equal("甲 乙 丙", SummaryJsonParser.CollapseProseWhitespace("甲  乙  \t 丙"));
     }
 
     [Fact]
@@ -440,11 +456,95 @@ public class ModelJsonTests
     }
 
     [Fact]
+    public void ReadingProgressIndex_segment_total_ignores_summary_divergence()
+    {
+        Assert.Equal(40, ReadingProgressIndex.SegmentTotal(40));
+        Assert.Equal(64, ReadingProgressIndex.SegmentTotal(40, 64));
+        var openTotal = ReadingProgressIndex.SegmentTotal(40);
+        Assert.Equal(20, ReadingProgressIndex.Restore(11, 20, 40, openTotal));
+        // Old bug: max(segment, summary) discarded local progress.
+        Assert.Equal(11, ReadingProgressIndex.Restore(11, 20, 40, Math.Max(40, 48)));
+    }
+
+    [Fact]
+    public void ReadingProgressIndex_resume_idx_in_catalog_no_first_fallback()
+    {
+        Assert.Equal(20, ReadingProgressIndex.ResumeIdxInCatalog(20, new[] { 10, 11, 20, 21 }));
+        Assert.Null(ReadingProgressIndex.ResumeIdxInCatalog(20, new[] { 10, 11, 12 }));
+    }
+
+    [Fact]
     public void ReadingProgressIndex_restore_offset_when_segment_count_matches()
     {
         Assert.Equal(120, ReadingProgressIndex.RestoreOffset(120, 10, 10));
         Assert.Equal(0, ReadingProgressIndex.RestoreOffset(120, 12, 4));
         Assert.Equal(0, ReadingProgressIndex.RestoreOffset(null, 10, 10));
+    }
+
+    [Fact]
+    public void ReaderOpen_restores_local_before_around_and_skips_offset()
+    {
+        var testsRoot = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", ".."));
+        var path = Path.GetFullPath(Path.Combine(
+            testsRoot, "..", "Lumina", "Features", "Reader", "ReaderPage.xaml.cs"));
+        Assert.True(File.Exists(path), path);
+        var source = File.ReadAllText(path);
+        var open = source.Split("private async Task OpenAsync", 2)[1]
+            .Split("private void StartEvents", 2)[0];
+        Assert.Contains("GetCachedProgress", open);
+        Assert.Contains("ReadingProgressIndex.Restore(", open);
+        Assert.Contains("around: preferredIdx", open);
+        // preferredIdx must be computed before the first ListSegmentsAsync.
+        var restoreAt = open.IndexOf("ReadingProgressIndex.Restore(", StringComparison.Ordinal);
+        var listAt = open.IndexOf("ListSegmentsAsync(", StringComparison.Ordinal);
+        Assert.True(restoreAt >= 0 && listAt > restoreAt, "Restore local before around-fetch");
+        Assert.Contains("_pendingOffsetY = 0", open);
+        Assert.DoesNotContain("RestoreOffset(", open);
+        Assert.DoesNotContain("MinBy(s => Math.Abs(s.Idx - idx))", open);
+        Assert.Contains("ResumeIdxInCatalog", open);
+    }
+
+    [Fact]
+    public void SegmentSelection_skips_side_effects_for_merge_rebind()
+    {
+        var testsRoot = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", ".."));
+        var path = Path.GetFullPath(Path.Combine(
+            testsRoot, "..", "Lumina", "Features", "Reader", "ReaderPage.xaml.cs"));
+        Assert.True(File.Exists(path), path);
+        var source = File.ReadAllText(path);
+        var handler = source.Split("private async void SegmentList_SelectionChanged", 2)[1]
+            .Split("private void ContentScroll_ViewChanged", 2)[0];
+        // Same-idx rebind (catalog merge / chapter collapse) must return before
+        // hydrate / progress writes so a background merge never re-hydrates the
+        // visible segment or rewrites identical progress.
+        var guardAt = handler.IndexOf("_selected?.Idx == item.Segment.Idx", StringComparison.Ordinal);
+        var hydrateAt = handler.IndexOf("HydrateSelectedAsync(", StringComparison.Ordinal);
+        var saveAt = handler.IndexOf("SaveLocalProgress(", StringComparison.Ordinal);
+        Assert.True(guardAt >= 0, "selection handler must skip same-idx rebinds");
+        Assert.True(hydrateAt > guardAt, "guard must run before hydrate");
+        Assert.True(saveAt > guardAt, "guard must run before progress write");
+        // Open resets selection so the guard never blocks the first hydrate.
+        var nav = source.Split("protected override void OnNavigatedTo", 2)[1]
+            .Split("protected override void OnNavigatedFrom", 2)[0];
+        Assert.Contains("_selected = null", nav);
+    }
+
+    [Fact]
+    public void HydrateSelected_cache_hit_renders_without_awaiting_network()
+    {
+        var testsRoot = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", ".."));
+        var path = Path.GetFullPath(Path.Combine(
+            testsRoot, "..", "Lumina", "Features", "Reader", "ReaderPage.xaml.cs"));
+        Assert.True(File.Exists(path), path);
+        var source = File.ReadAllText(path);
+        var hydrate = source.Split("private async Task HydrateSelectedAsync()", 2)[1]
+            .Split("private bool TryGetRenderableCachedDetail", 2)[0];
+        Assert.Contains("TryGetRenderableCachedDetail(idx, out var cached)", hydrate);
+        Assert.Contains("RenderContent(cached)", hydrate);
+        var cacheBeforeCancel = hydrate.IndexOf("TryGetRenderableCachedDetail", StringComparison.Ordinal);
+        var cancelAt = hydrate.IndexOf("_hydrateCts?.Cancel()", StringComparison.Ordinal);
+        Assert.True(cacheBeforeCancel >= 0 && cancelAt > cacheBeforeCancel,
+            "cache hit must paint before cancelling in-flight hydrate");
     }
 
     [Fact]

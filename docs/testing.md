@@ -128,7 +128,7 @@ Lumina/
 | ID | PRD | 场景 | 断言 | 层 | LLM |
 |----|-----|------|------|-----|-----|
 | **E2E-BOOT-01** | §3.4 | 启动时书库/设置/资讯三接口 JSON 契约 | `is_favorite` 为 JSON bool；Swift `BookSummary`/`AppSettings`/`NewsBrief` 可解码 | API unit + XCTest | Mock |
-| **E2E-BOOT-02** | §3.4 / §3.5 / §5.9 | Sidecar 启动就绪、冷启动门闩、退出必停、设置可停/重启 | `/health` 即时响应；`GET /startup/status` 引擎/数据/缓存至 product-ready（不等资讯）；资讯 boot sync 后台进行，失败/超时资讯 Tab 可重试；`POST /shutdown` 结束 uvicorn；卡死/复用孤儿退出时仍杀端口监听；Swift 连接错误中文 fallback；Release sidecar 冒烟 | API unit + XCTest + release smoke | Mock |
+| **E2E-BOOT-02** | §3.4 / §3.5 / §5.9 | Sidecar 启动就绪、冷启动品牌遮罩、退出必停、设置可停/重启 | `/health` 即时响应；`GET /startup/status` 引擎/数据/缓存至 product-ready（不等资讯）；壳立刻可见 + 品牌 Splash（无 checklist）；资讯 boot sync 后台进行，失败/超时资讯 Tab 可重试；`POST /shutdown` 结束 uvicorn；卡死/复用孤儿退出时仍杀端口监听；Swift 连接错误中文 fallback；Release sidecar 冒烟 | API unit + XCTest + release smoke | Mock |
 
 实现：`tests/unit/test_api_swift_contract.py` · `LuminaTests/Unit/CoreClientDecodingTests.swift`
 
@@ -147,7 +147,7 @@ Lumina/
 | **E2E-B1-reject** | TDD §14 | >500MB 拒绝 | 明确错误 | API | Mock |
 | **E2E-B2** | §5.3 B2 | 打开书 → 段列表 | 最多 3 层结构树；第一行 `段 N · 章名或 label`；三句话+要点+锚点 | API | Mock |
 | **E2E-B11** | §5.3 B11 | 长书导入后立即 open | 段 0 ready；段 1+ pending；SSE 进度 | API + SSE | Mock |
-| **E2E-B12** | §5.3.1 B12 | 听稿 summary/detailed/original | 简要=sentences；完整含要点不含 notes/follow_ups；summary 模式不读 raw_text | API | Mock |
+| **E2E-B12** | §5.3.1 B12 | 听稿 summary/detailed/original | 有 `label` 先读标题；起播/章变更先读章名；简要=sentences；完整含要点不含 notes/follow_ups；summary 模式不读 raw_text；utterance 带跟读锚点 | API | Mock |
 | **E2E-B2-switch** | §7.1 | 已缓存段切换 | ≤200ms | perf + XCUITest | — |
 | **E2E-B4** | §5.5 B4 | 深聊 10 轮 follow-up | 上下文不丢；每书单 thread | API + SSE | Mock |
 | **E2E-B6** | §5.5 B6 | Citation 跳转 | 100% 正确 segment_index | API + XCUITest | Mock |
@@ -176,7 +176,7 @@ Lumina/
 | **E2E-ingest-ocr** | §5.2 | 扫描 PDF OCR → 摘要 | API | Mock |
 | **E2E-ingest-ocr-cloud** | §5.2 | 云端配置完整 → 优先云端 OCR；失败不回退 | API | Mock HTTP |
 | **E2E-N1** | §5.8 N1 | sync 50 篇 RSS ≤60s | API | Mock |
-| **E2E-N2** | §5.8 N2 | 简报列表 | API | Mock |
+| **E2E-N2** | §5.8 N2 | 简报列表（时间倒序 + `last_synced_at`） | API | Mock |
 | **E2E-N3** | §5.8 N3 | 单篇精读 + 深聊 | API | Mock |
 | **E2E-settings** | §5.9 | Ollama 状态 + 三 Profile | API | Mock |
 | **E2E-summary-tier** | §5.3 | 正常/高级模型选择、默认正常、空高级模型回退、切档覆盖 | unit + API + 双端契约 | Mock |
@@ -208,7 +208,7 @@ Lumina/
 | **B2 段列表** | `test_heading_path_at` · `test_heading_path_from_legacy_chapter_label` · `test_list_catalog_heading_path_and_legacy_chapter_fallback` · `test_summary_json_parse` · `test_label_max_20_chars` · `test_summary_quality`（0/1/2 问题边界、误报、复核降级、带反馈重试） | `SegmentListGroupingTests`（2 层标题 + 折叠 + 无章平铺）· `SegmentCatalog_nests_part_and_chapter` · Snapshot |
 | **E2E-boundary-move** | `test_boundary_move` · `test_boundary_api` | `CoreClientDecodingTests.testSegmentBoundaryPreview_decodesCandidates` · `SegmentBoundaryOffsetTests` · `apps/windows/Lumina.Tests/SegmentBoundaryOffsetTests.cs` |
 | **B11 prefetch** | `test_same_book_summaries_are_strictly_ordered` · `test_different_books_still_summarize_in_parallel` · `test_final_failure_does_not_block_later_segments` · `test_chat_pauses_prefetch` · `test_job_persist_on_restart` | `ReaderViewModel_SSEHandler` |
-| **B12 听文本** | `test_listen_script` · `test_listen_speech_api`（listen-script 路由） | `ListenScriptTests` · `ListenChromePolicyTests` · `ListenSessionTests` · `ReaderChromeClickArchitectureTests.testListenChevronSplitPlaysBriefOnIconClick` · `apps/windows/Lumina.Tests/ListenScriptTests.cs` |
+| **B12 听文本** | `test_listen_script` · `test_listen_speech_api`（listen-script 路由） | `ListenScriptTests`（含跟读锚点 / 禁止跟读自动滚）· `ListenChromePolicyTests` · `ListenSessionTests` · `ReaderChromeClickArchitectureTests.testListenChevronSplitPlaysBriefOnIconClick` · `apps/windows/Lumina.Tests/ListenScriptTests.cs` |
 | **B4/B5 深聊** | `test_evidence_sufficiency_router` · `test_chat_dca` · `test_chat_evidence` · `test_web_search` · `test_rollup` · `test_book_scope_chat_after_index` | `CoreClientDecodingTests.testChatResponse_fromSSEDone_parsesMetrics` |
 | **B8 笔记/搜索** | `test_fts5_trigger_on_note_insert` · `test_search_group_by_kind` | `SearchViewModel_jumpToSegment` · Snapshot |
 | **B13 原文搜索** | `test_original_search` · `test_original_search_api` | `ReaderOriginalSearchTests` · `apps/windows/Lumina.Tests/ModelJsonTests.cs` |

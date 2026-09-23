@@ -59,7 +59,9 @@ public sealed class CoreClient : IDisposable
     {
         var data = await GetAsync($"/books?filter={Uri.EscapeDataString(filter)}&sort={Uri.EscapeDataString(sort)}", ct)
             .ConfigureAwait(false);
-        return Deserialize<BooksResp>(data)?.Books ?? [];
+        var books = Deserialize<BooksResp>(data)?.Books ?? [];
+        AttachCoverUrls(books);
+        return books;
     }
 
     public async Task<IReadOnlyList<string>> ListBookCategoriesAsync(CancellationToken ct = default)
@@ -71,7 +73,9 @@ public sealed class CoreClient : IDisposable
     public async Task<BookSummary> FetchBookAsync(string id, CancellationToken ct = default)
     {
         var data = await GetAsync($"/books/{id}", ct).ConfigureAwait(false);
-        return Deserialize<BookSummary>(data) ?? new BookSummary { Id = id };
+        var book = Deserialize<BookSummary>(data) ?? new BookSummary { Id = id };
+        AttachCoverUrls([book]);
+        return book;
     }
 
     public async Task<BookSummary> UpdateBookAsync(
@@ -444,11 +448,16 @@ public sealed class CoreClient : IDisposable
     public async Task<OriginalSearchResponse> SearchOriginalAsync(
         string bookId,
         string query,
+        int? afterSegment = null,
+        int? afterStart = null,
         CancellationToken ct = default)
     {
-        var data = await GetAsync(
-            $"/books/{bookId}/original-search?q={Uri.EscapeDataString(query)}",
-            ct).ConfigureAwait(false);
+        var url = $"/books/{bookId}/original-search?q={Uri.EscapeDataString(query)}";
+        if (afterSegment is int seg)
+            url += $"&after_segment={seg}";
+        if (afterStart is int start)
+            url += $"&after_start={start}";
+        var data = await GetAsync(url, ct).ConfigureAwait(false);
         return Deserialize<OriginalSearchResponse>(data) ?? new OriginalSearchResponse();
     }
 
@@ -565,6 +574,18 @@ public sealed class CoreClient : IDisposable
         var data = await GetAsync($"/settings/resources/{Uri.EscapeDataString(resourceId)}/status", ct)
             .ConfigureAwait(false);
         return Deserialize<ResourceStatus>(data) ?? new ResourceStatus { ResourceId = resourceId };
+    }
+
+    public async Task<CursorSdkStatus> FetchCursorSdkStatusAsync(CancellationToken ct = default)
+    {
+        var data = await GetAsync("/settings/cursor-sdk/status", ct).ConfigureAwait(false);
+        return Deserialize<CursorSdkStatus>(data) ?? new CursorSdkStatus();
+    }
+
+    public async Task<CursorSdkStatus> InstallCursorSdkAsync(CancellationToken ct = default)
+    {
+        var data = await PostAsync("/settings/cursor-sdk/install", "{}", ct).ConfigureAwait(false);
+        return Deserialize<CursorSdkStatus>(data) ?? new CursorSdkStatus();
     }
 
     public async Task<ContextProbeStatus> StartContextProbeAsync(
@@ -767,6 +788,19 @@ public sealed class CoreClient : IDisposable
     }
 
     private Uri Url(string path) => new(_baseUrl, path);
+
+    private void AttachCoverUrls(IEnumerable<BookSummary> books)
+    {
+        foreach (var book in books)
+        {
+            if (book.HasCover == false || string.IsNullOrEmpty(book.Id))
+            {
+                book.CoverUrl = null;
+                continue;
+            }
+            book.CoverUrl = Url($"/books/{book.Id}/cover").ToString();
+        }
+    }
 
     private async Task<byte[]> GetAsync(string path, CancellationToken ct)
     {

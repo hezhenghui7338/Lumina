@@ -12,11 +12,14 @@ public sealed class ListenSession : IDisposable
     private int _consecutiveSkips;
     private CancellationTokenSource? _playCts;
     private IListenEngine? _engine;
-    private Func<int, ListenMode, CancellationToken, Task<ListenScript>>? _resolve;
+    private Func<int, ListenMode, ListenChapterSpeakContext, CancellationToken, Task<ListenScript>>? _resolve;
     private Func<int, string>? _labelFor;
+    private Func<int, string?>? _chapterFor;
     private Func<IListenEngine>? _makeEngine;
     private string _bookId = "";
     private int _segmentCount;
+    private string? _lastSpokenChapter;
+    private bool _hasSpokenSegment;
 
     public ListenSession(DispatcherQueue dispatcher)
     {
@@ -33,6 +36,8 @@ public sealed class ListenSession : IDisposable
     public string? StatusMessage { get; private set; }
     public string? SkipNotice { get; private set; }
     public string SegmentLabel { get; private set; } = "";
+    /// Light follow-along target for the utterance currently speaking (kept while paused).
+    public ListenHighlightAnchor? ActiveHighlight { get; private set; }
 
     public string Title
     {
@@ -50,14 +55,16 @@ public sealed class ListenSession : IDisposable
     public void Configure(
         string bookId,
         int segmentCount,
-        Func<int, ListenMode, CancellationToken, Task<ListenScript>> resolve,
+        Func<int, ListenMode, ListenChapterSpeakContext, CancellationToken, Task<ListenScript>> resolve,
         Func<int, string> labelFor,
-        Func<IListenEngine> makeEngine)
+        Func<IListenEngine> makeEngine,
+        Func<int, string?>? chapterFor = null)
     {
         _bookId = bookId;
         _segmentCount = segmentCount;
         _resolve = resolve;
         _labelFor = labelFor;
+        _chapterFor = chapterFor;
         _makeEngine = makeEngine;
     }
 
@@ -73,6 +80,9 @@ public sealed class ListenSession : IDisposable
         _consecutiveSkips = 0;
         SkipNotice = null;
         StatusMessage = null;
+        ActiveHighlight = null;
+        _lastSpokenChapter = null;
+        _hasSpokenSegment = false;
         IsActive = true;
         IsPaused = false;
         var token = Interlocked.Increment(ref _generation);
@@ -148,7 +158,10 @@ public sealed class ListenSession : IDisposable
         IsLoading = false;
         StatusMessage = null;
         SkipNotice = null;
+        ActiveHighlight = null;
         _consecutiveSkips = 0;
+        _lastSpokenChapter = null;
+        _hasSpokenSegment = false;
         Emit();
     }
 
@@ -169,13 +182,17 @@ public sealed class ListenSession : IDisposable
                     return;
                 }
                 IsLoading = true;
+                ActiveHighlight = null;
                 var idx = CurrentIdx;
                 SegmentLabel = _labelFor?.Invoke(idx) ?? $"段 {idx + 1}";
                 Highlight(idx);
                 Emit();
+                ListenChapterSpeakContext chapterContext = _hasSpokenSegment
+                    ? new ListenChapterSpeakContext.Continuing(_lastSpokenChapter)
+                    : new ListenChapterSpeakContext.SessionStart();
                 var script = _resolve is null
                     ? ListenScript.NotReady(Mode, "summary_not_ready")
-                    : await _resolve(idx, Mode, ct).ConfigureAwait(false);
+                    : await _resolve(idx, Mode, chapterContext, ct).ConfigureAwait(false);
                 if (token != _generation) return;
 
                 var decision = ListenAdvancePolicy.Decide(
@@ -190,6 +207,7 @@ public sealed class ListenSession : IDisposable
                         StatusMessage = "已听完";
                         IsLoading = false;
                         IsPlaying = false;
+                        ActiveHighlight = null;
                         Emit();
                         return;
                     case ListenAdvanceDecision.PauseTooManySkips:
@@ -198,6 +216,7 @@ public sealed class ListenSession : IDisposable
                         IsLoading = false;
                         IsPlaying = false;
                         IsPaused = true;
+                        ActiveHighlight = null;
                         Emit();
                         return;
                     case ListenAdvanceDecision.Skip skip:
@@ -210,6 +229,8 @@ public sealed class ListenSession : IDisposable
 
                 _consecutiveSkips = 0;
                 SkipNotice = null;
+                _lastSpokenChapter = ListenChapterAnnouncePolicy.NormalizedChapter(_chapterFor?.Invoke(idx));
+                _hasSpokenSegment = true;
                 IsLoading = false;
                 IsPaused = false;
                 IsPlaying = true;
@@ -218,11 +239,19 @@ public sealed class ListenSession : IDisposable
                 _engine?.Dispose();
                 var engine = _makeEngine?.Invoke() ?? new SystemNeuralEngine();
                 _engine = engine;
+                var utterances = script.Utterances;
                 try
                 {
                     await engine.SpeakAsync(
                         new ListenSpeakRequest(script.Texts, script.Language, Rate, _bookId, idx, Mode),
-                        ct).ConfigureAwait(false);
+                        ct,
+                        utteranceIndex =>
+                        {
+                            if (token != _generation) return;
+                            if (utteranceIndex < 0 || utteranceIndex >= utterances.Count) return;
+                            ActiveHighlight = utterances[utteranceIndex].Anchor;
+                            Emit();
+                        }).ConfigureAwait(false);
                 }
                 catch (OperationCanceledException)
                 {
@@ -234,6 +263,7 @@ public sealed class ListenSession : IDisposable
                     StatusMessage = ex.Message;
                     IsPlaying = false;
                     IsLoading = false;
+                    ActiveHighlight = null;
                     Emit();
                     return;
                 }
@@ -244,6 +274,7 @@ public sealed class ListenSession : IDisposable
             {
                 StatusMessage = "已听完";
                 IsPlaying = false;
+                ActiveHighlight = null;
                 Emit();
             }
         }

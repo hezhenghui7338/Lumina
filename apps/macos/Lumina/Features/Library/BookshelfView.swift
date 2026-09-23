@@ -39,6 +39,7 @@ struct BookshelfView: View {
     @State private var showAdvancedStartConfirm = false
     @State private var showSummarizePopover = false
     @State private var dropTargeted = false
+    @FocusState private var titleFilterFocused: Bool
 
     var body: some View {
         VStack(spacing: 0) {
@@ -64,11 +65,18 @@ struct BookshelfView: View {
         }
         .navigationTitle(viewModel.query.title)
         .toolbar { toolbarContent }
+        .onAppear {
+            // macOS often autofocuses the first TextField; clear so ←/→ page.
+            titleFilterFocused = false
+        }
         .onChange(of: viewModel.pagedBooks.map(\.id)) { _, _ in
             syncCheckedBooks()
         }
         .onChange(of: viewModel.titleQuery) { _, _ in
             viewModel.resetPage()
+        }
+        .onChange(of: viewModel.query) { _, _ in
+            titleFilterFocused = false
         }
         .confirmationDialog(
             "确定删除这本书？",
@@ -236,7 +244,7 @@ struct BookshelfView: View {
             Button(action: onSearch) {
                 Label("搜索", systemImage: "magnifyingglass")
             }
-            .keyboardShortcut("k", modifiers: .command)
+            .help("跨书搜索（\(ShortcutStore.shared.display(for: .globalSearch))）")
 
             Button(action: onShowAllNotes) {
                 Label("全部笔记", systemImage: "note.text")
@@ -276,6 +284,7 @@ struct BookshelfView: View {
         HStack(spacing: 10) {
             TextField("筛选书名", text: $viewModel.titleQuery)
                 .textFieldStyle(.roundedBorder)
+                .focused($titleFilterFocused)
                 .frame(maxWidth: 240)
             Picker("排序", selection: sortBinding) {
                 ForEach(LibrarySort.allCases) { item in
@@ -403,36 +412,64 @@ struct BookshelfView: View {
     }
 
     private var bookGrid: some View {
-        ScrollView {
-            LazyVGrid(
-                columns: [GridItem(.adaptive(minimum: 148), spacing: 16)],
-                spacing: 20
-            ) {
-                ForEach(viewModel.pagedBooks) { book in
-                    BookCard(
-                        book: book,
-                        isClassifying: viewModel.classifyingIds.contains(book.id),
-                        ingestProgress: viewModel.ingestProgress[book.id],
-                        isSelectionMode: isSelectionMode,
-                        isChecked: checkedBookIds.contains(book.id),
-                        onToggleCheck: { toggleCheck(book.id) },
-                        onOpen: { openBook(book) },
-                        onToggleFavorite: { Task { await toggleFavorite(book) } },
-                        onRename: { presentRename(book) },
-                        onReclassify: { Task { await reclassify(book.id) } },
-                        onResegment: { presentResegment(for: book) },
-                        onExport: { presentExport(for: book) },
-                        onDelete: { bookPendingDelete = book },
-                        onStartSummarize: { tier in
-                            Task { await startSummarize(for: book.id, summaryTier: tier) }
-                        },
-                        onStopSummarize: {
-                            Task { await stopSummarize(for: book.id) }
+        // Pin grid width to outer container minus a permanent scroller gutter.
+        // Cover aspect-ratio height then cannot oscillate with scroller show/hide.
+        GeometryReader { geo in
+            let layoutWidth = BookshelfGridScrollPolicy.layoutWidth(
+                forContainerWidth: geo.size.width
+            )
+            let columnCount = BookshelfGridScrollPolicy.columnCount(
+                forLayoutWidth: layoutWidth
+            )
+            let rows = BookshelfGridScrollPolicy.rows(
+                books: viewModel.pagedBooks,
+                columnCount: columnCount
+            )
+            ScrollView {
+                VStack(alignment: .leading, spacing: BookshelfGridScrollPolicy.rowSpacing) {
+                    ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
+                        HStack(alignment: .top, spacing: BookshelfGridScrollPolicy.columnSpacing) {
+                            ForEach(row) { book in
+                                BookCard(
+                                    book: book,
+                                    isClassifying: viewModel.classifyingIds.contains(book.id),
+                                    ingestProgress: viewModel.ingestProgress[book.id],
+                                    isSelectionMode: isSelectionMode,
+                                    isChecked: checkedBookIds.contains(book.id),
+                                    coverURL: core.coverURL(for: book),
+                                    onToggleCheck: { toggleCheck(book.id) },
+                                    onOpen: { openBook(book) },
+                                    onToggleFavorite: { Task { await toggleFavorite(book) } },
+                                    onRename: { presentRename(book) },
+                                    onReclassify: { Task { await reclassify(book.id) } },
+                                    onResegment: { presentResegment(for: book) },
+                                    onExport: { presentExport(for: book) },
+                                    onDelete: { bookPendingDelete = book },
+                                    onStartSummarize: { tier in
+                                        Task { await startSummarize(for: book.id, summaryTier: tier) }
+                                    },
+                                    onStopSummarize: {
+                                        Task { await stopSummarize(for: book.id) }
+                                    }
+                                )
+                                .frame(maxWidth: .infinity, alignment: .topLeading)
+                            }
+                            if row.count < columnCount {
+                                ForEach(0..<(columnCount - row.count), id: \.self) { _ in
+                                    Color.clear
+                                        .frame(maxWidth: .infinity)
+                                }
+                            }
                         }
-                    )
+                    }
                 }
+                .frame(width: layoutWidth, alignment: .topLeading)
+                // Total content width = layoutWidth + 2×padding = container − gutter.
+                // Trailing gutter stays empty until a legacy scroller claims it —
+                // cover width/height never change with scroller show/hide.
+                .padding(BookshelfGridScrollPolicy.contentPadding)
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .padding(20)
         }
     }
 
@@ -817,7 +854,7 @@ final class BookshelfKeyNSView: NSView {
     private func handleKeyDown(_ event: NSEvent) -> NSEvent? {
         guard event.window == window else { return event }
         if window?.attachedSheet != nil { return event }
-        guard !Self.isTextInputResponder(window?.firstResponder) else { return event }
+        guard !Self.blocksPageTurn(window?.firstResponder) else { return event }
 
         let mods = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
         let hasModifiers = !mods.intersection([.command, .option, .control, .shift]).isEmpty
@@ -835,14 +872,23 @@ final class BookshelfKeyNSView: NSView {
         return nil
     }
 
-    static func isTextInputResponder(_ responder: NSResponder?) -> Bool {
+    /// True when an editable field with content owns focus (caret navigation).
+    /// Empty「筛选书名」autofocus must not swallow ←/→.
+    static func blocksPageTurn(_ responder: NSResponder?) -> Bool {
         var current = responder
         while let node = current {
             if let textView = node as? NSTextView {
-                return textView.isEditable
+                if textView is LuminaSelectableTextView { return false }
+                return BookshelfPageTurnKeyPolicy.blocksPageTurn(
+                    isEditableTextInput: textView.isEditable,
+                    contentIsEmpty: textView.string.isEmpty
+                )
             }
             if let field = node as? NSTextField {
-                return field.isEditable
+                return BookshelfPageTurnKeyPolicy.blocksPageTurn(
+                    isEditableTextInput: field.isEditable,
+                    contentIsEmpty: field.stringValue.isEmpty
+                )
             }
             current = node.nextResponder
         }

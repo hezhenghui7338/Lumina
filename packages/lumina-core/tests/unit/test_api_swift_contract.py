@@ -466,6 +466,8 @@ def test_news_brief_matches_swift_news_brief(client):
     brief = client.get("/news/brief").json()
     assert isinstance(brief["date"], str)
     assert isinstance(brief["count"], int)
+    assert "last_synced_at" in brief
+    assert brief["last_synced_at"] is None or isinstance(brief["last_synced_at"], str)
     assert isinstance(brief["articles"], list)
     for article in brief["articles"]:
         assert isinstance(article["id"], str)
@@ -551,6 +553,60 @@ def test_book_public_dict_exposes_ingest_error():
     assert out["ingest_error"] == "unknown encoding: utf-8-sig"
     assert "metadata_json" not in out
     assert "document_tree" not in out
+    assert out["has_cover"] is None
+    assert "cover_path" not in out
+
+
+def test_book_public_dict_has_cover_tri_state():
+    assert book_public_dict({"id": "a", "title": "t", "cover_path": "cover.png"})["has_cover"] is True
+    assert book_public_dict({"id": "a", "title": "t", "cover_path": ""})["has_cover"] is False
+    assert book_public_dict({"id": "a", "title": "t"})["has_cover"] is None
+
+
+def test_book_cover_endpoint_serves_saved_image(client, tmp_path):
+    book_id = import_sample_book(client)
+    conn = client.app.state.lumina.conn
+    book = BookRepo(conn).get(book_id)
+    book_dir = Path(book["file_path"]).parent
+    cover = book_dir / "cover.png"
+    cover.write_bytes(
+        bytes.fromhex(
+            "89504e470d0a1a0a0000000d4948445200000001000000010802000000907753de"
+            "0000000c4944415408d763f8cfc00000000300010005fed4ef0000000049454e44ae426082"
+        )
+    )
+    BookRepo(conn).update(book_id, cover_path="cover.png")
+    listed = next(b for b in client.get("/books").json()["books"] if b["id"] == book_id)
+    assert listed["has_cover"] is True
+    resp = client.get(f"/books/{book_id}/cover")
+    assert resp.status_code == 200
+    assert resp.content[:8] == b"\x89PNG\r\n\x1a\n"
+
+
+def test_book_cover_endpoint_extracts_on_demand_from_epub(client, tmp_path):
+    from tests.unit.test_cover import _write_epub_with_cover
+    from tests.support.import_helpers import wait_for_ingest
+
+    epub_path = tmp_path / "with-cover.epub"
+    _write_epub_with_cover(epub_path, via="property")
+    resp = client.post("/books/import", json={"paths": [str(epub_path)]})
+    assert resp.status_code == 200
+    book_id = resp.json()["books"][0]["book_id"]
+    wait_for_ingest(client, book_id, timeout=20.0)
+    after_ingest = next(b for b in client.get("/books").json()["books"] if b["id"] == book_id)
+    assert after_ingest["has_cover"] is True
+
+    # Clear cached path to force on-demand extract from original.
+    conn = client.app.state.lumina.conn
+    BookRepo(conn).update(book_id, cover_path=None)
+    listed = next(b for b in client.get("/books").json()["books"] if b["id"] == book_id)
+    assert listed["has_cover"] is None
+
+    cover = client.get(f"/books/{book_id}/cover")
+    assert cover.status_code == 200
+    assert cover.content[:8] == b"\x89PNG\r\n\x1a\n"
+    listed2 = next(b for b in client.get("/books").json()["books"] if b["id"] == book_id)
+    assert listed2["has_cover"] is True
 
 
 def test_books_list_omits_metadata_json_and_document_tree(client):

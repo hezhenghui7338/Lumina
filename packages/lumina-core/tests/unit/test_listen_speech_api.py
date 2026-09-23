@@ -91,7 +91,7 @@ def test_listen_script_summary_omits_follow_ups(client):
     ).json()
     assert payload["ready"] is True
     texts = [u["text"] for u in payload["utterances"]]
-    assert texts == SAMPLE_SUMMARY["sentences"]
+    assert texts == ["引子", *SAMPLE_SUMMARY["sentences"]]
     joined = "\n".join(texts)
     assert "不该被朗读的追问" not in joined
     assert "SECRET_RAW_TEXT" not in joined
@@ -104,7 +104,8 @@ def test_listen_script_detailed_has_bullets_not_follow_ups(client):
         params={"mode": "detailed"},
     ).json()
     texts = [u["text"] for u in payload["utterances"]]
-    assert "结构化要点" in texts
+    assert texts[0] == "引子"
+    assert "主要内容" in texts
     assert any(t.startswith("1. 寒门出身。") for t in texts)
     assert "需要注意" not in texts
     joined = "\n".join(texts)
@@ -119,7 +120,9 @@ def test_listen_script_original_uses_raw_text(client):
         params={"mode": "original"},
     ).json()
     assert payload["ready"] is True
-    joined = " ".join(u["text"] for u in payload["utterances"])
+    texts = [u["text"] for u in payload["utterances"]]
+    assert texts[0] == "引子"
+    joined = " ".join(texts)
     assert "SECRET_RAW_TEXT_SHOULD_NOT_LEAK" in joined
 
 

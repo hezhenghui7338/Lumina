@@ -47,6 +47,8 @@ final class ListenSession: ObservableObject {
     @Published private(set) var statusMessage: String?
     @Published private(set) var skipNotice: String?
     @Published private(set) var segmentLabel = ""
+    /// Light follow-along target for the utterance currently speaking (kept while paused).
+    @Published private(set) var activeHighlight: ListenHighlightAnchor?
 
     var onHighlightSegment: ((Int) -> Void)?
 
@@ -56,21 +58,27 @@ final class ListenSession: ObservableObject {
     private var engine: ListenEngine?
     private var bookId = ""
     private var segmentCount = 0
-    private var resolve: ((Int, ListenMode) async -> ListenScript)?
+    private var resolve: ((Int, ListenMode, ListenChapterSpeakContext) async -> ListenScript)?
     private var labelFor: ((Int) -> String)?
+    private var chapterFor: ((Int) -> String?)?
     private var makeEngine: (() -> ListenEngine)?
+    /// Normalized chapter of the last segment that entered `.play` in this session.
+    private var lastSpokenChapter: String?
+    private var hasSpokenSegment = false
 
     func configure(
         bookId: String,
         segmentCount: Int,
-        resolve: @escaping (Int, ListenMode) async -> ListenScript,
+        resolve: @escaping (Int, ListenMode, ListenChapterSpeakContext) async -> ListenScript,
         labelFor: @escaping (Int) -> String,
+        chapterFor: @escaping (Int) -> String? = { _ in nil },
         makeEngine: @escaping () -> ListenEngine
     ) {
         self.bookId = bookId
         self.segmentCount = segmentCount
         self.resolve = resolve
         self.labelFor = labelFor
+        self.chapterFor = chapterFor
         self.makeEngine = makeEngine
     }
 
@@ -87,6 +95,8 @@ final class ListenSession: ObservableObject {
         consecutiveSkips = 0
         skipNotice = nil
         statusMessage = nil
+        lastSpokenChapter = nil
+        hasSpokenSegment = false
         isActive = true
         generation += 1
         let token = generation
@@ -153,6 +163,9 @@ final class ListenSession: ObservableObject {
         statusMessage = nil
         skipNotice = nil
         consecutiveSkips = 0
+        activeHighlight = nil
+        lastSpokenChapter = nil
+        hasSpokenSegment = false
     }
 
     private func runLoop(token: Int) async {
@@ -165,10 +178,14 @@ final class ListenSession: ObservableObject {
             }
             isLoading = true
             statusMessage = nil
+            activeHighlight = nil
             let idx = currentIdx
             segmentLabel = labelFor?(idx) ?? "段 \(idx + 1)"
             onHighlightSegment?(idx)
-            let script = await resolve?(idx, mode) ?? .notReady(mode, reason: "summary_not_ready")
+            let chapterContext: ListenChapterSpeakContext = hasSpokenSegment
+                ? .continuing(previousSpokenChapter: lastSpokenChapter)
+                : .sessionStart
+            let script = await resolve?(idx, mode, chapterContext) ?? .notReady(mode, reason: "summary_not_ready")
             guard token == generation else { return }
 
             let decision = ListenAdvancePolicy.decide(
@@ -183,6 +200,7 @@ final class ListenSession: ObservableObject {
                 statusMessage = "已听完"
                 isLoading = false
                 isPlaying = false
+                activeHighlight = nil
                 return
             case .pauseTooManySkips:
                 skipNotice = skipMessage(for: idx, reason: script.skipReason)
@@ -190,6 +208,7 @@ final class ListenSession: ObservableObject {
                 isLoading = false
                 isPlaying = false
                 isPaused = true
+                activeHighlight = nil
                 return
             case .skip(let next, let reason):
                 consecutiveSkips += 1
@@ -199,6 +218,8 @@ final class ListenSession: ObservableObject {
             case .play:
                 consecutiveSkips = 0
                 skipNotice = nil
+                lastSpokenChapter = ListenChapterAnnouncePolicy.normalizedChapter(chapterFor?(idx))
+                hasSpokenSegment = true
             }
 
             isLoading = false
@@ -206,6 +227,7 @@ final class ListenSession: ObservableObject {
             isPlaying = true
             let engine = makeEngine?() ?? SystemNeuralEngine()
             self.engine = engine
+            let utterances = script.utterances
             do {
                 try await engine.speak(
                     ListenSpeakRequest(
@@ -215,7 +237,12 @@ final class ListenSession: ObservableObject {
                         bookId: bookId,
                         idx: idx,
                         mode: mode
-                    )
+                    ),
+                    onUtteranceStart: { [weak self] utteranceIndex in
+                        guard let self, token == self.generation else { return }
+                        guard utterances.indices.contains(utteranceIndex) else { return }
+                        self.activeHighlight = utterances[utteranceIndex].anchor
+                    }
                 )
             } catch is CancellationError {
                 return
@@ -224,6 +251,7 @@ final class ListenSession: ObservableObject {
                 statusMessage = error.localizedDescription
                 isPlaying = false
                 isLoading = false
+                activeHighlight = nil
                 return
             }
             guard token == generation, isActive else { return }
@@ -232,6 +260,7 @@ final class ListenSession: ObservableObject {
         if currentIdx >= segmentCount {
             statusMessage = "已听完"
             isPlaying = false
+            activeHighlight = nil
         }
     }
 

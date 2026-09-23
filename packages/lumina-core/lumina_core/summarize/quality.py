@@ -45,6 +45,74 @@ _ALWAYS_REJECT_CODES = frozenset(
         "first_person_as_narrator",
         "summary_too_short",
         "summary_too_long",
+        "sentences_redundant",
+    }
+)
+# Soft gates skipped after SUMMARY_RELAX_QUALITY_AFTER_FAILURES job failures.
+_RELAXED_SKIP_CODES = frozenset(
+    {
+        "summary_too_short",
+        "summary_too_long",
+        "sentences_redundant",
+    }
+)
+_SENTENCES_JACCARD_THRESHOLD = 0.28
+_SENTENCES_JACCARD_MIN_CHARS = 20
+_SENTENCES_SPLIT_HEAD_THRESHOLD = 0.22
+_SIGNATURE_TOKEN_MIN_SHARED = 3
+_SUMMARY_STOP_TOKENS = frozenset(
+    {
+        "本段",
+        "随后",
+        "之后",
+        "于是",
+        "心中",
+        "感到",
+        "带着",
+        "孩子们",
+        "人群",
+        "观看",
+        "告知",
+        "一件",
+        "一个",
+        "这位",
+        "那位",
+        "他们",
+        "我们",
+        "这么",
+        "那么",
+        "已经",
+        "尚未",
+        "开始",
+        "最终",
+        "对此",
+        "这一",
+        "消息",
+        "表演",
+        "展示",
+    }
+)
+_EVENT_WORDS = frozenset(
+    {
+        "震惊",
+        "得知",
+        "寻找",
+        "打听",
+        "观看",
+        "展示",
+        "告诉",
+        "发现",
+        "决定",
+        "离开",
+        "抵达",
+        "遇到",
+        "听到",
+        "看到",
+        "感到",
+        "吸引",
+        "呆立",
+        "死讯",
+        "未果",
     }
 )
 
@@ -86,11 +154,27 @@ class SummaryQualityError(ValueError):
         super().__init__(f"摘要存在 {len(self.issues)} 处乱码、串语或表意不清：{details}")
 
 
-def quality_should_reject(issues: tuple[ClarityIssue, ...] | list[ClarityIssue]) -> bool:
-    """Always-reject codes fail alone; other defects still need more than one."""
-    if any(issue.code in _ALWAYS_REJECT_CODES for issue in issues):
+def quality_should_reject(
+    issues: tuple[ClarityIssue, ...] | list[ClarityIssue],
+    *,
+    relaxed: bool = False,
+) -> bool:
+    """Always-reject codes fail alone; other defects still need more than one.
+
+    In relaxed mode only severe always-reject codes (excluding length/redundancy
+    soft gates) cause rejection.
+    """
+    effective = _ALWAYS_REJECT_CODES - _RELAXED_SKIP_CODES if relaxed else _ALWAYS_REJECT_CODES
+    filtered = (
+        [issue for issue in issues if issue.code not in _RELAXED_SKIP_CODES]
+        if relaxed
+        else list(issues)
+    )
+    if any(issue.code in effective for issue in filtered):
         return True
-    return len(issues) > 1
+    if relaxed:
+        return False
+    return len(filtered) > 1
 
 
 def sentences_char_count(summary: SegmentSummary) -> int:
@@ -116,11 +200,134 @@ def _snippet_at(text: str, start: int, length: int = 24) -> str:
     return text[left : min(len(text), start + length)]
 
 
+def _cjk_bigrams(text: str) -> set[str]:
+    cleaned = re.sub(r"[^\u4e00-\u9fff]", "", text)
+    if len(cleaned) < 2:
+        return set()
+    return {cleaned[index : index + 2] for index in range(len(cleaned) - 1)}
+
+
+def _latin_tokens(text: str) -> set[str]:
+    return {
+        match.group().casefold()
+        for match in re.finditer(r"[A-Za-z]+", text)
+        if len(match.group()) >= 2
+    }
+
+
+def _sentence_ngrams(text: str) -> set[str]:
+    return _cjk_bigrams(text) | _latin_tokens(text)
+
+
+def _jaccard(left: set[str], right: set[str]) -> float:
+    if not left or not right:
+        return 0.0
+    union = len(left | right)
+    if union == 0:
+        return 0.0
+    return len(left & right) / union
+
+
+def _signature_tokens(text: str) -> set[str]:
+    cleaned = re.sub(r"[^\u4e00-\u9fff]", "", text)
+    if len(cleaned) < 2:
+        return set()
+    tokens: set[str] = set()
+    for length in range(2, 7):
+        for index in range(len(cleaned) - length + 1):
+            token = cleaned[index : index + length]
+            if token in _SUMMARY_STOP_TOKENS:
+                continue
+            tokens.add(token)
+    return tokens
+
+
+def _has_event_word(text: str) -> bool:
+    return any(word in text for word in _EVENT_WORDS)
+
+
+def _redundancy_issue(
+    *,
+    field: str,
+    snippet: str,
+    problem: str,
+) -> ClarityIssue:
+    return ClarityIssue(
+        field,
+        "sentences_redundant",
+        problem,
+        snippet.replace("\n", " ").strip()[:60],
+        "hard",
+        0,
+    )
+
+
+def scan_sentences_redundancy(sentences: list[str]) -> list[ClarityIssue]:
+    """Detect overlapping or paraphrased summary sentences."""
+    cleaned = [sentence.strip() for sentence in sentences if sentence.strip()]
+    if len(cleaned) < 2:
+        return []
+
+    ngrams = [_sentence_ngrams(text) for text in cleaned]
+    signatures = [_signature_tokens(text) for text in cleaned]
+
+    for left_idx in range(len(cleaned)):
+        for right_idx in range(left_idx + 1, len(cleaned)):
+            left_text = cleaned[left_idx]
+            right_text = cleaned[right_idx]
+            overlap = _jaccard(ngrams[left_idx], ngrams[right_idx])
+            if (
+                overlap >= _SENTENCES_JACCARD_THRESHOLD
+                and len(left_text) >= _SENTENCES_JACCARD_MIN_CHARS
+                and len(right_text) >= _SENTENCES_JACCARD_MIN_CHARS
+            ):
+                shorter = left_text if len(left_text) <= len(right_text) else right_text
+                return [
+                    _redundancy_issue(
+                        field=f"sentences[{right_idx}]",
+                        snippet=shorter,
+                        problem="总结句之间复述同一事件或同义改写",
+                    )
+                ]
+
+            shared = signatures[left_idx] & signatures[right_idx]
+            if (
+                len(shared) >= _SIGNATURE_TOKEN_MIN_SHARED
+                and (_has_event_word(left_text) or _has_event_word(right_text))
+            ):
+                shorter = left_text if len(left_text) <= len(right_text) else right_text
+                return [
+                    _redundancy_issue(
+                        field=f"sentences[{right_idx}]",
+                        snippet=shorter,
+                        problem="总结句之间复述同一事件或同义改写",
+                    )
+                ]
+
+    if len(cleaned) == 3:
+        head_tail = (
+            _jaccard(ngrams[0], ngrams[1]) >= _SENTENCES_SPLIT_HEAD_THRESHOLD
+            or _jaccard(ngrams[0], ngrams[2]) >= _SENTENCES_SPLIT_HEAD_THRESHOLD
+        )
+        tail_distinct = _jaccard(ngrams[1], ngrams[2]) < _SENTENCES_SPLIT_HEAD_THRESHOLD
+        if head_tail and tail_distinct:
+            return [
+                _redundancy_issue(
+                    field="sentences",
+                    snippet=cleaned[1],
+                    problem="首句已概括，后句只是把同一情节拆开重说",
+                )
+            ]
+
+    return []
+
+
 def scan_summary_clarity(
     summary: SegmentSummary,
     *,
     raw_text: str | None = None,
     target_language: str | None = "zh-CN",
+    relaxed: bool = False,
 ) -> list[ClarityIssue]:
     """Return conservative local quality signals without calling a model."""
     issues: list[ClarityIssue] = []
@@ -249,33 +456,35 @@ def scan_summary_clarity(
                 )
             )
 
-    total = sentences_char_count(summary)
-    joined = "".join(summary.sentences)
-    source_len = len(raw_text.strip()) if raw_text is not None else None
-    if total > SENTENCES_REJECT_MAX:
-        issues.append(
-            ClarityIssue(
-                "sentences",
-                "summary_too_long",
-                f"总结合计约 {total} 字，明显超过目标上限 {SENTENCES_TARGET_MAX} 字",
-                joined[:60],
-                "hard",
-                0,
+    if not relaxed:
+        total = sentences_char_count(summary)
+        joined = "".join(summary.sentences)
+        source_len = len(raw_text.strip()) if raw_text is not None else None
+        if total > SENTENCES_REJECT_MAX:
+            issues.append(
+                ClarityIssue(
+                    "sentences",
+                    "summary_too_long",
+                    f"总结合计约 {total} 字，明显超过目标上限 {SENTENCES_TARGET_MAX} 字",
+                    joined[:60],
+                    "hard",
+                    0,
+                )
             )
-        )
-    elif total < SENTENCES_REJECT_MIN and (
-        source_len is None or source_len >= SENTENCES_TARGET_MIN
-    ):
-        issues.append(
-            ClarityIssue(
-                "sentences",
-                "summary_too_short",
-                f"总结合计约 {total} 字，明显短于目标下限 {SENTENCES_TARGET_MIN} 字",
-                joined[:60] if joined else "（空）",
-                "hard",
-                0,
+        elif total < SENTENCES_REJECT_MIN and (
+            source_len is None or source_len >= SENTENCES_TARGET_MIN
+        ):
+            issues.append(
+                ClarityIssue(
+                    "sentences",
+                    "summary_too_short",
+                    f"总结合计约 {total} 字，明显短于目标下限 {SENTENCES_TARGET_MIN} 字",
+                    joined[:60] if joined else "（空）",
+                    "hard",
+                    0,
+                )
             )
-        )
+        issues.extend(scan_sentences_redundancy(summary.sentences))
     return _dedupe_exact(issues)
 
 
@@ -363,11 +572,34 @@ async def inspect_summary_quality(
     review_prompt: str,
     summary_tier: Literal["normal", "advanced"] = "normal",
     target_language: str = "zh-CN",
+    relaxed: bool = False,
 ) -> QualityCheckResult:
-    """Apply local gates, then use a separate model call only for suspicious output."""
+    """Apply local gates, then use a separate model call only for suspicious output.
+
+    Relaxed mode skips model review and soft length/redundancy gates so a
+    chronically failing segment can still become ready.
+    """
     local_issues = scan_summary_clarity(
-        summary, raw_text=raw_text, target_language=target_language
+        summary, raw_text=raw_text, target_language=target_language, relaxed=relaxed
     )
+    if relaxed:
+        # Still surface garbled / wrong-language / narrator hard failures.
+        severe = [
+            issue
+            for issue in local_issues
+            if issue.code
+            in {
+                "wrong_language",
+                "first_person_as_narrator",
+                "replacement_char",
+                "control_char",
+                "template_leak",
+                "placeholder",
+                "symbol_noise",
+            }
+        ]
+        return QualityCheckResult(tuple(severe), False, 0.0)
+
     hard_issues = [issue for issue in local_issues if issue.severity == "hard"]
     always_reject = [issue for issue in local_issues if issue.code in _ALWAYS_REJECT_CODES]
     if always_reject:

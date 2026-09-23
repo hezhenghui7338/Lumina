@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException, Query, Request
-from fastapi.responses import PlainTextResponse, StreamingResponse
+from fastapi.responses import FileResponse, PlainTextResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from lumina_core.app_state import AppState, default_rss_sources
@@ -75,6 +75,11 @@ from lumina_core.search.original import search_original
 from lumina_core.tts.script import LISTEN_MODES, ListenMode
 from lumina_core.tts.service import load_listen_script
 from lumina_core.resource_probe import probe_ocr, probe_resource
+from lumina_core.models.cursor_sdk_adapter import (
+    get_install_state as cursor_sdk_get_install_state,
+    install_cursor_sdk_async,
+    mark_installing as cursor_sdk_mark_installing,
+)
 from lumina_core.ops.helpers import (
     book_title,
     register_article_task,
@@ -276,6 +281,7 @@ async def _queue_segment_retry(
         seg["id"],
         "pending",
         retry_count=0,
+        clear_failure_budget=True,
     )
     await state.job_queue.enqueue_summarize(
         book_id,
@@ -399,6 +405,13 @@ def book_public_dict(
         out["summary_tier"] = summary_tier or "normal"
 
     out.pop("metadata_json", None)
+    cover_path = out.pop("cover_path", None)
+    if cover_path == "":
+        out["has_cover"] = False
+    elif cover_path:
+        out["has_cover"] = True
+    else:
+        out["has_cover"] = None
     return out
 
 
@@ -797,7 +810,7 @@ async def list_books(
     state = _state(request)
     conn = state.conn
     try:
-        await state.job_queue.resume_orphaned_active()
+        state.job_queue.schedule_resume_orphaned_active()
         live_ids = set(state.ingest_tasks) | set(state.resegment_tasks)
         active_by_book = state.job_queue.summarize_active_by_book()
 
@@ -1017,6 +1030,48 @@ async def get_book(book_id: str, request: Request) -> dict[str, Any]:
     )
 
 
+@router.get("/books/{book_id}/cover")
+async def get_book_cover(book_id: str, request: Request) -> FileResponse:
+    """Serve the library-grid cover image (extract on demand if needed)."""
+    state = _state(request)
+
+    def _resolve() -> Path | None:
+        from lumina_core.ingest.cover import ensure_book_cover, resolve_cover_file
+
+        repo = BookRepo(state.conn)
+        book = repo.get(book_id)
+        if not book:
+            return None
+        # Empty string = previously probed, no cover.
+        if book.get("cover_path") == "":
+            return None
+        existing = resolve_cover_file(book, state.books_dir)
+        if existing is not None:
+            return existing
+        path = ensure_book_cover(book, books_dir=state.books_dir)
+        try:
+            repo.update(book_id, cover_path=path.name if path is not None else "")
+        except Exception:
+            logging.getLogger(__name__).debug(
+                "cover_path cache failed for %s", book_id, exc_info=True
+            )
+        return path
+
+    cover = await asyncio.to_thread(_resolve)
+    if cover is None:
+        raise HTTPException(404, "Cover not found")
+    media = {
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".png": "image/png",
+        ".gif": "image/gif",
+        ".webp": "image/webp",
+        ".bmp": "image/bmp",
+        ".svg": "image/svg+xml",
+    }.get(cover.suffix.lower(), "application/octet-stream")
+    return FileResponse(cover, media_type=media, filename=cover.name)
+
+
 @router.get("/books/{book_id}/segments")
 async def list_segments(
     book_id: str,
@@ -1070,7 +1125,37 @@ async def list_segments(
             _raise_on_db_schema_error(e)
             raise  # pragma: no cover
 
-    return await asyncio.to_thread(_list_meta)
+    started = time.perf_counter()
+    try:
+        result = await asyncio.to_thread(_list_meta)
+    except Exception:
+        elapsed_ms = (time.perf_counter() - started) * 1000
+        logger.warning(
+            "list_segments failed book_id=%s around=%s after_idx=%s before_idx=%s "
+            "limit=%s elapsed_ms=%.0f",
+            book_id,
+            around,
+            after_idx,
+            before_idx,
+            limit,
+            elapsed_ms,
+            exc_info=True,
+        )
+        raise
+    elapsed_ms = (time.perf_counter() - started) * 1000
+    if elapsed_ms >= 2000:
+        logger.warning(
+            "list_segments slow book_id=%s around=%s after_idx=%s before_idx=%s "
+            "limit=%s elapsed_ms=%.0f total=%s",
+            book_id,
+            around,
+            after_idx,
+            before_idx,
+            limit,
+            elapsed_ms,
+            result.get("total"),
+        )
+    return result
 
 
 @router.get("/books/{book_id}/original-search")
@@ -1078,6 +1163,8 @@ async def search_book_original(
     book_id: str,
     request: Request,
     q: str = Query(""),
+    after_segment: int | None = Query(None, ge=0),
+    after_start: int | None = Query(None, ge=0),
 ) -> dict[str, Any]:
     state = _state(request)
 
@@ -1085,7 +1172,13 @@ async def search_book_original(
         book = BookRepo(state.conn).get(book_id)
         if not book:
             return {"missing_book": True}
-        result = search_original(state.conn, book_id, q)
+        result = search_original(
+            state.conn,
+            book_id,
+            q,
+            after_segment_index=after_segment,
+            after_start=after_start,
+        )
         return result
 
     payload = await asyncio.to_thread(_run)
@@ -1096,12 +1189,53 @@ async def search_book_original(
 
 @router.get("/books/{book_id}/segments/{idx}")
 async def get_segment(book_id: str, idx: int, request: Request) -> dict[str, Any]:
-    seg = await asyncio.to_thread(
-        SegmentRepo(_state(request).conn).get_by_index, book_id, idx
-    )
+    state = _state(request)
+
+    def _load() -> dict[str, Any] | None:
+        seg = SegmentRepo(state.conn).get_by_index(book_id, idx)
+        if not seg:
+            return None
+        from lumina_core.ingest.illustrations import list_segment_illustrations
+
+        seg["illustrations"] = list_segment_illustrations(state.conn, book_id, idx)
+        return seg
+
+    seg = await asyncio.to_thread(_load)
     if not seg:
         raise HTTPException(404, "Segment not found")
     return seg
+
+
+@router.get("/books/{book_id}/assets/{asset_id}")
+async def get_book_asset(
+    book_id: str, asset_id: str, request: Request
+) -> FileResponse:
+    """Serve a persisted EPUB illustration asset."""
+    state = _state(request)
+
+    def _resolve() -> tuple[Path, str] | None:
+        row = state.conn.execute(
+            """
+            SELECT rel_path, mime FROM book_assets
+            WHERE id = ? AND book_id = ? AND role = 'illustration'
+            """,
+            (asset_id, book_id),
+        ).fetchone()
+        if not row:
+            return None
+        book = BookRepo(state.conn).get(book_id)
+        if not book or not book.get("file_path"):
+            return None
+        path = Path(str(book["file_path"])).parent / str(row["rel_path"])
+        if not path.is_file():
+            return None
+        return path, str(row["mime"] or "application/octet-stream")
+
+    resolved = await asyncio.to_thread(_resolve)
+    if resolved is None:
+        raise HTTPException(404, "Asset not found")
+    path, media = resolved
+    return FileResponse(path, media_type=media, filename=path.name)
 
 
 @router.get("/books/{book_id}/segments/{idx}/summary")
@@ -1332,9 +1466,27 @@ async def open_book(book_id: str, request: Request) -> dict[str, Any]:
 
     # Opening writes recency metadata and can wait behind an ingest writer.
     # Keep that wait off the single uvicorn event-loop thread.
-    book = await asyncio.to_thread(_open_book)
+    started = time.perf_counter()
+    try:
+        book = await asyncio.to_thread(_open_book)
+    except Exception:
+        elapsed_ms = (time.perf_counter() - started) * 1000
+        logger.warning(
+            "open_book failed book_id=%s elapsed_ms=%.0f",
+            book_id,
+            elapsed_ms,
+            exc_info=True,
+        )
+        raise
+    elapsed_ms = (time.perf_counter() - started) * 1000
     if not book:
         raise HTTPException(404, "Book not found")
+    if elapsed_ms >= 2000:
+        logger.warning(
+            "open_book slow book_id=%s elapsed_ms=%.0f",
+            book_id,
+            elapsed_ms,
+        )
     _wire_job_events(state)
     if state.job_queue.auto_start_summary:
         # Never block first paint on O(n) prefetch / recover scans.
@@ -1387,7 +1539,7 @@ async def update_reading_progress(
 @router.get("/books/summarize/overview")
 async def summarize_overview(request: Request) -> dict[str, Any]:
     state = _state(request)
-    await state.job_queue.resume_orphaned_active()
+    state.job_queue.schedule_resume_orphaned_active()
     return await asyncio.to_thread(state.job_queue.summarize_overview)
 
 
@@ -1400,12 +1552,12 @@ async def start_summarize_batch(
     book_ids = body.book_ids if body else []
     summary_tier = body.summary_tier if body else "normal"
     if not book_ids:
-        await state.job_queue.start_all(summary_tier=summary_tier)
+        affected = await state.job_queue.begin_start_all(summary_tier=summary_tier)
         return {
             "status": "started",
             "scope": "all",
-            "book_ids": [],
-            "affected_count": 0,
+            "book_ids": affected,
+            "affected_count": len(affected),
             "summary_tier": summary_tier,
         }
 
@@ -1416,7 +1568,7 @@ async def start_summarize_batch(
         if not await asyncio.to_thread(repo.get, book_id):
             skipped.append(book_id)
             continue
-        await state.job_queue.start_book(book_id, summary_tier=summary_tier)
+        await state.job_queue.begin_start_book(book_id, summary_tier=summary_tier)
         affected.append(book_id)
     return {
         "status": "started",
@@ -1468,7 +1620,7 @@ async def start_summarize_book(
         raise HTTPException(404, "Book not found")
     _wire_job_events(state)
     summary_tier = body.summary_tier if body else "normal"
-    await state.job_queue.start_book(book_id, summary_tier=summary_tier)
+    await state.job_queue.begin_start_book(book_id, summary_tier=summary_tier)
     return {
         "status": "started",
         "scope": "book",
@@ -1839,7 +1991,7 @@ async def all_resource_status(request: Request) -> dict[str, Any]:
     state = _state(request)
     results: list[dict[str, Any]] = []
     for resource in state.models.resources:
-        status = await probe_resource(resource)
+        status = await probe_resource(resource, data_dir=state.settings.data_dir)
         results.append(status.to_dict())
     return {"resources": results}
 
@@ -1855,7 +2007,7 @@ async def resource_status(resource_id: str, request: Request) -> dict[str, Any]:
     resource = state.models.resource_by_id(resource_id)
     if resource is None:
         raise HTTPException(404, "Resource not found")
-    status = await probe_resource(resource)
+    status = await probe_resource(resource, data_dir=state.settings.data_dir)
     return status.to_dict()
 
 
@@ -1911,7 +2063,7 @@ async def ollama_status(request: Request, resource_id: str = "ollama") -> dict[s
     if resource is None or resource.provider != "ollama":
         return {"skipped": True, "resource_id": resource_id}
 
-    status = await probe_resource(resource)
+    status = await probe_resource(resource, data_dir=state.settings.data_dir)
     payload = status.to_dict()
     payload["skipped"] = False
     payload["served"] = status.probe_ok
@@ -1924,6 +2076,34 @@ async def ollama_status(request: Request, resource_id: str = "ollama") -> dict[s
 @router.get("/settings/resources/{resource_id}/ollama-status")
 async def ollama_status_for_resource(resource_id: str, request: Request) -> dict[str, Any]:
     return await ollama_status(request, resource_id=resource_id)
+
+
+@router.get("/settings/cursor-sdk/status")
+async def cursor_sdk_status(request: Request) -> dict[str, Any]:
+    state = _state(request)
+    return cursor_sdk_get_install_state(state.settings.data_dir).to_dict()
+
+
+@router.post("/settings/cursor-sdk/install", status_code=202)
+async def cursor_sdk_install(request: Request) -> dict[str, Any]:
+    state = _state(request)
+    existing = getattr(state, "cursor_sdk_install_task", None)
+    if existing is not None and not existing.done():
+        return {
+            "status": "installing",
+            **cursor_sdk_get_install_state(state.settings.data_dir).to_dict(),
+        }
+
+    async def _run() -> None:
+        await install_cursor_sdk_async(state.settings.data_dir)
+
+    cursor_sdk_mark_installing()
+    task = asyncio.create_task(_run())
+    state.cursor_sdk_install_task = task
+    return {
+        "status": "started",
+        **cursor_sdk_get_install_state(state.settings.data_dir).to_dict(),
+    }
 
 
 @router.post("/shutdown")

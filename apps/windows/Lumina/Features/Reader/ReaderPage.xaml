@@ -218,10 +218,18 @@
                                PointerReleased="SelectableText_PointerReleased"/>
                     <StackPanel Orientation="Horizontal" Spacing="8">
                         <Button Content="选区提问" Click="AskSelection_Click"/>
-                        <Button x:Name="PrevSegmentButton" Content="[" Click="PrevSegment_Click"
-                                ToolTipService.ToolTip="上一段（[ / 【）"/>
-                        <Button x:Name="NextSegmentButton" Content="]" Click="NextSegment_Click"
-                                ToolTipService.ToolTip="下一段（] / 】）"/>
+                        <Button x:Name="PrevSegmentButton" Click="PrevSegment_Click"
+                                ToolTipService.ToolTip="上一段（←）"
+                                AutomationProperties.Name="上一段"
+                                AutomationProperties.AutomationId="lumina.reader.control.prevSegment">
+                            <FontIcon Glyph="&#xE72B;" FontSize="14"/>
+                        </Button>
+                        <Button x:Name="NextSegmentButton" Click="NextSegment_Click"
+                                ToolTipService.ToolTip="下一段（→）"
+                                AutomationProperties.Name="下一段"
+                                AutomationProperties.AutomationId="lumina.reader.control.nextSegment">
+                            <FontIcon Glyph="&#xE72A;" FontSize="14"/>
+                        </Button>
                         <Button Content="重试本段" Click="RetrySegment_Click"/>
                         <Button Content="重试选中失败段" Click="RetrySelectedSegments_Click"
                                 ToolTipService.ToolTip="对多选的失败段重新摘要"/>

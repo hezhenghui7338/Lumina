@@ -13,7 +13,10 @@ from xml.etree import ElementTree
 from lumina_core.chunker.markers import heading_marker
 from lumina_core.chunker.roles import DocumentRole, classify_heading, landmark_role
 from lumina_core.config import Settings
-from lumina_core.ingest.html import parse_html_document
+from lumina_core.ingest.html import (
+    parse_html_document,
+    parse_html_document_with_images,
+)
 from lumina_core.ingest.ocr import (
     OcrProgressCallback,
     ocr_images,
@@ -187,6 +190,16 @@ def _html_to_text(html: str) -> str:
         return text
     except ValueError:
         return ""
+
+
+def _html_to_text_with_images(
+    html: str,
+) -> tuple[str, list[dict]]:
+    try:
+        text, _metadata, images = parse_html_document_with_images(html)
+        return text, images
+    except ValueError:
+        return "", []
 
 
 def _page_image_items(book, documents: list[tuple[str, str]]) -> list:
@@ -379,7 +392,8 @@ def load_epub(
     skipped_chapters = 0
     landmark_lookup = _epub_landmark_roles(book)
     toc_lookup = _epub_nested_toc(book)
-    documents: list[tuple[object, str, str, str]] = []
+    # (item, href, raw_html, body, doc_images)
+    documents: list[tuple[object, str, str, str, list[dict]]] = []
 
     for item in _iter_document_items(book, ebooklib):
         if _is_nav_item(item):
@@ -391,7 +405,8 @@ def load_epub(
         except Exception:
             skipped_chapters += 1
             continue
-        documents.append((item, href, raw_html, _html_to_text(raw_html)))
+        body, doc_images = _html_to_text_with_images(raw_html)
+        documents.append((item, href, raw_html, body, doc_images))
 
     metadata: dict = {"title": title, "author": author}
     if skipped_chapters:
@@ -399,9 +414,11 @@ def load_epub(
 
     page_items = _page_image_items(
         book,
-        [(href, raw_html) for _item, href, raw_html, _body in documents],
+        [(href, raw_html) for _item, href, raw_html, _body, _imgs in documents],
     )
-    extracted_chars = sum(len(body.strip()) for _item, _href, _raw, body in documents)
+    extracted_chars = sum(
+        len(body.strip()) for _item, _href, _raw, body, _imgs in documents
+    )
     image_ocr_threshold = max(500, len(page_items) * 5)
     if page_items and extracted_chars < image_ocr_threshold:
         images = (
@@ -421,13 +438,16 @@ def load_epub(
         metadata["ocr"] = True
         metadata["ocr_source"] = "epub_images"
         metadata["epub_image_pages"] = len(page_items)
+        metadata["illustrations_status"] = "skipped_ocr"
         return result.text, metadata
 
     parts: list[str] = []
     structure_roles: list[dict] = []
     emitted_parents: set[str] = set()
+    illustrations: list[dict] = []
+    absolute_cursor = 0
 
-    for item, href, raw_html, body in documents:
+    for item, href, raw_html, body, doc_images in documents:
         if not body:
             skipped_chapters += 1
             continue
@@ -446,20 +466,36 @@ def load_epub(
             html_title=html_title,
         )
         toc = toc_lookup.get(_normalize_href(href))
-        blocks: list[str] = []
+        prefix_parts: list[str] = []
         if toc and toc[2] and toc[2] not in emitted_parents:
             parent_title = toc[2]
             emitted_parents.add(parent_title)
-            blocks.append(heading_marker(parent_title, 0))
+            prefix_parts.append(heading_marker(parent_title, 0))
             structure_roles.append(
                 {"title": parent_title, "role": classify_heading(parent_title).value}
             )
         marker = heading_marker(chapter_title, 1)
         if body.lstrip().startswith(marker):
-            blocks.append(body)
+            body_offset_in_block = sum(len(p) + 1 for p in prefix_parts)
+            block = "\n".join([*prefix_parts, body]) if prefix_parts else body
         else:
-            blocks.append(f"{marker}\n{body}")
-        parts.append("\n".join(blocks))
+            heading_line = f"{marker}\n"
+            body_offset_in_block = (
+                sum(len(p) + 1 for p in prefix_parts) + len(heading_line)
+            )
+            block = "\n".join([*prefix_parts, f"{marker}\n{body}"])
+        if parts:
+            absolute_cursor += 2  # "\n\n".join separator
+        for hit in doc_images:
+            illustrations.append(
+                {
+                    **hit,
+                    "doc_href": href,
+                    "offset": absolute_cursor + body_offset_in_block + int(hit["offset"]),
+                }
+            )
+        parts.append(block)
+        absolute_cursor += len(block)
         role = (landmark[0] if landmark else None) or classify_heading(chapter_title)
         structure_roles.append({"title": chapter_title, "role": role.value})
 
@@ -467,5 +503,10 @@ def load_epub(
         metadata["skipped_chapters"] = skipped_chapters
     if structure_roles:
         metadata["structure_roles"] = structure_roles
+    if illustrations:
+        metadata["illustrations"] = illustrations
+        metadata["illustrations_status"] = "pending"
+    else:
+        metadata["illustrations_status"] = "none"
 
     return "\n\n".join(parts), metadata

@@ -1,97 +1,136 @@
 import AppKit
 import SwiftUI
 
+/// Brand splash overlay while product readiness completes (PRD §3.5).
 struct ColdStartGateView: View {
     let phases: ColdStartPhaseSnapshot
     let startedAt: Date
+    var launchError: String? = nil
+    var onRetry: (() -> Void)? = nil
 
     var body: some View {
         TimelineView(.periodic(from: startedAt, by: 1)) { context in
-            VStack(spacing: 28) {
-                Spacer()
-                Image("LuminaLogo")
-                    .resizable()
-                    .scaledToFit()
-                    .frame(maxWidth: 280)
-                    .accessibilityLabel("Lumina")
-                Text("正在准备…")
-                    .font(.title3)
-                    .foregroundStyle(LuminaTheme.textSecondary)
+            let elapsed = max(0, context.date.timeIntervalSince(startedAt))
+            let failed = launchError.map { !$0.isEmpty } ?? false
+            let showDetail = failed
+                || ColdStartReadiness.shouldRevealTechnicalDetail(elapsedSeconds: elapsed)
+            ZStack {
+                Rectangle()
+                    .fill(.ultraThinMaterial)
+                    .overlay(LuminaTheme.background.opacity(0.55))
+                    .ignoresSafeArea()
 
-                VStack(alignment: .leading, spacing: 14) {
-                    ForEach(ColdStartRowKind.allCases, id: \.self) { kind in
-                        row(kind)
+                VStack(spacing: 28) {
+                    Spacer(minLength: 0)
+
+                    ColdStartBouncingLogo()
+
+                    if showDetail {
+                        VStack(spacing: 10) {
+                            if failed, let launchError {
+                                Text(launchError)
+                                    .font(.callout)
+                                    .foregroundStyle(LuminaTheme.textSecondary)
+                                    .multilineTextAlignment(.center)
+                            } else {
+                                Text(
+                                    ColdStartReadiness.technicalDetail(
+                                        phases,
+                                        launchError: launchError
+                                    )
+                                )
+                                .font(.caption)
+                                .foregroundStyle(LuminaTheme.textSecondary)
+                                .multilineTextAlignment(.center)
+                            }
+
+                            Text(elapsedLabel(seconds: Int(elapsed)))
+                                .font(.caption2)
+                                .foregroundStyle(LuminaTheme.textSecondary.opacity(0.85))
+                                .monospacedDigit()
+
+                            HStack(spacing: 12) {
+                                if failed, let onRetry {
+                                    Button("重试") { onRetry() }
+                                        .buttonStyle(.borderedProminent)
+                                }
+                                Button("退出") {
+                                    NSApplication.shared.terminate(nil)
+                                }
+                                .buttonStyle(.bordered)
+                            }
+                        }
+                        .frame(maxWidth: 360)
+                        .transition(.opacity)
                     }
-                }
-                .frame(maxWidth: 360, alignment: .leading)
-                .padding(.horizontal, 24)
 
-                Text(elapsedLabel(at: context.date))
-                    .font(.caption)
-                    .foregroundStyle(LuminaTheme.textSecondary)
-                    .monospacedDigit()
-
-                Button("退出") {
-                    NSApplication.shared.terminate(nil)
+                    Spacer(minLength: 0)
                 }
-                .buttonStyle(.bordered)
-                Spacer()
+                .padding(.horizontal, 32)
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background(LuminaTheme.background)
+            .animation(.easeInOut(duration: 0.25), value: showDetail)
         }
+        .accessibilityElement(children: .contain)
     }
 
-    private func elapsedLabel(at date: Date) -> String {
-        let seconds = max(0, Int(date.timeIntervalSince(startedAt)))
-        return "已用时 \(seconds) 秒"
+    private func elapsedLabel(seconds: Int) -> String {
+        "已用时 \(seconds) 秒"
     }
+}
 
-    @ViewBuilder
-    private func row(_ kind: ColdStartRowKind) -> some View {
-        let state = state(for: kind)
-        let done = state == .done
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 12) {
-                Image(systemName: done ? "checkmark.circle.fill" : "circle")
-                    .foregroundStyle(done ? Color.accentColor : LuminaTheme.textSecondary)
-                    .font(.title3)
-                Text(
-                    ColdStartReadiness.rowLabel(
-                        kind: kind,
-                        state: state,
-                        cacheDetail: phases.cacheDetail
-                    )
+/// Soft bounce with a landing puddle centered directly under the logo.
+private struct ColdStartBouncingLogo: View {
+    @State private var airborne = false
+
+    var body: some View {
+        ZStack(alignment: .bottom) {
+            Image("LuminaLogo")
+                .resizable()
+                .interpolation(.high)
+                .scaledToFit()
+                .frame(maxWidth: 220)
+                .scaleEffect(x: airborne ? 1.0 : 1.04, y: airborne ? 1.0 : 0.94, anchor: .bottom)
+                .offset(y: airborne ? -22 : 0)
+                .shadow(
+                    color: Color.black.opacity(airborne ? 0.08 : 0.16),
+                    radius: airborne ? 16 : 7,
+                    y: airborne ? 12 : 3
                 )
-                .font(.body.weight(done ? .regular : .medium))
-                .foregroundStyle(LuminaTheme.textPrimary)
-                if state == .running && (kind != .cache || phases.cacheProgress == nil) {
-                    ProgressView()
-                        .controlSize(.small)
-                }
-                Spacer(minLength: 0)
-                if kind == .cache, state == .running, let p = phases.cacheProgress {
-                    Text("\(Int(min(1.0, max(0.0, p)) * 100))%")
-                        .font(.caption)
-                        .foregroundStyle(LuminaTheme.textSecondary)
-                        .monospacedDigit()
-                }
-            }
-            if kind == .cache, state == .running, let p = phases.cacheProgress {
-                ProgressView(value: min(1.0, max(0.0, p)), total: 1.0)
-                    .progressViewStyle(.linear)
-                    .tint(Color.accentColor)
-                    .padding(.leading, 32)
-            }
-        }
-        .accessibilityElement(children: .combine)
-    }
+                .accessibilityLabel("Lumina")
+                .padding(.bottom, 14)
 
-    private func state(for kind: ColdStartRowKind) -> ColdStartPhaseState {
-        switch kind {
-        case .engine: return phases.engine
-        case .data: return phases.data
-        case .cache: return phases.cache
+            // Landing spot: sits on the ZStack bottom center (logo正下方).
+            ZStack {
+                Ellipse()
+                    .fill(
+                        RadialGradient(
+                            colors: [
+                                Color.accentColor.opacity(airborne ? 0.08 : 0.28),
+                                Color.accentColor.opacity(0.0),
+                            ],
+                            center: .center,
+                            startRadius: 2,
+                            endRadius: airborne ? 28 : 48
+                        )
+                    )
+                    .frame(width: airborne ? 56 : 96, height: airborne ? 10 : 16)
+                    .blur(radius: airborne ? 1 : 0.5)
+
+                Ellipse()
+                    .fill(Color.primary.opacity(airborne ? 0.06 : 0.14))
+                    .frame(width: airborne ? 36 : 64, height: airborne ? 5 : 9)
+            }
+            .frame(maxWidth: .infinity)
+            .accessibilityHidden(true)
+        }
+        .frame(maxWidth: 220)
+        .onAppear {
+            withAnimation(
+                .easeInOut(duration: 0.62)
+                .repeatForever(autoreverses: true)
+            ) {
+                airborne = true
+            }
         }
     }
 }

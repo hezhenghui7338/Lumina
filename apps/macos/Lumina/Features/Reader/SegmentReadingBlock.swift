@@ -2,30 +2,101 @@ import AppKit
 import SwiftUI
 
 /// Trailing items in the per-segment header, left-to-right after the spacer.
-/// Turn buttons stay last so their click target does not shift with metadata width.
+/// Source char meta sits immediately left of panel toggle; turn buttons stay
+/// last so their click target does not shift with progress/regenerate width.
 enum SegmentHeaderTrailingItem: Hashable {
+    case contentMeta
+    case panelToggle
     case progress
     case regenerateSummary
-    case charCount
-    case segmentIndex
     case turnButtons
 }
 
 enum SegmentHeaderLayoutPolicy {
     static func trailingItems(
+        showsContentMeta: Bool,
         isSummaryInProgress: Bool,
         showsRegenerate: Bool,
-        showsCharCount: Bool,
-        showsSegmentIndex: Bool,
         showsTurnButtons: Bool
     ) -> [SegmentHeaderTrailingItem] {
         var items: [SegmentHeaderTrailingItem] = []
+        if showsContentMeta { items.append(.contentMeta) }
+        items.append(.panelToggle)
         if isSummaryInProgress { items.append(.progress) }
         if showsRegenerate { items.append(.regenerateSummary) }
-        if showsCharCount { items.append(.charCount) }
-        if showsSegmentIndex { items.append(.segmentIndex) }
         if showsTurnButtons { items.append(.turnButtons) }
         return items
+    }
+}
+
+/// Segment header meta left of「切换原文」: 段 N/total · optional char count.
+enum SegmentContentMetaPolicy {
+    static func label(idx: Int, segmentTotal: Int, charCount: Int?) -> String {
+        let ordinal = segmentTotal > 0
+            ? "段 \(idx + 1)/\(segmentTotal)"
+            : "段 \(idx + 1)"
+        guard let charCount, charCount > 0 else { return ordinal }
+        return "\(ordinal) · 约 \(formatCount(charCount)) 字"
+    }
+
+    static func formatCount(_ count: Int) -> String {
+        let formatter = NumberFormatter()
+        formatter.numberStyle = .decimal
+        return formatter.string(from: NSNumber(value: count)) ?? "\(count)"
+    }
+}
+
+/// Split original text at illustration char offsets (Python/Unicode scalar offsets).
+enum OriginalTextIllustrationLayout {
+    enum Part: Equatable {
+        case text(String)
+        case image(SegmentIllustration)
+    }
+
+    static func parts(
+        text: String,
+        illustrations: [SegmentIllustration]
+    ) -> [Part] {
+        let sorted = illustrations.sorted {
+            if $0.char_offset != $1.char_offset {
+                return $0.char_offset < $1.char_offset
+            }
+            return $0.asset_id < $1.asset_id
+        }
+        guard !sorted.isEmpty else { return [.text(text)] }
+
+        var result: [Part] = []
+        var cursor = 0
+        let scalarCount = text.unicodeScalars.count
+        for illustration in sorted {
+            let offset = max(0, min(illustration.char_offset, scalarCount))
+            if offset > cursor {
+                result.append(.text(substring(text, from: cursor, to: offset)))
+            }
+            result.append(.image(illustration))
+            cursor = offset
+        }
+        if cursor < scalarCount {
+            result.append(.text(substring(text, from: cursor, to: scalarCount)))
+        }
+        return result.isEmpty ? [.text(text)] : result
+    }
+
+    private static func substring(_ text: String, from: Int, to: Int) -> String {
+        let scalars = text.unicodeScalars
+        guard from < to, from < scalars.count else { return "" }
+        let start = scalars.index(scalars.startIndex, offsetBy: from)
+        let endOffset = min(to, scalars.count)
+        let end = scalars.index(scalars.startIndex, offsetBy: endOffset)
+        return String(String.UnicodeScalarView(scalars[start..<end]))
+    }
+}
+
+private struct SegmentPanelContentHeightKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
     }
 }
 
@@ -47,6 +118,7 @@ struct SegmentReadingBlock: View, Equatable {
     var summaryProgressMessage: String?
     var runningMetrics: SegmentRunningMetrics?
     var fontScale: Double = 1.0
+    var lineSpacingScale: Double = ThemeManager.defaultReadingLineSpacingScale
     var paper: ReaderPaper = .white
     var onToggleSource: () -> Void
     var onToggleSummary: () -> Void
@@ -60,9 +132,20 @@ struct SegmentReadingBlock: View, Equatable {
     var onSourceAppear: (() -> Void)?
     var onSummaryAppear: (() -> Void)?
     var originalHighlightUTF16: NSRange? = nil
+    /// Active listen follow-along target for this segment (nil when inactive / other segment).
+    var listenHighlight: ListenHighlightAnchor? = nil
+    /// Resolve EPUB asset id → sidecar URL for inline illustrations.
+    var illustrationURL: ((String) -> URL)? = nil
+
+    @State private var lockedViewportHeight: CGFloat?
+    @State private var measuredContentHeight: CGFloat = LuminaTheme.segmentContentMinHeight
 
     private func scaled(_ base: CGFloat) -> CGFloat {
         base * CGFloat(fontScale)
+    }
+
+    private func lineSpaced(_ base: CGFloat) -> CGFloat {
+        scaled(base) * CGFloat(lineSpacingScale)
     }
 
     var body: some View {
@@ -135,8 +218,15 @@ struct SegmentReadingBlock: View, Equatable {
         contentMode == .summary && isSourceExpanded
     }
 
+    private var shouldMeasureSummaryHeight: Bool {
+        contentMode == .summary && !isSourceExpanded
+    }
+
     private var viewportHeight: CGFloat {
-        ReaderSegmentPanelHeight.clamp(320)
+        ReaderSegmentPanelHeight.boxedViewportHeight(
+            measured: measuredContentHeight,
+            locked: lockedViewportHeight
+        )
     }
 
     @ViewBuilder
@@ -153,11 +243,13 @@ struct SegmentReadingBlock: View, Equatable {
         VStack(alignment: .leading, spacing: 0) {
             panelBody(showingSource: showingSource)
                 .frame(maxWidth: .infinity, alignment: .leading)
+                .background(summaryHeightMeasurement)
 
-            panelToggleButton
+            panelCopyButton
                 .padding(.top, 10)
         }
         .readingColumn()
+        .onPreferenceChange(SegmentPanelContentHeightKey.self, perform: handleSummaryHeightChange)
     }
 
     @ViewBuilder
@@ -173,7 +265,7 @@ struct SegmentReadingBlock: View, Equatable {
             Divider()
                 .background(paper.border)
 
-            panelToggleButton
+            panelCopyButton
                 .padding(.horizontal, LuminaTheme.summaryPadding)
                 .padding(.vertical, 10)
         }
@@ -185,18 +277,39 @@ struct SegmentReadingBlock: View, Equatable {
         .clipShape(RoundedRectangle(cornerRadius: LuminaTheme.summaryCornerRadius))
     }
 
-    private var panelToggleButton: some View {
-        HStack(spacing: 0) {
-            Button(action: togglePanelContent) {
-                Text(toggleTitle(showingSource: showingSource))
-                    .font(.system(size: LuminaTheme.summaryLabelSize, weight: .semibold))
-                    .foregroundStyle(paper.textSecondary)
-                    .tracking(0.6)
+    @ViewBuilder
+    private var summaryHeightMeasurement: some View {
+        if shouldMeasureSummaryHeight {
+            GeometryReader { proxy in
+                Color.clear.preference(
+                    key: SegmentPanelContentHeightKey.self,
+                    value: proxy.size.height
+                )
             }
-            .buttonStyle(.plain)
-            .accessibilityIdentifier("lumina.reader.control.panelToggle")
+        }
+    }
 
-            Spacer(minLength: 8)
+    private var panelToggleButton: some View {
+        Button(toggleTitle(showingSource: showingSource), action: togglePanelContent)
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .help(showingSource ? "切换回摘要" : "切换到原文")
+            .accessibilityIdentifier("lumina.reader.control.panelToggle")
+            .absorbsReaderChromeClicks()
+    }
+
+    private var panelCopyButton: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            if let leading = panelFooterLeadingLabel {
+                Text(leading)
+                    .font(.system(size: LuminaTheme.summaryLabelSize - 1))
+                    .foregroundStyle(paper.textSecondary.opacity(0.85))
+                    .textSelection(.enabled)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.75)
+            }
+
+            Spacer(minLength: 0)
 
             Button(action: copyCurrentPanel) {
                 Text("复制")
@@ -257,6 +370,19 @@ struct SegmentReadingBlock: View, Equatable {
         return text.isEmpty ? nil : text
     }
 
+    private func handleSummaryHeightChange(_ height: CGFloat) {
+        guard shouldMeasureSummaryHeight else { return }
+        guard ReaderSegmentPanelHeight.shouldCommitMeasurement(
+            current: measuredContentHeight,
+            incoming: height
+        ) else { return }
+        measuredContentHeight = height
+        let locked = ReaderSegmentPanelHeight.clamp(height)
+        if lockedViewportHeight != locked {
+            lockedViewportHeight = locked
+        }
+    }
+
     @ViewBuilder
     private func panelBody(showingSource: Bool) -> some View {
         if showingSource {
@@ -287,15 +413,15 @@ struct SegmentReadingBlock: View, Equatable {
                 rawJSON: nil,
                 provider: segment.summary_provider,
                 model: segment.summary_model,
-                charCount: effectiveCharCount,
-                segmentIndex: segment.idx,
-                segmentTotal: segmentTotal,
                 fallbackAnchor: segment.anchor_label,
                 summaryDurationS: segment.summary_duration_s,
                 summaryLlmAttempts: segment.summary_llm_attempts,
+                qualityRelaxed: segment.summary_quality_relaxed == true,
                 onFollowUp: onFollowUp,
                 showsBackground: showsBackground,
-                showsHeader: false
+                showsHeader: false,
+                showsAttribution: false,
+                listenHighlight: listenHighlight
             )
         } else if isSummaryLoading || segment.summary_status == "running" {
             summaryLoadingSkeleton
@@ -322,24 +448,47 @@ struct SegmentReadingBlock: View, Equatable {
 
     private var trailingHeaderItems: [SegmentHeaderTrailingItem] {
         SegmentHeaderLayoutPolicy.trailingItems(
+            showsContentMeta: true,
             isSummaryInProgress: isSummaryInProgress,
             showsRegenerate: showsRegenerateSummaryButton,
-            showsCharCount: (effectiveCharCount ?? 0) > 0,
-            showsSegmentIndex: segmentTotal > 0,
             showsTurnButtons: showsSegmentTurnButtons
+        )
+    }
+
+    private var segmentContentMetaLabel: String {
+        SegmentContentMetaPolicy.label(
+            idx: segment.idx,
+            segmentTotal: segmentTotal,
+            charCount: effectiveCharCount
+        )
+    }
+
+    /// Bottom-left of the panel: summary attribution only (char meta lives in the header).
+    private var panelFooterLeadingLabel: String? {
+        showingSource ? nil : summaryAttributionLabel
+    }
+
+    private var summaryAttributionLabel: String? {
+        SummaryAttributionPolicy.label(
+            provider: segment.summary_provider,
+            model: segment.summary_model,
+            durationS: segment.summary_duration_s,
+            llmAttempts: segment.summary_llm_attempts
         )
     }
 
     @ViewBuilder
     private var segmentHeaderRow: some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
-            if let anchor = resolvedAnchorText {
-                Text(anchor)
-                    .font(.system(size: LuminaTheme.summaryLabelSize, weight: .medium))
-                    .foregroundStyle(paper.textSecondary)
-                    .lineLimit(1)
-                    .textSelection(.enabled)
-            }
+            Text(SegmentReadingHeaderTitle.title(
+                chapter: segment.chapter,
+                label: segment.label
+            ))
+            .font(.system(size: LuminaTheme.summaryLabelSize, weight: .medium))
+            .foregroundStyle(paper.textSecondary)
+            .lineLimit(1)
+            .textSelection(.enabled)
+            .listenFollowHighlight(listenHighlight == .segmentTitle)
 
             Spacer(minLength: 8)
 
@@ -352,6 +501,15 @@ struct SegmentReadingBlock: View, Equatable {
     @ViewBuilder
     private func trailingHeaderItemView(_ item: SegmentHeaderTrailingItem) -> some View {
         switch item {
+        case .contentMeta:
+            Text(segmentContentMetaLabel)
+                .font(.system(size: LuminaTheme.summaryLabelSize - 1))
+                .foregroundStyle(paper.textSecondary.opacity(0.85))
+                .textSelection(.enabled)
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+        case .panelToggle:
+            panelToggleButton
         case .progress:
             HStack(spacing: 6) {
                 ProgressView()
@@ -365,35 +523,9 @@ struct SegmentReadingBlock: View, Equatable {
             .lineLimit(1)
         case .regenerateSummary:
             regenerateSummaryButton
-        case .charCount:
-            if let count = effectiveCharCount, count > 0 {
-                Text("约 \(Self.formatCount(count)) 字")
-                    .font(.system(size: LuminaTheme.summaryLabelSize - 1))
-                    .foregroundStyle(paper.textSecondary.opacity(0.85))
-                    .textSelection(.enabled)
-            }
-        case .segmentIndex:
-            Text("段 \(segment.idx + 1)/\(segmentTotal)")
-                .font(.system(size: LuminaTheme.summaryLabelSize - 1))
-                .foregroundStyle(paper.textSecondary.opacity(0.85))
-                .textSelection(.enabled)
         case .turnButtons:
             segmentTurnButtons
         }
-    }
-
-    private var resolvedAnchorText: String? {
-        let raw: String? = {
-            if let anchor = parsedSummary?.anchor, !anchor.isEmpty {
-                return anchor
-            }
-            if let label = segment.anchor_label, !label.isEmpty {
-                return label
-            }
-            return nil
-        }()
-        guard let raw else { return nil }
-        return raw.hasPrefix("〔") ? raw : "〔\(raw)〕"
     }
 
     @ViewBuilder
@@ -465,16 +597,16 @@ struct SegmentReadingBlock: View, Equatable {
     private var segmentTurnButtons: some View {
         HStack(spacing: 4) {
             segmentTurnButton(
-                label: "[",
-                help: "上一段（[ / 【）",
+                systemImage: "arrow.left",
+                help: "上一段（\(ShortcutStore.shared.display(for: .prevSegment))）",
                 accessibilityName: "上一段",
                 identifier: "lumina.reader.control.prevSegment",
                 enabled: canGoPrev,
                 action: onPrevSegment
             )
             segmentTurnButton(
-                label: "]",
-                help: "下一段（] / 】）",
+                systemImage: "arrow.right",
+                help: "下一段（\(ShortcutStore.shared.display(for: .nextSegment))）",
                 accessibilityName: "下一段",
                 identifier: "lumina.reader.control.nextSegment",
                 enabled: canGoNext,
@@ -486,20 +618,22 @@ struct SegmentReadingBlock: View, Equatable {
     }
 
     private func segmentTurnButton(
-        label: String,
+        systemImage: String,
         help: String,
         accessibilityName: String,
         identifier: String,
         enabled: Bool,
         action: @escaping () -> Void
     ) -> some View {
-        Button(label, action: action)
-            .buttonStyle(.bordered)
-            .controlSize(.small)
-            .disabled(!enabled)
-            .help(help)
-            .accessibilityLabel(accessibilityName)
-            .accessibilityIdentifier(identifier)
+        Button(action: action) {
+            Image(systemName: systemImage)
+        }
+        .buttonStyle(.bordered)
+        .controlSize(.small)
+        .disabled(!enabled)
+        .help(help)
+        .accessibilityLabel(accessibilityName)
+        .accessibilityIdentifier(identifier)
     }
 
     private func summaryTierButton(
@@ -581,8 +715,12 @@ struct SegmentReadingBlock: View, Equatable {
 
     @ViewBuilder
     private func sourceBodyContent(showHeader: Bool) -> some View {
-        if showHeader, let count = effectiveCharCount, count > 0 {
-            Text("原文 · 约 \(Self.formatCount(count)) 字")
+        if showHeader {
+            Text(SegmentContentMetaPolicy.label(
+                idx: segment.idx,
+                segmentTotal: segmentTotal,
+                charCount: effectiveCharCount
+            ))
                 .font(.system(size: LuminaTheme.summaryLabelSize - 1))
                 .foregroundStyle(paper.textSecondary.opacity(0.85))
                 .textSelection(.enabled)
@@ -593,13 +731,7 @@ struct SegmentReadingBlock: View, Equatable {
                 if needsTranslation {
                     sourceTextLabel("原文")
                 }
-                LuminaSelectableText(
-                    text: body.rawText,
-                    fontSize: scaled(LuminaTheme.summaryBulletSize),
-                    lineSpacing: scaled(LuminaTheme.summaryBulletLineSpacing),
-                    foreground: paper.textSecondary,
-                    highlightUTF16: originalHighlightUTF16
-                )
+                originalTextWithIllustrations(body)
             }
             if needsTranslation {
                 if isSourceRefreshing && body.translation.isEmpty {
@@ -609,7 +741,7 @@ struct SegmentReadingBlock: View, Equatable {
                     LuminaSelectableText(
                         text: body.translation,
                         fontSize: scaled(LuminaTheme.summaryBulletSize),
-                        lineSpacing: scaled(LuminaTheme.summaryBulletLineSpacing),
+                        lineSpacing: lineSpaced(LuminaTheme.summaryBulletLineSpacing),
                         foreground: paper.textSecondary.opacity(0.85)
                     )
                 }
@@ -628,6 +760,83 @@ struct SegmentReadingBlock: View, Equatable {
         }
     }
 
+    @ViewBuilder
+    private func originalTextWithIllustrations(_ body: SegmentSourceBody) -> some View {
+        let parts = OriginalTextIllustrationLayout.parts(
+            text: body.rawText,
+            illustrations: body.illustrations
+        )
+        if parts.count == 1, let first = parts.first, case .text(let only) = first {
+            LuminaSelectableText(
+                text: only,
+                fontSize: scaled(LuminaTheme.summaryBulletSize),
+                lineSpacing: lineSpaced(LuminaTheme.summaryBulletLineSpacing),
+                foreground: paper.textSecondary,
+                highlightUTF16: resolvedOriginalHighlight.range,
+                highlightStyle: resolvedOriginalHighlight.style
+            )
+        } else {
+            VStack(alignment: .leading, spacing: scaled(10)) {
+                ForEach(Array(parts.enumerated()), id: \.offset) { _, part in
+                    switch part {
+                    case .text(let chunk):
+                        if !chunk.isEmpty {
+                            LuminaSelectableText(
+                                text: chunk,
+                                fontSize: scaled(LuminaTheme.summaryBulletSize),
+                                lineSpacing: lineSpaced(LuminaTheme.summaryBulletLineSpacing),
+                                foreground: paper.textSecondary,
+                                highlightUTF16: nil,
+                                highlightStyle: .search
+                            )
+                        }
+                    case .image(let illustration):
+                        inlineIllustration(illustration)
+                    }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func inlineIllustration(_ illustration: SegmentIllustration) -> some View {
+        let url = illustrationURL?(illustration.asset_id)
+        Group {
+            if let url {
+                AsyncImage(url: url) { phase in
+                    switch phase {
+                    case .success(let image):
+                        image
+                            .resizable()
+                            .scaledToFit()
+                            .frame(maxWidth: .infinity)
+                            .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                    case .failure:
+                        illustrationPlaceholder(illustration.alt)
+                    case .empty:
+                        ProgressView()
+                            .controlSize(.small)
+                            .frame(maxWidth: .infinity, minHeight: 48)
+                    @unknown default:
+                        illustrationPlaceholder(illustration.alt)
+                    }
+                }
+            } else {
+                illustrationPlaceholder(illustration.alt)
+            }
+        }
+        .accessibilityLabel(illustration.alt?.isEmpty == false ? illustration.alt! : "插图")
+    }
+
+    private func illustrationPlaceholder(_ alt: String?) -> some View {
+        Text(alt?.isEmpty == false ? alt! : "插图")
+            .font(.system(size: scaled(LuminaTheme.summaryLabelSize)))
+            .foregroundStyle(paper.textSecondary.opacity(0.7))
+            .frame(maxWidth: .infinity, minHeight: 48)
+            .background(paper.card.opacity(0.4))
+            .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+    }
+
     private func sourceTextLabel(_ title: String) -> some View {
         Text(title)
             .font(.system(size: LuminaTheme.summaryLabelSize, weight: .semibold))
@@ -636,10 +845,15 @@ struct SegmentReadingBlock: View, Equatable {
             .padding(.top, 4)
     }
 
-    private static func formatCount(_ count: Int) -> String {
-        let formatter = NumberFormatter()
-        formatter.numberStyle = .decimal
-        return formatter.string(from: NSNumber(value: count)) ?? "\(count)"
+    /// Search highlight wins when both are present; otherwise listen follow-along.
+    private var resolvedOriginalHighlight: (range: NSRange?, style: LuminaSelectableText.TextHighlightStyle) {
+        if let originalHighlightUTF16 {
+            return (originalHighlightUTF16, .search)
+        }
+        if let range = listenHighlight?.originalNSRange {
+            return (range, .listen)
+        }
+        return (nil, .search)
     }
 
     static func == (lhs: SegmentReadingBlock, rhs: SegmentReadingBlock) -> Bool {
@@ -659,9 +873,11 @@ struct SegmentReadingBlock: View, Equatable {
             && lhs.summaryProgressMessage == rhs.summaryProgressMessage
             && lhs.runningMetrics == rhs.runningMetrics
             && lhs.fontScale == rhs.fontScale
+            && lhs.lineSpacingScale == rhs.lineSpacingScale
             && lhs.paper == rhs.paper
             && lhs.canGoPrev == rhs.canGoPrev
             && lhs.canGoNext == rhs.canGoNext
             && lhs.originalHighlightUTF16 == rhs.originalHighlightUTF16
+            && lhs.listenHighlight == rhs.listenHighlight
     }
 }

@@ -40,7 +40,7 @@ enum NewsSummaryMarkdown {
                 }
                 return "- \(bullet.body)"
             }
-            bodyParts.append("## 结构化要点\n" + lines.joined(separator: "\n"))
+            bodyParts.append("## 主要内容\n" + lines.joined(separator: "\n"))
         }
         if !structured.notes.isEmpty {
             bodyParts.append("## 需要注意\n" + structured.notes.map { "- \($0)" }.joined(separator: "\n"))
@@ -99,7 +99,7 @@ enum NewsSummaryMarkdown {
 
     private static func sectionKind(from heading: String) -> NewsSummarySectionKind {
         if heading.contains("总结") { return .summary }
-        if heading.contains("结构化要点") { return .bullets }
+        if heading.contains("主要内容") || heading.contains("结构化要点") { return .bullets }
         if heading.contains("需要注意") { return .notes }
         if heading.contains(askHeadingMarker) { return .followUps }
         return .none

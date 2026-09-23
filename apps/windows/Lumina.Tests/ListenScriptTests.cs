@@ -30,6 +30,26 @@ public class ListenScriptTests
         Assert.DoesNotContain("你可以接着问", joined);
         Assert.DoesNotContain("主角与邻里期望之间有何张力？", joined);
         Assert.DoesNotContain(ListenScript.SectionBullets, joined);
+        // summary JSON label is not spoken unless passed as segmentLabel
+        Assert.DoesNotContain("引子", script.Texts);
+    }
+
+    [Fact]
+    public void Summary_mode_prepends_segment_label()
+    {
+        var script = ListenScriptBuilder.Build(
+            ListenMode.Summary, SampleJson, null, segmentLabel: "引子");
+        Assert.Equal(
+            new[] { "引子", "本段交代主角出身寒门。", "邻里敬其向学却无力资助。" },
+            script.Texts);
+    }
+
+    [Fact]
+    public void Blank_segment_label_is_skipped()
+    {
+        var script = ListenScriptBuilder.Build(
+            ListenMode.Summary, SampleJson, null, segmentLabel: "   ");
+        Assert.Equal("本段交代主角出身寒门。", script.Texts[0]);
     }
 
     [Fact]
@@ -49,6 +69,16 @@ public class ListenScriptTests
     }
 
     [Fact]
+    public void Detailed_prepends_segment_label()
+    {
+        var script = ListenScriptBuilder.Build(
+            ListenMode.Detailed, SampleJson, null, segmentLabel: "引子");
+        Assert.Equal("引子", script.Texts[0]);
+        Assert.Equal("本段交代主角出身寒门。", script.Texts[1]);
+        Assert.Contains(ListenScript.SectionBullets, script.Texts);
+    }
+
+    [Fact]
     public void Original_splits_sentences()
     {
         var script = ListenScriptBuilder.Build(
@@ -57,6 +87,16 @@ public class ListenScriptTests
         Assert.Equal("第一句。", script.Texts[0]);
         Assert.Contains("第二句！", script.Texts);
         Assert.Contains("第三句？", script.Texts);
+    }
+
+    [Fact]
+    public void Original_prepends_segment_label()
+    {
+        var script = ListenScriptBuilder.Build(
+            ListenMode.Original, null, "第一句。第二句！", segmentLabel: "开篇");
+        Assert.Equal("开篇", script.Texts[0]);
+        Assert.Equal("第一句。", script.Texts[1]);
+        Assert.Contains("第二句！", script.Texts);
     }
 
     [Fact]
@@ -81,6 +121,95 @@ public class ListenScriptTests
     {
         Assert.Equal("zh", ListenScriptBuilder.DetectLanguage("本段交代主角出身寒门。"));
         Assert.Equal("en", ListenScriptBuilder.DetectLanguage("The hero leaves home at dawn."));
+    }
+
+    [Fact]
+    public void Summary_anchors_match_utterances()
+    {
+        var script = ListenScriptBuilder.Build(
+            ListenMode.Summary, SampleJson, null, segmentLabel: "引子");
+        Assert.Equal(
+            new ListenHighlightAnchor[]
+            {
+                new ListenHighlightAnchor.SegmentTitle(),
+                new ListenHighlightAnchor.SummarySentence(0),
+                new ListenHighlightAnchor.SummarySentence(1),
+            },
+            script.Utterances.Select(u => u.Anchor).ToArray());
+    }
+
+    [Fact]
+    public void Detailed_anchors_include_section_and_bullets()
+    {
+        var script = ListenScriptBuilder.Build(
+            ListenMode.Detailed, SampleJson, null, segmentLabel: "引子");
+        Assert.Equal(new ListenHighlightAnchor.SegmentTitle(), script.Utterances[0].Anchor);
+        Assert.Contains(script.Utterances, u => u.Anchor is ListenHighlightAnchor.SectionBullets);
+        Assert.Contains(script.Utterances, u => u.Anchor is ListenHighlightAnchor.Bullet b && b.Index == 0);
+        Assert.Contains(script.Utterances, u => u.Anchor is ListenHighlightAnchor.Bullet b && b.Index == 2);
+    }
+
+    [Fact]
+    public void Original_anchors_carry_utf16_ranges()
+    {
+        const string raw = "第一句。第二句！";
+        var script = ListenScriptBuilder.Build(ListenMode.Original, null, raw);
+        Assert.Equal(2, script.Utterances.Count);
+        var a0 = Assert.IsType<ListenHighlightAnchor.OriginalUtf16>(script.Utterances[0].Anchor);
+        Assert.Equal("第一句。", raw.Substring(a0.Start, a0.Length));
+        var a1 = Assert.IsType<ListenHighlightAnchor.OriginalUtf16>(script.Utterances[1].Anchor);
+        Assert.Equal("第二句！", raw.Substring(a1.Start, a1.Length));
+    }
+
+    [Fact]
+    public void Follow_highlight_does_not_auto_scroll()
+    {
+        // Auto-scrolling spoken lines fights continuous play advance.
+        Assert.False(ListenFollowHighlightPolicy.ScrollsUtteranceIntoView);
+    }
+
+    [Fact]
+    public void Announce_chapter_on_session_start_and_change()
+    {
+        Assert.True(ListenChapterAnnouncePolicy.ShouldAnnounce(
+            "§第十三章 1942年南俄冬季战役",
+            new ListenChapterSpeakContext.SessionStart()));
+        Assert.False(ListenChapterAnnouncePolicy.ShouldAnnounce(
+            "第十三章 1942年南俄冬季战役",
+            new ListenChapterSpeakContext.Continuing("第十三章 1942年南俄冬季战役")));
+        Assert.True(ListenChapterAnnouncePolicy.ShouldAnnounce(
+            "第十三章 1942年南俄冬季战役",
+            new ListenChapterSpeakContext.Continuing("第十二章 斯大林格勒的悲剧")));
+    }
+
+    [Fact]
+    public void Chapter_then_label_on_session_start()
+    {
+        var script = ListenScriptBuilder.Build(
+            ListenMode.Summary,
+            SampleJson,
+            null,
+            segmentLabel: "南翼战役新动向",
+            chapter: "§第十三章 1942年南俄冬季战役",
+            chapterContext: new ListenChapterSpeakContext.SessionStart());
+        Assert.Equal(
+            new[] { "第十三章 1942年南俄冬季战役", "南翼战役新动向" },
+            script.Texts.Take(2).ToArray());
+        Assert.Equal(new ListenHighlightAnchor.SegmentTitle(), script.Utterances[0].Anchor);
+    }
+
+    [Fact]
+    public void Same_chapter_skips_chapter_announcement()
+    {
+        var script = ListenScriptBuilder.Build(
+            ListenMode.Summary,
+            SampleJson,
+            null,
+            segmentLabel: "南翼战役新动向",
+            chapter: "第十三章 1942年南俄冬季战役",
+            chapterContext: new ListenChapterSpeakContext.Continuing("第十三章 1942年南俄冬季战役"));
+        Assert.Equal("南翼战役新动向", script.Texts[0]);
+        Assert.DoesNotContain("第十三章", script.Texts[0]);
     }
 
     [Fact]

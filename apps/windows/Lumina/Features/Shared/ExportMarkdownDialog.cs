@@ -36,7 +36,7 @@ internal static class ExportMarkdownDialog
 
         var caption = new TextBlock
         {
-            Text = "完整版默认含译文。仅总结不含要点、注意、追问、译文和笔记。",
+            Text = "完整版默认含译文。仅总结不含主要内容、注意、追问、译文和笔记。",
             TextWrapping = TextWrapping.Wrap,
             Opacity = 0.7,
         };

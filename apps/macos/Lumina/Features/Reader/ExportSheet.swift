@@ -41,7 +41,7 @@ struct ExportSheet: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             } else {
-                Text("只含各段三句话，不含要点、注意、追问、译文和笔记。")
+                Text("只含各段三句话，不含主要内容、注意、追问、译文和笔记。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

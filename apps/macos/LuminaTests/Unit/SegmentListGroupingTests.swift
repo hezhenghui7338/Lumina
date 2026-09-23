@@ -128,4 +128,25 @@ final class SegmentListGroupingTests: XCTestCase {
             ["第一部分", "第一部分/第二章"]
         )
     }
+
+    func testReplaceSegment_patchesLeafWithoutChangingTreeShape() {
+        let segments = [
+            row(idx: 0, headingPath: ["卷一"], label: "旧"),
+            row(idx: 1, headingPath: ["卷一"], label: "乙"),
+        ]
+        var rows = SegmentOutlinePolicy.build(segments: segments, collapsed: [])
+        var updated = segments[0]
+        updated.summary_status = "ready"
+        updated.label = "新"
+        XCTAssertTrue(SegmentOutlinePolicy.replaceSegment(updated, in: &rows))
+        XCTAssertEqual(rows.compactMap(\.idx), [0, 1])
+        XCTAssertEqual(rows.first { $0.idx == 0 }?.segment?.label, "新")
+        XCTAssertFalse(
+            SegmentOutlinePolicy.structureChanged(from: segments[0], to: updated)
+        )
+        var rechaptered = updated
+        rechaptered.chapter = "卷二"
+        rechaptered.heading_path = ["卷二"]
+        XCTAssertTrue(SegmentOutlinePolicy.structureChanged(from: updated, to: rechaptered))
+    }
 }

@@ -15,7 +15,7 @@ from pydantic_settings import BaseSettings
 
 # App / engine identity. Must match pyproject version and desktop marketing versions.
 # Clients replace a leftover sidecar when this disagrees, even if CHUNKER_VERSION matches.
-CORE_VERSION = "1.3.0"
+CORE_VERSION = "1.4.4"
 # Segmentation algorithm id only. Do not use this as the "engine is current" signal.
 CHUNKER_VERSION = "16"
 DOCUMENT_MAP_TIMEOUT_SECONDS = float(
@@ -42,6 +42,8 @@ SEGMENT_CACHE_QUOTA_BYTES = 2 * 1024 * 1024 * 1024  # 2GB
 MAX_SUMMARY_RETRIES = 3
 OLLAMA_SUMMARY_MAX_RETRIES = 2
 SUMMARY_JOB_MAX_RETRIES = 2
+# After this many cumulative job failures on one segment, accept with relaxed quality.
+SUMMARY_RELAX_QUALITY_AFTER_FAILURES = 10
 OLLAMA_SUMMARY_MIN_BODY_CHARS = 12
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434")
 LUMINA_SUMMARIZE_MODEL = os.getenv("LUMINA_SUMMARIZE_MODEL", "qwen3.5:4b")

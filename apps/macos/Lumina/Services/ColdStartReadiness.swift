@@ -1,6 +1,6 @@
 import Foundation
 
-/// One cold-start checklist row (PRD §3.5).
+/// Internal cold-start phase (PRD §3.5; not shown as a checklist).
 enum ColdStartPhaseState: String, Equatable {
     case pending
     case running
@@ -14,7 +14,7 @@ struct ColdStartPhaseSnapshot: Equatable {
     var cache: ColdStartPhaseState = .pending
     var cacheProgress: Double?
     var cacheDetail: String?
-    /// Background boot news (not part of the gate).
+    /// Background boot news (not part of product-ready).
     var news: ColdStartPhaseState = .pending
     var newsDetail: String?
 
@@ -24,6 +24,8 @@ struct ColdStartPhaseSnapshot: Equatable {
 /// Pure cold-start gate decisions (unit-testable).
 enum ColdStartReadiness {
     static let statusPollIntervalNanoseconds: UInt64 = 100_000_000
+    /// After this many seconds, reveal one soft technical line (PRD §3.5).
+    static let detailRevealAfterSeconds: TimeInterval = 10
 
     static func phaseState(from raw: String?) -> ColdStartPhaseState {
         switch (raw ?? "").lowercased() {
@@ -66,26 +68,27 @@ enum ColdStartReadiness {
         state == .done || state == .failed
     }
 
-    static func rowLabel(
-        kind: ColdStartRowKind,
-        state: ColdStartPhaseState,
-        cacheDetail: String? = nil
-    ) -> String {
-        switch kind {
-        case .engine:
-            return state == .done ? "启动完毕" : "引擎启动中"
-        case .data:
-            return state == .done ? "准备完毕" : "数据准备中"
-        case .cache:
-            if state == .done { return "加载完毕" }
-            if let detail = cacheDetail, !detail.isEmpty {
-                return "缓存加载中 · \(detail)"
-            }
-            return "缓存加载中"
-        }
+    static func shouldRevealTechnicalDetail(elapsedSeconds: TimeInterval) -> Bool {
+        elapsedSeconds >= detailRevealAfterSeconds
     }
-}
 
-enum ColdStartRowKind: CaseIterable {
-    case engine, data, cache
+    /// One soft line derived from the current internal phase (never a multi-step list).
+    static func technicalDetail(
+        _ snapshot: ColdStartPhaseSnapshot,
+        launchError: String? = nil
+    ) -> String {
+        if let launchError, !launchError.isEmpty {
+            return launchError
+        }
+        if snapshot.engine != .done {
+            return "正在启动引擎"
+        }
+        if snapshot.data != .done {
+            return "正在准备阅读数据"
+        }
+        if let detail = snapshot.cacheDetail, !detail.isEmpty {
+            return detail
+        }
+        return "正在加载缓存"
+    }
 }

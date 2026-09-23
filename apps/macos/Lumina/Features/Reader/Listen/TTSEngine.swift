@@ -13,7 +13,10 @@ struct ListenSpeakRequest: Equatable {
 @MainActor
 protocol ListenEngine: AnyObject {
     var isPaused: Bool { get }
-    func speak(_ request: ListenSpeakRequest) async throws
+    func speak(
+        _ request: ListenSpeakRequest,
+        onUtteranceStart: ((Int) -> Void)?
+    ) async throws
     func pause()
     func resume()
     func stop()
@@ -32,7 +35,10 @@ final class SystemNeuralEngine: NSObject, ListenEngine, AVSpeechSynthesizerDeleg
         synthesizer.delegate = self
     }
 
-    func speak(_ request: ListenSpeakRequest) async throws {
+    func speak(
+        _ request: ListenSpeakRequest,
+        onUtteranceStart: ((Int) -> Void)? = nil
+    ) async throws {
         stop()
         generation += 1
         let token = generation
@@ -43,9 +49,10 @@ final class SystemNeuralEngine: NSObject, ListenEngine, AVSpeechSynthesizerDeleg
             identifier: ListenPreferences.systemVoiceIdentifier
         )
         if request.texts.isEmpty { return }
-        for text in request.texts {
+        for (index, text) in request.texts.enumerated() {
             try Task.checkCancellation()
             if stopped || token != generation { throw CancellationError() }
+            onUtteranceStart?(index)
             try await speakOne(text, voice: voice, rate: request.rate, token: token)
         }
     }

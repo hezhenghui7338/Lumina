@@ -100,6 +100,7 @@ def test_pyinstaller_spec_bundles_text_encodings():
         "encodings.gb18030",
         "encodings.gbk",
         "encodings.cp936",
+        "encodings.cp932",
         "encodings.cp1252",
         "encodings.latin_1",
         "encodings.big5",
@@ -186,6 +187,50 @@ def test_detect_plan_gbk_bytes():
     plan = detect_encoding_plan(_gbk_prose().encode("gbk"))
     assert plan.encoding == "gb18030"
     assert plan.recover_gbk_mojibake is False
+
+
+def _aozora_japanese_prose() -> str:
+    """青空文庫-style Japanese with ruby markers (Shift-JIS / CP932 dumps)."""
+    return (
+        "新書太閤記\r\n第五分冊\r\n吉川英治\r\n\r\n"
+        "　湖畔の城は、日にまし重きをなした。長浜《ながはま》の町には、"
+        "灯のかずが夜ごとのように増《ふ》えてゆく。\r\n"
+        "　風土はよし、天産にはめぐまれている。しかも、城主に人を得て、"
+        "安業楽土《あんぎょうらくど》の国とは、おれたちのことなれと、"
+        "謳歌《おうか》せぬ領民はなかった。\r\n"
+    ) * 12
+
+
+def test_detect_plan_cp932_japanese_not_gb18030():
+    """Shift-JIS Japanese must not be mistaken for GB18030 Han garbage."""
+    from lumina_core.ingest.text import detect_encoding_plan
+
+    raw = _aozora_japanese_prose().encode("cp932")
+    # Same bytes often decode as "valid" GB18030 with zero kana.
+    assert raw.decode("gb18030")
+    plan = detect_encoding_plan(raw)
+    assert plan.encoding == "cp932"
+    assert plan.recover_gbk_mojibake is False
+
+
+def test_load_txt_cp932_japanese_roundtrip(tmp_path):
+    p = tmp_path / "shinsho_taikoki.txt"
+    original = _aozora_japanese_prose()
+    p.write_bytes(original.encode("cp932"))
+    text, _meta = load_document(p, "txt")
+    assert "新書太閤記" in text
+    assert "長浜《ながはま》" in text
+    assert "謳歌《おうか》" in text
+    assert "怴彂懢峿婰" not in text
+    assert "ながはま" in text
+
+
+def test_detect_plan_big5_not_beaten_by_gb18030_false_kana():
+    from lumina_core.ingest.text import detect_encoding_plan
+
+    prose = ("這是一段繁體中文測試。內容包含足夠的漢字與標點符號以便偵測編碼。\n" * 20)
+    plan = detect_encoding_plan(prose.encode("big5"))
+    assert plan.encoding == "big5"
 
 
 def test_detect_plan_utf8_mojibake_recovers():
@@ -304,6 +349,34 @@ def test_load_html_preserves_headings_and_metadata(tmp_path):
     assert "正文段落" in text
     assert "不要收录" not in text
     assert meta == {"title": "HTML 测试书", "author": "测试作者"}
+
+
+def test_html_soft_containers_do_not_invent_blank_lines():
+    """EPUB-style <div class="para"> must not become blank rows in the reader."""
+    from lumina_core.ingest.html import parse_html_document
+
+    div_paras, _ = parse_html_document(
+        """
+        <div class="chapter">
+          <div class="para">第一段内容。</div>
+          <div class="para">第二段内容。</div>
+          <div class="para">第三段内容。</div>
+        </div>
+        """
+    )
+    assert div_paras == "第一段内容。\n第二段内容。\n第三段内容。"
+
+    glued, _ = parse_html_document("<div>甲</div><div>乙</div>")
+    assert glued == "甲 乙"
+    assert "\n\n" not in glued
+
+    paragraphs, _ = parse_html_document("<p>甲</p><p>乙</p>")
+    assert paragraphs == "甲\n\n乙"
+
+    wrapped, _ = parse_html_document(
+        "<div><p>甲</p></div><div><p>乙</p></div>"
+    )
+    assert wrapped == "甲\n\n乙"
 
 
 def test_load_html_strips_source_section_sign_from_heading(tmp_path):

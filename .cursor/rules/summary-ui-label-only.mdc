@@ -1,0 +1,24 @@
+---
+description: 改摘要分区用户可见标题时，不得同步改 LLM prompt / schema / 生成标题
+alwaysApply: true
+---
+
+# 摘要分区标题：仅改用户可见文案
+
+用户要求改摘要 **bullets 分区** 的显示名（如「结构化要点」→「主要内容」）时，**只改 UI / TTS 朗读 / 本地化字符串**。
+
+## 禁止同步修改
+
+- `packages/lumina-core/config/prompts.yaml` 及 `prompts_defaults`
+- document 生成标题、schema 字段名、深聊上下文里的内部术语
+- 任何会改变 LLM 输出格式或 prompt 语义的文案
+
+## 允许修改
+
+- Swift / WinUI 阅读器、摘要卡片、TTS 朗读文案
+- 用户可见的分区标题与菜单项
+- `docs/PRD.md` 中描述 **用户界面** 的用语（若 PRD 已用新名）
+
+## 自检
+
+改完后：`prompts.yaml` 仍可含「结构化要点」等 prompt 用语；用户界面显示目标文案（如「主要内容」）。

@@ -95,6 +95,7 @@ class AppState:
     context_probe_tasks: dict[str, asyncio.Task[Any]] = field(default_factory=dict)
     context_probe_cancel: dict[str, asyncio.Event] = field(default_factory=dict)
     context_probe_status: dict[str, Any] = field(default_factory=dict)
+    cursor_sdk_install_task: asyncio.Task[Any] | None = field(default=None, repr=False)
     cpu_job_lock: asyncio.Semaphore = field(default_factory=lambda: asyncio.Semaphore(1))
     # Cold-start gate: pending|running|done|failed
     startup_news_phase: str = "pending"
@@ -221,7 +222,7 @@ def create_app_state(settings: Settings | None = None) -> AppState:
     init_db_ms = (t_db - t_hydrate) * 1000.0
     perf_record(kind="op", name="startup.init_db", ms=init_db_ms)
     concurrency_gate = ResourceConcurrencyGate(models.resources)
-    router = ProfileModelRouter(models, gate=concurrency_gate)
+    router = ProfileModelRouter(models, gate=concurrency_gate, data_dir=settings.data_dir)
     task_registry = TaskRegistry()
     job_queue = JobQueue(
         conn,

@@ -273,6 +273,10 @@ async def test_stop_all_and_start_all(conn):
     q = JobQueue(conn, router)
     a = _seed_book(conn, book_id="book-a", n_segments=1)
     b = _seed_book(conn, book_id="book-b", n_segments=1)
+    BookRepo(conn).update(a, status="unread")
+    BookRepo(conn).update(b, status="unread")
+    BookRepo(conn).refresh_summary_progress(a)
+    BookRepo(conn).refresh_summary_progress(b)
 
     await q.stop_all()
     assert q.is_user_paused(a)
@@ -1285,6 +1289,120 @@ async def test_final_failure_does_not_block_later_segments(conn):
 
 
 @pytest.mark.asyncio
+async def test_failure_total_survives_start_book_reset(conn):
+    router = MockModelRouter(responses={"summarize": SUMMARY, "translate": "译文"})
+    q = JobQueue(conn, router)
+    book_id = _seed_book(conn, n_segments=1)
+    segs = SegmentRepo(conn).list_for_book(book_id)
+    seg_repo = SegmentRepo(conn)
+    seg_repo.set_status(
+        segs[0]["id"], "failed", retry_count=2, increment_failure_total=True
+    )
+    # Simulate nine prior failures already accumulated.
+    for _ in range(8):
+        seg_repo.set_status(
+            segs[0]["id"], "failed", retry_count=2, increment_failure_total=True
+        )
+    before = seg_repo.get_by_index(book_id, 0)
+    assert before["summary_failure_total"] == 9
+
+    await q.start_book(book_id)
+    after_reset = seg_repo.get_by_index(book_id, 0)
+    assert after_reset["summary_status"] == "pending"
+    assert after_reset["retry_count"] == 0
+    assert after_reset["summary_failure_total"] == 9
+
+    for _ in range(50):
+        updated = seg_repo.get_by_index(book_id, 0)
+        if updated["summary_status"] == "ready":
+            break
+        await asyncio.sleep(0.05)
+    else:
+        pytest.fail("segment did not become ready")
+
+    ready = seg_repo.get_by_index(book_id, 0)
+    # Still below threshold → not marked relaxed.
+    assert ready["summary_quality_relaxed"] is False
+
+
+@pytest.mark.asyncio
+async def test_relaxed_quality_marks_ready_after_threshold(conn, monkeypatch):
+    from lumina_core import config as cfg
+    from lumina_core.jobs import queue as queue_mod
+
+    monkeypatch.setattr(cfg, "SUMMARY_RELAX_QUALITY_AFTER_FAILURES", 2)
+    monkeypatch.setattr(queue_mod, "SUMMARY_RELAX_QUALITY_AFTER_FAILURES", 2)
+
+    # Redundant sentences: strict gate rejects; relaxed skips redundancy.
+    redundant_summary = json.dumps(
+        {
+            "sentences": [
+                "本段交代主角离乡赴考启程上路，并说明家人对他的期望与族人看重功名，以及途中陌生来信留下的冲突伏笔线索。",
+                "本段交代主角离乡赴考启程上路，并说明家人对他的期望与族人看重功名，以及途中陌生来信留下的冲突伏笔。",
+            ],
+            "bullets": [
+                {"label": "要点一", "body": "这是充实说明正文，用于满足字段结构要求。"},
+                {"label": "要点二", "body": "这是充实说明正文，用于满足字段结构要求。"},
+                {"label": "要点三", "body": "这是充实说明正文，用于满足字段结构要求。"},
+            ],
+            "notes": [],
+            "follow_ups": ["接着问什么？"],
+            "label": "重复摘要",
+            "anchor": "段 1",
+        },
+        ensure_ascii=False,
+    )
+    router = MockModelRouter(
+        responses={"summarize": redundant_summary, "translate": "译文"}
+    )
+    q = JobQueue(conn, router)
+    book_id = _seed_book(conn, book_id="relax-book", n_segments=1)
+    seg_repo = SegmentRepo(conn)
+    seg = seg_repo.get_by_index(book_id, 0)
+    # Seed enough cumulative failures to trip relaxed mode on the next job.
+    for _ in range(2):
+        seg_repo.set_status(
+            seg["id"], "error", retry_count=0, increment_failure_total=True
+        )
+    seg_repo.set_status(seg["id"], "pending", retry_count=0)
+
+    await q.enqueue_book_prefetch(book_id)
+    for _ in range(80):
+        updated = seg_repo.get_by_index(book_id, 0)
+        if updated["summary_status"] == "ready":
+            break
+        await asyncio.sleep(0.05)
+    else:
+        pytest.fail(
+            f"relaxed summarize did not complete: {seg_repo.get_by_index(book_id, 0)}"
+        )
+
+    ready = seg_repo.get_by_index(book_id, 0)
+    assert ready["summary_quality_relaxed"] is True
+    assert BookRepo(conn).get(book_id)["status"] == "summarized"
+
+
+@pytest.mark.asyncio
+async def test_manual_retry_clears_failure_budget(conn):
+    seg_repo = SegmentRepo(conn)
+    book_id = _seed_book(conn, book_id="retry-clear", n_segments=1)
+    seg = seg_repo.get_by_index(book_id, 0)
+    for _ in range(5):
+        seg_repo.set_status(
+            seg["id"], "failed", retry_count=2, increment_failure_total=True
+        )
+    seg_repo.set_status(
+        seg["id"],
+        "pending",
+        retry_count=0,
+        clear_failure_budget=True,
+    )
+    cleared = seg_repo.get_by_index(book_id, 0)
+    assert cleared["summary_failure_total"] == 0
+    assert cleared["summary_quality_relaxed"] is False
+
+
+@pytest.mark.asyncio
 async def test_summarize_state_running_when_active(conn):
     router = SlowMockRouter(
         delay=0.8,
@@ -1475,4 +1593,110 @@ async def test_recover_start_book_avoids_full_list_for_book(conn, monkeypatch):
             await deferred
         assert calls["n"] == 0
     finally:
+        await q.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_start_all_skips_summarized_and_acks_intent(conn):
+    """Library-wide start must not walk finished books; intent flips before enqueue."""
+    router = MockModelRouter(responses={"summarize": SUMMARY, "translate": "译文"})
+    q = JobQueue(conn, router, auto_start_summary=False)
+    done = _seed_book(conn, book_id="done", n_segments=2)
+    pending = _seed_book(conn, book_id="pending", n_segments=2)
+    BookRepo(conn).update(done, status="unread")
+    BookRepo(conn).update(pending, status="unread")
+    BookRepo(conn).refresh_summary_progress(done)
+    BookRepo(conn).refresh_summary_progress(pending)
+    for seg in SegmentRepo(conn).list_for_book(done):
+        SegmentRepo(conn).update_summary(
+            seg["id"],
+            summary_json='{"sentences":["x"],"bullets":[],"label":"a","anchor":"b"}',
+            label="a",
+            status="ready",
+        )
+    BookRepo(conn).refresh_summary_progress(done)
+
+    started: list[str] = []
+    original = q._complete_start_book
+
+    async def tracking(book_id: str, *, summary_tier: str = "normal") -> None:
+        started.append(book_id)
+        await original(book_id, summary_tier=summary_tier)
+
+    q._complete_start_book = tracking  # type: ignore[method-assign]
+    try:
+        targets = await q.ack_start_all()
+        assert pending in targets
+        assert done not in targets
+        assert q.summarize_state_for_book(
+            pending,
+            ready=0,
+            total=2,
+        ) == "queued"
+        await q.start_all()
+        assert started == [pending]
+    finally:
+        await q.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_start_book_reset_failed_avoids_per_segment_progress(conn, monkeypatch):
+    """User resume must reset failed rows without N× summary_progress fan-out."""
+    router = MockModelRouter(responses={"summarize": SUMMARY, "translate": "译文"})
+    q = JobQueue(conn, router, auto_start_summary=False)
+    book_id = _seed_book(conn, book_id="many-failed", n_segments=80)
+    BookRepo(conn).update(book_id, status="unread")
+    BookRepo(conn).refresh_summary_progress(book_id)
+    for seg in SegmentRepo(conn).list_for_book(book_id):
+        SegmentRepo(conn).set_status(seg["id"], "failed", retry_count=3)
+
+    progress_calls = {"n": 0}
+    original = BookRepo.summary_progress
+
+    def counting(self, bid: str):
+        progress_calls["n"] += 1
+        return original(self, bid)
+
+    monkeypatch.setattr(BookRepo, "summary_progress", counting)
+    try:
+        await q.start_book(book_id)
+        # One progress read would be ok; dozens of failed SSE fan-outs are not.
+        assert progress_calls["n"] <= 2
+        assert q._has_scheduled_summarize_job(book_id)
+        statuses = {
+            s["summary_status"] for s in SegmentRepo(conn).list_for_book(book_id)
+        }
+        assert "failed" not in statuses
+    finally:
+        await q.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_begin_start_book_sets_queued_before_enqueue_finishes(conn):
+    """HTTP ack must flip summarize_state before background reset/enqueue."""
+    router = MockModelRouter(responses={"summarize": SUMMARY, "translate": "译文"})
+    q = JobQueue(conn, router, auto_start_summary=False)
+    book_id = _seed_book(conn, book_id="ack-first", n_segments=3)
+    BookRepo(conn).update(book_id, status="unread")
+    BookRepo(conn).refresh_summary_progress(book_id)
+
+    gate = asyncio.Event()
+    finished = asyncio.Event()
+    original = q._complete_start_book
+
+    async def blocked(book_id: str, *, summary_tier: str = "normal") -> None:
+        await gate.wait()
+        await original(book_id, summary_tier=summary_tier)
+        finished.set()
+
+    q._complete_start_book = blocked  # type: ignore[method-assign]
+    try:
+        await q.begin_start_book(book_id)
+        assert q.summarize_state_for_book(book_id, ready=0, total=3) == "queued"
+        assert not q._has_scheduled_summarize_job(book_id)
+        gate.set()
+        await asyncio.wait_for(finished.wait(), timeout=2)
+        assert q._has_scheduled_summarize_job(book_id)
+    finally:
+        gate.set()
         await q.shutdown()

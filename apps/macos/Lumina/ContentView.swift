@@ -44,18 +44,25 @@ struct ContentView: View {
     @State private var skipRemainingImportDuplicates = false
 
     var body: some View {
-        Group {
-            if sidecar.productReady {
-                mainTabs
-            } else {
-                ColdStartGateView(
-                    phases: sidecar.coldStartPhases,
-                    startedAt: sidecar.coldStartStartedAt
-                )
-            }
-        }
+        mainTabs
         .background(LuminaTheme.background)
         .environmentObject(tour)
+        .overlay {
+            if !sidecar.productReady {
+                ColdStartGateView(
+                    phases: sidecar.coldStartPhases,
+                    startedAt: sidecar.coldStartStartedAt,
+                    launchError: sidecar.userStopped ? nil : sidecar.launchError,
+                    onRetry: {
+                        connectionError = nil
+                        Task { await finishBootstrap() }
+                    }
+                )
+                .transition(.opacity)
+                .zIndex(1)
+            }
+        }
+        .animation(.easeInOut(duration: 0.35), value: sidecar.productReady)
         .overlayPreferenceValue(TourAnchorPreferenceKey.self) { anchors in
             if sidecar.productReady {
                 tourOverlay(anchors: anchors)
@@ -246,8 +253,7 @@ struct ContentView: View {
     private func finishBootstrap() async {
         await sidecar.ensureRunningAndProductReady()
         guard sidecar.isRunning else {
-            if sidecar.userStopped { return }
-            connectionError = sidecar.launchError ?? "无法连接到 AI 引擎，请重试或退出。"
+            // Brand splash overlay shows launchError + retry; avoid a second alert.
             return
         }
         guard sidecar.productReady else { return }
@@ -392,6 +398,7 @@ struct ContentView: View {
             } else {
                 try await core.startSummarizeAll(summaryTier: summaryTier)
             }
+            NotificationCenter.default.post(name: .luminaLibraryRefresh, object: nil)
         } catch {
             if ConnectionError.isConnectionFailure(error) {
                 connectionError = "无法连接到 AI 引擎，请重试或退出。"
@@ -408,6 +415,7 @@ struct ContentView: View {
             } else {
                 try await core.stopSummarizeAll()
             }
+            NotificationCenter.default.post(name: .luminaLibraryRefresh, object: nil)
         } catch {
             if ConnectionError.isConnectionFailure(error) {
                 connectionError = "无法连接到 AI 引擎，请重试或退出。"
@@ -480,8 +488,8 @@ private struct LibraryTabView: View {
         .onReceive(NotificationCenter.default.publisher(for: .luminaLibraryRefresh)) { _ in
             Task { await refreshBooks() }
         }
-        .onReceive(readingProgress.$positions) { positions in
-            viewModel.applyLocalProgress(positions)
+        .onReceive(readingProgress.$positions) { _ in
+            viewModel.applyLocalProgress { readingProgress.position(for: $0) }
         }
         .onChange(of: selectedBookId) { oldId, newId in
             if newId != nil {

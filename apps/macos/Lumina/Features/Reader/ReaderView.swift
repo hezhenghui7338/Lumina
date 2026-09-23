@@ -54,10 +54,9 @@ struct ReaderView: View {
     /// scrolling; intentional jumps freeze commits until three further pins.
     /// Every jump still assigns here — nothing else may move the scroll view.
     @State private var topSegmentIdx: Int?
-    /// Materialized render window anchor. Updated with hysteresis so regular
-    /// scrolling within ±hysteresisThreshold segments never moves the window
-    /// bounds or changes spacer heights mid-flight.
-    @State private var renderAnchorIdx: Int?
+    /// While true, `scrollPosition` does not force the pinned segment to `.top`,
+    /// so ↑/↓ can pixel-scroll mid-segment; SwiftUI may still write the binding.
+    @State private var freeKeyboardScroll = false
     @State private var readerGlobalFrame: CGRect = .null
     @State private var overlay: ReaderOverlay = .none
     @State private var overlayEngaged = false
@@ -135,9 +134,15 @@ struct ReaderView: View {
         )
     }
 
+    private var shouldReserveContentSummaryProgressInset: Bool {
+        ReaderSummaryProgressPolicy.shouldReserveContentBannerInset(
+            readyCount: viewModel.summaryReadyCount,
+            totalCount: viewModel.summaryTotalCount
+        )
+    }
+
     private var readerKeyboardScrollEnabled: Bool {
         overlay == .none
-            && coverPage == .none
             && !chatFocused
             && !showBoundarySheet
             && !showExport
@@ -150,7 +155,7 @@ struct ReaderView: View {
     }
 
     private var regenerateConfirmMessage: String {
-        let count = viewModel.effectiveSegmentCount
+        let count = viewModel.segments.count
         let tier = regenerateSummaryTier.label
         return "将用「\(tier)」重新生成全书 \(count) 个段的摘要。已有摘要会被全部覆盖，会消耗大量计算和 API 资源，且无法撤销。若只想用该档位补齐未摘要段落，请改用「开始摘要」。"
     }
@@ -175,10 +180,6 @@ struct ReaderView: View {
     var body: some View {
         readerLayout
             .toolbar(removing: .sidebarToggle)
-            .background {
-                readerModeShortcutButton
-                originalSearchShortcutButton
-            }
             .confirmationDialog(
                 "全书重新摘要",
                 isPresented: $showRegenerateConfirm,
@@ -281,7 +282,7 @@ struct ReaderView: View {
         resegmentTargetChars = ResegmentTarget.normalized(
             currentTarget: viewModel.chunkTargetChars,
             totalChars: viewModel.totalCharCount,
-            segmentCount: viewModel.effectiveSegmentCount
+            segmentCount: viewModel.segments.count
         )
         resegmentTier = .normal
         showResegmentSheet = true
@@ -289,7 +290,7 @@ struct ReaderView: View {
 
     private func openBoundaryEditor(at idx: Int? = nil) {
         let resolved = idx ?? viewModel.selectedIdx ?? 0
-        let lastIdx = max(0, viewModel.effectiveSegmentCount - 2)
+        let lastIdx = max(0, viewModel.segments.count - 2)
         boundaryLeftIdx = min(max(0, resolved), lastIdx)
         showBoundarySheet = true
     }
@@ -346,20 +347,6 @@ struct ReaderView: View {
             get: { actionError != nil },
             set: { if !$0 { actionError = nil } }
         )
-    }
-
-    private var readerModeShortcutButton: some View {
-        Button("切换阅读模式", action: toggleContentMode)
-            .keyboardShortcut("o", modifiers: [.command, .shift])
-            .opacity(0)
-            .frame(width: 0, height: 0)
-    }
-
-    private var originalSearchShortcutButton: some View {
-        Button("搜索原文", action: openOriginalSearch)
-            .keyboardShortcut("f", modifiers: .command)
-            .opacity(0)
-            .frame(width: 0, height: 0)
     }
 
     private func startReaderSummarize(_ tier: SummaryTier) {
@@ -462,7 +449,7 @@ struct ReaderView: View {
                 }
                 .buttonStyle(.plain)
                 .disabled(originalSearchHits.isEmpty)
-                .help("上一条")
+            .help("上一条（\(ShortcutStore.shared.display(for: .searchPrev))）")
                 .accessibilityIdentifier("lumina.reader.originalSearch.prev")
                 Button {
                     stepOriginalSearch(1)
@@ -471,7 +458,7 @@ struct ReaderView: View {
                 }
                 .buttonStyle(.plain)
                 .disabled(originalSearchHits.isEmpty)
-                .help("下一条")
+                .help("下一条（\(ShortcutStore.shared.display(for: .searchNext))）")
                 .accessibilityIdentifier("lumina.reader.originalSearch.next")
                 Button {
                     closeOriginalSearch()
@@ -497,7 +484,7 @@ struct ReaderView: View {
             }
             .labelStyle(.iconOnly)
             .readerChromeIconAction()
-            .help("搜索原文（⌘F）")
+            .help("搜索原文（\(ShortcutStore.shared.display(for: .originalSearch))）")
             .accessibilityIdentifier("lumina.reader.originalSearch")
         }
     }
@@ -514,15 +501,20 @@ struct ReaderView: View {
     private func startListening(_ mode: ListenMode) {
         listenSession.configure(
             bookId: bookId,
-            segmentCount: viewModel.effectiveSegmentCount,
-            resolve: { [viewModel, core] idx, listenMode in
-                await viewModel.listenScript(idx: idx, mode: listenMode, core: core)
+            segmentCount: viewModel.segments.count,
+            resolve: { [viewModel, core] idx, listenMode, chapterContext in
+                await viewModel.listenScript(
+                    idx: idx, mode: listenMode, core: core, chapterContext: chapterContext
+                )
             },
             labelFor: { [viewModel] idx in
                 if let seg = viewModel.segments.first(where: { $0.idx == idx }) {
                     return seg.label ?? seg.anchor_label ?? "段 \(idx + 1)"
                 }
                 return "段 \(idx + 1)"
+            },
+            chapterFor: { [viewModel] idx in
+                viewModel.segments.first(where: { $0.idx == idx })?.chapter
             },
             makeEngine: {
                 SystemNeuralEngine()
@@ -563,7 +555,7 @@ struct ReaderView: View {
             .pickerStyle(.segmented)
             .labelsHidden()
             .frame(width: ReaderChromeBarMetrics.modePickerWidth)
-            .help("切换摘要 / 原文阅读模式（⌘⇧O）")
+            .help("切换摘要 / 原文阅读模式（\(ShortcutStore.shared.display(for: .toggleContentMode))）")
             .tourAnchor(.modePicker)
 
             listenChromeControl
@@ -664,7 +656,7 @@ struct ReaderView: View {
                     .buttonStyle(.plain)
                     .padding(.horizontal, 8)
                     .padding(.vertical, 6)
-                    .disabled(viewModel.effectiveSegmentCount < 2)
+                    .disabled(viewModel.segments.count < 2)
                     Button("整书重新分段") {
                         showSegmentPopover = false
                         prepareResegment()
@@ -763,7 +755,7 @@ struct ReaderView: View {
             .popover(isPresented: $showAppearancePopover, arrowEdge: .top) {
                 ReaderAppearancePanel(theme: theme)
             }
-            .help("字号与纸色")
+            .help("字号、行间距与纸色")
         }
         .font(ReaderChromeBarMetrics.labelFont)
         .imageScale(.medium)
@@ -926,6 +918,11 @@ struct ReaderView: View {
         .onAppear {
             readerOverlayActive = overlay != .none
             revealChromeIfTouringReader()
+            ShortcutKeyMonitor.isReaderActive = true
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .luminaReaderShortcutAction)) { note in
+            guard let action = ShortcutActionUserInfo.action(from: note) else { return }
+            handleShortcut(action)
         }
         .onChange(of: tour.step) { _, _ in
             revealChromeIfTouringReader()
@@ -946,22 +943,11 @@ struct ReaderView: View {
                 }
                 return
             }
-            let nextAnchor = SegmentRenderWindow.stabilizedAnchor(
-                currentPinnedIdx: idx,
-                existingAnchorIdx: renderAnchorIdx,
-                in: viewModel.segments
-            )
-            if renderAnchorIdx != nextAnchor {
-                renderAnchorIdx = nextAnchor
-            }
-            // Progress stays live; hydrate/prefetch wait for scroll idle.
             viewModel.noteTopSegment(idx)
-            viewModel.noteScrollActivity()
-            viewModel.scheduleViewportPrefetch(
-                around: idx,
-                core: core,
-                originalMode: contentMode == .original
-            )
+            viewModel.prefetchSummaries(around: idx, core: core, radius: 3)
+            if contentMode == .original {
+                viewModel.prefetchSources(around: idx, core: core, radius: 3)
+            }
         }
         .onPreferenceChange(ReaderGlobalFrameKey.self) { frame in
             readerGlobalFrame = frame
@@ -986,7 +972,6 @@ struct ReaderView: View {
             contentMode = ReaderPreferences.contentMode(for: bookId)
             viewModel.setContentMode(contentMode)
             topSegmentIdx = nil
-            renderAnchorIdx = nil
             // The resume index is delivered before the segments are published so
             // the feed's very first layout already renders at the saved segment.
             await viewModel.load(
@@ -994,7 +979,6 @@ struct ReaderView: View {
                 core: core,
                 initialSegmentIndex: initialSegmentIndex
             ) { resumeIdx in
-                renderAnchorIdx = resumeIdx
                 topSegmentIdx = resumeIdx
             }
             readerContentFocused = true
@@ -1004,7 +988,7 @@ struct ReaderView: View {
             if let idx = viewModel.selectedIdx {
                 viewModel.prefetchSummaries(around: idx, core: core, radius: 5)
             }
-            listenSession.updateSegmentCount(viewModel.effectiveSegmentCount)
+            listenSession.updateSegmentCount(viewModel.segments.count)
             if let settings = try? await core.fetchSettings() {
                 ListenPreferences.syncFromSettings(settings.models.tts)
             }
@@ -1015,6 +999,7 @@ struct ReaderView: View {
             }
         }
         .onDisappear {
+            ShortcutKeyMonitor.isReaderActive = false
             listenSession.stop()
             LuminaSelectionActionPopover.dismiss()
             originalSearchTask?.cancel()
@@ -1023,6 +1008,163 @@ struct ReaderView: View {
                 NotificationCenter.default.post(name: .luminaLibraryRefresh, object: nil)
                 viewModel.cancelAllTasks()
             }
+        }
+    }
+
+    // MARK: - Shortcuts
+
+    private func handleShortcut(_ action: ShortcutAction) {
+        switch action {
+        case .toggleContentMode:
+            setChromeMode(.revealed)
+            toggleContentMode()
+        case .toggleSegmentPanel:
+            toggleCurrentSegmentPanel()
+        case .originalSearch:
+            openOriginalSearch()
+        case .searchNext:
+            guard originalSearchExpanded, !originalSearchHits.isEmpty else { return }
+            stepOriginalSearch(1)
+        case .searchPrev:
+            guard originalSearchExpanded, !originalSearchHits.isEmpty else { return }
+            stepOriginalSearch(-1)
+        case .startSummarize:
+            guard viewModel.bookStatus != "processing" else { return }
+            startReaderSummarize(.normal)
+        case .stopSummarize:
+            Task {
+                do { try await viewModel.stopSummarize(core: core) }
+                catch { actionError = error.localizedDescription }
+            }
+        case .openSummarizeMenu:
+            guard viewModel.bookStatus != "processing" else { return }
+            setChromeMode(.revealed)
+            showSummarizePopover.toggle()
+        case .regenerateSegment:
+            regenerateCurrentSegment()
+        case .openSegmentMenu:
+            guard viewModel.bookStatus != "processing" else { return }
+            setChromeMode(.revealed)
+            showSegmentPopover.toggle()
+        case .adjustBoundary:
+            guard viewModel.bookStatus != "processing" else { return }
+            openBoundaryEditor()
+        case .toggleListen:
+            toggleListenShortcut()
+        case .toggleSegmentList:
+            setChromeMode(.revealed)
+            toggleCoverPage(.segments)
+        case .toggleNotes:
+            guard viewModel.bookStatus != "processing" else { return }
+            setChromeMode(.revealed)
+            toggleOverlay(.notes)
+        case .toggleChat:
+            guard viewModel.bookStatus != "processing" else { return }
+            setChromeMode(.revealed)
+            toggleOverlay(.chat)
+        case .toggleDisplay:
+            setChromeMode(.revealed)
+            showAppearancePopover = true
+        case .exportMarkdown:
+            guard viewModel.bookStatus != "processing" else { return }
+            exportIncludeNotes = false
+            exportMode = .full
+            showExport = true
+        case .backToLibrary:
+            onReturnToBookshelf()
+        case .prevSegment:
+            navigateSegment(delta: -1)
+        case .nextSegment:
+            navigateSegment(delta: 1)
+        case .scrollUp:
+            performReaderKeyboardScroll(lineDelta: -ReaderKeyboardScroll.lineDelta, page: nil)
+        case .scrollDown:
+            performReaderKeyboardScroll(lineDelta: ReaderKeyboardScroll.lineDelta, page: nil)
+        case .pageUp:
+            performReaderKeyboardScroll(lineDelta: nil, page: -1)
+        case .pageDown:
+            performReaderKeyboardScroll(lineDelta: nil, page: 1)
+        case .dismissOverlay:
+            dismissReaderOverlayShortcut()
+        case .globalSearch, .importBooks:
+            break
+        }
+    }
+
+    private func dismissReaderOverlayShortcut() {
+        if coverPage != .none {
+            coverPage = ReaderCoverPagePolicy.close()
+            return
+        }
+        if overlay != .none {
+            overlay = .none
+            overlayEngaged = false
+        }
+    }
+
+    /// ↑/↓ / PgUp / PgDn — posts to the feed key handler after releasing the
+    /// scrollPosition pin (or turns the segment list when that cover is open).
+    private func performReaderKeyboardScroll(lineDelta: CGFloat?, page: Int?) {
+        if coverPage.showsSegments {
+            let delta: Int
+            if let lineDelta {
+                delta = lineDelta < 0 ? -1 : 1
+            } else if let page {
+                delta = page < 0 ? -1 : 1
+            } else {
+                return
+            }
+            navigateSegment(delta: delta)
+            return
+        }
+        freeKeyboardScroll = true
+        if let lineDelta {
+            NotificationCenter.default.post(
+                name: .luminaScrollContent,
+                object: nil,
+                userInfo: ["delta": lineDelta]
+            )
+        } else if let page {
+            NotificationCenter.default.post(
+                name: .luminaScrollContent,
+                object: nil,
+                userInfo: ["page": page]
+            )
+        }
+    }
+
+    private func toggleCurrentSegmentPanel() {
+        let idx = topSegmentIdx ?? viewModel.selectedIdx ?? viewModel.segments.first?.idx
+        guard let idx else { return }
+        switch contentMode {
+        case .summary:
+            toggleSource(for: idx)
+        case .original:
+            toggleSummary(for: idx)
+        }
+    }
+
+    private func regenerateCurrentSegment() {
+        let idx = topSegmentIdx ?? viewModel.selectedIdx ?? viewModel.segments.first?.idx
+        guard let idx, viewModel.bookStatus != "processing" else { return }
+        Task {
+            do {
+                try await viewModel.retrySegment(idx, summaryTier: .normal, core: core)
+            } catch {
+                actionError = error.localizedDescription
+            }
+        }
+    }
+
+    private func toggleListenShortcut() {
+        if listenSession.isActive {
+            listenSession.stop()
+            return
+        }
+        if listenTargetShowsOriginal {
+            startListening(.original)
+        } else {
+            startListening(.summary)
         }
     }
 
@@ -1111,6 +1253,12 @@ struct ReaderView: View {
     private var segmentContent: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
+                // Must live *inside* the feed ScrollView so enclosingScrollView
+                // is the reading surface (the key handler sits in .background).
+                ReaderFeedScrollAnchor()
+                    .frame(width: 0, height: 0)
+                    .accessibilityHidden(true)
+
                 LazyVStack(alignment: .leading, spacing: segmentFeedGap) {
                     if let error = viewModel.loadError {
                         loadErrorContent(error)
@@ -1127,35 +1275,8 @@ struct ReaderView: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(LuminaTheme.summaryPadding)
                     } else {
-                        // Bounded feed: far jumps teleport the window instead of
-                        // laying out every intermediate SegmentReadingBlock.
-                        let window = SegmentRenderWindow.readingWindow(
-                            segments: viewModel.segments,
-                            pinnedIdx: topSegmentIdx ?? viewModel.selectedIdx,
-                            anchorIdx: renderAnchorIdx
-                        )
-                        if window.aboveCount > 0 {
-                            Color.clear
-                                .frame(
-                                    height: SegmentRenderWindow.offscreenSpacerHeight(
-                                        count: window.aboveCount
-                                    )
-                                )
-                                .allowsHitTesting(false)
-                                .accessibilityHidden(true)
-                        }
-                        ForEach(window.items, id: \.idx) { seg in
+                        ForEach(viewModel.segments, id: \.idx) { seg in
                             segmentBlock(for: seg)
-                        }
-                        if window.belowCount > 0 {
-                            Color.clear
-                                .frame(
-                                    height: SegmentRenderWindow.offscreenSpacerHeight(
-                                        count: window.belowCount
-                                    )
-                                )
-                                .allowsHitTesting(false)
-                                .accessibilityHidden(true)
                         }
                     }
                 }
@@ -1185,7 +1306,13 @@ struct ReaderView: View {
             .onReaderBodyTextPlainClick(toggleChromeOnBlankClick)
             .readerSelectionNoteContext(client: core, onSaved: bumpNotesRefresh)
         }
-        .scrollPosition(id: $topSegmentIdx, anchor: .top)
+        .scrollPosition(
+            id: Binding(
+                get: { freeKeyboardScroll ? nil : topSegmentIdx },
+                set: { topSegmentIdx = $0 }
+            ),
+            anchor: .top
+        )
         // Nothing here may depend on the chrome: this inset steals height from
         // the feed, so a chrome-driven change would slide the text. The summary
         // banner uses a constant reserved height for the same reason — captions
@@ -1203,6 +1330,11 @@ struct ReaderView: View {
                     .padding(.horizontal, LuminaTheme.summaryPadding)
                     .frame(height: SummaryProgressBannerMetrics.reservedHeight)
                     .background(theme.readerPaper.page)
+                } else if shouldReserveContentSummaryProgressInset {
+                    Color.clear
+                        .frame(height: SummaryProgressBannerMetrics.reservedHeight)
+                        .allowsHitTesting(false)
+                        .accessibilityHidden(true)
                 }
             }
             .animation(nil, value: shouldShowContentSummaryProgress)
@@ -1225,8 +1357,14 @@ struct ReaderView: View {
         .background {
             ScrollViewKeyHandler(
                 enabled: readerKeyboardScrollEnabled,
+                segmentListOpen: coverPage.showsSegments,
                 onTurnSegment: { delta in
                     navigateSegment(delta: delta)
+                },
+                onReleaseMainScrollPin: {
+                    // Stop forcing segment-top while ↑/↓ pixel-scroll; keep the
+                    // last idx so progress / turn still have a current segment.
+                    freeKeyboardScroll = true
                 }
             )
         }
@@ -1248,30 +1386,22 @@ struct ReaderView: View {
         .onAppear { readerContentFocused = true }
         .onKeyPress(.upArrow) {
             guard readerKeyboardScrollEnabled else { return .ignored }
-            NotificationCenter.default.post(
-                name: .luminaScrollContent,
-                object: nil,
-                userInfo: ["delta": -ReaderKeyboardScroll.lineDelta]
-            )
+            performReaderKeyboardScroll(lineDelta: -ReaderKeyboardScroll.lineDelta, page: nil)
             return .handled
         }
         .onKeyPress(.downArrow) {
             guard readerKeyboardScrollEnabled else { return .ignored }
-            NotificationCenter.default.post(
-                name: .luminaScrollContent,
-                object: nil,
-                userInfo: ["delta": ReaderKeyboardScroll.lineDelta]
-            )
+            performReaderKeyboardScroll(lineDelta: ReaderKeyboardScroll.lineDelta, page: nil)
             return .handled
         }
         .onKeyPress(.pageUp) {
             guard readerKeyboardScrollEnabled else { return .ignored }
-            NotificationCenter.default.post(name: .luminaScrollContent, object: nil, userInfo: ["page": -1])
+            performReaderKeyboardScroll(lineDelta: nil, page: -1)
             return .handled
         }
         .onKeyPress(.pageDown) {
             guard readerKeyboardScrollEnabled else { return .ignored }
-            NotificationCenter.default.post(name: .luminaScrollContent, object: nil, userInfo: ["page": 1])
+            performReaderKeyboardScroll(lineDelta: nil, page: 1)
             return .handled
         }
     }
@@ -1308,15 +1438,14 @@ struct ReaderView: View {
 
     @ViewBuilder
     private func segmentBlock(for seg: SegmentRow) -> some View {
+        let _ = viewModel.sourceCacheVersion
         let cachedSource = viewModel.cachedSource(for: seg.idx)
         let idx = seg.idx
-        let sortedIdxs = viewModel.sortedSegmentIdxs
-        let isLast = viewModel.effectiveSegmentCount > 0
-            && seg.idx == viewModel.effectiveSegmentCount - 1
+        let isLast = seg.idx == viewModel.segments.last?.idx
         SegmentReadingBlock(
             contentMode: contentMode,
             segment: seg,
-            segmentTotal: viewModel.effectiveSegmentCount,
+            segmentTotal: viewModel.segments.count,
             isLast: isLast,
             isHighlighted: highlightSegment == idx,
             isSourceExpanded: contentMode == .original || expandedSourceSegments.contains(idx),
@@ -1330,6 +1459,7 @@ struct ReaderView: View {
             summaryProgressMessage: viewModel.segmentProgressMessage(for: idx),
             runningMetrics: viewModel.segmentRunningMetrics[idx],
             fontScale: theme.readingFontScale,
+            lineSpacingScale: theme.readingLineSpacingScale,
             paper: theme.readerPaper,
             onToggleSource: { toggleSource(for: idx) },
             onToggleSummary: { toggleSummary(for: idx) },
@@ -1350,10 +1480,10 @@ struct ReaderView: View {
                 }
             },
             canGoPrev: SegmentTurnNavigation.targetIdx(
-                current: idx, delta: -1, sortedIdxs: sortedIdxs
+                current: idx, delta: -1, sortedIdxs: viewModel.segments.map(\.idx).sorted()
             ) != nil,
             canGoNext: SegmentTurnNavigation.targetIdx(
-                current: idx, delta: 1, sortedIdxs: sortedIdxs
+                current: idx, delta: 1, sortedIdxs: viewModel.segments.map(\.idx).sorted()
             ) != nil,
             onPrevSegment: { turnSegment(from: idx, delta: -1) },
             onNextSegment: { turnSegment(from: idx, delta: 1) },
@@ -1361,7 +1491,11 @@ struct ReaderView: View {
             onSourceAppear: contentMode == .original
                 ? { viewModel.fetchSource(idx: idx, core: core) }
                 : nil,
-            originalHighlightUTF16: originalHighlightRange(for: idx, source: cachedSource)
+            originalHighlightUTF16: originalHighlightRange(for: idx, source: cachedSource),
+            listenHighlight: listenSession.isActive && listenSession.currentIdx == idx
+                ? listenSession.activeHighlight
+                : nil,
+            illustrationURL: { assetId in core.assetURL(bookId: bookId, assetId: assetId) }
         )
         .equatable()
         .readerSelectionNoteAnchor(
@@ -1374,14 +1508,10 @@ struct ReaderView: View {
 
     /// The one and only way to move the reader. Assigning the pinned segment is
     /// the scroll: SwiftUI owns the anchoring, nothing else touches the origin.
-    /// Far jumps (> scrollAnimateThreshold) disable animation so the bounded
-    /// reading window teleports around the target — cost stays O(buffer), not
-    /// O(distance), including ±100 segment sidebar / citation jumps.
     private func jump(to idx: Int) {
         LuminaSelectionActionPopover.dismiss()
+        freeKeyboardScroll = false
         guard topSegmentIdx != idx else { return }
-        renderAnchorIdx = idx
-        viewModel.acknowledgeUserNavigation(target: idx)
         let delta = SegmentRenderWindow.segmentIndexDelta(
             from: topSegmentIdx,
             to: idx,
@@ -1408,35 +1538,14 @@ struct ReaderView: View {
     }
 
     private func turnSegment(from idx: Int, delta: Int) {
-        let base = SegmentTurnNavigation.continuousBaseIdx(
-            clickedIdx: idx,
-            delta: delta,
-            selectedIdx: viewModel.selectedIdx
-        )
+        let sorted = viewModel.segments.map(\.idx).sorted()
         guard let target = SegmentTurnNavigation.targetIdx(
-            current: base, delta: delta, sortedIdxs: viewModel.sortedSegmentIdxs
+            current: idx, delta: delta, sortedIdxs: sorted
         ) else { return }
-        viewModel.acknowledgeUserNavigation(target: target)
-        // Warm neighbours before the scroll lands so the turn feels instantaneous.
-        viewModel.prefetchSummaries(
-            around: target,
-            core: core,
-            back: ReaderScrollFeedPolicy.backwardPrefetchRadius,
-            forward: ReaderScrollFeedPolicy.forwardPrefetchRadius
-        )
-        if contentMode == .original {
-            viewModel.prefetchSources(
-                around: target,
-                core: core,
-                back: ReaderScrollFeedPolicy.backwardPrefetchRadius,
-                forward: ReaderScrollFeedPolicy.forwardPrefetchRadius
-            )
-        }
         navigateToSegment(target, suspendProgress: false)
     }
 
     private func navigateToSegment(_ idx: Int, suspendProgress: Bool = true) {
-        viewModel.acknowledgeUserNavigation(target: idx)
         if suspendProgress {
             viewModel.beginProgressSeek(at: idx)
         }
@@ -1451,7 +1560,6 @@ struct ReaderView: View {
     }
 
     private func selectSidebarSegment(_ idx: Int) {
-        viewModel.acknowledgeUserNavigation(target: idx)
         viewModel.beginProgressSeek(at: idx)
         viewModel.selectedIdx = idx
         jump(to: idx)
@@ -1519,9 +1627,36 @@ struct ReaderView: View {
             Divider()
 
             segmentSidebar
+                .equatable()
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(LuminaTheme.surface)
+    }
+
+    private var segmentSidebar: SegmentOutlineCatalogList {
+        SegmentOutlineCatalogList(
+            rows: viewModel.outlineRows,
+            selectedIdx: viewModel.selectedIdx,
+            isSelectionMode: viewModel.isSegmentSelectionMode,
+            checkedIndices: viewModel.checkedSegmentIndices,
+            segmentSwitchDuration: segmentSwitchDuration,
+            onRevealSelection: { idx in viewModel.revealOutline(for: idx) },
+            onToggleOutlineKey: { key in viewModel.toggleOutlineKey(key) },
+            onSelect: { idx in selectSidebarSegment(idx) },
+            onToggleCheck: { idx in viewModel.toggleCheck(idx) },
+            onRetrySegment: { idx in
+                Task {
+                    do { try await viewModel.retrySegment(idx, core: core) }
+                    catch { actionError = error.localizedDescription }
+                }
+            },
+            onRetryChecked: {
+                Task {
+                    do { try await viewModel.retryCheckedSegments(core: core) }
+                    catch { actionError = error.localizedDescription }
+                }
+            }
+        )
     }
 
     @ViewBuilder
@@ -1620,147 +1755,6 @@ struct ReaderView: View {
         }
         .shadow(color: .black.opacity(overlay == .chat ? 0.12 : 0), radius: 12, x: 0, y: -2)
         .simultaneousGesture(TapGesture().onEnded { overlayEngaged = true })
-    }
-
-    private var segmentSidebar: some View {
-        let rows = SegmentOutlinePolicy.build(
-            segments: viewModel.segments,
-            collapsed: viewModel.collapsedOutlineKeys
-        )
-        return ScrollViewReader { proxy in
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 0) {
-                    ForEach(rows) { row in
-                        outlineCatalogRow(row)
-                            .id(row.isHeader ? "h:\(row.pathKey)" : "s:\(row.idx ?? 0)")
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                }
-                .frame(maxWidth: .infinity)
-            }
-            .onChange(of: viewModel.selectedIdx) { _, idx in
-                guard let idx else { return }
-                viewModel.revealOutline(for: idx)
-                withAnimation(.easeInOut(duration: segmentSwitchDuration)) {
-                    proxy.scrollTo("s:\(idx)", anchor: .center)
-                }
-            }
-            .onAppear {
-                viewModel.revealOutline(for: viewModel.selectedIdx)
-                guard let idx = viewModel.selectedIdx else { return }
-                Task { @MainActor in
-                    await Task.yield()
-                    proxy.scrollTo("s:\(idx)", anchor: .center)
-                }
-            }
-        }
-    }
-
-    @ViewBuilder
-    private func outlineCatalogRow(_ row: SegmentOutlinePolicy.Row) -> some View {
-        if row.isHeader {
-            outlineHeaderRow(row)
-        } else if let seg = row.segment {
-            segmentSidebarRow(seg, grouped: row.grouped)
-                .padding(.leading, CGFloat(row.depth) * SegmentOutlinePolicy.indentStep)
-        }
-    }
-
-    private func outlineHeaderRow(_ row: SegmentOutlinePolicy.Row) -> some View {
-        Button {
-            viewModel.toggleOutlineKey(row.pathKey)
-        } label: {
-            HStack(spacing: 6) {
-                Image(systemName: row.isCollapsed ? "chevron.right" : "chevron.down")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                    .frame(width: 12)
-                Text(row.title)
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-                Text("\(row.headerCount)")
-                    .font(.caption)
-                    .foregroundStyle(.tertiary)
-                Spacer(minLength: 0)
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 6)
-            .padding(.leading, CGFloat(row.depth) * SegmentOutlinePolicy.indentStep)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-    }
-
-    @ViewBuilder
-    private func segmentSidebarRow(_ seg: SegmentRow, grouped: Bool = false) -> some View {
-        let rowContent = HStack(alignment: .top, spacing: 8) {
-            if viewModel.isSegmentSelectionMode {
-                Toggle(
-                    isOn: Binding(
-                        get: { viewModel.checkedSegmentIndices.contains(seg.idx) },
-                        set: { on in
-                            if on {
-                                viewModel.checkedSegmentIndices.insert(seg.idx)
-                            } else {
-                                viewModel.checkedSegmentIndices.remove(seg.idx)
-                            }
-                        }
-                    )
-                ) {
-                    EmptyView()
-                }
-                .toggleStyle(.checkbox)
-                .labelsHidden()
-            }
-
-            statusIcon(for: seg)
-            SegmentSidebarRow(segment: seg, grouped: grouped)
-        }
-        .contentShape(Rectangle())
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(
-            viewModel.selectedIdx == seg.idx
-                ? LuminaTheme.listSelectionBackground
-                : Color.clear
-        )
-
-        Group {
-            if viewModel.isSegmentSelectionMode {
-                rowContent
-                    .onTapGesture { viewModel.toggleCheck(seg.idx) }
-            } else {
-                Button {
-                    selectSidebarSegment(seg.idx)
-                } label: {
-                    rowContent
-                }
-                .buttonStyle(.plain)
-                .frame(maxWidth: .infinity, alignment: .leading)
-            }
-        }
-        .contextMenu {
-            if viewModel.checkedSegmentIndices.contains(seg.idx),
-               viewModel.checkedSegmentIndices.count > 1 {
-                Button("重新摘要选中 (\(viewModel.checkedSegmentIndices.count))") {
-                    Task {
-                        do { try await viewModel.retryCheckedSegments(core: core) }
-                        catch { actionError = error.localizedDescription }
-                    }
-                }
-            } else {
-                Button("重新摘要") {
-                    Task {
-                        do { try await viewModel.retrySegment(seg.idx, core: core) }
-                        catch { actionError = error.localizedDescription }
-                    }
-                }
-            }
-        }
     }
 
     private var chatPanel: some View {
@@ -2035,13 +2029,63 @@ struct ReaderView: View {
     }
 
     private func stepOriginalSearch(_ delta: Int) {
-        guard let next = OriginalSearchHighlight.steppedIndex(
+        guard let action = OriginalSearchHighlight.navigate(
             current: originalSearchIndex,
             delta: delta,
-            count: originalSearchHits.count
+            count: originalSearchHits.count,
+            truncated: originalSearchTruncated
         ) else { return }
-        originalSearchIndex = next
-        locateOriginalSearchHit()
+        switch action {
+        case .loadMore:
+            loadMoreOriginalSearch()
+        case .step(let next):
+            originalSearchIndex = next
+            locateOriginalSearchHit()
+        }
+    }
+
+    private func loadMoreOriginalSearch() {
+        let q = originalSearchLastQuery
+        guard !q.isEmpty, let last = originalSearchHits.last else { return }
+        originalSearchTask?.cancel()
+        originalSearching = true
+        let book = bookId
+        let afterSegment = last.segment_index
+        let afterStart = last.start
+        let priorCount = originalSearchHits.count
+        originalSearchTask = Task {
+            defer {
+                if !Task.isCancelled { originalSearching = false }
+            }
+            do {
+                let result = try await core.searchOriginal(
+                    bookId: book,
+                    query: q,
+                    afterSegment: afterSegment,
+                    afterStart: afterStart
+                )
+                guard !Task.isCancelled else { return }
+                if result.hits.isEmpty {
+                    originalSearchTruncated = false
+                    if let next = OriginalSearchHighlight.steppedIndex(
+                        current: originalSearchIndex,
+                        delta: 1,
+                        count: originalSearchHits.count
+                    ) {
+                        originalSearchIndex = next
+                        locateOriginalSearchHit()
+                    }
+                    return
+                }
+                originalSearchHits.append(contentsOf: result.hits)
+                originalSearchTruncated = result.truncated
+                originalSearchIndex = priorCount
+                locateOriginalSearchHit()
+            } catch {
+                guard !Task.isCancelled else { return }
+                actionError = error.localizedDescription
+            }
+        }
     }
 
     private func locateOriginalSearchHit() {
@@ -2101,28 +2145,6 @@ struct ReaderView: View {
         }
     }
 
-    @ViewBuilder
-    private func statusIcon(for seg: SegmentRow) -> some View {
-        Group {
-            if seg.idx == viewModel.selectedIdx {
-                Image(systemName: "largecircle.fill.circle")
-                    .foregroundStyle(LuminaTheme.accent)
-            } else {
-                switch seg.summary_status {
-                case "ready":
-                    Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
-                case "running":
-                    Image(systemName: "circle.lefthalf.filled").foregroundStyle(LuminaTheme.accent)
-                case "failed", "error":
-                    Image(systemName: "exclamationmark.circle").foregroundStyle(.red)
-                default:
-                    Image(systemName: "circle").foregroundStyle(.secondary)
-                }
-            }
-        }
-        .font(.body)
-        .frame(width: 20, alignment: .center)
-    }
 }
 
 struct SegmentSidebarRow: View {
@@ -2159,47 +2181,87 @@ private struct ReaderGlobalFrameKey: PreferenceKey {
     }
 }
 
-/// Scrolls the enclosing NSScrollView on keyboard scroll notifications.
-/// Also turns segments on `[` / `]` (and IME 【】 on the same key codes).
+/// Registers the reading-feed NSScrollView from *inside* the ScrollView content.
+/// The key handler lives in `.background` and cannot use enclosingScrollView.
+private struct ReaderFeedScrollAnchor: NSViewRepresentable {
+    func makeNSView(context: Context) -> ReaderFeedScrollAnchorNSView {
+        ReaderFeedScrollAnchorNSView()
+    }
+
+    func updateNSView(_ nsView: ReaderFeedScrollAnchorNSView, context: Context) {
+        nsView.registerFeedScrollView()
+    }
+}
+
+private final class ReaderFeedScrollAnchorNSView: NSView {
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        registerFeedScrollView()
+    }
+
+    override func viewDidMoveToSuperview() {
+        super.viewDidMoveToSuperview()
+        registerFeedScrollView()
+    }
+
+    override func layout() {
+        super.layout()
+        registerFeedScrollView()
+    }
+
+    func registerFeedScrollView() {
+        ScrollViewKeyNSView.feedScrollView = enclosingScrollView
+    }
+}
+
+/// Scrolls the feed NSScrollView on keyboard scroll notifications.
+/// Also turns segments on `←` / `→`. Continuous reading uses `↑` / `↓` / page keys.
 private struct ScrollViewKeyHandler: NSViewRepresentable {
     var enabled: Bool
+    var segmentListOpen: Bool
     var onTurnSegment: (Int) -> Void
+    var onReleaseMainScrollPin: () -> Void
 
     func makeNSView(context: Context) -> ScrollViewKeyNSView {
         let view = ScrollViewKeyNSView()
         view.isEnabled = enabled
+        view.segmentListOpen = segmentListOpen
         view.onTurnSegment = onTurnSegment
+        view.onReleaseMainScrollPin = onReleaseMainScrollPin
         return view
     }
 
     func updateNSView(_ nsView: ScrollViewKeyNSView, context: Context) {
         nsView.isEnabled = enabled
+        nsView.segmentListOpen = segmentListOpen
         nsView.onTurnSegment = onTurnSegment
+        nsView.onReleaseMainScrollPin = onReleaseMainScrollPin
     }
 }
 
-/// Keyboard scrolling only. This view must never move the scroll origin on its
-/// own: anchoring belongs to SwiftUI's `scrollPosition`, and a second writer is
-/// what used to make reading progress drift.
+/// ↑/↓ continuous reading via the feed NSScrollView registered by
+/// `ReaderFeedScrollAnchor`. Segment jumps still go through SwiftUI
+/// `scrollPosition` (`←` / `→`).
 private final class ScrollViewKeyNSView: NSView {
     var isEnabled = true
+    var segmentListOpen = false
     var onTurnSegment: ((Int) -> Void)?
+    var onReleaseMainScrollPin: (() -> Void)?
     private var observer: NSObjectProtocol?
     private var revealObserver: NSObjectProtocol?
     private var keyMonitor: Any?
     private static weak var activeInstance: ScrollViewKeyNSView?
-    private static weak var readerScrollView: NSScrollView?
+    /// Set from inside the feed ScrollView; preferred over window-wide search.
+    static weak var feedScrollView: NSScrollView?
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         if window != nil {
             Self.activeInstance = self
-            Self.readerScrollView = Self.discoverScrollView(from: self)
             installKeyMonitor()
         } else {
             if Self.activeInstance === self {
                 Self.activeInstance = nil
-                Self.readerScrollView = nil
             }
             removeKeyMonitor()
         }
@@ -2249,39 +2311,64 @@ private final class ScrollViewKeyNSView: NSView {
     }
 
     private func handleKeyDown(_ event: NSEvent) -> NSEvent? {
-        guard isEnabled, event.window == window else { return event }
-        if window?.attachedSheet != nil { return event }
-        guard !Self.isTextInputResponder(window?.firstResponder) else { return event }
+        guard isEnabled else { return event }
+        if let window, event.window != window { return event }
+        if event.window == nil { return event }
+        if event.window?.attachedSheet != nil { return event }
+        guard !Self.isTextInputResponder(event.window?.firstResponder) else { return event }
 
         let mods = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
         if !mods.intersection([.command, .option, .control]).isEmpty { return event }
 
-        if let delta = SegmentTurnKeyPolicy.delta(
-            keyCode: event.keyCode,
-            characters: event.characters ?? "",
-            shift: mods.contains(.shift),
-            isRepeat: event.isARepeat
-        ) {
-            onTurnSegment?(delta)
+        if !event.isARepeat {
+            let currentPrev = ShortcutStore.shared.chord(for: .prevSegment)
+            let currentNext = ShortcutStore.shared.chord(for: .nextSegment)
+            if currentPrev.matches(event) {
+                onTurnSegment?(-1)
+                return nil
+            }
+            if currentNext.matches(event) {
+                onTurnSegment?(1)
+                return nil
+            }
+        }
+
+        // Fixed scroll chords (not in customizableActions) — must handle here
+        // because this monitor runs before ShortcutKeyMonitor.
+        if ShortcutCatalog.defaultChord(for: .scrollUp).matches(event) {
+            if segmentListOpen {
+                if !event.isARepeat { onTurnSegment?(-1) }
+            } else {
+                performKeyboardScroll(lineDelta: -ReaderKeyboardScroll.lineDelta, page: nil)
+            }
+            return nil
+        }
+        if ShortcutCatalog.defaultChord(for: .scrollDown).matches(event) {
+            if segmentListOpen {
+                if !event.isARepeat { onTurnSegment?(1) }
+            } else {
+                performKeyboardScroll(lineDelta: ReaderKeyboardScroll.lineDelta, page: nil)
+            }
+            return nil
+        }
+        if ShortcutCatalog.defaultChord(for: .pageUp).matches(event) {
+            if segmentListOpen {
+                if !event.isARepeat { onTurnSegment?(-1) }
+            } else {
+                performKeyboardScroll(lineDelta: nil, page: -1)
+            }
+            return nil
+        }
+        if ShortcutCatalog.defaultChord(for: .pageDown).matches(event) {
+            if segmentListOpen {
+                if !event.isARepeat { onTurnSegment?(1) }
+            } else {
+                performKeyboardScroll(lineDelta: nil, page: 1)
+            }
             return nil
         }
 
-        switch event.keyCode {
-        case 126: // up arrow
-            performKeyboardScroll(lineDelta: -ReaderKeyboardScroll.lineDelta, page: nil)
-            return nil
-        case 125: // down arrow
-            performKeyboardScroll(lineDelta: ReaderKeyboardScroll.lineDelta, page: nil)
-            return nil
-        case 116: // page up
-            performKeyboardScroll(lineDelta: nil, page: -1)
-            return nil
-        case 121: // page down
-            performKeyboardScroll(lineDelta: nil, page: 1)
-            return nil
-        default:
-            return event
-        }
+        return event
     }
 
     private func handleReveal(_ note: Notification) {
@@ -2300,11 +2387,14 @@ private final class ScrollViewKeyNSView: NSView {
         } else {
             return
         }
-        Self.applyScrollOrigin(origin, to: scrollView)
+        onReleaseMainScrollPin?()
+        DispatchQueue.main.async {
+            Self.applyScrollOrigin(origin, to: scrollView)
+        }
     }
 
     private func handleScroll(_ note: Notification) {
-        guard isEnabled else { return }
+        guard isEnabled, !segmentListOpen else { return }
         if let delta = note.userInfo?["delta"] as? CGFloat {
             performKeyboardScroll(lineDelta: delta, page: nil)
         } else if let page = note.userInfo?["page"] as? Int {
@@ -2321,34 +2411,73 @@ private final class ScrollViewKeyNSView: NSView {
         } else {
             return
         }
-        guard let scrollView = Self.targetScrollView(deltaY: probeDelta) else { return }
+        guard let main = Self.resolvedScrollView else { return }
+        let nested = Self.preferredNestedScrollView(in: main, deltaY: probeDelta)
+        let route = ReaderKeyboardScrollRouting.target(nestedCanMove: nested != nil)
+        let scrollView: NSScrollView = {
+            switch route {
+            case .nested: return nested ?? main
+            case .main: return main
+            }
+        }()
 
-        let clipView = scrollView.contentView
         let deltaY: CGFloat
         if let lineDelta {
             deltaY = lineDelta
         } else if let page {
-            deltaY = ReaderKeyboardScroll.pageDelta(viewportHeight: clipView.bounds.height, page: page)
+            deltaY = ReaderKeyboardScroll.pageDelta(
+                viewportHeight: scrollView.contentView.bounds.height,
+                page: page
+            )
         } else {
             return
         }
 
+        let isMainFeed = scrollView === main
+        if isMainFeed {
+            onReleaseMainScrollPin?()
+            // Wait for scrollPosition binding to stop forcing .top, then nudge.
+            DispatchQueue.main.async {
+                DispatchQueue.main.async {
+                    Self.applyOriginDelta(deltaY, to: scrollView)
+                }
+            }
+        } else {
+            Self.applyOriginDelta(deltaY, to: scrollView)
+        }
+    }
+
+    private static func applyOriginDelta(_ deltaY: CGFloat, to scrollView: NSScrollView) {
+        let clipView = scrollView.contentView
+        let contentHeight = documentContentHeight(of: scrollView)
         var origin = clipView.bounds.origin
-        origin.y = ReaderKeyboardScroll.clampedOriginY(
+        let nextY = ReaderKeyboardScroll.clampedOriginY(
             currentY: origin.y,
             deltaY: deltaY,
             viewportHeight: clipView.bounds.height,
-            contentHeight: scrollView.documentView?.bounds.height ?? 0
+            contentHeight: contentHeight
         )
-        Self.applyScrollOrigin(origin, to: scrollView)
+        if abs(nextY - origin.y) > 0.5 {
+            origin.y = nextY
+            applyScrollOrigin(origin, to: scrollView)
+            return
+        }
+        // SwiftUI LazyVStack feeds often report no AppKit overflow; fall back to
+        // NSResponder actions after making the scroll view first responder.
+        scrollView.window?.makeFirstResponder(scrollView)
+        if deltaY < 0 {
+            scrollView.scrollLineUp(nil)
+        } else if deltaY > 0 {
+            scrollView.scrollLineDown(nil)
+        }
     }
 
-    private static func targetScrollView(deltaY: CGFloat) -> NSScrollView? {
-        guard let main = resolvedScrollView else { return nil }
-        if let nested = preferredNestedScrollView(in: main, deltaY: deltaY) {
-            return nested
-        }
-        return main
+    private static func documentContentHeight(of scrollView: NSScrollView) -> CGFloat {
+        let clip = scrollView.contentView
+        let fromDocRect = clip.documentRect.height
+        let fromFrame = scrollView.documentView?.frame.height ?? 0
+        let fromBounds = scrollView.documentView?.bounds.height ?? 0
+        return max(fromDocRect, fromFrame, fromBounds, clip.bounds.height)
     }
 
     private static func preferredNestedScrollView(in main: NSScrollView, deltaY: CGFloat) -> NSScrollView? {
@@ -2388,7 +2517,7 @@ private final class ScrollViewKeyNSView: NSView {
 
     private static func canScroll(_ scrollView: NSScrollView, by deltaY: CGFloat) -> Bool {
         let clip = scrollView.contentView
-        let maxY = max(0, (scrollView.documentView?.bounds.height ?? 0) - clip.bounds.height)
+        let maxY = max(0, documentContentHeight(of: scrollView) - clip.bounds.height)
         return ReaderKeyboardScroll.canMove(
             originY: clip.bounds.origin.y,
             deltaY: deltaY,
@@ -2412,41 +2541,46 @@ private final class ScrollViewKeyNSView: NSView {
     }
 
     private static var resolvedScrollView: NSScrollView? {
-        readerScrollView ?? activeInstance?.enclosingScrollView
-    }
-
-    private static func discoverScrollView(from view: NSView) -> NSScrollView? {
-        var current: NSView? = view
-        while let node = current {
-            if let scrollView = node as? NSScrollView { return scrollView }
-            current = node.superview
+        if let feed = feedScrollView, feed.window != nil {
+            return feed
         }
-        guard let contentView = view.window?.contentView else { return nil }
-        return findLargestScrollView(in: contentView)
+        guard let active = activeInstance else { return nil }
+        if let enclosed = feedScrollView ?? active.enclosingScrollView {
+            return enclosed
+        }
+        return findPreferredScrollView(in: active.window?.contentView)
     }
 
-    private static func findLargestScrollView(in view: NSView) -> NSScrollView? {
-        if let scrollView = view as? NSScrollView { return scrollView }
+    private static func findPreferredScrollView(in view: NSView?) -> NSScrollView? {
+        guard let view else { return nil }
         var best: NSScrollView?
-        var bestArea: CGFloat = 0
-        for subview in view.subviews {
-            guard let candidate = findLargestScrollView(in: subview) else { continue }
-            let area = candidate.bounds.width * candidate.bounds.height
-            if area > bestArea {
-                bestArea = area
-                best = candidate
+        var bestScore: CGFloat = -1
+        func walk(_ node: NSView) {
+            if let scrollView = node as? NSScrollView {
+                let area = scrollView.bounds.width * scrollView.bounds.height
+                let docH = max(
+                    scrollView.documentView?.frame.height ?? 0,
+                    scrollView.documentView?.bounds.height ?? 0
+                )
+                let overflow = max(0, docH - scrollView.contentView.bounds.height)
+                let score = overflow * 1_000_000 + area
+                if score > bestScore {
+                    bestScore = score
+                    best = scrollView
+                }
             }
+            for sub in node.subviews { walk(sub) }
         }
+        walk(view)
         return best
     }
 
     private static func applyScrollOrigin(_ origin: NSPoint, to scrollView: NSScrollView) {
         let clipView = scrollView.contentView
         var clamped = origin
-        let docHeight = scrollView.documentView?.bounds.height ?? 0
-        let maxY = max(0, docHeight - clipView.bounds.height)
+        let maxY = max(0, documentContentHeight(of: scrollView) - clipView.bounds.height)
         clamped.y = min(max(0, clamped.y), maxY)
-        clipView.setBoundsOrigin(clamped)
+        clipView.scroll(to: clamped)
         scrollView.reflectScrolledClipView(clipView)
     }
 }
@@ -2459,6 +2593,7 @@ struct SegmentSourceBody: Equatable {
     let idx: Int
     let rawText: String
     let translation: String
+    var illustrations: [SegmentIllustration] = []
 }
 
 enum BookLanguageMatcher {
@@ -2534,20 +2669,22 @@ enum BookLanguageMatcher {
 @MainActor
 final class ReaderViewModel: ObservableObject {
     @Published var segments: [SegmentRow] = []
-    /// Cached ascending idxs for the current `segments` (updated only when the catalog changes).
-    private(set) var sortedSegmentIdxs: [Int] = []
-    /// Authoritative segment count from the server; may exceed `segments.count` while catalog fills.
-    @Published private(set) var catalogTotalCount = 0
     @Published var selectedIdx: Int?
     @Published var checkedSegmentIndices: Set<Int> = []
     @Published var isSegmentSelectionMode = false
     @Published var collapsedOutlineKeys: Set<String> = []
+    /// Cached catalog outline. Never rebuild in SwiftUI `body` — summarize SSE
+    /// would otherwise re-run O(n) `SegmentOutlinePolicy.build` on every tick.
+    @Published private(set) var outlineRows: [SegmentOutlinePolicy.Row] = []
+    /// Test hook: full chapter-tree rebuilds (load / collapse / structure change).
+    private(set) var outlineRebuildCount = 0
+    /// Test hook: single-row patches from status/ready (not progress metrics).
+    private(set) var outlinePatchCount = 0
     private var collapsedOutlineByBook: [String: Set<String>] = [:]
     @Published var currentSegment: SegmentRow?
-    /// Bumps when a source body is stored/evicted so Equatable rows can refresh without a global force-read.
     @Published private(set) var sourceCacheVersion = 0
-    @Published private(set) var loadingSourceIndices: Set<Int> = []
-    @Published private(set) var refreshingSourceIndices: Set<Int> = []
+    @Published var loadingSourceIndices: Set<Int> = []
+    @Published var refreshingSourceIndices: Set<Int> = []
     @Published var messages: [ChatMessage] = []
     @Published var isSending = false
     @Published var chatStatus: String?
@@ -2586,20 +2723,10 @@ final class ReaderViewModel: ObservableObject {
     private var summaryHydrateTasks: [Int: Task<Void, Never>] = [:]
     private var summaryPrefetchTask: Task<Void, Never>?
     private var summaryPrefetchGeneration = 0
-    private var prefetchingSummaryIdx: Int?
-    private var viewportPrefetchTask: Task<Void, Never>?
-    private var scrollIdleTask: Task<Void, Never>?
-    private var scrollBusy = false
-    private var lastScrollSegmentIdx: Int?
-    private var pendingSourcePrefetch: (idx: Int, core: CoreClient, back: Int, forward: Int)?
-    private var catalogFillTask: Task<Void, Never>?
-    private var catalogFillGeneration = 0
-    private var catalogHasMoreBefore = false
-    private var catalogHasMoreAfter = false
     private var summaryParseTasks: [Int: Task<Void, Never>] = [:]
     private var chatTask: Task<Void, Never>?
-    @Published private(set) var hydratingSummaryIndices: Set<Int> = []
-    @Published private(set) var parsingSummaryIndices: Set<Int> = []
+    private var hydratingSummaryIndices: Set<Int> = []
+    private var parsingSummaryIndices: Set<Int> = []
     private var parsedSummarySourceJSON: [Int: String] = [:]
     private var parsingSummaryJSON: [Int: String] = [:]
     private var summaryParseGeneration: [Int: Int] = [:]
@@ -2608,29 +2735,9 @@ final class ReaderViewModel: ObservableObject {
     private var contentMode: ReaderContentMode = .summary
     private let summaryModeCacheLimit = 5
     private let originalModeCacheLimit = 12
-    /// First paint around resume index; remainder fills in the background.
-    static let openCatalogWindowLimit = 64
-    static let catalogFillPageLimit = 200
 
     private var effectiveCacheLimit: Int {
         contentMode == .original ? originalModeCacheLimit : summaryModeCacheLimit
-    }
-
-    private func replaceSegments(_ next: [SegmentRow]) {
-        segments = next
-        sortedSegmentIdxs = next.map(\.idx)
-    }
-
-    private func appendSegments(_ more: [SegmentRow]) {
-        guard !more.isEmpty else { return }
-        segments.append(contentsOf: more)
-        sortedSegmentIdxs.append(contentsOf: more.map(\.idx))
-    }
-
-    private func prependSegments(_ more: [SegmentRow]) {
-        guard !more.isEmpty else { return }
-        segments = more + segments
-        sortedSegmentIdxs = more.map(\.idx) + sortedSegmentIdxs
     }
 
     static let resegmentMinTargetChars = ResegmentTarget.minChars
@@ -2649,11 +2756,6 @@ final class ReaderViewModel: ObservableObject {
         )
     }
 
-    /// Prefer server total while progressive catalog is still filling.
-    var effectiveSegmentCount: Int {
-        max(catalogTotalCount, segments.count)
-    }
-
     func setContentMode(_ mode: ReaderContentMode) {
         guard contentMode != mode else { return }
         contentMode = mode
@@ -2665,106 +2767,15 @@ final class ReaderViewModel: ObservableObject {
     }
 
     func prefetchSources(around idx: Int, core: CoreClient, radius: Int) {
-        prefetchSources(around: idx, core: core, back: radius, forward: radius)
-    }
-
-    func prefetchSources(around idx: Int, core: CoreClient, back: Int, forward: Int) {
-        let sorted = sortedSegmentIdxs
-        let window = ReaderScrollFeedPolicy.prefetchWindow(
-            sorted: sorted,
-            center: idx,
-            back: back,
-            forward: forward
-        )
-        guard !window.isEmpty else { return }
-        let desired = Set(window)
-        cancelSourceFetches(outside: desired)
-        let missing = window.filter {
-            sourceCache[$0] == nil && !loadingSourceIndices.contains($0)
-        }
-        .sorted { abs($0 - idx) < abs($1 - idx) }
-        let inFlight = detailTasks.count
-        let slots = max(0, ReaderScrollFeedPolicy.sourceFetchConcurrency - inFlight)
-        guard slots > 0 else {
-            pendingSourcePrefetch = (idx, core, back, forward)
-            return
-        }
-        pendingSourcePrefetch = nil
-        for segmentIdx in missing.prefix(slots) {
+        let sorted = segments.map(\.idx).sorted()
+        guard let pos = sorted.firstIndex(of: idx) else { return }
+        let start = max(0, pos - radius)
+        let end = min(sorted.count - 1, pos + radius)
+        for i in start...end {
+            let segmentIdx = sorted[i]
+            if sourceCache[segmentIdx] != nil { continue }
+            if loadingSourceIndices.contains(segmentIdx) { continue }
             fetchSource(idx: segmentIdx, core: core)
-        }
-        if missing.count > slots {
-            pendingSourcePrefetch = (idx, core, back, forward)
-        }
-    }
-
-    private func cancelSourceFetches(outside desired: Set<Int>) {
-        let obsolete = detailTasks.keys.filter { !desired.contains($0) }
-        var removed = false
-        for taskIdx in obsolete {
-            detailTasks.removeValue(forKey: taskIdx)?.cancel()
-            if loadingSourceIndices.contains(taskIdx) {
-                loadingSourceIndices.remove(taskIdx)
-            }
-            refreshingSourceIndices.remove(taskIdx)
-            removed = true
-        }
-        if removed {
-            pumpPendingSourcePrefetch()
-        }
-    }
-
-    private func pumpPendingSourcePrefetch() {
-        guard let pending = pendingSourcePrefetch else { return }
-        pendingSourcePrefetch = nil
-        prefetchSources(
-            around: pending.idx,
-            core: pending.core,
-            back: pending.back,
-            forward: pending.forward
-        )
-    }
-
-    /// Mark the feed as scrolling so background catalog merges wait for idle.
-    func noteScrollActivity() {
-        scrollBusy = true
-        scrollIdleTask?.cancel()
-        scrollIdleTask = Task { @MainActor [weak self] in
-            try? await Task.sleep(nanoseconds: ReaderScrollFeedPolicy.scrollIdleNanoseconds)
-            guard !Task.isCancelled, let self else { return }
-            self.scrollBusy = false
-        }
-    }
-
-    /// Progress is recorded immediately; hydrate/prefetch runs after a short debounce.
-    func scheduleViewportPrefetch(around idx: Int, core: CoreClient, originalMode: Bool) {
-        let previous = lastScrollSegmentIdx
-        lastScrollSegmentIdx = idx
-        viewportPrefetchTask?.cancel()
-        viewportPrefetchTask = Task { @MainActor [weak self] in
-            try? await Task.sleep(nanoseconds: ReaderScrollFeedPolicy.prefetchDebounceNanoseconds)
-            guard !Task.isCancelled, let self else { return }
-            let radii = ReaderScrollFeedPolicy.directionalRadii(from: previous, to: idx)
-            self.prefetchSummaries(
-                around: idx,
-                core: core,
-                back: radii.back,
-                forward: radii.forward
-            )
-            if originalMode {
-                self.prefetchSources(
-                    around: idx,
-                    core: core,
-                    back: radii.back,
-                    forward: radii.forward
-                )
-            }
-        }
-    }
-
-    private func waitWhileScrollBusy() async {
-        while scrollBusy && !Task.isCancelled {
-            try? await Task.sleep(nanoseconds: 50_000_000)
         }
     }
 
@@ -2800,20 +2811,34 @@ final class ReaderViewModel: ObservableObject {
         parsedSummaryCache[idx]
     }
 
-    func listenScript(idx: Int, mode: ListenMode, core: CoreClient) async -> ListenScript {
+    func listenScript(
+        idx: Int,
+        mode: ListenMode,
+        core: CoreClient,
+        chapterContext: ListenChapterSpeakContext = .sessionStart
+    ) async -> ListenScript {
+        let seg = segments.first(where: { $0.idx == idx })
+        let segmentLabel = seg?.label
+        let chapter = seg?.chapter
         switch mode {
         case .summary, .detailed:
             if let parsed = parsedSummary(for: idx), parsed.hasContent {
-                return ListenScript.build(mode: mode, summary: parsed, rawText: nil)
+                return ListenScript.build(
+                    mode: mode, summary: parsed, rawText: nil,
+                    segmentLabel: segmentLabel, chapter: chapter, chapterContext: chapterContext
+                )
             }
-            if let json = segments.first(where: { $0.idx == idx })?.summary_json,
+            if let json = seg?.summary_json,
                !json.isEmpty,
                let parsed = ParsedSummary(json: json),
                parsed.hasContent
             {
-                return ListenScript.build(mode: mode, summary: parsed, rawText: nil)
+                return ListenScript.build(
+                    mode: mode, summary: parsed, rawText: nil,
+                    segmentLabel: segmentLabel, chapter: chapter, chapterContext: chapterContext
+                )
             }
-            let status = segments.first(where: { $0.idx == idx })?.summary_status ?? ""
+            let status = seg?.summary_status ?? ""
             if status != "ready" && status != "done" {
                 return .notReady(mode, reason: "summary_not_ready")
             }
@@ -2821,25 +2846,43 @@ final class ReaderViewModel: ObservableObject {
                 return .notReady(mode, reason: "summary_not_ready")
             }
             mergeSummaryDetail(detail, at: idx)
+            let label = segments.first(where: { $0.idx == idx })?.label ?? segmentLabel
+            let ch = segments.first(where: { $0.idx == idx })?.chapter ?? chapter
             if let json = detail.summary_json, let parsed = ParsedSummary(json: json), parsed.hasContent {
-                return ListenScript.build(mode: mode, summary: parsed, rawText: nil)
+                return ListenScript.build(
+                    mode: mode, summary: parsed, rawText: nil,
+                    segmentLabel: label, chapter: ch, chapterContext: chapterContext
+                )
             }
             return .notReady(mode, reason: "summary_not_ready")
         case .original:
             if let cached = cachedSource(for: idx), !cached.rawText.isEmpty {
-                return ListenScript.build(mode: .original, summary: nil, rawText: cached.rawText)
+                return ListenScript.build(
+                    mode: .original, summary: nil, rawText: cached.rawText,
+                    segmentLabel: segmentLabel, chapter: chapter, chapterContext: chapterContext
+                )
             }
             guard let fresh = try? await core.getSegment(bookId: bookId, idx: idx) else {
                 return .notReady(.original, reason: "empty_text")
             }
             let raw = fresh.raw_text ?? ""
             storeSourceCache(
-                SegmentSourceBody(idx: idx, rawText: raw, translation: fresh.translation ?? "")
+                SegmentSourceBody(
+                    idx: idx,
+                    rawText: raw,
+                    translation: fresh.translation ?? "",
+                    illustrations: fresh.illustrations ?? []
+                )
             )
             if raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 return .notReady(.original, reason: "empty_text")
             }
-            return ListenScript.build(mode: .original, summary: nil, rawText: raw)
+            let label = fresh.label ?? segmentLabel
+            let ch = fresh.chapter ?? chapter
+            return ListenScript.build(
+                mode: .original, summary: nil, rawText: raw,
+                segmentLabel: label, chapter: ch, chapterContext: chapterContext
+            )
         }
     }
 
@@ -2852,16 +2895,6 @@ final class ReaderViewModel: ObservableObject {
         eventTask = nil
         restoreSettleTask?.cancel()
         restoreSettleTask = nil
-        catalogFillTask?.cancel()
-        catalogFillTask = nil
-        catalogFillGeneration += 1
-        viewportPrefetchTask?.cancel()
-        viewportPrefetchTask = nil
-        scrollIdleTask?.cancel()
-        scrollIdleTask = nil
-        scrollBusy = false
-        lastScrollSegmentIdx = nil
-        pendingSourcePrefetch = nil
         for task in detailTasks.values {
             task.cancel()
         }
@@ -2873,7 +2906,6 @@ final class ReaderViewModel: ObservableObject {
         summaryPrefetchTask?.cancel()
         summaryPrefetchTask = nil
         summaryPrefetchGeneration += 1
-        prefetchingSummaryIdx = nil
         clearSummaryCache()
         hydratingSummaryIndices.removeAll()
         chatTask?.cancel()
@@ -2898,10 +2930,10 @@ final class ReaderViewModel: ObservableObject {
         if !self.bookId.isEmpty {
             collapsedOutlineByBook[self.bookId] = collapsedOutlineKeys
         }
-        replaceSegments([])
-        catalogTotalCount = 0
-        catalogHasMoreBefore = false
-        catalogHasMoreAfter = false
+        segments = []
+        outlineRows = []
+        outlineRebuildCount = 0
+        outlinePatchCount = 0
         selectedIdx = nil
         checkedSegmentIndices = []
         isSegmentSelectionMode = false
@@ -2911,6 +2943,7 @@ final class ReaderViewModel: ObservableObject {
         summaryReadyCount = 0
         summaryTotalCount = 0
         summarizeState = nil
+        segmentRunningMetrics = [:]
         totalCharCount = nil
         chunkTargetChars = nil
         bookLanguage = nil
@@ -2959,41 +2992,32 @@ final class ReaderViewModel: ObservableObject {
             }
 
             async let openTask = core.openBook(id: bookId)
+            // Compat full slim catalog (no around) — intentional d383158 rollback.
+            async let listTask = core.listSegments(bookId: bookId)
             let open = try await openTask
             try Task.checkCancellation()
+            let page = try await listTask
+            try Task.checkCancellation()
+            let list = page.segments
 
             let saved = ReadingProgressStore.shared.resumeIndex(
                 bookId: bookId,
                 serverIndex: open.current_segment_index,
-                segmentCount: max(book.segment_count ?? 0, book.summary_total_count ?? 0, 1)
+                segmentCount: page.total ?? list.count
             )
             let jumpedIn = initialSegmentIndex != nil
-            let preferredIdx = initialSegmentIndex ?? saved
-            // Windowed catalog — never wait on O(n) full list for first paint.
-            let page = try await core.listSegments(
-                bookId: bookId,
-                around: preferredIdx,
-                limit: Self.openCatalogWindowLimit
-            )
-            try Task.checkCancellation()
-            let list = page.segments.sorted { $0.idx < $1.idx }
-            catalogTotalCount = page.total
-                ?? book.segment_count
-                ?? book.summary_total_count
-                ?? list.count
-            catalogHasMoreBefore = page.has_more_before ?? false
-            catalogHasMoreAfter = page.has_more_after ?? false
-
-            let idx = list.first(where: { $0.idx == preferredIdx })?.idx
+            let idx = initialSegmentIndex
+                ?? list.first(where: { $0.idx == saved })?.idx
                 ?? list.first?.idx
             restoreTarget = idx
             // Pin before publishing the feed: the first layout lands on `idx`.
             onResume(idx)
 
-            replaceSegments(list)
+            segments = list
+            rebuildOutline()
             warmSummaryCache(from: list)
             summaryReadyCount = book.summary_ready_count ?? list.filter { $0.summary_status == "ready" }.count
-            summaryTotalCount = book.summary_total_count ?? catalogTotalCount
+            summaryTotalCount = book.summary_total_count ?? list.count
             summarizeState = book.summarize_state
             totalCharCount = book.total_char_count
             chunkTargetChars = book.chunk_target_chars
@@ -3006,7 +3030,7 @@ final class ReaderViewModel: ObservableObject {
                 ReadingProgressStore.shared.hydrate(
                     bookId: bookId,
                     index: progressIdx,
-                    total: catalogTotalCount
+                    total: list.count
                 )
                 if jumpedIn {
                     beginProgressSeek(at: idx)
@@ -3020,7 +3044,6 @@ final class ReaderViewModel: ObservableObject {
                 progressPhase = .reading
                 selectedIdx = nil
             }
-            fillCatalogInBackground(core: core)
         } catch is CancellationError {
             progressPhase = .reading
             return
@@ -3062,18 +3085,6 @@ final class ReaderViewModel: ObservableObject {
         }
     }
 
-    /// When the user explicitly navigates (turn segment, jump, sidebar click),
-    /// immediately dismiss any cold-start restore lock so user action is not
-    /// reverted back to the restored segment.
-    func acknowledgeUserNavigation(target: Int? = nil) {
-        if progressPhase == .restoring {
-            restoreSettleTask?.cancel()
-            restoreSettleTask = nil
-            progressPhase = .reading
-            restoreTarget = nil
-        }
-    }
-
     /// Record the segment pinned to the top of the viewport. This is the only
     /// place reading progress is written — and only when the seek gate allows.
     func noteTopSegment(_ idx: Int) {
@@ -3088,7 +3099,7 @@ final class ReaderViewModel: ObservableObject {
         ReadingProgressStore.shared.record(
             bookId: bookId,
             index: idx,
-            total: effectiveSegmentCount
+            total: segments.count
         )
     }
 
@@ -3119,7 +3130,7 @@ final class ReaderViewModel: ObservableObject {
         ReadingProgressStore.shared.record(
             bookId: bookId,
             index: currentIdx,
-            total: effectiveSegmentCount
+            total: segments.count
         )
         if selectedIdx != currentIdx {
             topSegmentSelection = currentIdx
@@ -3149,150 +3160,15 @@ final class ReaderViewModel: ObservableObject {
         await ReadingProgressStore.shared.flush(bookId: bookId)
     }
 
-    /// Background pages until the full slim catalog is present. Cancelled on leave/switch.
-    private func fillCatalogInBackground(core: CoreClient) {
-        catalogFillTask?.cancel()
-        catalogFillGeneration += 1
-        let generation = catalogFillGeneration
-        let bookId = self.bookId
-        let pageLimit = Self.catalogFillPageLimit
-        catalogFillTask = Task { @MainActor [weak self] in
-            guard let self else { return }
-            // Let the first paint and initial user interaction settle cleanly.
-            try? await Task.sleep(nanoseconds: ReaderScrollFeedPolicy.catalogFillInitialDelayNanoseconds)
-            guard !Task.isCancelled,
-                  self.catalogFillGeneration == generation,
-                  self.bookId == bookId
-            else { return }
-            // Prefer expanding forward (reading direction), then backward.
-            while !Task.isCancelled,
-                  self.catalogFillGeneration == generation,
-                  self.bookId == bookId,
-                  self.catalogHasMoreAfter
-            {
-                await self.waitWhileScrollBusy()
-                guard !Task.isCancelled,
-                      self.catalogFillGeneration == generation,
-                      self.bookId == bookId
-                else { return }
-                guard let maxIdx = self.sortedSegmentIdxs.last else { break }
-                guard let page = try? await core.listSegments(
-                    bookId: bookId,
-                    afterIdx: maxIdx,
-                    limit: pageLimit
-                ) else { return }
-                guard !Task.isCancelled,
-                      self.catalogFillGeneration == generation,
-                      self.bookId == bookId
-                else { return }
-                await self.waitWhileScrollBusy()
-                guard !Task.isCancelled,
-                      self.catalogFillGeneration == generation,
-                      self.bookId == bookId
-                else { return }
-                self.mergeCatalogPage(page)
-                self.catalogHasMoreAfter = page.has_more_after ?? false
-                await Task.yield()
-            }
-            while !Task.isCancelled,
-                  self.catalogFillGeneration == generation,
-                  self.bookId == bookId,
-                  self.catalogHasMoreBefore
-            {
-                await self.waitWhileScrollBusy()
-                guard !Task.isCancelled,
-                      self.catalogFillGeneration == generation,
-                      self.bookId == bookId
-                else { return }
-                guard let minIdx = self.sortedSegmentIdxs.first else { break }
-                guard let page = try? await core.listSegments(
-                    bookId: bookId,
-                    beforeIdx: minIdx,
-                    limit: pageLimit
-                ) else { return }
-                guard !Task.isCancelled,
-                      self.catalogFillGeneration == generation,
-                      self.bookId == bookId
-                else { return }
-                await self.waitWhileScrollBusy()
-                guard !Task.isCancelled,
-                      self.catalogFillGeneration == generation,
-                      self.bookId == bookId
-                else { return }
-                self.mergeCatalogPage(page)
-                self.catalogHasMoreBefore = page.has_more_before ?? false
-                await Task.yield()
-            }
-            if self.catalogFillGeneration == generation {
-                self.catalogFillTask = nil
-            }
-        }
-    }
-
-    private func mergeCatalogPage(_ page: SegmentCatalogPage) {
-        if let total = page.total, total > 0 {
-            catalogTotalCount = total
-        }
-        guard !page.segments.isEmpty else { return }
-        let incomingIdxs = page.segments.map(\.idx)
-        if ReaderCatalogMergePolicy.canAppendAfter(
-            existingMaxIdx: sortedSegmentIdxs.last,
-            incomingIdxs: incomingIdxs
-        ) {
-            appendSegments(page.segments)
-            warmSummaryCache(from: page.segments)
-            return
-        }
-        if ReaderCatalogMergePolicy.canPrependBefore(
-            existingMinIdx: sortedSegmentIdxs.first,
-            incomingIdxs: incomingIdxs
-        ) {
-            prependSegments(page.segments)
-            warmSummaryCache(from: page.segments)
-            return
-        }
-        var byIdx = Dictionary(uniqueKeysWithValues: segments.map { ($0.idx, $0) })
-        for incoming in page.segments {
-            if let existing = byIdx[incoming.idx] {
-                var merged = existing
-                if merged.summary_preview == nil { merged.summary_preview = incoming.summary_preview }
-                if merged.bullet_labels == nil { merged.bullet_labels = incoming.bullet_labels }
-                if merged.label == nil { merged.label = incoming.label }
-                if merged.heading_path == nil { merged.heading_path = incoming.heading_path }
-                byIdx[incoming.idx] = merged
-            } else {
-                byIdx[incoming.idx] = incoming
-            }
-        }
-        replaceSegments(byIdx.values.sorted { $0.idx < $1.idx })
-        warmSummaryCache(from: page.segments)
-    }
-
     func prefetchSummaries(around idx: Int, core: CoreClient, radius: Int = 3) {
-        prefetchSummaries(around: idx, core: core, back: radius, forward: radius)
-    }
-
-    func prefetchSummaries(around idx: Int, core: CoreClient, back: Int, forward: Int) {
-        let window = ReaderScrollFeedPolicy.prefetchWindow(
-            sorted: sortedSegmentIdxs,
-            center: idx,
-            back: back,
-            forward: forward
-        )
-        guard !window.isEmpty else { return }
+        let sorted = segments.map(\.idx).sorted()
+        guard let pos = sorted.firstIndex(of: idx) else { return }
+        let start = max(0, pos - radius)
+        let end = min(sorted.count - 1, pos + radius)
+        let window = Array(sorted[start...end])
         let desired = Set(window)
 
-        // 1. Cancel previous serial prefetch first and clean up in-flight prefetch index
-        if let currentPrefetch = prefetchingSummaryIdx {
-            hydratingSummaryIndices.remove(currentPrefetch)
-            prefetchingSummaryIdx = nil
-        }
-        summaryPrefetchTask?.cancel()
-        summaryPrefetchTask = nil
-        summaryPrefetchGeneration += 1
-
-        // 2. Cancel eager tasks that have moved completely outside the desired window
-        let obsoleteTaskIndices = summaryHydrateTasks.keys.filter { !desired.contains($0) }
+        let obsoleteTaskIndices = summaryHydrateTasks.keys.filter { $0 != idx }
         for taskIdx in obsoleteTaskIndices {
             summaryHydrateTasks.removeValue(forKey: taskIdx)?.cancel()
             hydratingSummaryIndices.remove(taskIdx)
@@ -3304,34 +3180,25 @@ final class ReaderViewModel: ObservableObject {
             hydratingSummaryIndices.remove(taskIdx)
         }
 
-        // 3. Center segment gets eager first-class hydrate request
+        // The visible segment wins the only eager request. Neighbours hydrate
+        // serially at utility priority so a far jump cannot fan out seven DB reads.
         hydrateSummary(idx: idx, core: core)
-
-        // 4. Start serial background prefetch for remaining unhydrated neighbours
+        summaryPrefetchTask?.cancel()
+        summaryPrefetchGeneration += 1
         let generation = summaryPrefetchGeneration
         let bookId = self.bookId
         let neighbours = window
-            .filter { $0 != idx && summaryHydrateTasks[$0] == nil }
+            .filter { $0 != idx }
             .sorted { abs($0 - idx) < abs($1 - idx) }
         summaryPrefetchTask = Task(priority: .utility) { @MainActor [weak self] in
             guard let self else { return }
-            defer {
-                if self.summaryPrefetchGeneration == generation {
-                    if let current = self.prefetchingSummaryIdx {
-                        self.hydratingSummaryIndices.remove(current)
-                        self.prefetchingSummaryIdx = nil
-                    }
-                    self.summaryPrefetchTask = nil
-                }
-            }
             for neighbour in neighbours {
-                guard !Task.isCancelled else { break }
+                guard !Task.isCancelled else { return }
                 guard self.summaryPrefetchGeneration == generation,
                       self.bookId == bookId,
                       let segment = self.segments.first(where: { $0.idx == neighbour }),
                       self.needsSummaryHydration(segment)
                 else { continue }
-                self.prefetchingSummaryIdx = neighbour
                 self.hydratingSummaryIndices.insert(neighbour)
                 let detail = try? await core.fetchSegmentSummary(
                     bookId: bookId,
@@ -3340,14 +3207,14 @@ final class ReaderViewModel: ObservableObject {
                 guard !Task.isCancelled,
                       self.summaryPrefetchGeneration == generation,
                       self.bookId == bookId
-                else { break }
-                if self.prefetchingSummaryIdx == neighbour {
-                    self.hydratingSummaryIndices.remove(neighbour)
-                    self.prefetchingSummaryIdx = nil
-                }
+                else { return }
+                self.hydratingSummaryIndices.remove(neighbour)
                 if let detail {
                     self.mergeSummaryDetail(detail, at: neighbour)
                 }
+            }
+            if self.summaryPrefetchGeneration == generation {
+                self.summaryPrefetchTask = nil
             }
         }
     }
@@ -3358,11 +3225,9 @@ final class ReaderViewModel: ObservableObject {
             ensureSummaryParsed(idx: idx, json: json)
         }
         guard needsSummaryHydration(seg) else { return }
-        guard summaryHydrateTasks[idx] == nil else { return }
+        guard !hydratingSummaryIndices.contains(idx) else { return }
 
-        if prefetchingSummaryIdx == idx {
-            prefetchingSummaryIdx = nil
-        }
+        summaryHydrateTasks[idx]?.cancel()
         hydratingSummaryIndices.insert(idx)
         let bookId = self.bookId
 
@@ -3395,10 +3260,13 @@ final class ReaderViewModel: ObservableObject {
         if let value = detail.summary_tier { updated.summary_tier = value }
         if let value = detail.summary_duration_s { updated.summary_duration_s = value }
         if let value = detail.summary_llm_attempts { updated.summary_llm_attempts = value }
+        if let value = detail.summary_failure_total { updated.summary_failure_total = value }
+        if let value = detail.summary_quality_relaxed { updated.summary_quality_relaxed = value }
         if let status = detail.summary_status { updated.summary_status = status }
         fillCatalogPreviewIfNeeded(&updated)
         segments[i] = updated
         syncCurrentSegment(from: updated)
+        patchOutlineSegment(updated)
         if let json = updated.summary_json, !json.isEmpty {
             ensureSummaryParsed(idx: idx, json: json)
         }
@@ -3526,7 +3394,6 @@ final class ReaderViewModel: ObservableObject {
 
     /// Apply list meta only — never fetch or cache raw_text / translation in `segments[]`.
     func selectSegment(_ idx: Int) {
-        if currentSegment?.idx == idx { return }
         if let meta = segments.first(where: { $0.idx == idx }) {
             currentSegment = meta
         }
@@ -3596,7 +3463,6 @@ final class ReaderViewModel: ObservableObject {
                 self.detailTasks.removeValue(forKey: idx)
                 self.loadingSourceIndices.remove(idx)
                 self.refreshingSourceIndices.remove(idx)
-                defer { self.pumpPendingSourcePrefetch() }
                 guard let fresh else { return }
                 let rawText = fresh.raw_text ?? ""
                 let translation = fresh.translation ?? ""
@@ -3605,10 +3471,16 @@ final class ReaderViewModel: ObservableObject {
                     body = SegmentSourceBody(
                         idx: idx,
                         rawText: existing.rawText,
-                        translation: translation
+                        translation: translation,
+                        illustrations: existing.illustrations
                     )
                 } else {
-                    body = SegmentSourceBody(idx: idx, rawText: rawText, translation: translation)
+                    body = SegmentSourceBody(
+                        idx: idx,
+                        rawText: rawText,
+                        translation: translation,
+                        illustrations: fresh.illustrations ?? []
+                    )
                 }
                 self.storeSourceCache(body)
             }
@@ -3690,13 +3562,45 @@ final class ReaderViewModel: ObservableObject {
         } else {
             collapsedOutlineKeys.insert(key)
         }
+        rebuildOutline()
     }
 
     func revealOutline(for idx: Int?) {
         guard let idx else { return }
-        for key in SegmentOutlinePolicy.keysToReveal(for: idx, in: segments) {
+        let keys = SegmentOutlinePolicy.keysToReveal(for: idx, in: segments)
+        guard !keys.isEmpty else { return }
+        var changed = false
+        for key in keys where collapsedOutlineKeys.contains(key) {
             collapsedOutlineKeys.remove(key)
+            changed = true
         }
+        if changed {
+            rebuildOutline()
+        }
+    }
+
+    func rebuildOutline() {
+        outlineRows = SegmentOutlinePolicy.build(
+            segments: segments,
+            collapsed: collapsedOutlineKeys
+        )
+        outlineRebuildCount += 1
+    }
+
+    /// Update one visible leaf without rebuilding the chapter tree.
+    /// Falls back to full rebuild when chapter/heading identity changed.
+    func patchOutlineSegment(_ segment: SegmentRow) {
+        if let existing = outlineRows.first(where: { $0.segment?.idx == segment.idx })?.segment,
+           SegmentOutlinePolicy.structureChanged(from: existing, to: segment) {
+            rebuildOutline()
+            return
+        }
+        var rows = outlineRows
+        if SegmentOutlinePolicy.replaceSegment(segment, in: &rows) {
+            outlineRows = rows
+            outlinePatchCount += 1
+        }
+        // Collapsed-away leaves stay stale until expand → rebuildOutline.
     }
 
     func enterSegmentSelectionMode() {
@@ -3810,6 +3714,7 @@ final class ReaderViewModel: ObservableObject {
         updated.chapter = chapter
         segments[i] = updated
         syncCurrentSegment(from: updated)
+        patchOutlineSegment(updated)
         invalidateParsedSummary(idx: idx)
         segmentRunningMetrics.removeValue(forKey: idx)
         if let rawText {
@@ -4014,6 +3919,7 @@ final class ReaderViewModel: ObservableObject {
         }
         segments[i] = updated
         syncCurrentSegment(from: updated)
+        patchOutlineSegment(updated)
         if status == "running" {
             let startedAt: Date
             if let startedAtStr = event?["started_at"] as? String,
@@ -4058,9 +3964,15 @@ final class ReaderViewModel: ObservableObject {
         if let attempts = event["summary_llm_attempts"] as? Int {
             updated.summary_llm_attempts = attempts
         }
+        if let relaxed = event["summary_quality_relaxed"] as? Bool {
+            updated.summary_quality_relaxed = relaxed
+        } else if let relaxed = event["summary_quality_relaxed"] as? Int {
+            updated.summary_quality_relaxed = relaxed != 0
+        }
         fillCatalogPreviewIfNeeded(&updated)
         segments[i] = updated
         syncCurrentSegment(from: updated)
+        patchOutlineSegment(updated)
         segmentRunningMetrics.removeValue(forKey: idx)
         if let json = updated.summary_json, !json.isEmpty {
             ensureSummaryParsed(idx: idx, json: json)
@@ -4222,7 +4134,12 @@ final class ReaderViewModel: ObservableObject {
             guard let idx = SegmentReadyEventParser.eventIndex(from: event) else { return }
             if let translation = event["translation"] as? String {
                 let rawText = sourceCache[idx]?.rawText ?? ""
-                let body = SegmentSourceBody(idx: idx, rawText: rawText, translation: translation)
+                let body = SegmentSourceBody(
+                    idx: idx,
+                    rawText: rawText,
+                    translation: translation,
+                    illustrations: sourceCache[idx]?.illustrations ?? []
+                )
                 storeSourceCache(body)
                 refreshingSourceIndices.remove(idx)
             } else if loadingSourceIndices.contains(idx) || sourceCache[idx] != nil {

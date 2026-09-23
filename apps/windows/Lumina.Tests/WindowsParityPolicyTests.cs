@@ -33,12 +33,15 @@ public class WindowsParityPolicyTests
     }
 
     [Fact]
-    public void NeighborPrefetch_returns_prev_and_next_only()
+    public void NeighborPrefetch_returns_down15_up5_window()
     {
-        int[] sorted = [0, 2, 5];
-        Assert.Equal(new[] { 0, 5 }, NeighborPrefetchPolicy.Neighbors(2, sorted));
-        Assert.Equal(new[] { 2 }, NeighborPrefetchPolicy.Neighbors(0, sorted));
-        Assert.Empty(NeighborPrefetchPolicy.Neighbors(9, sorted));
+        var sorted = Enumerable.Range(0, 40).ToArray();
+        Assert.Equal(15, NeighborPrefetchPolicy.ForwardCount);
+        Assert.Equal(5, NeighborPrefetchPolicy.BackwardCount);
+        var around20 = NeighborPrefetchPolicy.Neighbors(20, sorted);
+        Assert.Equal(Enumerable.Range(15, 5).Concat(Enumerable.Range(21, 15)).ToArray(), around20);
+        Assert.Equal(new[] { 1, 2 }, NeighborPrefetchPolicy.Neighbors(0, new[] { 0, 1, 2 }));
+        Assert.Empty(NeighborPrefetchPolicy.Neighbors(9, new[] { 0, 2, 5 }));
         Assert.True(NeighborPrefetchPolicy.NeedsRawText(true));
         Assert.True(NeighborPrefetchPolicy.NeedsSummaryJson(false));
     }

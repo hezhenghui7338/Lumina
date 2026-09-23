@@ -212,6 +212,11 @@ def _persist_resegment_sync(
             metadata_json=metadata_json,
             status=status,
         )
+        # Segment cascade clears illustration anchors; mark pending for silent backfill.
+        try:
+            BookRepo(conn).update(book_id, illustrations_status="pending")
+        except Exception:
+            pass
     finally:
         conn.close()
         detach_db_lock(conn)

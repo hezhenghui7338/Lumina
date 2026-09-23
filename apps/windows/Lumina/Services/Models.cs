@@ -43,6 +43,12 @@ public sealed class BookSummary
     public string? ProcessingKind { get; set; }
     public string? IndexStatus { get; set; }
     public string? IngestError { get; set; }
+    /// <summary>null = unknown (may probe); false = none; true = saved cover.</summary>
+    public bool? HasCover { get; set; }
+
+    /// <summary>Local overlay only — not decoded from the API.</summary>
+    [JsonIgnore]
+    public string? CoverUrl { get; set; }
 
     /// <summary>Local overlay from ingest SSE — not decoded from the API.</summary>
     [JsonIgnore]
@@ -88,7 +94,7 @@ public sealed class BookSummary
     }
 
     [JsonIgnore]
-    public int ReadingTotal => Math.Max(SegmentCount ?? 0, 0);
+    public int ReadingTotal => ReadingProgressIndex.SegmentTotal(SegmentCount);
 
     [JsonIgnore]
     public int ReadingCurrent
@@ -664,6 +670,8 @@ public sealed class SegmentRow
     public string? SummaryTier { get; set; }
     public int? CharCount { get; set; }
     public int? RetryCount { get; set; }
+    public int? SummaryFailureTotal { get; set; }
+    public bool? SummaryQualityRelaxed { get; set; }
     public double? SummaryDurationS { get; set; }
     public int? SummaryLlmAttempts { get; set; }
     public string? SummaryPreview { get; set; }
@@ -738,6 +746,8 @@ public sealed class SegmentSummaryDetail
     public string? Label { get; set; }
     public string? AnchorLabel { get; set; }
     public string? SummaryStatus { get; set; }
+    public int? SummaryFailureTotal { get; set; }
+    public bool? SummaryQualityRelaxed { get; set; }
     public string? SummaryProvider { get; set; }
     public string? SummaryModel { get; set; }
     public string? SummaryTier { get; set; }
@@ -981,6 +991,7 @@ public sealed class NewsBrief
 {
     public string Date { get; set; } = "";
     public int Count { get; set; }
+    public string? LastSyncedAt { get; set; }
     public List<NewsArticleCard> Articles { get; set; } = [];
 }
 
@@ -1281,6 +1292,16 @@ public sealed class OllamaStatus
     public bool Available => !Skipped && (ProbeOk || Served);
 }
 
+public sealed class CursorSdkStatus
+{
+    public bool Installed { get; set; }
+    public bool Importable { get; set; }
+    public string Status { get; set; } = "idle";
+    public string Message { get; set; } = "";
+    public string VendorDir { get; set; } = "";
+    public string? Progress { get; set; }
+}
+
 public sealed class ImportConflictException : Exception
 {
     public string ExistingBookId { get; }
@@ -1308,6 +1329,20 @@ public sealed class StructuredSummary
 
 public static class ReadingProgressIndex
 {
+    /// <summary>Canonical segment count for progress — segment rows only, never summary_total.</summary>
+    public static int SegmentTotal(int? segmentCount, int? catalogTotal = null) =>
+        Math.Max(catalogTotal ?? 0, Math.Max(segmentCount ?? 0, 0));
+
+    /// <summary>Pin target after an around-window fetch; null if preferred is still absent.</summary>
+    public static int? ResumeIdxInCatalog(int preferredIdx, IEnumerable<int> catalogIdxs)
+    {
+        foreach (var idx in catalogIdxs)
+        {
+            if (idx == preferredIdx) return preferredIdx;
+        }
+        return null;
+    }
+
     public static int Restore(
         int serverIndex,
         int? localIndex,
@@ -1320,6 +1355,10 @@ public static class ReadingProgressIndex
         return Math.Clamp(serverIndex, 0, last);
     }
 
+    /// <summary>
+    /// Legacy mid-segment offset. Open-book resume must not call this — progress
+    /// is segment-index only so reopen always starts at the segment head.
+    /// </summary>
     public static double RestoreOffset(
         double? localOffset,
         int? localSegmentCount,

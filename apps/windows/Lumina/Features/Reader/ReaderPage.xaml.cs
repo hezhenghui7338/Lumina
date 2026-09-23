@@ -38,6 +38,11 @@ public sealed partial class ReaderPage : Page
     private List<OriginalSearchHit> _originalHits = [];
     private int _originalHitIndex;
     private string _originalLastQuery = "";
+    private bool _originalTruncated;
+    private List<string> _listenSentenceLines = [];
+    private List<string> _listenKeyPointLines = [];
+    private static readonly SolidColorBrush ListenFollowBrush =
+        new(Windows.UI.Color.FromArgb(255, 209, 242, 199)); // soft mint ≈ #D1F2C7
     private CancellationTokenSource? _originalSearchCts;
     private CancellationTokenSource? _pageCts;
     private CancellationTokenSource? _eventsCts;
@@ -84,7 +89,6 @@ public sealed partial class ReaderPage : Page
         _listen.HighlightSegment += idx => JumpToSegment(idx, flash: false);
         ChatList.ItemsSource = _chat;
         KeyDown += ReaderPage_KeyDown;
-        CharacterReceived += ReaderPage_CharacterReceived;
     }
 
     internal FrameworkElement? TourTarget(OnboardingTourAnchor anchor) => anchor switch
@@ -112,6 +116,21 @@ public sealed partial class ReaderPage : Page
 
         if (e.Handled) return;
         if (ShouldIgnoreReaderScrollKey(e.OriginalSource as DependencyObject)) return;
+
+        if (!ctrl && !shift)
+        {
+            switch (e.Key)
+            {
+                case VirtualKey.Left:
+                    if (TurnSegment(-1))
+                        e.Handled = true;
+                    return;
+                case VirtualKey.Right:
+                    if (TurnSegment(1))
+                        e.Handled = true;
+                    return;
+            }
+        }
 
         const double lineDelta = 80;
         var offset = ContentScroll.VerticalOffset;
@@ -149,20 +168,6 @@ public sealed partial class ReaderPage : Page
             current = VisualTreeHelper.GetParent(current);
         }
         return false;
-    }
-
-    private void ReaderPage_CharacterReceived(UIElement sender, CharacterReceivedRoutedEventArgs e)
-    {
-        if (ShouldIgnoreReaderScrollKey(e.OriginalSource as DependencyObject)) return;
-        var delta = e.Character switch
-        {
-            '[' or '【' => -1,
-            ']' or '】' => 1,
-            _ => 0,
-        };
-        if (delta == 0) return;
-        if (TurnSegment(delta))
-            e.Handled = true;
     }
 
     private void PrevSegment_Click(object sender, RoutedEventArgs e) => TurnSegment(-1);
@@ -210,6 +215,9 @@ public sealed partial class ReaderPage : Page
         {
             RestoreCollapsedChapters(args.BookId);
             _bookId = args.BookId;
+            // Fresh open must hydrate even if a reused page still holds the
+            // same-segment selection from a previous book.
+            _selected = null;
             TitleText.Text = args.Title;
             _pendingJump = args.SegmentIndex;
             _showRaw = LocalPrefs.GetShowRaw(_bookId);
@@ -329,8 +337,16 @@ public sealed partial class ReaderPage : Page
             _isProcessing = false;
             CancelProcessingBtn.Visibility = Visibility.Collapsed;
             var open = await App.Core.OpenBookAsync(args.BookId, _pageCts.Token);
-            var preferredIdx = _pendingJump
-                ?? open.CurrentSegmentIndex;
+            // Restore local index BEFORE around-fetch (same contract as macOS).
+            // Never mix summary_total into the count check — that demotes local progress.
+            var segmentTotal = Math.Max(ReadingProgressIndex.SegmentTotal(book.SegmentCount), 1);
+            var cached = LocalPrefs.GetCachedProgress(_bookId);
+            var preferredIdx = _pendingJump ?? ReadingProgressIndex.Restore(
+                open.CurrentSegmentIndex,
+                cached?.Index,
+                cached?.SegmentCount,
+                segmentTotal);
+            preferredIdx = Math.Clamp(preferredIdx, 0, Math.Max(0, segmentTotal - 1));
             var page = await App.Core.ListSegmentsAsync(
                 args.BookId,
                 _pageCts.Token,
@@ -338,33 +354,39 @@ public sealed partial class ReaderPage : Page
                 limit: OpenCatalogWindowLimit);
             _segments = page.Segments.OrderBy(s => s.Idx).ToList();
             foreach (var s in _segments) s.RawText = null;
-            _totalCount = page.Total
-                ?? book.SegmentCount
-                ?? book.SummaryTotalCount
-                ?? _segments.Count;
+            _totalCount = ReadingProgressIndex.SegmentTotal(book.SegmentCount, page.Total);
+            if (_totalCount <= 0) _totalCount = _segments.Count;
             _catalogHasMoreBefore = page.HasMoreBefore ?? false;
             _catalogHasMoreAfter = page.HasMoreAfter ?? false;
+
+            if (ReadingProgressIndex.ResumeIdxInCatalog(preferredIdx, _segments.Select(s => s.Idx)) is null
+                && (_segments.Count > 0 || (page.Total ?? 0) > 0))
+            {
+                page = await App.Core.ListSegmentsAsync(
+                    args.BookId,
+                    _pageCts.Token,
+                    around: preferredIdx,
+                    limit: OpenCatalogWindowLimit);
+                _segments = page.Segments.OrderBy(s => s.Idx).ToList();
+                foreach (var s in _segments) s.RawText = null;
+                _totalCount = Math.Max(
+                    _totalCount,
+                    ReadingProgressIndex.SegmentTotal(book.SegmentCount, page.Total));
+                _catalogHasMoreBefore = page.HasMoreBefore ?? false;
+                _catalogHasMoreAfter = page.HasMoreAfter ?? false;
+            }
+
             _readyCount = book.SummaryReadyCount
                 ?? _segments.Count(s => s.SummaryStatus is "ready" or "done");
             UpdateProgressBanner();
             UpdateChatScopeUi();
 
-            var local = LocalPrefs.GetReadingProgress(_bookId, _totalCount);
-            var idx = _pendingJump ?? ReadingProgressIndex.Restore(
-                open.CurrentSegmentIndex,
-                local,
-                local is null ? null : _totalCount,
-                _totalCount);
-            idx = Math.Clamp(idx, 0, Math.Max(0, _totalCount - 1));
-            // If resume idx is outside the first window (should be rare), clamp to loaded.
-            if (_segments.Count > 0 && _segments.All(s => s.Idx != idx))
-            {
-                idx = _segments.MinBy(s => Math.Abs(s.Idx - idx))!.Idx;
-            }
-            _pendingOffsetY = ReadingProgressIndex.RestoreOffset(
-                LocalPrefs.GetReadingProgressOffset(_bookId, _totalCount),
-                local is null ? null : _totalCount,
-                _totalCount);
+            // Never clamp to list.first / nearest — that writes dirty progress via SelectionChanged.
+            var idx = ReadingProgressIndex.ResumeIdxInCatalog(
+                preferredIdx,
+                _segments.Select(s => s.Idx)) ?? preferredIdx;
+            // Open always starts at the segment head (no mid-segment OffsetY).
+            _pendingOffsetY = 0;
             BindSegmentCatalog(idx);
             UpdateSegmentTurnButtons();
             StartEvents();
@@ -791,6 +813,10 @@ public sealed partial class ReaderPage : Page
             return;
         }
         if (item.Segment is null) return;
+        // Background catalog merges and chapter collapse re-bind SegmentList and
+        // re-assign the same segment: skip side effects so a merge never
+        // re-hydrates the visible segment or rewrites identical progress.
+        if (_selected?.Idx == item.Segment.Idx) return;
         DismissSelectionFlyout();
         _selected = item.Segment;
         UpdateSegmentTurnButtons();
@@ -834,13 +860,25 @@ public sealed partial class ReaderPage : Page
     private void SaveLocalProgress(int index)
     {
         var percent = ReadingProgressIndex.Percent(index, _totalCount);
-        LocalPrefs.SetReadingProgress(_bookId, index, _totalCount, ContentScroll.VerticalOffset, percent);
+        // OffsetY is not part of resume — reopen must land on the segment head.
+        LocalPrefs.SetReadingProgress(_bookId, index, _totalCount, offsetY: 0, percent);
     }
 
     private async Task HydrateSelectedAsync()
     {
         if (_selected is null) return;
         var idx = _selected.Idx;
+
+        // Cache hit: paint immediately — do not flash the spinner or await.
+        if (TryGetRenderableCachedDetail(idx, out var cached))
+        {
+            SegmentTitle.Text = cached.DisplayLabel;
+            RenderContent(cached);
+            SegmentLoading.IsActive = false;
+            _ = PrefetchNeighborsAsync(idx);
+            return;
+        }
+
         _hydrateCts?.Cancel();
         _hydrateCts = CancellationTokenSource.CreateLinkedTokenSource(_pageCts?.Token ?? default);
         var ct = _hydrateCts.Token;
@@ -875,6 +913,21 @@ public sealed partial class ReaderPage : Page
         {
             SegmentLoading.IsActive = false;
         }
+    }
+
+    private bool TryGetRenderableCachedDetail(int idx, out SegmentRow detail)
+    {
+        if (_hydrated.TryGetValue(idx, out var cached)
+            && (!_showRaw || !string.IsNullOrEmpty(cached.RawText))
+            && (_showRaw
+                || !string.IsNullOrEmpty(cached.SummaryJson)
+                || cached.SummaryStatus is not ("ready" or "done")))
+        {
+            detail = cached;
+            return true;
+        }
+        detail = null!;
+        return false;
     }
 
     private async Task<SegmentRow> LoadSegmentDetailAsync(int idx, bool needRaw, CancellationToken ct)
@@ -931,6 +984,8 @@ public sealed partial class ReaderPage : Page
         if (!string.IsNullOrEmpty(sum.SummaryTier)) detail.SummaryTier = sum.SummaryTier;
         if (!string.IsNullOrEmpty(sum.SummaryStatus)) detail.SummaryStatus = sum.SummaryStatus;
         if (!string.IsNullOrEmpty(sum.AnchorLabel)) detail.AnchorLabel = sum.AnchorLabel;
+        if (sum.SummaryFailureTotal.HasValue) detail.SummaryFailureTotal = sum.SummaryFailureTotal;
+        if (sum.SummaryQualityRelaxed.HasValue) detail.SummaryQualityRelaxed = sum.SummaryQualityRelaxed;
     }
 
     private async Task PrefetchNeighborsAsync(int idx)
@@ -979,18 +1034,35 @@ public sealed partial class ReaderPage : Page
             KeyPointsText.Text = "";
             WatchOutsText.Text = "";
             FollowUpChips.ItemsSource = null;
+            _listenSentenceLines = [];
+            _listenKeyPointLines = [];
+            ApplyListenFollowHighlight();
             return;
         }
 
         ThreeSentenceText.Text = parsed.ThreeSentence
             ?? SummaryStatusPlaceholder(detail.SummaryStatus);
-        KeyPointsText.Text = parsed.KeyPoints.Count == 0
-            ? ""
-            : "要点\n" + string.Join("\n", parsed.KeyPoints.Select(p => "• " + p));
+        _listenSentenceLines = string.IsNullOrWhiteSpace(parsed.ThreeSentence)
+            ? []
+            : parsed.ThreeSentence.Split('\n', StringSplitOptions.None)
+                .Select(s => s.TrimEnd('\r'))
+                .Where(s => s.Length > 0)
+                .ToList();
+        if (parsed.KeyPoints.Count == 0)
+        {
+            KeyPointsText.Text = "";
+            _listenKeyPointLines = [];
+        }
+        else
+        {
+            _listenKeyPointLines = [ListenScript.SectionBullets, .. parsed.KeyPoints.Select(p => "• " + p)];
+            KeyPointsText.Text = string.Join("\n", _listenKeyPointLines);
+        }
         WatchOutsText.Text = parsed.WatchOuts.Count == 0
             ? ""
             : "需要注意\n" + string.Join("\n", parsed.WatchOuts.Select(p => "• " + p));
         FollowUpChips.ItemsSource = parsed.FollowUps;
+        ApplyListenFollowHighlight();
     }
 
     private static string SummaryStatusPlaceholder(string? status) => status switch
@@ -1029,26 +1101,54 @@ public sealed partial class ReaderPage : Page
         var hit = _selected is null ? null : CurrentOriginalHitFor(_selected.Idx);
         var start = hit?.StartUtf16 ?? -1;
         var end = hit?.EndUtf16 ?? -1;
-        if (hit is null || start < 0 || end > raw.Length || end <= start)
+        var hasSearchHighlight = hit is not null && start >= 0 && end <= raw.Length && end > start;
+        var listenRange = CurrentListenOriginalRange(raw.Length);
+        var hasListenHighlight = !hasSearchHighlight && listenRange is not null;
+        if (hasListenHighlight)
         {
-            BodyText.Inlines.Add(new Run { Text = raw });
+            start = listenRange!.Value.Start;
+            end = listenRange.Value.Start + listenRange.Value.Length;
+        }
+        var hasHighlight = hasSearchHighlight || hasListenHighlight;
+        var display = ReaderBodyTypography.DisplayText(raw, preservingHighlight: hasHighlight);
+        if (!hasHighlight)
+        {
+            BodyText.Inlines.Add(new Run { Text = display });
         }
         else
         {
             if (start > 0)
                 BodyText.Inlines.Add(new Run { Text = raw[..start] });
-            BodyText.Inlines.Add(new Run
-            {
-                Text = raw[start..end],
-                Foreground = new SolidColorBrush(Windows.UI.Color.FromArgb(255, 196, 90, 30)),
-            });
+            var marked = new Span();
+            if (hasSearchHighlight)
+                marked.Foreground = new SolidColorBrush(Windows.UI.Color.FromArgb(255, 196, 90, 30));
+            else
+                marked.Background = ListenFollowBrush;
+            marked.Inlines.Add(new Run { Text = raw[start..end] });
+            BodyText.Inlines.Add(marked);
             if (end < raw.Length)
                 BodyText.Inlines.Add(new Run { Text = raw[end..] });
-            DispatcherQueue.TryEnqueue(() => ScrollOriginalHitIntoView(start, raw.Length));
+            // Only search hits scroll into view; listen follow-along paints only.
+            if (hasSearchHighlight)
+                DispatcherQueue.TryEnqueue(() => ScrollOriginalHitIntoView(start, raw.Length));
         }
 
         if (!string.IsNullOrWhiteSpace(translation))
-            BodyText.Inlines.Add(new Run { Text = $"\n\n—— 译文 ——\n{translation}" });
+        {
+            var translated = ReaderBodyTypography.CollapseEmptyLines(translation);
+            BodyText.Inlines.Add(new Run { Text = $"\n\n—— 译文 ——\n{translated}" });
+        }
+    }
+
+    private (int Start, int Length)? CurrentListenOriginalRange(int rawLength)
+    {
+        if (!_listen.IsActive || _selected is null || _listen.CurrentIdx != _selected.Idx)
+            return null;
+        if (_listen.ActiveHighlight is not ListenHighlightAnchor.OriginalUtf16 range)
+            return null;
+        if (range.Length <= 0 || range.Start < 0 || range.Start + range.Length > rawLength)
+            return null;
+        return (range.Start, range.Length);
     }
 
     private void ScrollOriginalHitIntoView(int utf16Start, int rawLength)
@@ -1075,7 +1175,7 @@ public sealed partial class ReaderPage : Page
         OriginalSearchNext.IsEnabled = count > 0;
         OriginalSearchStatus.Text = count == 0
             ? (string.IsNullOrEmpty(_originalLastQuery) ? "" : "无匹配")
-            : $"{_originalHitIndex + 1}/{count}";
+            : $"{_originalHitIndex + 1}/{count}{(_originalTruncated ? "+" : "")}";
     }
 
     private void OriginalSearch_Accelerator(KeyboardAccelerator sender, KeyboardAcceleratorInvokedEventArgs args)
@@ -1104,9 +1204,10 @@ public sealed partial class ReaderPage : Page
         _originalLastQuery = query;
         try
         {
-            var result = await App.Core.SearchOriginalAsync(_bookId, query, ct).ConfigureAwait(true);
+            var result = await App.Core.SearchOriginalAsync(_bookId, query, ct: ct).ConfigureAwait(true);
             if (ct.IsCancellationRequested) return;
             _originalHits = result.Hits;
+            _originalTruncated = result.Truncated;
             _originalHitIndex = 0;
             UpdateOriginalSearchChrome();
             if (_originalHits.Count == 0) return;
@@ -1128,10 +1229,56 @@ public sealed partial class ReaderPage : Page
     private void StepOriginalSearch(int delta)
     {
         if (_originalHits.Count == 0) return;
+        if (delta > 0 && _originalHitIndex >= _originalHits.Count - 1 && _originalTruncated)
+        {
+            _ = LoadMoreOriginalSearchAsync();
+            return;
+        }
         _originalHitIndex = (_originalHitIndex + delta) % _originalHits.Count;
         if (_originalHitIndex < 0) _originalHitIndex += _originalHits.Count;
         UpdateOriginalSearchChrome();
         _ = LocateOriginalSearchHitAsync();
+    }
+
+    private async Task LoadMoreOriginalSearchAsync()
+    {
+        if (string.IsNullOrEmpty(_bookId) || string.IsNullOrEmpty(_originalLastQuery)) return;
+        if (_originalHits.Count == 0) return;
+        var last = _originalHits[^1];
+        _originalSearchCts?.Cancel();
+        _originalSearchCts = new CancellationTokenSource();
+        var ct = _originalSearchCts.Token;
+        var priorCount = _originalHits.Count;
+        try
+        {
+            var result = await App.Core.SearchOriginalAsync(
+                _bookId,
+                _originalLastQuery,
+                afterSegment: last.SegmentIndex,
+                afterStart: last.Start,
+                ct: ct).ConfigureAwait(true);
+            if (ct.IsCancellationRequested) return;
+            if (result.Hits.Count == 0)
+            {
+                _originalTruncated = false;
+                _originalHitIndex = (_originalHitIndex + 1) % Math.Max(_originalHits.Count, 1);
+                UpdateOriginalSearchChrome();
+                await LocateOriginalSearchHitAsync();
+                return;
+            }
+            _originalHits.AddRange(result.Hits);
+            _originalTruncated = result.Truncated;
+            _originalHitIndex = priorCount;
+            UpdateOriginalSearchChrome();
+            await LocateOriginalSearchHitAsync();
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch (Exception ex)
+        {
+            OriginalSearchStatus.Text = ex.Message;
+        }
     }
 
     private async Task LocateOriginalSearchHitAsync()
@@ -1982,36 +2129,65 @@ public sealed partial class ReaderPage : Page
             _segments.Count,
             ResolveListenScriptAsync,
             idx => _segments.FirstOrDefault(s => s.Idx == idx)?.DisplayLabel ?? $"段 {idx + 1}",
-            () => new SystemNeuralEngine());
+            () => new SystemNeuralEngine(),
+            idx => _segments.FirstOrDefault(s => s.Idx == idx)?.Chapter
+                ?? (_hydrated.TryGetValue(idx, out var h) ? h.Chapter : null));
         var start = _selected?.Idx ?? _segments[0].Idx;
         _listen.Start(mode, start);
         UpdateListenBar();
     }
 
-    private async Task<ListenScript> ResolveListenScriptAsync(int idx, ListenMode mode, CancellationToken ct)
+    private async Task<ListenScript> ResolveListenScriptAsync(
+        int idx,
+        ListenMode mode,
+        ListenChapterSpeakContext chapterContext,
+        CancellationToken ct)
     {
+        var row = _segments.FirstOrDefault(s => s.Idx == idx);
+        var segmentLabel = row?.Label;
+        var chapter = row?.Chapter;
         if (mode is ListenMode.Summary or ListenMode.Detailed)
         {
-            var row = _segments.FirstOrDefault(s => s.Idx == idx);
             var json = row?.SummaryJson;
             if (string.IsNullOrEmpty(json) && _hydrated.TryGetValue(idx, out var cached))
+            {
                 json = cached.SummaryJson;
+                chapter ??= cached.Chapter;
+            }
             var status = row?.SummaryStatus ?? "";
             if (string.IsNullOrEmpty(json) && status is "ready" or "done")
             {
                 var sum = await App.Core.FetchSegmentSummaryAsync(_bookId, idx, ct).ConfigureAwait(true);
                 json = sum.SummaryJson;
-                if (row is not null) row.SummaryJson = json;
-                if (_hydrated.TryGetValue(idx, out var hyd)) hyd.SummaryJson = json;
+                if (row is not null)
+                {
+                    row.SummaryJson = json;
+                    if (!string.IsNullOrWhiteSpace(sum.Label)) row.Label = sum.Label;
+                }
+                if (_hydrated.TryGetValue(idx, out var hyd))
+                {
+                    hyd.SummaryJson = json;
+                    if (!string.IsNullOrWhiteSpace(sum.Label)) hyd.Label = sum.Label;
+                }
+                segmentLabel = row?.Label ?? sum.Label ?? segmentLabel;
             }
-            return ListenScriptBuilder.Build(mode, json, null);
+            return ListenScriptBuilder.Build(
+                mode, json, null, segmentLabel: segmentLabel, chapter: chapter, chapterContext: chapterContext);
         }
 
         if (_hydrated.TryGetValue(idx, out var source) && !string.IsNullOrEmpty(source.RawText))
-            return ListenScriptBuilder.Build(ListenMode.Original, null, source.RawText);
+            return ListenScriptBuilder.Build(
+                ListenMode.Original, null, source.RawText,
+                segmentLabel: segmentLabel ?? source.Label,
+                chapter: chapter ?? source.Chapter,
+                chapterContext: chapterContext);
         var detail = await App.Core.GetSegmentAsync(_bookId, idx, ct).ConfigureAwait(true);
         _hydrated[idx] = detail;
-        return ListenScriptBuilder.Build(ListenMode.Original, null, detail.RawText);
+        return ListenScriptBuilder.Build(
+            ListenMode.Original, null, detail.RawText,
+            segmentLabel: detail.Label ?? segmentLabel,
+            chapter: detail.Chapter ?? chapter,
+            chapterContext: chapterContext);
     }
 
     private void ListenPause_Click(object sender, RoutedEventArgs e) => _listen.TogglePause();
@@ -2060,6 +2236,64 @@ public sealed partial class ReaderPage : Page
             }
         }
         _listenRateSuppress = false;
+        ApplyListenFollowHighlight();
+    }
+
+    private void ApplyListenFollowHighlight()
+    {
+        var highlight = _listen.IsActive ? _listen.ActiveHighlight : null;
+        SegmentTitle.Background = highlight is ListenHighlightAnchor.SegmentTitle
+            ? ListenFollowBrush
+            : null;
+
+        if (_showRaw)
+        {
+            if (_selected is not null)
+                RenderOriginalBody(_selected.RawText ?? "", _selected.Translation);
+            return;
+        }
+
+        int? sentenceIdx = highlight is ListenHighlightAnchor.SummarySentence s ? s.Index : null;
+        PaintLinedText(ThreeSentenceText, _listenSentenceLines, sentenceIdx, fallbackText: ThreeSentenceText.Text);
+
+        int? keyIdx = highlight switch
+        {
+            ListenHighlightAnchor.SectionBullets => 0,
+            ListenHighlightAnchor.Bullet b => b.Index + 1,
+            _ => null,
+        };
+        PaintLinedText(KeyPointsText, _listenKeyPointLines, keyIdx, fallbackText: KeyPointsText.Text);
+        // No auto-scroll for listen follow-along (fights continuous play / jump).
+    }
+
+    private static void PaintLinedText(
+        TextBlock block,
+        IReadOnlyList<string> lines,
+        int? activeIndex,
+        string? fallbackText)
+    {
+        if (lines.Count == 0)
+        {
+            block.Text = fallbackText ?? "";
+            return;
+        }
+
+        block.Inlines.Clear();
+        for (var i = 0; i < lines.Count; i++)
+        {
+            if (i > 0)
+                block.Inlines.Add(new Run { Text = "\n" });
+            if (activeIndex == i)
+            {
+                var span = new Span { Background = ListenFollowBrush };
+                span.Inlines.Add(new Run { Text = lines[i] });
+                block.Inlines.Add(span);
+            }
+            else
+            {
+                block.Inlines.Add(new Run { Text = lines[i] });
+            }
+        }
     }
 
     private static string RateTag(float rate)

@@ -60,7 +60,6 @@ async def test_cursor_requires_api_key():
     cursor = ModelResource(
         id="cursor",
         provider="cursor",
-        base_url="https://cursor-proxy.example/v1",
         model="composer-2.5",
     )
     router = _router(chat=[cursor])
@@ -69,35 +68,28 @@ async def test_cursor_requires_api_key():
 
 
 @pytest.mark.asyncio
-async def test_cursor_requires_base_url():
+async def test_cursor_chat_uses_sdk_path(tmp_path, monkeypatch):
     cursor = ModelResource(
         id="cursor",
         provider="cursor",
         model="composer-2.5",
         api_key="cursor-test-key",
     )
-    router = _router(chat=[cursor])
-    with pytest.raises(RuntimeError, match="base_url not set"):
-        await router.chat([{"role": "user", "content": "hi"}], profile="chat")
-
-
-@pytest.mark.asyncio
-async def test_cursor_chat_uses_openai_path():
-    cursor = ModelResource(
-        id="cursor",
-        provider="cursor",
-        base_url="https://cursor-proxy.example/v1",
-        model="composer-2.5",
-        api_key="cursor-test-key",
+    router = ProfileModelRouter(
+        ModelsConfig(
+            resources=[cursor],
+            chat=ProfileRoute(priority=["cursor"]),
+            summarize=ProfileRoute(priority=["cursor"]),
+        ),
+        data_dir=tmp_path,
     )
-    router = _router(chat=[cursor])
 
-    async def fake_openai(resource, messages, *, json_mode, timeout):
+    async def fake_cursor(resource, messages, *, json_mode):
         assert resource.id == "cursor"
         assert messages == [{"role": "user", "content": "hi"}]
         return '{"answer":"hello"}'
 
-    with patch.object(router, "_openai_chat", side_effect=fake_openai):
+    with patch.object(router, "_cursor_chat", side_effect=fake_cursor):
         raw = await router.chat([{"role": "user", "content": "hi"}], profile="chat")
 
     assert raw == '{"answer":"hello"}'
@@ -105,21 +97,27 @@ async def test_cursor_chat_uses_openai_path():
 
 
 @pytest.mark.asyncio
-async def test_cursor_stream_uses_openai_path():
+async def test_cursor_stream_uses_sdk_path(tmp_path):
     cursor = ModelResource(
         id="cursor",
         provider="cursor",
-        base_url="https://cursor-proxy.example/v1",
         model="composer-2.5",
         api_key="cursor-test-key",
     )
-    router = _router(chat=[cursor])
+    router = ProfileModelRouter(
+        ModelsConfig(
+            resources=[cursor],
+            chat=ProfileRoute(priority=["cursor"]),
+            summarize=ProfileRoute(priority=["cursor"]),
+        ),
+        data_dir=tmp_path,
+    )
 
-    async def fake_stream(resource, messages, *, json_mode, timeout):
+    async def fake_stream(resource, messages, *, json_mode):
         yield "streamed "
         yield "answer"
 
-    with patch.object(router, "_openai_chat_stream", side_effect=fake_stream):
+    with patch.object(router, "_cursor_chat_stream", side_effect=fake_stream):
         stream = await router.chat(
             [{"role": "user", "content": "hi"}],
             profile="chat",
@@ -130,14 +128,14 @@ async def test_cursor_stream_uses_openai_path():
     assert chunks == ["streamed ", "answer"]
 
 
-def test_format_chain_failure_cursor_base_url_hint():
+def test_format_chain_failure_cursor_sdk_hint():
     resources = [ModelResource(id="cursor", provider="cursor", model="composer-2.5")]
     msg = _format_chain_failure(
         resources,
-        RuntimeError("cursor base_url not set"),
+        RuntimeError("cursor sdk not installed"),
     )
     assert "已尝试：cursor" in msg
-    assert "OpenAI 兼容 Base URL" in msg
+    assert "下载 Cursor SDK" in msg
 
 
 def test_format_chain_failure_connect_error_hint():

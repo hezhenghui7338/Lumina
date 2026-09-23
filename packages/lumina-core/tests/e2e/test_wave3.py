@@ -274,7 +274,7 @@ AI 初评: 91  字数: 800
     assert art.get("one_liner")
     assert art.get("score_hint") == 91.0
     assert art.get("detail")
-    assert isinstance(art.get("reasons"), list) and art["reasons"]
+    assert isinstance(art.get("reasons"), list) and art["reasons"] == []
     assert isinstance(art.get("viewpoints"), list)
     assert isinstance(art.get("meta"), dict)
 

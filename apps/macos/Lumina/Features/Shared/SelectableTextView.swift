@@ -38,6 +38,22 @@ struct LuminaSelectableText: NSViewRepresentable {
     var lineSpacing: CGFloat = LuminaTheme.summaryBulletLineSpacing
     var foreground: Color = LuminaTheme.textPrimary
     var highlightUTF16: NSRange? = nil
+    /// Search uses a stronger tint; listen follow-along uses a lighter bar.
+    var highlightStyle: TextHighlightStyle = .search
+
+    enum TextHighlightStyle: Equatable {
+        case search
+        case listen
+
+        var backgroundNSColor: NSColor {
+            switch self {
+            case .search:
+                return NSColor(LuminaTheme.accent).withAlphaComponent(0.35)
+            case .listen:
+                return NSColor(LuminaTheme.listenFollowHighlight)
+            }
+        }
+    }
 
     func makeNSView(context: Context) -> IntrinsicSizingTextContainer {
         let container = IntrinsicSizingTextContainer()
@@ -78,16 +94,24 @@ struct LuminaSelectableText: NSViewRepresentable {
         let textChanged = textView.textStorage?.string != text
             || textView.font?.pointSize != fontSize
             || textView.textColor != NSColor(foreground)
+            || abs(textView.appliedLineSpacing - lineSpacing) > 0.001
         if textChanged {
             textView.textStorage?.setAttributedString(attributed)
+            textView.appliedLineSpacing = lineSpacing
             textView.invalidateIntrinsicContentSize()
             textView.superview?.invalidateIntrinsicContentSize()
         }
-        Self.applyHighlight(highlightUTF16, on: textView, textChanged: textChanged)
+        Self.applyHighlight(
+            highlightUTF16,
+            style: highlightStyle,
+            on: textView,
+            textChanged: textChanged
+        )
     }
 
     private static func applyHighlight(
         _ range: NSRange?,
+        style: TextHighlightStyle,
         on textView: LuminaSelectableTextView,
         textChanged: Bool
     ) {
@@ -95,7 +119,8 @@ struct LuminaSelectableText: NSViewRepresentable {
         let length = textView.string.utf16.count
         let full = NSRange(location: 0, length: length)
         let previous = textView.appliedHighlightUTF16
-        let sameRange = previous == range
+        let previousStyle = textView.appliedHighlightStyle
+        let sameRange = previous == range && previousStyle == style
         if textChanged || !sameRange {
             if full.length > 0 {
                 layoutManager.removeTemporaryAttribute(.backgroundColor, forCharacterRange: full)
@@ -103,15 +128,21 @@ struct LuminaSelectableText: NSViewRepresentable {
             if let range, NSMaxRange(range) <= length, range.length > 0 {
                 layoutManager.addTemporaryAttribute(
                     .backgroundColor,
-                    value: NSColor(LuminaTheme.accent).withAlphaComponent(0.35),
+                    value: style.backgroundNSColor,
                     forCharacterRange: range
                 )
                 textView.appliedHighlightUTF16 = range
-                DispatchQueue.main.async {
-                    reveal(range, in: textView)
+                textView.appliedHighlightStyle = style
+                // Search jumps to the hit; listen follow-along must not scroll
+                // (PRD §5.3.1 / ListenFollowHighlightPolicy.scrollsUtteranceIntoView).
+                if style == .search {
+                    DispatchQueue.main.async {
+                        reveal(range, in: textView)
+                    }
                 }
             } else {
                 textView.appliedHighlightUTF16 = nil
+                textView.appliedHighlightStyle = nil
             }
         }
     }
@@ -140,6 +171,8 @@ struct LuminaSelectableText: NSViewRepresentable {
 final class LuminaSelectableTextView: NSTextView {
     private var lastLayoutWidth: CGFloat = -1
     var appliedHighlightUTF16: NSRange?
+    var appliedHighlightStyle: LuminaSelectableText.TextHighlightStyle?
+    var appliedLineSpacing: CGFloat = 0
 
     var appliedLayoutWidth: CGFloat { lastLayoutWidth }
 

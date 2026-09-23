@@ -16,7 +16,7 @@ public sealed record ListenSpeakRequest(
 public interface IListenEngine : IDisposable
 {
     bool IsPaused { get; }
-    Task SpeakAsync(ListenSpeakRequest request, CancellationToken ct);
+    Task SpeakAsync(ListenSpeakRequest request, CancellationToken ct, Action<int>? onUtteranceStart = null);
     void Pause();
     void Resume();
     void Stop();
@@ -30,7 +30,10 @@ public sealed class SystemNeuralEngine : IListenEngine
     private bool _paused;
     public bool IsPaused => _paused;
 
-    public async Task SpeakAsync(ListenSpeakRequest request, CancellationToken ct)
+    public async Task SpeakAsync(
+        ListenSpeakRequest request,
+        CancellationToken ct,
+        Action<int>? onUtteranceStart = null)
     {
         Stop();
         var token = Interlocked.Increment(ref _generation);
@@ -48,11 +51,12 @@ public sealed class SystemNeuralEngine : IListenEngine
             // Some voices ignore out-of-range rates; keep going.
         }
 
-        foreach (var text in request.Texts)
+        for (var i = 0; i < request.Texts.Count; i++)
         {
             ct.ThrowIfCancellationRequested();
             if (token != _generation) throw new OperationCanceledException();
-            var stream = await synth.SynthesizeTextToStreamAsync(text).AsTask(ct).ConfigureAwait(true);
+            onUtteranceStart?.Invoke(i);
+            var stream = await synth.SynthesizeTextToStreamAsync(request.Texts[i]).AsTask(ct).ConfigureAwait(true);
             await PlayAsync(stream, stream.ContentType, token, ct).ConfigureAwait(true);
         }
     }
