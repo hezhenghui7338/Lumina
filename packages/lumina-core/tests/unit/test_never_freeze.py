@@ -1000,6 +1000,16 @@ def test_should_offload_cpu_respects_size_and_inline_env(tmp_path, monkeypatch):
     cmd = cpu_worker_command(tmp_path / "job.json")
     assert "-m" in cmd
     assert "lumina_core.jobs.cpu_worker" in cmd
+    assert Path(cmd[-1]).is_absolute()
+
+
+def test_format_worker_exception_attaches_missing_filename():
+    from lumina_core.jobs.cpu_worker import format_worker_exception
+
+    bare = FileNotFoundError(2, "No such file or directory")
+    assert format_worker_exception(bare) == "[Errno 2] No such file or directory"
+    with_path = FileNotFoundError(2, "No such file or directory", "/tmp/original.azw3")
+    assert "/tmp/original.azw3" in format_worker_exception(with_path)
 
 
 def test_health_news_settings_other_book_live_during_cpu_process_ingest(

@@ -14,10 +14,8 @@ from lumina_core.chunker.markers import (
     is_hash_heading_line,
     is_page_line,
     match_structure_line,
-    parse_heading_line,
-)
+    parse_heading_line)
 from lumina_core.chunker.roles import DocumentRole, role_families_differ, role_family
-
 
 class TextStyle(str, Enum):
     PROSE = "prose"
@@ -26,13 +24,11 @@ class TextStyle(str, Enum):
     LIST = "list"
     HEADING = "heading"
 
-
 class BoundaryStrength(IntEnum):
     FORBIDDEN = 0
     NORMAL = 1
     STRONG = 2
     HARD = 3
-
 
 @dataclass(frozen=True)
 class TextAtom:
@@ -47,11 +43,9 @@ class TextAtom:
     def content_chars(self) -> int:
         return len(re.sub(r"\s+", "", self.text))
 
-
 class PairScorer(Protocol):
     def score_pairs(self, pairs: list[tuple[str, str]]) -> list[float]:
         """Return topic novelty in [0, 1] for every adjacent pair."""
-
 
 _LIST_LINE = re.compile(r"^\s*(?:[-*+]\s+|\d+[.)、]\s*|[一二三四五六七八九十]+、)")
 # True sentence ends. Latin .!? only count before whitespace/end (not 3.14 / Mr.).
@@ -75,16 +69,13 @@ SEGMENT_MIN_CHARS = 500
 SEGMENT_HARD_MIN_CHARS = 200
 _CHAPTER_ORDINAL = re.compile(r"第[零一二三四五六七八九十百千\d]+[章节篇回]")
 
-
 def _segment_floor(min_chars: int, max_chars: int) -> int:
     """Packer soft-window start. A tiny target below 500 wins."""
     return max(1, min(min_chars, max_chars))
 
-
 def _fragment_floor(min_chars: int, max_chars: int) -> int:
     """Merge only true fragments. Topic-shift cuts may sit between 500 and 0.6T."""
     return min(_segment_floor(min_chars, max_chars), SEGMENT_MIN_CHARS)
-
 
 def detect_style(value: str) -> TextStyle:
     """Classify a local block; uncertainty deliberately falls back to prose."""
@@ -112,14 +103,12 @@ def detect_style(value: str) -> TextStyle:
             return TextStyle.CLASSICAL
     return TextStyle.PROSE
 
-
 def atomize_text(
     text: str,
     *,
     target_chars: int,
     max_chars: int,
-    yielder: GilYielder | None = None,
-) -> list[TextAtom]:
+    yielder: GilYielder | None = None) -> list[TextAtom]:
     """Split into contiguous structural atoms without losing separators."""
     if not text:
         return []
@@ -145,8 +134,7 @@ def atomize_text(
             atoms[-1] = replace(
                 previous,
                 end=end,
-                text=text[previous.start:end],
-            )
+                text=text[previous.start:end])
             continue
         style = detect_style(value)
         stripped_first = value.strip().splitlines()[0] if value.strip() else ""
@@ -176,7 +164,13 @@ def atomize_text(
         elif is_hard_heading_line(stripped_first):
             boundary = BoundaryStrength.HARD
         elif parsed is not None:
-            boundary = BoundaryStrength.STRONG
+            # Hash structure markers (#…###### [§…]) are pack barriers so deep
+            # TOC leaves (文章) are not merged away under the soft floor.
+            boundary = (
+                BoundaryStrength.HARD
+                if is_hash_heading_line(stripped_first)
+                else BoundaryStrength.STRONG
+            )
         elif previous_was_heading:
             boundary = BoundaryStrength.FORBIDDEN
         else:
@@ -190,8 +184,7 @@ def atomize_text(
                 end,
                 preferred_chars=max_chars,
                 max_chars=max_chars,
-                yielder=coop,
-            )
+                yielder=coop)
         else:
             pieces = [(start, end)]
         for piece_index, (piece_start, piece_end) in enumerate(pieces):
@@ -204,8 +197,7 @@ def atomize_text(
                     end=piece_end,
                     text=piece_text,
                     style=piece_style,
-                    boundary_before=piece_boundary,
-                )
+                    boundary_before=piece_boundary)
             )
         previous_was_heading = style is TextStyle.HEADING
         coop.bump(end - start)
@@ -217,10 +209,8 @@ def atomize_text(
             end=first.end,
             text=first.text,
             style=first.style,
-            boundary_before=BoundaryStrength.HARD,
-        )
+            boundary_before=BoundaryStrength.HARD)
     return _soften_heading_shell_runs(atoms)
-
 
 def adaptive_merge(
     text: str,
@@ -231,8 +221,7 @@ def adaptive_merge(
     max_chars: int,
     min_chars: int,
     topic_shift_threshold: float,
-    yielder: GilYielder | None = None,
-) -> list[tuple[int, int]]:
+    yielder: GilYielder | None = None) -> list[tuple[int, int]]:
     """Pack whole paragraphs until max_chars; topic shift may stop early at a paragraph."""
     if not atoms:
         return []
@@ -276,7 +265,8 @@ def adaptive_merge(
         )
         complete_poem = group_style is TextStyle.POETRY and boundary >= BoundaryStrength.STRONG
         section_break = boundary >= BoundaryStrength.STRONG and atom.style is TextStyle.HEADING
-        chapter_hard = boundary is BoundaryStrength.HARD
+        structure_heading = match_structure_line(_atom_first_line(atom)) is not None
+        chapter_hard = boundary is BoundaryStrength.HARD or structure_heading
         chapter_like = _bodymatter_chapter_atom(atom)
         incoming_key = _body_chapter_key(atom)
         same_chapter_heading = (
@@ -357,8 +347,7 @@ def adaptive_merge(
         atoms,
         max_chars=max_chars,
         min_chars=min_chars,
-        yielder=coop,
-    )
+        yielder=coop)
     return _enforce_minimum_spans(
         spans,
         atoms,
@@ -366,9 +355,7 @@ def adaptive_merge(
         text_length=len(text),
         max_chars=max_chars,
         min_chars=min_chars,
-        yielder=coop,
-    )
-
+        yielder=coop)
 
 def _information_size(atom: TextAtom) -> float:
     multiplier = {
@@ -380,7 +367,6 @@ def _information_size(atom: TextAtom) -> float:
     }[atom.style]
     return atom.content_chars * multiplier
 
-
 def _role_hard_starts(atoms: list[TextAtom]) -> set[int]:
     starts: set[int] = set()
     for index in range(1, len(atoms)):
@@ -388,10 +374,8 @@ def _role_hard_starts(atoms: list[TextAtom]) -> set[int]:
             starts.add(atoms[index].start)
     return starts
 
-
 _HEADING_SHELL_MAX_CHARS = 80
 _SEPARATOR_ONLY = re.compile(r"^[\s\-—_=＊※\*]+$")
-
 
 def _is_heading_shell(atom: TextAtom) -> bool:
     """True for marker / 第N章 title crumbs with no substantial prose body."""
@@ -408,7 +392,8 @@ def _is_heading_shell(atom: TextAtom) -> bool:
         return False
     if atom.role is DocumentRole.TOC:
         return True
-    if all(
+    # Title + any non-heading body line is a real section leaf, not a TOC crumb.
+    return all(
         is_hard_heading_line(line)
         or match_structure_line(line) is not None
         or (
@@ -416,19 +401,11 @@ def _is_heading_shell(atom: TextAtom) -> bool:
             and not _SEPARATOR_ONLY.match(re.sub(r"\s+", "", line))
         )
         for line in lines
-    ):
-        return True
-    first = lines[0]
-    return bool(
-        (is_hard_heading_line(first) or match_structure_line(first) is not None)
-        and atom.content_chars <= _HEADING_SHELL_MAX_CHARS
     )
-
 
 def _span_is_heading_shell_only(atoms: list[TextAtom], start: int, end: int) -> bool:
     span_atoms = [atom for atom in atoms if start <= atom.start < end]
     return bool(span_atoms) and all(_is_heading_shell(atom) for atom in span_atoms)
-
 
 def _soften_heading_shell_runs(atoms: list[TextAtom]) -> list[TextAtom]:
     """Downgrade HARD→STRONG inside consecutive title-only runs (TOC-like lists)."""
@@ -449,18 +426,15 @@ def _soften_heading_shell_runs(atoms: list[TextAtom]) -> list[TextAtom]:
                 if atom.boundary_before is BoundaryStrength.HARD:
                     out[offset] = replace(
                         atom,
-                        boundary_before=BoundaryStrength.STRONG,
-                    )
+                        boundary_before=BoundaryStrength.STRONG)
         index = run_end
     return out
-
 
 def _atom_first_line(atom: TextAtom) -> str:
     stripped = atom.text.strip()
     if not stripped:
         return ""
     return stripped.splitlines()[0]
-
 
 def _bodymatter_chapter_atom(atom: TextAtom) -> bool:
     """True for 第N章-like headings in body text, not TOC/front crumbs or ### sections."""
@@ -469,14 +443,12 @@ def _bodymatter_chapter_atom(atom: TextAtom) -> bool:
         and is_hard_heading_line(_atom_first_line(atom))
     )
 
-
 def _normalize_chapter_key(title: str) -> str:
     stripped = clean_structure_title(title)
     match = _CHAPTER_ORDINAL.search(stripped)
     if match:
         return match.group(0)
     return stripped
-
 
 def _body_chapter_key(atom: TextAtom) -> str | None:
     first = _atom_first_line(atom)
@@ -489,7 +461,6 @@ def _body_chapter_key(atom: TextAtom) -> str | None:
         return None
     return _normalize_chapter_key(parsed[1])
 
-
 def _atom_at_offset(atoms: list[TextAtom], offset: int) -> TextAtom | None:
     for atom in atoms:
         if atom.start == offset:
@@ -498,8 +469,10 @@ def _atom_at_offset(atoms: list[TextAtom], offset: int) -> TextAtom | None:
             return atom
     return None
 
-
-def _span_chapter_key(atoms: list[TextAtom], start: int, end: int) -> str | None:
+def _span_chapter_key(
+    atoms: list[TextAtom],
+    start: int,
+    end: int) -> str | None:
     for atom in atoms:
         if atom.end <= start:
             continue
@@ -510,18 +483,24 @@ def _span_chapter_key(atoms: list[TextAtom], start: int, end: int) -> str | None
             return key
     return None
 
-
-def _span_opens_body_chapter(atoms: list[TextAtom], start: int) -> bool:
+def _span_opens_body_chapter(
+    atoms: list[TextAtom],
+    start: int) -> bool:
     atom = _atom_at_offset(atoms, start)
     return atom is not None and _body_chapter_key(atom) is not None
 
-
-def _cross_chapter_starts(atoms: list[TextAtom]) -> set[int]:
-    """Role-family changes and a *new* body chapter (not duplicate 第N章 shells)."""
+def _cross_chapter_starts(
+    atoms: list[TextAtom]) -> set[int]:
+    """Role changes, body-chapter keys, and Lumina structure heading barriers."""
     starts = set(_role_hard_starts(atoms))
     last_key: str | None = None
     first_start = atoms[0].start if atoms else 0
     for atom in atoms:
+        if atom.start > first_start and (
+            atom.boundary_before is BoundaryStrength.HARD
+            or match_structure_line(_atom_first_line(atom)) is not None
+        ):
+            starts.add(atom.start)
         key = _body_chapter_key(atom)
         if key is None:
             continue
@@ -533,13 +512,11 @@ def _cross_chapter_starts(atoms: list[TextAtom]) -> set[int]:
         last_key = key
     return starts
 
-
 def _blocks_same_chapter_merge(
     atoms: list[TextAtom],
     role_hard: set[int],
     later_start: int,
-    earlier: tuple[int, int],
-) -> bool:
+    earlier: tuple[int, int]) -> bool:
     """True if joining `later_start` onto `earlier` would cross role or chapter."""
     if later_start in role_hard:
         return True
@@ -554,7 +531,6 @@ def _blocks_same_chapter_merge(
         return True
     return later_key != earlier_key
 
-
 def _complete_paragraph_starts(atoms: list[TextAtom]) -> set[int]:
     return {
         atom.start
@@ -562,12 +538,10 @@ def _complete_paragraph_starts(atoms: list[TextAtom]) -> set[int]:
         if index > 0 and atom.boundary_before >= BoundaryStrength.STRONG
     }
 
-
 def _preferred_atom_chars(
     style: TextStyle,
     target_chars: int,
-    max_chars: int,
-) -> int:
+    max_chars: int) -> int:
     if style in (TextStyle.POETRY, TextStyle.HEADING):
         return max_chars
     multiplier = {
@@ -577,7 +551,6 @@ def _preferred_atom_chars(
     }.get(style, 1.0)
     return min(max_chars, max(120, int(target_chars / multiplier)))
 
-
 def _ends_with_sentence(value: str) -> bool:
     stripped = value.rstrip(" \t\r")
     if not stripped:
@@ -586,7 +559,6 @@ def _ends_with_sentence(value: str) -> bool:
         if match.end() == len(stripped):
             return True
     return False
-
 
 def _indent_cut_offsets(text: str, start: int, limit: int) -> list[int]:
     if limit <= start:
@@ -600,13 +572,11 @@ def _indent_cut_offsets(text: str, start: int, limit: int) -> list[int]:
                 offsets.add(pos)
     return sorted(offsets)
 
-
 def _paragraph_cut_offsets(
     text: str,
     start: int,
     limit: int,
-    yielder: GilYielder | None = None,
-) -> list[int]:
+    yielder: GilYielder | None = None) -> list[int]:
     """Paragraph cuts in (start, limit]. Blank lines, sentence-ending newline, indent."""
     if limit <= start:
         return []
@@ -666,7 +636,6 @@ def _paragraph_cut_offsets(
                     offsets.add(pos)
     return sorted(offsets)
 
-
 def _sentence_cut_offsets(text: str, start: int, limit: int) -> list[int]:
     if limit <= start:
         return []
@@ -677,7 +646,6 @@ def _sentence_cut_offsets(text: str, start: int, limit: int) -> list[int]:
         if start < pos <= limit:
             offsets.append(pos)
     return offsets
-
 
 def _weak_cut_offsets(text: str, start: int, limit: int) -> list[int]:
     if limit <= start:
@@ -694,7 +662,6 @@ def _weak_cut_offsets(text: str, start: int, limit: int) -> list[int]:
             offsets.add(pos)
     return sorted(offsets)
 
-
 def _last_cut_in_windows(offsets: list[int], preferred_limit: int) -> int | None:
     """Last cut at or before preferred, else last cut still within the hard window."""
     if not offsets:
@@ -704,15 +671,13 @@ def _last_cut_in_windows(offsets: list[int], preferred_limit: int) -> int | None
         return preferred[-1]
     return offsets[-1]
 
-
 def _best_cut_offset(
     text: str,
     cursor: int,
     *,
     preferred_chars: int,
     max_chars: int,
-    end: int,
-) -> int | None:
+    end: int) -> int | None:
     """Chapter/paragraph cuts in the max window beat a closer sentence inside target."""
     remaining = end - cursor
     if remaining <= preferred_chars:
@@ -722,14 +687,12 @@ def _best_cut_offset(
 
     paragraph_cut = _last_cut_in_windows(
         _paragraph_cut_offsets(text, cursor, hard_limit),
-        preferred_limit,
-    )
+        preferred_limit)
     if paragraph_cut is not None:
         return paragraph_cut
     sentence_cut = _last_cut_in_windows(
         _sentence_cut_offsets(text, cursor, hard_limit),
-        preferred_limit,
-    )
+        preferred_limit)
     if sentence_cut is not None:
         return sentence_cut
 
@@ -743,7 +706,6 @@ def _best_cut_offset(
         return hard_limit
     return None
 
-
 def _pick_rebalance_split(
     text: str,
     *,
@@ -753,8 +715,7 @@ def _pick_rebalance_split(
     upper: int,
     target: int,
     max_chars: int,
-    atom_starts: list[int] | None = None,
-) -> int:
+    atom_starts: list[int] | None = None) -> int:
     """Keep paragraph-complete splits even when one side is below the floor."""
 
     def closest(candidates: list[int]) -> int:
@@ -804,7 +765,6 @@ def _pick_rebalance_split(
         return min(max(target, lower), upper)
     return min(max(target, combined_start + 1), combined_end - 1)
 
-
 def _span_has_toc(atoms: list[TextAtom], start: int, end: int) -> bool:
     span_atoms = [atom for atom in atoms if start <= atom.start < end]
     if not span_atoms:
@@ -816,15 +776,13 @@ def _span_has_toc(atoms: list[TextAtom], start: int, end: int) -> bool:
     # Heading-only crumb spans (directory lists without the word 目录).
     return len(span_atoms) >= 2 and all(_is_heading_shell(atom) for atom in span_atoms)
 
-
 def _merge_noise_fragments(
     spans: list[tuple[int, int]],
     atoms: list[TextAtom],
     *,
     max_chars: int,
     min_chars: int,
-    yielder: GilYielder | None = None,
-) -> list[tuple[int, int]]:
+    yielder: GilYielder | None = None) -> list[tuple[int, int]]:
     """Pack TOC/metadata crumbs first, then rebalance leftovers to min_chars."""
     if len(spans) < 2:
         return spans
@@ -835,17 +793,14 @@ def _merge_noise_fragments(
         hard_starts=hard_starts,
         max_chars=max_chars,
         min_chars=min_chars,
-        yielder=yielder,
-    )
+        yielder=yielder)
     return _rebalance_toc_spans(
         packed,
         atoms,
         hard_starts=hard_starts,
         max_chars=max_chars,
         min_chars=min_chars,
-        yielder=yielder,
-    )
-
+        yielder=yielder)
 
 def _pack_synthetic_fragments(
     spans: list[tuple[int, int]],
@@ -854,8 +809,7 @@ def _pack_synthetic_fragments(
     hard_starts: set[int],
     max_chars: int,
     min_chars: int,
-    yielder: GilYielder | None = None,
-) -> list[tuple[int, int]]:
+    yielder: GilYielder | None = None) -> list[tuple[int, int]]:
     tiny_limit = min(120, max(24, min_chars // 10))
     role_hard = _role_hard_starts(atoms)
     out: list[tuple[int, int]] = []
@@ -906,7 +860,6 @@ def _pack_synthetic_fragments(
             out.append((start, end))
     return out
 
-
 def _rebalance_toc_spans(
     spans: list[tuple[int, int]],
     atoms: list[TextAtom],
@@ -914,8 +867,7 @@ def _rebalance_toc_spans(
     hard_starts: set[int],
     max_chars: int,
     min_chars: int,
-    yielder: GilYielder | None = None,
-) -> list[tuple[int, int]]:
+    yielder: GilYielder | None = None) -> list[tuple[int, int]]:
     atom_starts = sorted({atom.start for atom in atoms})
     balanced: list[tuple[int, int]] = []
     for index, (start, end) in enumerate(spans):
@@ -938,13 +890,11 @@ def _rebalance_toc_spans(
             if candidates:
                 split_at = min(
                     candidates,
-                    key=lambda point: abs(point - (previous_start + end) / 2),
-                )
+                    key=lambda point: abs(point - (previous_start + end) / 2))
                 balanced[-1] = (previous_start, split_at)
                 start = split_at
         balanced.append((start, end))
     return balanced
-
 
 def _enforce_minimum_spans(
     spans: list[tuple[int, int]],
@@ -954,8 +904,7 @@ def _enforce_minimum_spans(
     text_length: int,
     max_chars: int,
     min_chars: int,
-    yielder: GilYielder | None = None,
-) -> list[tuple[int, int]]:
+    yielder: GilYielder | None = None) -> list[tuple[int, int]]:
     """Merge short spans to ≥200 (forward, may cross chapter) and rebalance crumbs."""
     packer_floor = _segment_floor(min_chars, max_chars)
     fragment_floor = _fragment_floor(min_chars, max_chars)
@@ -987,6 +936,8 @@ def _enforce_minimum_spans(
         if needs_hard:
             # Hard floor: chapter-opening / title shells take 下文 (may cross chapter).
             # Mid-chapter crumbs before the next HARD prefer 上文 so they stay put.
+            # After a shell absorbs one body leaf, prev is no longer shell-only so the
+            # next structure leaf is not swallowed.
             nxt = i + 1
             crosses_next = nxt < len(out) and out[nxt][0] in hard_starts
             shell_only = _span_is_heading_shell_only(atoms, start, end)
@@ -1074,8 +1025,7 @@ def _enforce_minimum_spans(
                 upper=upper,
                 target=original_boundary,
                 max_chars=max_chars,
-                atom_starts=atom_starts,
-            )
+                atom_starts=atom_starts)
             if combined_start < split_at < combined_end:
                 # Never re-cut a hard-min merge into a title-only left shell.
                 if needs_hard and (split_at - combined_start) < hard_min:
@@ -1127,8 +1077,7 @@ def _enforce_minimum_spans(
                         atoms,
                         role_hard,
                         out[expanded_left][0],
-                        out[expanded_left - 1],
-                    )
+                        out[expanded_left - 1])
                 )
             )
             can_expand_right = next_right < len(out) and (
@@ -1142,8 +1091,7 @@ def _enforce_minimum_spans(
                         atoms,
                         role_hard,
                         out[next_right][0],
-                        (out[expanded_left][0], out[expanded_right][1]),
-                    )
+                        (out[expanded_left][0], out[expanded_right][1]))
                 )
             )
             if can_expand_left:
@@ -1161,8 +1109,7 @@ def _enforce_minimum_spans(
             floor=expand_floor,
             max_chars=max_chars,
             hard_starts=None if needs_hard else hard_starts,
-            yielder=yielder,
-        )
+            yielder=yielder)
         current = out[expanded_left : expanded_right + 1]
         if replacement == current:
             i += 1
@@ -1170,7 +1117,6 @@ def _enforce_minimum_spans(
         out[expanded_left : expanded_right + 1] = replacement
         i = max(0, expanded_left - 1)
     return out
-
 
 def _balanced_partition(
     text: str,
@@ -1182,8 +1128,7 @@ def _balanced_partition(
     floor: int,
     max_chars: int,
     hard_starts: set[int] | None = None,
-    yielder: GilYielder | None = None,
-) -> list[tuple[int, int]]:
+    yielder: GilYielder | None = None) -> list[tuple[int, int]]:
     interior = sorted(point for point in (hard_starts or ()) if start < point < end)
     if interior:
         points = [start, *interior, end]
@@ -1201,8 +1146,7 @@ def _balanced_partition(
                     floor=floor,
                     max_chars=max_chars,
                     hard_starts=None,
-                    yielder=yielder,
-                )
+                    yielder=yielder)
             )
         return out
     if part_count <= 1:
@@ -1240,8 +1184,7 @@ def _balanced_partition(
                 upper=upper,
                 target=target,
                 max_chars=max_chars,
-                atom_starts=atom_starts,
-            )
+                atom_starts=atom_starts)
         if boundary <= cursor:
             later = [point for point in paragraph_points if cursor < point < end]
             if not later:
@@ -1265,7 +1208,6 @@ def _balanced_partition(
     boundaries.append(end)
     return list(zip(boundaries, boundaries[1:]))
 
-
 def _looks_like_heading(line: str) -> bool:
     stripped = line.strip()
     if match_structure_line(stripped) and not is_page_line(stripped):
@@ -1276,7 +1218,6 @@ def _looks_like_heading(line: str) -> bool:
         return False
     return bool(re.fullmatch(r"[\w\u3400-\u9fff《》〈〉·：:—\- ]+", stripped))
 
-
 def _split_oversized_span(
     text: str,
     start: int,
@@ -1284,8 +1225,7 @@ def _split_oversized_span(
     *,
     preferred_chars: int,
     max_chars: int,
-    yielder: GilYielder | None = None,
-) -> list[tuple[int, int]]:
+    yielder: GilYielder | None = None) -> list[tuple[int, int]]:
     pieces: list[tuple[int, int]] = []
     cursor = start
     while end - cursor > preferred_chars:
@@ -1296,8 +1236,7 @@ def _split_oversized_span(
             cursor,
             preferred_chars=preferred_chars,
             max_chars=max_chars,
-            end=end,
-        )
+            end=end)
         if split_at is None or split_at <= cursor or split_at >= end:
             break
         pieces.append((cursor, split_at))

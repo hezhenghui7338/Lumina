@@ -1562,10 +1562,14 @@ class JobQueue:
         summary_llm_attempts: int,
         summary_quality_relaxed: bool = False,
     ) -> bool:
+        # Structure tertiary (ingest/outline) wins: do not overwrite non-empty label.
+        existing = self._segments_repo.get(segment_id) or {}
+        existing_label = str(existing.get("label") or "").strip()
+        stored_label = existing_label[:20] if existing_label else label
         self._segments_repo.update_summary(
             segment_id,
             summary_json=summary_json,
-            label=label,
+            label=stored_label,
             anchor_label=anchor_label,
             status="ready",
             summary_provider=resource_id,

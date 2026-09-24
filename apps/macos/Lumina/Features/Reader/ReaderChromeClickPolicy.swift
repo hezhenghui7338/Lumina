@@ -93,9 +93,12 @@ struct ReaderChromeTextActionButtonStyle: ButtonStyle {
 
 /// Icon chrome actions: no system bezel, press dims. Does not set
 /// `foregroundStyle`, so an active icon can stay accent on its own.
+/// Expands to the full chrome-bar height so clicks on the icon's upper
+/// padding are not swallowed by the bar's empty `absorbsReaderChromeClicks`.
 struct ReaderChromeIconButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
+            .frame(maxHeight: .infinity)
             .contentShape(Rectangle())
             .opacity(configuration.isPressed ? 0.7 : 1)
     }
@@ -221,9 +224,17 @@ extension View {
     /// SwiftUI Button is not hit-testable, so without this a click on a greyed
     /// out control (or on the gap between controls) falls through and toggles
     /// the chrome.
+    ///
+    /// Absorb via a *background* layer — never put `.onTapGesture` on the
+    /// control container itself. On macOS, a parent tap gesture plus a custom
+    /// `ButtonStyle` commonly steals or nullifies the Button action, so 分段
+    /// looks tappable but does nothing.
     func absorbsReaderChromeClicks() -> some View {
-        contentShape(Rectangle())
-            .onTapGesture {}
+        background {
+            Color.clear
+                .contentShape(Rectangle())
+                .onTapGesture {}
+        }
     }
 
     /// Text commands on the reader action bar: no grey bezel, hover → accent.

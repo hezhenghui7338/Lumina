@@ -29,7 +29,7 @@ struct SegmentOutlineCatalogList: View, Equatable {
                 LazyVStack(alignment: .leading, spacing: 0) {
                     ForEach(rows) { row in
                         outlineCatalogRow(row)
-                            .id(row.isHeader ? "h:\(row.pathKey)" : "s:\(row.idx ?? 0)")
+                            .id(row.id)
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
                 }

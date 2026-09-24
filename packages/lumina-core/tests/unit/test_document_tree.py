@@ -20,8 +20,82 @@ def test_document_tree_nests_part_chapter_section():
     assert chapter.children[0].kind == "section"
     assert chapter.children[0].title == "一"
     body_offset = text.index("正文")
-    assert chapter_path_at(tree, body_offset) == "第一卷 · 第一章"
-    assert heading_path_at(tree, body_offset) == ["第一卷", "第一章"]
+    assert chapter_path_at(tree, body_offset) == "第一卷 · 第一章 · 一"
+    assert heading_path_at(tree, body_offset) == ["第一卷", "第一章", "一"]
+
+
+def test_volume_hash_markers_keep_later_chapters_under_volume():
+    """人性论-style: ## 卷 then ### 章 / ## 后续章 must stay under the volume."""
+    from lumina_core.chunker.tree import compress_outline_path
+
+    text = """## [§第一卷 知性]
+
+### [§第一章 观念的起源、组合、抽象、联系等]
+
+#### [§第一节 人类观念的起源]
+
+正文甲。
+
+## [§第二章 空间观念和时间观念]
+
+#### [§第一节 空间观念和时间观念的无限不可分性]
+
+正文乙。
+
+## [§第二卷 情感]
+
+### [§第一章 骄傲与谦卑]
+
+#### [§第一节 对象和原因的划分]
+
+正文丙。
+"""
+    tree = build_document_tree(text)
+    roots = [child.title for child in tree.children]
+    assert roots == ["第一卷 知性", "第二卷 情感"]
+    vol1 = tree.children[0]
+    assert [c.title for c in vol1.children] == [
+        "第一章 观念的起源、组合、抽象、联系等",
+        "第二章 空间观念和时间观念",
+    ]
+
+    path_a = heading_path_at(tree, text.index("正文甲"))
+    path_b = heading_path_at(tree, text.index("正文乙"))
+    path_c = heading_path_at(tree, text.index("正文丙"))
+    assert path_a[0] == "第一卷 知性"
+    assert path_b[0] == "第一卷 知性"
+    assert "第二章 空间观念和时间观念" in path_b
+    assert path_c[0] == "第二卷 情感"
+
+    assert compress_outline_path(path_a)[0] == [
+        "第一卷 知性",
+        "第一章 观念的起源、组合、抽象、联系等",
+    ]
+    assert compress_outline_path(path_b)[0] == [
+        "第一卷 知性",
+        "第二章 空间观念和时间观念",
+    ]
+    assert compress_outline_path(path_c)[0] == ["第二卷 情感", "第一章 骄傲与谦卑"]
+
+
+def test_nest_flat_outline_paths_infers_volume_chapter():
+    from lumina_core.chunker.tree import nest_flat_outline_paths
+
+    flat = [
+        ("第一卷 知性",),
+        ("第一章 观念的起源",),
+        ("第一节 人类观念的起源",),
+        ("第二章 空间观念",),
+        ("第二卷 情感",),
+        ("第一章 骄傲与谦卑",),
+    ]
+    nested = nest_flat_outline_paths(flat)
+    assert nested[0] == ("第一卷 知性",)
+    assert nested[1] == ("第一卷 知性", "第一章 观念的起源")
+    assert nested[2] == ("第一卷 知性", "第一章 观念的起源", "第一节 人类观念的起源")
+    assert nested[3] == ("第一卷 知性", "第二章 空间观念")
+    assert nested[4] == ("第二卷 情感",)
+    assert nested[5] == ("第二卷 情感", "第一章 骄傲与谦卑")
 
 
 def test_chapter_path_falls_back_to_section_when_no_chapter():
@@ -39,14 +113,15 @@ def test_heading_path_preface_is_single_level():
     assert heading_path_at(tree, offset) == ["序言"]
 
 
-def test_heading_path_does_not_include_section():
+def test_heading_path_includes_section():
     text = "# [§第一部分]\n\n## [§第一章]\n\n### [§第一节]\n\n章内小节。"
     tree = build_document_tree(text)
-    assert heading_path_at(tree, text.index("章内")) == ["第一部分", "第一章"]
+    assert heading_path_at(tree, text.index("章内")) == ["第一部分", "第一章", "第一节"]
 
 
 def test_heading_path_from_legacy_chapter_label():
     assert heading_path_from_chapter("§第一卷 · 第一章") == ["第一卷", "第一章"]
+    assert heading_path_from_chapter("§合集 · 年份 · 文章") == ["合集", "年份", "文章"]
     assert heading_path_from_chapter("§序言") == ["序言"]
     assert heading_path_from_chapter("§§第一章") == ["第一章"]
     assert heading_path_from_chapter(None) == []
@@ -55,7 +130,13 @@ def test_heading_path_from_legacy_chapter_label():
 
 def test_decode_heading_path_falls_back_to_chapter():
     assert decode_heading_path(None, chapter="§第一卷 · 第一章") == ["第一卷", "第一章"]
+    assert decode_heading_path(None, chapter="§合集 · 年份 · 文章") == [
+        "合集",
+        "年份",
+        "文章",
+    ]
     assert decode_heading_path('["第一部分", "第二章"]') == ["第一部分", "第二章"]
+    assert decode_heading_path('["合集", "年份", "文章"]') == ["合集", "年份", "文章"]
     assert decode_heading_path([" 第一部分 ", ""], chapter="§其它") == ["第一部分"]
     assert decode_heading_path('["§§第一章"]') == ["第一章"]
 

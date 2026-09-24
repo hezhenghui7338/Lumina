@@ -98,6 +98,80 @@ def test_update_summary_bumps_ready_count(db_conn):
     }
 
 
+def test_update_summary_preserves_existing_structure_label(db_conn):
+    book = _insert_book(db_conn, segment_count=1)
+    seg_id = str(uuid.uuid4())
+    SegmentRepo(db_conn).insert_many(
+        [
+            {
+                "id": seg_id,
+                "book_id": book["id"],
+                "idx": 0,
+                "raw_text": "text",
+                "summary_status": "pending",
+                "heading_path": ["合集", "咸丰元年", "致诸弟"],
+            }
+        ]
+    )
+    row = db_conn.execute(
+        "SELECT label, heading_path FROM segments WHERE id = ?", (seg_id,)
+    ).fetchone()
+    assert row["label"] == "致诸弟"
+    # Direct update_summary still overwrites (API / tests).
+    SegmentRepo(db_conn).update_summary(
+        seg_id,
+        summary_json='{"sentences":[{"text":"摘要句"}], "label": "LLM标签"}',
+        label="LLM标签",
+        status="ready",
+    )
+    kept = db_conn.execute(
+        "SELECT label FROM segments WHERE id = ?", (seg_id,)
+    ).fetchone()["label"]
+    assert kept == "LLM标签"
+
+
+def test_persist_ready_summary_keeps_structure_label(db_conn):
+    """Summarize job path must not overwrite tertiary structure labels."""
+    from unittest.mock import MagicMock
+
+    from lumina_core.jobs.queue import JobQueue
+
+    book = _insert_book(db_conn, segment_count=1)
+    seg_id = str(uuid.uuid4())
+    SegmentRepo(db_conn).insert_many(
+        [
+            {
+                "id": seg_id,
+                "book_id": book["id"],
+                "idx": 0,
+                "raw_text": "text",
+                "summary_status": "pending",
+                "heading_path": ["合集", "咸丰元年", "致诸弟"],
+            }
+        ]
+    )
+    q = JobQueue(db_conn, MagicMock())
+    q._persist_ready_summary(
+        book_id=book["id"],
+        segment_id=seg_id,
+        segment_idx=0,
+        summary_json='{"sentences":[{"text":"hi"}],"label":"LLM"}',
+        label="LLM",
+        anchor_label=None,
+        resource_id="mock",
+        model="m",
+        summary_tier="normal",
+        summary_duration_s=0.1,
+        summary_llm_attempts=1,
+    )
+    assert (
+        db_conn.execute(
+            "SELECT label FROM segments WHERE id = ?", (seg_id,)
+        ).fetchone()["label"]
+        == "致诸弟"
+    )
+
+
 def test_list_books_does_not_count_segments_per_book(client, monkeypatch):
     """GET /books must use books.summary_* — not N× COUNT(segments)."""
     conn = client.app.state.lumina.conn

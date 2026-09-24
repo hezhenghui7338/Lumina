@@ -139,6 +139,32 @@ final class ReaderChromeClickArchitectureTests: XCTestCase {
                 "\(banned) puts reader chrome back in the window toolbar row, which resizes the reading surface"
             )
         }
+        let topOverlay = source
+            .components(separatedBy: "private var readerChromeBarOverlay")
+            .last?
+            .components(separatedBy: "private var listenStartIdx")
+            .first ?? ""
+        XCTAssertTrue(
+            topOverlay.contains("Spacer(minLength: 0)"),
+            "chrome overlay must use a non-hittable Spacer so only the bar captures clicks"
+        )
+        XCTAssertFalse(
+            topOverlay.contains("Color.clear"),
+            "Color.clear.allowsHitTesting(false).overlay can make the bar itself non-hittable"
+        )
+        let chromeShow = source
+            .components(separatedBy: "if barsVisible")
+            .dropFirst()
+            .prefix(2)
+            .joined(separator: "\n")
+        XCTAssertFalse(
+            chromeShow.contains(".transition(.move"),
+            "move transitions on the chrome bars desync hit-testing from the drawn bar"
+        )
+        XCTAssertTrue(
+            chromeShow.contains(".transition(.opacity)"),
+            "chrome bars fade without sliding their hit frames"
+        )
     }
 
     func testReaderChromeBarAndInsetsShareTheBarHeight() throws {
@@ -146,8 +172,8 @@ final class ReaderChromeClickArchitectureTests: XCTestCase {
         let reader = try readerSource()
         XCTAssertEqual(
             reader.components(separatedBy: "ReaderChromeBarMetrics.height").count - 1,
-            5,
-            "top/bottom bar frames, notes top pad, and top/bottom feed insets must share the same reserved height"
+            6,
+            "top/bottom bar frames, notes top pad, progress-return spacer, and top/bottom feed insets must share the same reserved height"
         )
         XCTAssertTrue(reader.contains("ReaderChromeBarMetrics.labelFont"))
         XCTAssertTrue(reader.contains("ReaderChromeBarMetrics.controlSize"))
@@ -354,6 +380,26 @@ final class ReaderChromeClickArchitectureTests: XCTestCase {
         )
         XCTAssertTrue(styleBody.contains("contentShape(Rectangle())"))
         XCTAssertTrue(styleBody.contains("isPressed"))
+        XCTAssertTrue(
+            styleBody.contains("frame(maxHeight: .infinity)"),
+            "icon hit targets must fill the chrome bar height or clicks above the glyph are swallowed"
+        )
+        let absorb = policy
+            .components(separatedBy: "func absorbsReaderChromeClicks()")
+            .last?
+            .components(separatedBy: "func readerChromeTextAction()")
+            .first ?? ""
+        XCTAssertTrue(
+            absorb.contains("background"),
+            "absorb must sit behind controls; a parent onTapGesture steals custom ButtonStyle clicks on macOS"
+        )
+        let absorbBody = absorb
+            .components(separatedBy: "-> some View {")
+            .last ?? ""
+        XCTAssertTrue(
+            absorbBody.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("background"),
+            "the first modifier must be background, not an onTapGesture on the container"
+        )
 
         let reader = try readerSource()
         let chromeBarBody = topChromeBarSource(reader)
@@ -569,6 +615,11 @@ final class ReaderChromeClickArchitectureTests: XCTestCase {
         XCTAssertTrue(split.contains(".menuStyle(.borderlessButton)"))
         XCTAssertTrue(split.contains(".menuIndicator(.hidden)"))
         XCTAssertTrue(split.contains(".readerChromeIconAction()"))
+        XCTAssertTrue(
+            split.contains("frame(maxHeight: .infinity)"),
+            "listen split must fill the chrome bar height so top-edge clicks stay live"
+        )
+        XCTAssertTrue(split.contains("ReaderChromeBarMetrics.height"))
         XCTAssertFalse(
             split.contains("primaryAction:"),
             "the icon must be a Button, not Menu+primaryAction"
@@ -1060,6 +1111,15 @@ final class ReaderHelpTooltipPolicyTests: XCTestCase {
         XCTAssertFalse(
             source.contains("didSet { applyVisibility() }"),
             "didSet on every SwiftUI updateNSView retriggers help tags"
+        )
+        XCTAssertTrue(
+            source.contains("window.titleVisibility = .visible"),
+            "title must stay visible so the floating chrome is not under the drag strip"
+        )
+        XCTAssertFalse(
+            source.contains("titleVisibility = visible ? .visible : .hidden")
+                || source.contains("titleVisibility = .hidden"),
+            "hiding the title puts reader chrome under the traffic-light / drag zone"
         )
     }
 }

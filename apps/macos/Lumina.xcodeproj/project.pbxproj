@@ -119,6 +119,8 @@
 		A1000451 /* ListenScriptTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000450 /* ListenScriptTests.swift */; };
         A1000531 /* ReaderOriginalSearch.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000530 /* ReaderOriginalSearch.swift */; };
 		A1000533 /* ReaderOriginalSearchTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000532 /* ReaderOriginalSearchTests.swift */; };
+		A1000631 /* ReaderSourcePrefetchPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000630 /* ReaderSourcePrefetchPolicy.swift */; };
+		A1000633 /* ReaderSourcePrefetchPolicyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000632 /* ReaderSourcePrefetchPolicyTests.swift */; };
 		A1000543 /* BookCardCoverTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000542 /* BookCardCoverTests.swift */; };
 		A1000551 /* MarkdownExportModeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000550 /* MarkdownExportModeTests.swift */; };
 		A1000571 /* ImportConflictPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000570 /* ImportConflictPolicy.swift */; };
@@ -243,6 +245,8 @@
 		A1000450 /* ListenScriptTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ListenScriptTests.swift; sourceTree = "<group>"; };
 		A1000530 /* ReaderOriginalSearch.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderOriginalSearch.swift; sourceTree = "<group>"; };
 		A1000532 /* ReaderOriginalSearchTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderOriginalSearchTests.swift; sourceTree = "<group>"; };
+		A1000630 /* ReaderSourcePrefetchPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderSourcePrefetchPolicy.swift; sourceTree = "<group>"; };
+		A1000632 /* ReaderSourcePrefetchPolicyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderSourcePrefetchPolicyTests.swift; sourceTree = "<group>"; };
 		A1000542 /* BookCardCoverTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BookCardCoverTests.swift; sourceTree = "<group>"; };
 		A1000550 /* MarkdownExportModeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownExportModeTests.swift; sourceTree = "<group>"; };
 		A1000570 /* ImportConflictPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ImportConflictPolicy.swift; sourceTree = "<group>"; };
@@ -359,6 +363,7 @@
 				A1000284 /* ReaderSegmentListGeometry.swift */,
 				A1000410 /* ReaderChromeClickPolicy.swift */,
 				A1000530 /* ReaderOriginalSearch.swift */,
+				A1000630 /* ReaderSourcePrefetchPolicy.swift */,
 				A1000440 /* ReaderSelectionActionBar.swift */,
 				A1000472 /* Listen */,
 				A1000278 /* SegmentSidebarView.swift */,
@@ -511,6 +516,7 @@
 				A1000286 /* ReaderSegmentListGeometryTests.swift */,
 				A1000412 /* ReaderChromeClickPolicyTests.swift */,
 				A1000532 /* ReaderOriginalSearchTests.swift */,
+				A1000632 /* ReaderSourcePrefetchPolicyTests.swift */,
 				A10005E2 /* SegmentBoundaryOffsetTests.swift */,
 				A1000542 /* BookCardCoverTests.swift */,
 				A1000294 /* LibrarySidebarVisibilityPolicyTests.swift */,
@@ -688,6 +694,7 @@
 				A1000285 /* ReaderSegmentListGeometry.swift in Sources */,
 				A1000411 /* ReaderChromeClickPolicy.swift in Sources */,
 				A1000531 /* ReaderOriginalSearch.swift in Sources */,
+				A1000631 /* ReaderSourcePrefetchPolicy.swift in Sources */,
 				A1000441 /* ReaderSelectionActionBar.swift in Sources */,
 				A1000461 /* ListenScript.swift in Sources */,
 				A1000463 /* ListenFollowHighlight.swift in Sources */,
@@ -772,6 +779,7 @@
 				A1000287 /* ReaderSegmentListGeometryTests.swift in Sources */,
 				A1000413 /* ReaderChromeClickPolicyTests.swift in Sources */,
 				A1000533 /* ReaderOriginalSearchTests.swift in Sources */,
+				A1000633 /* ReaderSourcePrefetchPolicyTests.swift in Sources */,
 				A10005E3 /* SegmentBoundaryOffsetTests.swift in Sources */,
 				A1000543 /* BookCardCoverTests.swift in Sources */,
 				A1000295 /* LibrarySidebarVisibilityPolicyTests.swift in Sources */,

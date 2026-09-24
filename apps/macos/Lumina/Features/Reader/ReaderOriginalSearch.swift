@@ -24,7 +24,18 @@ enum OriginalSearchNav: Equatable {
     case loadMore
 }
 
+/// How far `locateOriginalSearchHit` must go for the current hit.
+enum OriginalSearchLocateKind: Equatable {
+    /// Same segment, already in original mode, source cached — only highlight.
+    case highlightOnly
+    /// Need content-mode / scroll / fetchSource.
+    case navigateAndFetch
+}
+
 enum OriginalSearchHighlight {
+    /// Coalesce rapid ⌘G / next-hit navigations so MainActor is not flooded.
+    static let stepCoalesceNanoseconds: UInt64 = 32_000_000
+
     static func nsRange(
         startUTF16: Int,
         endUTF16: Int,
@@ -66,6 +77,22 @@ enum OriginalSearchHighlight {
             return nil
         }
         return .step(to: next)
+    }
+
+    /// Same-segment next/prev must not re-run navigate + fetchSource (freezes).
+    static func locateKind(
+        hitSegmentIndex: Int,
+        currentSegmentIndex: Int?,
+        contentModeIsOriginal: Bool,
+        sourceCached: Bool
+    ) -> OriginalSearchLocateKind {
+        if contentModeIsOriginal,
+           currentSegmentIndex == hitSegmentIndex,
+           sourceCached
+        {
+            return .highlightOnly
+        }
+        return .navigateAndFetch
     }
 
     static func statusLabel(index: Int, count: Int, truncated: Bool) -> String {

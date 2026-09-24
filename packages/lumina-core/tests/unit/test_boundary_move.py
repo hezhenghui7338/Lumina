@@ -154,4 +154,70 @@ def test_segment_repo_moves_text_and_notes(tmp_path):
     assert updated_left["translation"] is None
     assert notes.get(keep["id"])["segment_id"] == "seg-l"
     assert notes.get(stay["id"])["segment_id"] == "seg-r"
+    progress = BookRepo(conn).summary_progress("book-b")
+    assert progress["summary_ready_count"] == 0
+    assert progress["summary_total_count"] == 2
+    conn.close()
+
+
+def test_boundary_move_bumps_ready_count_without_recount(tmp_path, monkeypatch):
+    """Large-book COUNT(segments) must not run on every boundary save."""
+    conn = init_db(tmp_path / "boundary-count.db")
+    BookRepo(conn).insert(
+        id="book-c",
+        title="Count",
+        format="txt",
+        file_path="/tmp/c.txt",
+        segment_count=2,
+        status="summarized",
+    )
+    left = {
+        "id": "seg-l",
+        "book_id": "book-c",
+        "idx": 0,
+        "anchor_label": "〔段 1〕",
+        "raw_text": LEFT,
+        "char_count": len(LEFT),
+        "summary_status": "ready",
+        "retry_count": 0,
+    }
+    right = {
+        "id": "seg-r",
+        "book_id": "book-c",
+        "idx": 1,
+        "anchor_label": "〔段 2〕",
+        "raw_text": RIGHT,
+        "char_count": len(RIGHT),
+        "summary_status": "pending",
+        "retry_count": 0,
+    }
+    repo = SegmentRepo(conn)
+    repo.insert_many([left, right])
+    assert BookRepo(conn).summary_progress("book-c")["summary_ready_count"] == 1
+
+    def boom(*_args, **_kwargs):
+        raise AssertionError("refresh_summary_progress must not run on boundary move")
+
+    monkeypatch.setattr(BookRepo, "refresh_summary_progress", boom)
+    moved = apply_cut(
+        LEFT,
+        RIGHT,
+        len(LEFT) + len("右侧开篇。数据库事务使用日志、索引和锁。\n\n"),
+    )
+    repo.apply_boundary_move(
+        left,
+        right,
+        left_text=moved.left_text,
+        right_text=moved.right_text,
+        left_chapter=moved.left_chapter,
+        right_chapter=moved.right_chapter,
+        left_page_range=moved.left_page_range,
+        right_page_range=moved.right_page_range,
+        left_anchor="〔段 1〕",
+        right_anchor="〔段 2〕",
+        summary_tier="normal",
+    )
+    progress = BookRepo(conn).summary_progress("book-c")
+    assert progress["summary_ready_count"] == 0
+    assert progress["summary_total_count"] == 2
     conn.close()

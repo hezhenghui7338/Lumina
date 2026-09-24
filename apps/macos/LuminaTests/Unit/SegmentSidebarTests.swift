@@ -306,6 +306,29 @@ final class SegmentCatalogPreviewArchitectureTests: XCTestCase {
             catalog.contains("struct SegmentOutlineCatalogList"),
             "segment list cover must live in an isolated catalog list view"
         )
+        XCTAssertTrue(
+            reader.contains("toggleOutlineBulk"),
+            "segment list header must expose one-tap collapse/expand all for structured books"
+        )
+        XCTAssertTrue(
+            reader.contains("\"收起全部\"") && reader.contains("\"展开全部\""),
+            "bulk outline toggle must use visible caption labels next to 导出摘要"
+        )
+        // Catalog cover opens with top chrome revealed; without top inset the
+        // header (导出 / 收起全部) sits under the bar and looks "missing".
+        if let coverRange = reader.range(of: "if coverPage == .segments") {
+            let slice = String(reader[coverRange.lowerBound...])
+            let end = slice.range(of: "\n            if let offer")?.lowerBound
+                ?? slice.range(of: "\n            if barsVisible")?.lowerBound
+                ?? slice.endIndex
+            let cover = String(slice[..<end])
+            XCTAssertTrue(
+                cover.contains(".padding(.top, ReaderChromeBarMetrics.height)"),
+                "segment cover must clear the revealed top chrome bar"
+            )
+        } else {
+            XCTFail("segment cover block missing")
+        }
         let iconSlice = models.components(separatedBy: "private var statusIcon: some View").last ?? ""
         XCTAssertTrue(
             iconSlice.contains("Group {"),
@@ -550,6 +573,42 @@ final class ReaderViewModelSidebarTests: XCTestCase {
         vm.toggleOutlineKey("卷一")
         XCTAssertEqual(vm.outlineRebuildCount, before + 1)
         XCTAssertTrue(vm.collapsedOutlineKeys.contains("卷一"))
+    }
+
+    func testOutlineBulkToggle_collapsesAllThenExpands() {
+        let vm = ReaderViewModel()
+        vm.segments = [
+            SegmentRow(
+                id: "s0", idx: 0, label: "甲", chapter: nil, summary_status: "ready",
+                summary_json: nil, raw_text: nil, translation: nil, anchor_label: nil,
+                summary_provider: nil, summary_model: nil, summary_tier: nil, char_count: nil,
+                retry_count: nil, summary_duration_s: nil, summary_llm_attempts: nil,
+                heading_path: ["合集", "咸丰元年"]
+            ),
+            SegmentRow(
+                id: "s1", idx: 1, label: "乙", chapter: nil, summary_status: "ready",
+                summary_json: nil, raw_text: nil, translation: nil, anchor_label: nil,
+                summary_provider: nil, summary_model: nil, summary_tier: nil, char_count: nil,
+                retry_count: nil, summary_duration_s: nil, summary_llm_attempts: nil,
+                heading_path: ["合集", "咸丰二年"]
+            ),
+        ]
+        vm.rebuildOutline()
+        XCTAssertTrue(vm.canBulkToggleOutline)
+        XCTAssertFalse(vm.outlineBulkToggleShowsExpand)
+        let before = vm.outlineRebuildCount
+        vm.toggleOutlineBulk()
+        XCTAssertEqual(vm.outlineRebuildCount, before + 1)
+        XCTAssertEqual(
+            vm.collapsedOutlineKeys,
+            ["合集", "合集/咸丰元年", "合集/咸丰二年"]
+        )
+        XCTAssertTrue(vm.outlineBulkToggleShowsExpand)
+        XCTAssertEqual(vm.outlineRows.map(\.title), ["合集"])
+        vm.toggleOutlineBulk()
+        XCTAssertTrue(vm.collapsedOutlineKeys.isEmpty)
+        XCTAssertFalse(vm.outlineBulkToggleShowsExpand)
+        XCTAssertEqual(vm.outlineRows.compactMap { $0.segment?.idx }, [0, 1])
     }
 
     func testSettingsChunkTargetRange_allows200() {

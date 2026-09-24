@@ -68,12 +68,21 @@ struct ContentView: View {
                 tourOverlay(anchors: anchors)
             }
         }
-        .alert("出错了", isPresented: .constant(alertError != nil)) {
+        // Never use `.constant(error != nil)` for alerts: SwiftUI dismiss writes
+        // `isPresented = false`, a constant ignores it, and a zombie modal can
+        // keep eating bookshelf / chrome clicks while the UI still looks idle.
+        .alert("出错了", isPresented: Binding(
+            get: { alertError != nil },
+            set: { if !$0 { alertError = nil } }
+        )) {
             Button("好") { alertError = nil }
         } message: {
             Text(alertError ?? "")
         }
-        .alert("无法连接服务", isPresented: .constant(connectionError != nil)) {
+        .alert("无法连接服务", isPresented: Binding(
+            get: { connectionError != nil },
+            set: { if !$0 { connectionError = nil } }
+        )) {
             Button("重试") {
                 connectionError = nil
                 Task { await finishBootstrap() }
@@ -468,9 +477,10 @@ private struct LibraryTabView: View {
                 }
                 .navigationSplitViewStyle(.balanced)
             } else {
-                NavigationStack {
-                    detailContent
-                }
+                // No NavigationStack: an empty stack still installs a nav/title
+                // strip that sits above the floating reader chrome and eats
+                // clicks on 分段 / 摘要 / … until the pointer is moved lower.
+                detailContent
             }
         }
         .background {

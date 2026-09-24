@@ -85,4 +85,103 @@ final class ReaderOriginalSearchTests: XCTestCase {
         let dumped = String(data: json, encoding: .utf8)!
         XCTAssertFalse(dumped.contains("raw_text"))
     }
+
+    func testLocateKind_sameSegmentCachedIsHighlightOnly() {
+        XCTAssertEqual(
+            OriginalSearchHighlight.locateKind(
+                hitSegmentIndex: 12,
+                currentSegmentIndex: 12,
+                contentModeIsOriginal: true,
+                sourceCached: true
+            ),
+            .highlightOnly
+        )
+        XCTAssertEqual(
+            OriginalSearchHighlight.locateKind(
+                hitSegmentIndex: 12,
+                currentSegmentIndex: 12,
+                contentModeIsOriginal: true,
+                sourceCached: false
+            ),
+            .navigateAndFetch
+        )
+        XCTAssertEqual(
+            OriginalSearchHighlight.locateKind(
+                hitSegmentIndex: 12,
+                currentSegmentIndex: 11,
+                contentModeIsOriginal: true,
+                sourceCached: true
+            ),
+            .navigateAndFetch
+        )
+        XCTAssertEqual(
+            OriginalSearchHighlight.locateKind(
+                hitSegmentIndex: 12,
+                currentSegmentIndex: 12,
+                contentModeIsOriginal: false,
+                sourceCached: true
+            ),
+            .navigateAndFetch
+        )
+    }
+
+    func testStepCoalesceDelayIsPositiveAndShort() {
+        XCTAssertGreaterThan(OriginalSearchHighlight.stepCoalesceNanoseconds, 0)
+        XCTAssertLessThan(
+            OriginalSearchHighlight.stepCoalesceNanoseconds,
+            ReaderSourcePrefetchPolicy.debounceNanoseconds
+        )
+    }
+
+    func testReaderSameSegmentSearchSkipsNavigate() throws {
+        let macosRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let reader = try String(
+            contentsOf: macosRoot.appendingPathComponent("Lumina/Features/Reader/ReaderView.swift"),
+            encoding: .utf8
+        )
+        guard
+            let start = reader.range(of: "private func stepOriginalSearch(_ delta: Int)"),
+            let end = reader.range(
+                of: "private func scheduleLocateOriginalSearchHit()",
+                range: start.lowerBound..<reader.endIndex
+            )
+        else {
+            return XCTFail("missing stepOriginalSearch")
+        }
+        let body = String(reader[start.lowerBound..<end.lowerBound])
+        XCTAssertTrue(body.contains("locateKind"))
+        XCTAssertTrue(body.contains(".highlightOnly"))
+        XCTAssertTrue(body.contains("scheduleLocateOriginalSearchHit"))
+    }
+
+    func testSearchRevealUsesBoundedGlyphLayout() throws {
+        let macosRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(
+            contentsOf: macosRoot.appendingPathComponent(
+                "Lumina/Features/Shared/SelectableTextView.swift"
+            ),
+            encoding: .utf8
+        )
+        guard let start = source.range(of: "private static func reveal("),
+              let end = source.range(
+                of: "// MARK: - AppKit views",
+                range: start.lowerBound..<source.endIndex
+              )
+        else {
+            return XCTFail("missing reveal()")
+        }
+        let body = String(source[start.lowerBound..<end.lowerBound])
+        XCTAssertTrue(body.contains("ensureLayout(forGlyphRange:"))
+        XCTAssertTrue(body.contains("ensureGlyphs(forCharacterRange:"))
+        XCTAssertFalse(
+            body.contains("ensureLayout(for: textContainer)"),
+            "search-next must not full-container ensureLayout long CJK"
+        )
+    }
 }

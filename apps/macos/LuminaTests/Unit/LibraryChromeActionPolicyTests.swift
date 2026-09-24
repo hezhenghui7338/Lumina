@@ -270,4 +270,49 @@ final class LibraryChromeActionPolicyTests: XCTestCase {
         XCTAssertFalse(windowsLibrary.contains("if (book.IsSegmenting || book.IsIngestFailed)"))
         XCTAssertTrue(windowsLibrary.contains("CanOpenInReader"))
     }
+
+    func testReaderSurfaceHasNoNavigationStackHitStrip() throws {
+        let macosRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let content = try String(
+            contentsOf: macosRoot.appendingPathComponent("Lumina/ContentView.swift"),
+            encoding: .utf8
+        )
+        let readingBranch = content
+            .components(separatedBy: "selectedBookId == nil")
+            .last?
+            .components(separatedBy: ".background")
+            .first ?? ""
+        XCTAssertTrue(
+            readingBranch.contains("detailContent"),
+            "reading must still host the reader detail"
+        )
+        XCTAssertFalse(
+            readingBranch.contains("NavigationStack"),
+            "an empty NavigationStack over the reader installs a top hit strip that eats 分段 clicks"
+        )
+    }
+
+    func testContentViewAlerts_useWritableBindingsNotConstant() throws {
+        let macosRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let content = try String(
+            contentsOf: macosRoot.appendingPathComponent("Lumina/ContentView.swift"),
+            encoding: .utf8
+        )
+        XCTAssertFalse(
+            content.contains(".constant(alertError != nil)"),
+            "constant alert binding ignores dismiss and can zombie-modal the bookshelf"
+        )
+        XCTAssertFalse(
+            content.contains(".constant(connectionError != nil)"),
+            "constant connection alert binding ignores dismiss and can zombie-modal the app"
+        )
+        XCTAssertTrue(content.contains("get: { alertError != nil }"))
+        XCTAssertTrue(content.contains("get: { connectionError != nil }"))
+    }
 }

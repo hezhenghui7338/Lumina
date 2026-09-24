@@ -10,7 +10,7 @@ from posixpath import dirname, join, normpath
 from urllib.parse import unquote
 from xml.etree import ElementTree
 
-from lumina_core.chunker.markers import heading_marker
+from lumina_core.chunker.markers import clean_structure_title, heading_marker
 from lumina_core.chunker.roles import DocumentRole, classify_heading, landmark_role
 from lumina_core.config import Settings
 from lumina_core.ingest.html import (
@@ -25,11 +25,11 @@ from lumina_core.ingest.ocr import (
 
 
 class _NavTocParser(HTMLParser):
-    """Collect nested nav/toc links as (href, title, depth, parent_title)."""
+    """Collect nested nav/toc links as (href, title, depth, ancestors)."""
 
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
-        self.entries: list[tuple[str, str, int, str | None]] = []
+        self.entries: list[tuple[str, str, int, tuple[str, ...]]] = []
         self._list_depth = 0
         self._in_a = False
         self._href = ""
@@ -71,9 +71,11 @@ class _NavTocParser(HTMLParser):
         if tag == "a" and self._in_a:
             title = " ".join("".join(self._text).split())
             href = unquote(self._href.split("#", 1)[0])
-            parent = next((item for item in reversed(self._li_titles[:-1]) if item), None)
+            ancestors = tuple(item for item in self._li_titles[:-1] if item)
             if href and title:
-                self.entries.append((href, title, max(1, self._list_depth), parent))
+                self.entries.append(
+                    (href, title, max(1, self._list_depth), ancestors)
+                )
                 if self._li_titles:
                     self._li_titles[-1] = title
             self._in_a = False
@@ -103,9 +105,18 @@ class _PageImageParser(HTMLParser):
             self.sources.append(unquote(source.split("#", 1)[0]))
 
 
-def _epub_nested_toc(book) -> dict[str, tuple[str, int, str | None]]:
-    """Map normalized href -> (title, depth, parent_title) from nav or NCX."""
-    lookup: dict[str, tuple[str, int, str | None]] = {}
+def _epub_nested_toc(book) -> dict[str, tuple[str, int, tuple[str, ...]]]:
+    """Map normalized href -> (title, depth, ancestors) from nav or NCX."""
+    lookup: dict[str, tuple[str, int, tuple[str, ...]]] = {}
+    for href, title, depth, ancestors in _epub_toc_entries(book):
+        key = _normalize_href(href)
+        if key and key not in lookup:
+            lookup[key] = (title, depth, ancestors)
+    return lookup
+
+
+def _epub_toc_entries(book) -> list[tuple[str, str, int, tuple[str, ...]]]:
+    """Ordered TOC rows: (href, title, depth, ancestors) from nav or NCX."""
     get_items = getattr(book, "get_items", None)
     items = list(get_items()) if callable(get_items) else []
     for item in items:
@@ -123,23 +134,91 @@ def _epub_nested_toc(book) -> dict[str, tuple[str, int, str | None]]:
             parser.close()
         except Exception:
             continue
-        for href, title, depth, parent in parser.entries:
-            key = _normalize_href(href)
-            if key and key not in lookup:
-                lookup[key] = (title, depth, parent)
-        if lookup:
-            return lookup
+        if parser.entries:
+            return list(parser.entries)
 
-    ncx = _parse_ncx_toc(book)
-    for href, title, depth, parent in ncx:
-        key = _normalize_href(href)
-        if key and key not in lookup:
-            lookup[key] = (title, depth, parent)
-    return lookup
+    return _parse_ncx_toc(book)
 
 
-def _parse_ncx_toc(book) -> list[tuple[str, str, int, str | None]]:
-    entries: list[tuple[str, str, int, str | None]] = []
+def list_epub_toc_paths(epub_path: Path | str) -> list[tuple[str, ...]]:
+    """Ordered full TOC paths (ancestors + leaf title) for outline repair.
+
+    When nav/NCX is flat (no ancestors), infer 章/节 nesting from numbered titles.
+    """
+    from ebooklib import epub as ebooklib_epub
+
+    from lumina_core.chunker.tree import nest_flat_outline_paths
+
+    path = Path(epub_path)
+    book = ebooklib_epub.read_epub(str(path))
+    paths: list[tuple[str, ...]] = []
+    seen: set[tuple[str, ...]] = set()
+    for _href, title, _depth, ancestors in _epub_toc_entries(book):
+        leaf = clean_structure_title(title) if title else ""
+        if not leaf:
+            continue
+        chain = tuple(
+            cleaned
+            for item in (*ancestors, leaf)
+            if (cleaned := clean_structure_title(item))
+        )
+        if not chain or chain in seen:
+            continue
+        seen.add(chain)
+        paths.append(chain)
+    return nest_flat_outline_paths(paths)
+
+
+def list_mobi_toc_paths(mobi_path: Path | str) -> list[tuple[str, ...]]:
+    """TOC paths from Kindle/MOBI/AZW3 via temporary EPUB extract (no DRM)."""
+    import shutil
+    import tempfile
+
+    try:
+        import mobi
+    except ImportError as exc:
+        raise RuntimeError("MOBI TOC requires mobi: pip install mobi") from exc
+
+    path = Path(mobi_path)
+    tempdir: str | None = None
+    try:
+        tempdir, extracted = mobi.extract(str(path))
+        extracted_path = Path(extracted)
+        if extracted_path.suffix.lower() != ".epub":
+            return []
+        return list_epub_toc_paths(extracted_path)
+    finally:
+        if tempdir:
+            shutil.rmtree(tempdir, ignore_errors=True)
+
+
+def list_book_toc_paths(
+    source: Path | str,
+    *,
+    format_name: str | None = None,
+) -> list[tuple[str, ...]]:
+    """TOC paths for outline rebuild across EPUB and Kindle formats."""
+    path = Path(source)
+    if not path.is_file():
+        return []
+    fmt = (format_name or path.suffix.lstrip(".")).lower()
+    if fmt == "epub" or path.suffix.lower() == ".epub":
+        return list_epub_toc_paths(path)
+    if fmt in {"mobi", "azw", "azw3", "kf8", "prc"} or path.suffix.lower() in {
+        ".mobi",
+        ".azw",
+        ".azw3",
+        ".prc",
+    }:
+        try:
+            return list_mobi_toc_paths(path)
+        except Exception:
+            return []
+    return []
+
+
+def _parse_ncx_toc(book) -> list[tuple[str, str, int, tuple[str, ...]]]:
+    entries: list[tuple[str, str, int, tuple[str, ...]]] = []
     get_items = getattr(book, "get_items", None)
     items = list(get_items()) if callable(get_items) else []
     ncx_item = next(
@@ -161,7 +240,7 @@ def _parse_ncx_toc(book) -> list[tuple[str, str, int, str | None]]:
     def local(tag: str) -> str:
         return tag.rsplit("}", 1)[-1]
 
-    def walk(node, depth: int, parent: str | None) -> None:
+    def walk(node, depth: int, ancestors: tuple[str, ...]) -> None:
         for child in list(node):
             if local(child.tag) != "navPoint":
                 continue
@@ -176,12 +255,71 @@ def _parse_ncx_toc(book) -> list[tuple[str, str, int, str | None]]:
                 elif name == "content":
                     href = sub.attrib.get("src") or ""
             if href and label:
-                entries.append((href, label, depth, parent))
-            walk(child, depth + 1, label or parent)
+                entries.append((href, label, depth, ancestors))
+            next_ancestors = ancestors + ((label,) if label else ())
+            walk(child, depth + 1, next_ancestors)
 
     nav_map = next((el for el in root.iter() if local(el.tag) == "navMap"), root)
-    walk(nav_map, 1, None)
+    walk(nav_map, 1, ())
     return entries
+
+
+def _toc_full_path(
+    toc: tuple[str, int, tuple[str, ...]] | None,
+    chapter_title: str,
+) -> tuple[list[str], bool]:
+    """Return (path titles root→leaf, from_toc)."""
+    if toc is None:
+        title = (chapter_title or "").strip()
+        return ([title] if title else [], False)
+    leaf = (toc[0] or chapter_title or "").strip()
+    if not leaf:
+        return ([], False)
+    ancestors = [item for item in toc[2] if item]
+    return ([*ancestors, leaf], True)
+
+
+def _path_delta_markers(
+    open_path: list[str],
+    full_path: list[str],
+    *,
+    from_toc: bool,
+) -> list[tuple[int, str]]:
+    """(level, title) for the divergent suffix. Flat spine chapters stay level 1."""
+    common = 0
+    while (
+        common < len(open_path)
+        and common < len(full_path)
+        and open_path[common] == full_path[common]
+    ):
+        common += 1
+    markers: list[tuple[int, str]] = []
+    flat = not from_toc and len(full_path) == 1
+    for index in range(common, len(full_path)):
+        level = 1 if flat else index
+        markers.append((level, full_path[index]))
+    return markers
+
+
+def _join_heading_block(markers: list[tuple[int, str]], body: str) -> tuple[str, int]:
+    """Build spine block text and body offset within the block."""
+    if not markers:
+        return body, 0
+    lines = [heading_marker(title, level) for level, title in markers]
+    leaf = lines[-1]
+    stripped = body.lstrip()
+    if stripped.startswith(leaf):
+        prefix = lines[:-1]
+        if prefix:
+            block = "\n".join([*prefix, stripped])
+            return block, sum(len(p) + 1 for p in prefix)
+        return stripped, 0
+    prefix = lines[:-1]
+    heading_line = f"{leaf}\n"
+    if prefix:
+        block = "\n".join([*prefix, f"{leaf}\n{body}"])
+        return block, sum(len(p) + 1 for p in prefix) + len(heading_line)
+    return f"{leaf}\n{body}", len(heading_line)
 
 
 def _html_to_text(html: str) -> str:
@@ -443,7 +581,7 @@ def load_epub(
 
     parts: list[str] = []
     structure_roles: list[dict] = []
-    emitted_parents: set[str] = set()
+    open_path: list[str] = []
     illustrations: list[dict] = []
     absolute_cursor = 0
 
@@ -466,24 +604,17 @@ def load_epub(
             html_title=html_title,
         )
         toc = toc_lookup.get(_normalize_href(href))
-        prefix_parts: list[str] = []
-        if toc and toc[2] and toc[2] not in emitted_parents:
-            parent_title = toc[2]
-            emitted_parents.add(parent_title)
-            prefix_parts.append(heading_marker(parent_title, 0))
+        full_path, from_toc = _toc_full_path(toc, chapter_title)
+        if not full_path:
+            full_path, from_toc = ([chapter_title], False) if chapter_title else ([], False)
+        delta = _path_delta_markers(open_path, full_path, from_toc=from_toc)
+        for _level, title in delta[:-1]:
             structure_roles.append(
-                {"title": parent_title, "role": classify_heading(parent_title).value}
+                {"title": title, "role": classify_heading(title).value}
             )
-        marker = heading_marker(chapter_title, 1)
-        if body.lstrip().startswith(marker):
-            body_offset_in_block = sum(len(p) + 1 for p in prefix_parts)
-            block = "\n".join([*prefix_parts, body]) if prefix_parts else body
-        else:
-            heading_line = f"{marker}\n"
-            body_offset_in_block = (
-                sum(len(p) + 1 for p in prefix_parts) + len(heading_line)
-            )
-            block = "\n".join([*prefix_parts, f"{marker}\n{body}"])
+        block, body_offset_in_block = _join_heading_block(delta, body)
+        if full_path:
+            open_path = full_path
         if parts:
             absolute_cursor += 2  # "\n\n".join separator
         for hit in doc_images:
@@ -496,8 +627,12 @@ def load_epub(
             )
         parts.append(block)
         absolute_cursor += len(block)
-        role = (landmark[0] if landmark else None) or classify_heading(chapter_title)
-        structure_roles.append({"title": chapter_title, "role": role.value})
+        leaf_title = full_path[-1] if full_path else chapter_title
+        role = (landmark[0] if landmark else None) or classify_heading(leaf_title)
+        if delta:
+            structure_roles.append({"title": delta[-1][1], "role": role.value})
+        elif leaf_title:
+            structure_roles.append({"title": leaf_title, "role": role.value})
 
     if skipped_chapters:
         metadata["skipped_chapters"] = skipped_chapters

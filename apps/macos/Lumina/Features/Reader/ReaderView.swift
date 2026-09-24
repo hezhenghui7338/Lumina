@@ -97,6 +97,12 @@ struct ReaderView: View {
     @State private var originalSearchTruncated = false
     @State private var originalSearchLastQuery = ""
     @State private var originalSearchTask: Task<Void, Never>?
+    @State private var originalSearchLocateTask: Task<Void, Never>?
+    /// Search locate flips to original; skip the onChange radius-5 fan-out
+    /// (target is fetched in locate; neighbours via debounced visible prefetch).
+    @State private var suppressContentModeSourcePrefetch = false
+    @State private var settledReaderViewportHeight: CGFloat = 0
+    @State private var viewportHeightSettleTask: Task<Void, Never>?
     @FocusState private var chatFocused: Bool
     @FocusState private var readerContentFocused: Bool
     @FocusState private var originalSearchFocused: Bool
@@ -363,12 +369,16 @@ struct ReaderView: View {
     /// used to carry these controls, and adding/removing it resized the content
     /// area, so every chrome toggle slid the reading surface. An overlay can
     /// never move a single line of text.
+    ///
+    /// Use a `VStack` + non-hittable `Spacer`, not `Color.clear.allowsHitTesting(false)
+    /// .overlay { bar }`: the latter can mark the bar itself non-hittable, so
+    /// top-of-window clicks fall through or die in the titlebar drag strip.
     private var readerChromeBarOverlay: some View {
-        Color.clear
-            .allowsHitTesting(false)
-            .overlay(alignment: .top) {
-                readerChromeBar
-            }
+        VStack(spacing: 0) {
+            readerChromeBar
+            Spacer(minLength: 0)
+                .allowsHitTesting(false)
+        }
     }
 
     private var listenStartIdx: Int {
@@ -711,11 +721,11 @@ struct ReaderView: View {
     }
 
     private var readerBottomBarOverlay: some View {
-        Color.clear
-            .allowsHitTesting(false)
-            .overlay(alignment: .bottom) {
-                readerBottomBar
-            }
+        VStack(spacing: 0) {
+            Spacer(minLength: 0)
+                .allowsHitTesting(false)
+            readerBottomBar
+        }
     }
 
     private var readerBottomBar: some View {
@@ -822,6 +832,9 @@ struct ReaderView: View {
                 ReaderCoverPageShell {
                     segmentCoverPanel
                 }
+                // Top chrome stays revealed while the catalog is open; without this
+                // inset the cover header (导出 / 收起全部 / 多选) sits under the bar.
+                .padding(.top, ReaderChromeBarMetrics.height)
                 .padding(.bottom, overlayBottomPadding)
                 .transition(.move(edge: .bottom).combined(with: .opacity))
             }
@@ -854,27 +867,29 @@ struct ReaderView: View {
             }
 
             if barsVisible {
+                // Opacity only: `.move(edge:)` desyncs the hit-test frame from
+                // the drawn bar, so the top of 分段 looks live but clicks miss.
                 readerChromeBarOverlay
-                    .transition(.move(edge: .top).combined(with: .opacity))
+                    .transition(.opacity)
             }
 
             if barsVisible {
                 readerBottomBarOverlay
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
+                    .transition(.opacity)
             }
 
             if listenSession.isActive {
-                Color.clear
-                    .allowsHitTesting(false)
-                    .overlay(alignment: .bottom) {
-                        ListenMiniBar(session: listenSession) {
-                            listenSession.stop()
-                        }
-                        .padding(
-                            .bottom,
-                            ReaderBottomStackPolicy.miniBarBottomPadding(barsVisible: barsVisible)
-                        )
+                VStack(spacing: 0) {
+                    Spacer(minLength: 0)
+                        .allowsHitTesting(false)
+                    ListenMiniBar(session: listenSession) {
+                        listenSession.stop()
                     }
+                    .padding(
+                        .bottom,
+                        ReaderBottomStackPolicy.miniBarBottomPadding(barsVisible: barsVisible)
+                    )
+                }
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -944,20 +959,29 @@ struct ReaderView: View {
                 return
             }
             viewModel.noteTopSegment(idx)
-            viewModel.prefetchSummaries(around: idx, core: core, radius: 3)
-            if contentMode == .original {
-                viewModel.prefetchSources(around: idx, core: core, radius: 3)
-            }
+            // Debounce: fast scroll / search-next must not fan out hydrate+source
+            // on every pin tick (万段书会卡死 MainActor).
+            viewModel.scheduleVisiblePrefetch(
+                around: idx,
+                core: core,
+                original: contentMode == .original,
+                radius: 3
+            )
         }
         .onPreferenceChange(ReaderGlobalFrameKey.self) { frame in
             readerGlobalFrame = frame
+            scheduleSettledViewportHeight(frame.height)
         }
         .onChange(of: contentMode) { _, mode in
             ReaderPreferences.setContentMode(mode, for: bookId)
             viewModel.setContentMode(mode)
             if mode == .original {
-                let idx = topSegmentIdx ?? viewModel.selectedIdx ?? viewModel.segments.first?.idx ?? 0
-                viewModel.prefetchSources(around: idx, core: core, radius: 5)
+                if suppressContentModeSourcePrefetch {
+                    suppressContentModeSourcePrefetch = false
+                } else {
+                    let idx = topSegmentIdx ?? viewModel.selectedIdx ?? viewModel.segments.first?.idx ?? 0
+                    viewModel.prefetchSources(around: idx, core: core, radius: 5)
+                }
             }
         }
         .task(id: bookId) {
@@ -1003,6 +1027,8 @@ struct ReaderView: View {
             listenSession.stop()
             LuminaSelectionActionPopover.dismiss()
             originalSearchTask?.cancel()
+            originalSearchLocateTask?.cancel()
+            viewportHeightSettleTask?.cancel()
             Task {
                 await viewModel.flushProgressSave()
                 NotificationCenter.default.post(name: .luminaLibraryRefresh, object: nil)
@@ -1286,7 +1312,9 @@ struct ReaderView: View {
                     Color.clear
                         .frame(
                             height: ReadingProgress.endPinSpacerHeight(
-                                viewportHeight: readerGlobalFrame.height
+                                viewportHeight: settledReaderViewportHeight > 0
+                                    ? settledReaderViewportHeight
+                                    : readerGlobalFrame.height
                             )
                         )
                         .allowsHitTesting(false)
@@ -1368,7 +1396,8 @@ struct ReaderView: View {
                 }
             )
         }
-        .animation(.easeOut(duration: 0.2), value: contentMode)
+        // No feed-wide height animation on contentMode — search→原文 and
+        // summary↔original already remeasure; animating every LazyVStack row freezes.
         .background(theme.readerPaper.page)
         .environment(\.readerPaper, theme.readerPaper)
         .background {
@@ -1479,12 +1508,8 @@ struct ReaderView: View {
                     catch { actionError = error.localizedDescription }
                 }
             },
-            canGoPrev: SegmentTurnNavigation.targetIdx(
-                current: idx, delta: -1, sortedIdxs: viewModel.segments.map(\.idx).sorted()
-            ) != nil,
-            canGoNext: SegmentTurnNavigation.targetIdx(
-                current: idx, delta: 1, sortedIdxs: viewModel.segments.map(\.idx).sorted()
-            ) != nil,
+            canGoPrev: viewModel.canNavigateSegment(from: idx, delta: -1),
+            canGoNext: viewModel.canNavigateSegment(from: idx, delta: 1),
             onPrevSegment: { turnSegment(from: idx, delta: -1) },
             onNextSegment: { turnSegment(from: idx, delta: 1) },
             onAdjustBoundary: isLast ? nil : { openBoundaryEditor(at: idx) },
@@ -1538,10 +1563,7 @@ struct ReaderView: View {
     }
 
     private func turnSegment(from idx: Int, delta: Int) {
-        let sorted = viewModel.segments.map(\.idx).sorted()
-        guard let target = SegmentTurnNavigation.targetIdx(
-            current: idx, delta: delta, sortedIdxs: sorted
-        ) else { return }
+        guard let target = viewModel.neighbourSegmentIdx(from: idx, delta: delta) else { return }
         navigateToSegment(target, suspendProgress: false)
     }
 
@@ -1571,7 +1593,7 @@ struct ReaderView: View {
     private var segmentCoverPanel: some View {
         VStack(spacing: 0) {
             VStack(alignment: .leading, spacing: 6) {
-                HStack {
+                HStack(spacing: 10) {
                     Text("段列表")
                         .font(ReaderChromeBarMetrics.labelFont)
                         .foregroundStyle(LuminaTheme.textPrimary)
@@ -1585,6 +1607,25 @@ struct ReaderView: View {
                     .buttonStyle(.plain)
                     .foregroundStyle(LuminaTheme.accent)
                     .disabled(viewModel.summaryReadyCount == 0)
+
+                    Button {
+                        viewModel.toggleOutlineBulk()
+                    } label: {
+                        Text(viewModel.outlineBulkToggleShowsExpand ? "展开全部" : "收起全部")
+                            .font(.caption)
+                            .foregroundStyle(
+                                viewModel.canBulkToggleOutline
+                                    ? LuminaTheme.accent
+                                    : LuminaTheme.textSecondary
+                            )
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(!viewModel.canBulkToggleOutline)
+                    .help(
+                        viewModel.canBulkToggleOutline
+                            ? (viewModel.outlineBulkToggleShowsExpand ? "展开全部目录" : "收起全部目录")
+                            : "当前书无目录结构"
+                    )
 
                     Spacer(minLength: 0)
                     sidebarHeaderButtons
@@ -1659,7 +1700,6 @@ struct ReaderView: View {
         )
     }
 
-    @ViewBuilder
     private var sidebarHeaderButtons: some View {
         Button {
             viewModel.toggleSegmentSelectionMode()
@@ -1967,6 +2007,8 @@ struct ReaderView: View {
     private func closeOriginalSearch() {
         originalSearchTask?.cancel()
         originalSearchTask = nil
+        originalSearchLocateTask?.cancel()
+        originalSearchLocateTask = nil
         originalSearchExpanded = false
         originalSearchFocused = false
         originalSearching = false
@@ -1980,6 +2022,8 @@ struct ReaderView: View {
     private func resetOriginalSearch(clearQuery: Bool) {
         originalSearchTask?.cancel()
         originalSearchTask = nil
+        originalSearchLocateTask?.cancel()
+        originalSearchLocateTask = nil
         originalSearchExpanded = false
         originalSearchFocused = false
         originalSearching = false
@@ -2040,7 +2084,30 @@ struct ReaderView: View {
             loadMoreOriginalSearch()
         case .step(let next):
             originalSearchIndex = next
+            guard originalSearchHits.indices.contains(next) else { return }
+            let hit = originalSearchHits[next]
+            let currentIdx = topSegmentIdx ?? viewModel.selectedIdx
+            let kind = OriginalSearchHighlight.locateKind(
+                hitSegmentIndex: hit.segment_index,
+                currentSegmentIndex: currentIdx,
+                contentModeIsOriginal: contentMode == .original,
+                sourceCached: viewModel.cachedSource(for: hit.segment_index) != nil
+            )
+            // Same-segment: @State index already refreshes highlight; skip navigate.
+            if kind == .highlightOnly { return }
+            scheduleLocateOriginalSearchHit()
+        }
+    }
+
+    private func scheduleLocateOriginalSearchHit() {
+        originalSearchLocateTask?.cancel()
+        originalSearchLocateTask = Task { @MainActor in
+            try? await Task.sleep(
+                nanoseconds: OriginalSearchHighlight.stepCoalesceNanoseconds
+            )
+            guard !Task.isCancelled else { return }
             locateOriginalSearchHit()
+            originalSearchLocateTask = nil
         }
     }
 
@@ -2091,11 +2158,42 @@ struct ReaderView: View {
     private func locateOriginalSearchHit() {
         guard originalSearchHits.indices.contains(originalSearchIndex) else { return }
         let hit = originalSearchHits[originalSearchIndex]
+        let currentIdx = topSegmentIdx ?? viewModel.selectedIdx
+        let kind = OriginalSearchHighlight.locateKind(
+            hitSegmentIndex: hit.segment_index,
+            currentSegmentIndex: currentIdx,
+            contentModeIsOriginal: contentMode == .original,
+            sourceCached: viewModel.cachedSource(for: hit.segment_index) != nil
+        )
+        if kind == .highlightOnly { return }
         if contentMode != .original {
+            suppressContentModeSourcePrefetch = true
             contentMode = .original
         }
         navigateToSegment(hit.segment_index)
         viewModel.fetchSource(idx: hit.segment_index, core: core)
+    }
+
+    private func scheduleSettledViewportHeight(_ height: CGFloat) {
+        let previous = settledReaderViewportHeight
+        if previous > 0,
+           !LuminaTextLayoutSizing.widthDidChange(from: previous, to: height)
+        {
+            return
+        }
+        if previous <= 0 {
+            settledReaderViewportHeight = height
+            return
+        }
+        viewportHeightSettleTask?.cancel()
+        viewportHeightSettleTask = Task { @MainActor in
+            try? await Task.sleep(
+                nanoseconds: LuminaTextLayoutSizing.widthSettleNanoseconds
+            )
+            guard !Task.isCancelled else { return }
+            settledReaderViewportHeight = height
+            viewportHeightSettleTask = nil
+        }
     }
 
     private func originalHighlightRange(for idx: Int, source: SegmentSourceBody?) -> NSRange? {
@@ -2683,8 +2781,10 @@ final class ReaderViewModel: ObservableObject {
     private var collapsedOutlineByBook: [String: Set<String>] = [:]
     @Published var currentSegment: SegmentRow?
     @Published private(set) var sourceCacheVersion = 0
-    @Published var loadingSourceIndices: Set<Int> = []
-    @Published var refreshingSourceIndices: Set<Int> = []
+    /// Not @Published — each getSegment start/finish must not repaint the whole
+    /// LazyVStack feed. UI observes `sourceCacheVersion` (coalesced) instead.
+    private var loadingSourceIndices: Set<Int> = []
+    private var refreshingSourceIndices: Set<Int> = []
     @Published var messages: [ChatMessage] = []
     @Published var isSending = false
     @Published var chatStatus: String?
@@ -2723,6 +2823,10 @@ final class ReaderViewModel: ObservableObject {
     private var summaryHydrateTasks: [Int: Task<Void, Never>] = [:]
     private var summaryPrefetchTask: Task<Void, Never>?
     private var summaryPrefetchGeneration = 0
+    private var sourcePrefetchTask: Task<Void, Never>?
+    private var sourcePrefetchGeneration = 0
+    private var visiblePrefetchTask: Task<Void, Never>?
+    private var sourceUIRefreshTask: Task<Void, Never>?
     private var summaryParseTasks: [Int: Task<Void, Never>] = [:]
     private var chatTask: Task<Void, Never>?
     private var hydratingSummaryIndices: Set<Int> = []
@@ -2732,6 +2836,8 @@ final class ReaderViewModel: ObservableObject {
     private var summaryParseGeneration: [Int: Int] = [:]
     private var sourceCache: [Int: SegmentSourceBody] = [:]
     private var sourceCacheOrder: [Int] = []
+    /// Cached once per catalog replace — never `map+sorted` inside segment rows.
+    private(set) var sortedSegmentIdxs: [Int] = []
     private var contentMode: ReaderContentMode = .summary
     private let summaryModeCacheLimit = 5
     private let originalModeCacheLimit = 12
@@ -2759,24 +2865,111 @@ final class ReaderViewModel: ObservableObject {
     func setContentMode(_ mode: ReaderContentMode) {
         guard contentMode != mode else { return }
         contentMode = mode
+        var evicted = false
         while sourceCacheOrder.count > effectiveCacheLimit {
             let evict = sourceCacheOrder.removeFirst()
             sourceCache.removeValue(forKey: evict)
+            evicted = true
         }
-        sourceCacheVersion += 1
+        // Avoid empty sourceCacheVersion bumps — they repaint every visible row.
+        if evicted {
+            bumpSourceCacheVersion()
+        }
+    }
+
+    /// Debounced summary + original prefetch after the pinned segment moves.
+    func scheduleVisiblePrefetch(
+        around idx: Int,
+        core: CoreClient,
+        original: Bool,
+        radius: Int
+    ) {
+        visiblePrefetchTask?.cancel()
+        visiblePrefetchTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(
+                nanoseconds: ReaderSourcePrefetchPolicy.debounceNanoseconds
+            )
+            guard !Task.isCancelled, let self else { return }
+            self.prefetchSummaries(around: idx, core: core, radius: radius)
+            if original {
+                self.prefetchSources(around: idx, core: core, radius: radius)
+            }
+            self.visiblePrefetchTask = nil
+        }
     }
 
     func prefetchSources(around idx: Int, core: CoreClient, radius: Int) {
-        let sorted = segments.map(\.idx).sorted()
-        guard let pos = sorted.firstIndex(of: idx) else { return }
-        let start = max(0, pos - radius)
-        let end = min(sorted.count - 1, pos + radius)
-        for i in start...end {
-            let segmentIdx = sorted[i]
-            if sourceCache[segmentIdx] != nil { continue }
-            if loadingSourceIndices.contains(segmentIdx) { continue }
-            fetchSource(idx: segmentIdx, core: core)
+        let ordered = ReaderSourcePrefetchPolicy.neighbourOrder(
+            center: idx,
+            radius: radius,
+            sortedIdxs: sortedSegmentIdxs
+        )
+        guard !ordered.isEmpty else { return }
+        let desired = Set(ordered)
+
+        let obsoleteTaskIndices = detailTasks.keys.filter { !desired.contains($0) }
+        for taskIdx in obsoleteTaskIndices {
+            detailTasks.removeValue(forKey: taskIdx)?.cancel()
+            loadingSourceIndices.remove(taskIdx)
+            refreshingSourceIndices.remove(taskIdx)
         }
+
+        // Visible segment loads eagerly; neighbours run serially at utility
+        // priority so search-next / fast scroll cannot fan out seven DB reads.
+        let center = ordered[0]
+        fetchSource(idx: center, core: core)
+        let neighbours = Array(ordered.dropFirst())
+        sourcePrefetchTask?.cancel()
+        sourcePrefetchGeneration += 1
+        let generation = sourcePrefetchGeneration
+        let bookId = self.bookId
+        sourcePrefetchTask = Task(priority: .utility) { @MainActor [weak self] in
+            guard let self else { return }
+            for neighbour in neighbours {
+                guard !Task.isCancelled else { return }
+                guard self.sourcePrefetchGeneration == generation,
+                      self.bookId == bookId
+                else { return }
+                if self.sourceCache[neighbour] != nil { continue }
+                if self.loadingSourceIndices.contains(neighbour) { continue }
+                await self.fetchSourceAwaiting(idx: neighbour, core: core)
+            }
+            if self.sourcePrefetchGeneration == generation {
+                self.sourcePrefetchTask = nil
+            }
+        }
+    }
+
+    func canNavigateSegment(from idx: Int, delta: Int) -> Bool {
+        neighbourSegmentIdx(from: idx, delta: delta) != nil
+    }
+
+    func neighbourSegmentIdx(from idx: Int, delta: Int) -> Int? {
+        SegmentTurnNavigation.targetIdx(
+            current: idx,
+            delta: delta,
+            sortedIdxs: sortedSegmentIdxs
+        )
+    }
+
+    private func rebuildSortedSegmentIdxs() {
+        sortedSegmentIdxs = segments.map(\.idx).sorted()
+    }
+
+    private func scheduleSourceUIRefresh() {
+        sourceUIRefreshTask?.cancel()
+        sourceUIRefreshTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(
+                nanoseconds: ReaderSourcePrefetchPolicy.publishCoalesceNanoseconds
+            )
+            guard !Task.isCancelled, let self else { return }
+            self.bumpSourceCacheVersion()
+            self.sourceUIRefreshTask = nil
+        }
+    }
+
+    private func bumpSourceCacheVersion() {
+        sourceCacheVersion += 1
     }
 
     func needsTranslation(for textSample: String? = nil) -> Bool {
@@ -2895,6 +3088,13 @@ final class ReaderViewModel: ObservableObject {
         eventTask = nil
         restoreSettleTask?.cancel()
         restoreSettleTask = nil
+        visiblePrefetchTask?.cancel()
+        visiblePrefetchTask = nil
+        sourcePrefetchTask?.cancel()
+        sourcePrefetchTask = nil
+        sourcePrefetchGeneration += 1
+        sourceUIRefreshTask?.cancel()
+        sourceUIRefreshTask = nil
         for task in detailTasks.values {
             task.cancel()
         }
@@ -2931,6 +3131,7 @@ final class ReaderViewModel: ObservableObject {
             collapsedOutlineByBook[self.bookId] = collapsedOutlineKeys
         }
         segments = []
+        sortedSegmentIdxs = []
         outlineRows = []
         outlineRebuildCount = 0
         outlinePatchCount = 0
@@ -3014,6 +3215,7 @@ final class ReaderViewModel: ObservableObject {
             onResume(idx)
 
             segments = list
+            rebuildSortedSegmentIdxs()
             rebuildOutline()
             warmSummaryCache(from: list)
             summaryReadyCount = book.summary_ready_count ?? list.filter { $0.summary_status == "ready" }.count
@@ -3399,11 +3601,9 @@ final class ReaderViewModel: ObservableObject {
         }
     }
 
+    /// Peek only — must not mutate LRU order during SwiftUI `body` evaluation.
     func cachedSource(for idx: Int) -> SegmentSourceBody? {
-        guard let body = sourceCache[idx] else { return nil }
-        sourceCacheOrder.removeAll { $0 == idx }
-        sourceCacheOrder.append(idx)
-        return body
+        sourceCache[idx]
     }
 
     func isSourceLoading(idx: Int) -> Bool {
@@ -3415,6 +3615,11 @@ final class ReaderViewModel: ObservableObject {
     }
 
     private func clearAllSourceCache() {
+        sourcePrefetchTask?.cancel()
+        sourcePrefetchTask = nil
+        sourcePrefetchGeneration += 1
+        sourceUIRefreshTask?.cancel()
+        sourceUIRefreshTask = nil
         for task in detailTasks.values {
             task.cancel()
         }
@@ -3423,7 +3628,7 @@ final class ReaderViewModel: ObservableObject {
         sourceCacheOrder.removeAll()
         loadingSourceIndices.removeAll()
         refreshingSourceIndices.removeAll()
-        sourceCacheVersion += 1
+        bumpSourceCacheVersion()
     }
 
     private func storeSourceCache(_ body: SegmentSourceBody) {
@@ -3434,7 +3639,7 @@ final class ReaderViewModel: ObservableObject {
             let evict = sourceCacheOrder.removeFirst()
             sourceCache.removeValue(forKey: evict)
         }
-        sourceCacheVersion += 1
+        scheduleSourceUIRefresh()
     }
 
     /// On-demand original text; results stay in per-segment cache (not `segments[]`).
@@ -3453,6 +3658,8 @@ final class ReaderViewModel: ObservableObject {
         } else {
             loadingSourceIndices.insert(idx)
         }
+        // Coalesce with in-flight neighbour completions — do not @Publish here.
+        scheduleSourceUIRefresh()
 
         let bookId = self.bookId
         detailTasks[idx] = Task.detached { [bookId] in
@@ -3463,7 +3670,10 @@ final class ReaderViewModel: ObservableObject {
                 self.detailTasks.removeValue(forKey: idx)
                 self.loadingSourceIndices.remove(idx)
                 self.refreshingSourceIndices.remove(idx)
-                guard let fresh else { return }
+                guard let fresh else {
+                    self.scheduleSourceUIRefresh()
+                    return
+                }
                 let rawText = fresh.raw_text ?? ""
                 let translation = fresh.translation ?? ""
                 let body: SegmentSourceBody
@@ -3484,6 +3694,19 @@ final class ReaderViewModel: ObservableObject {
                 }
                 self.storeSourceCache(body)
             }
+        }
+    }
+
+    /// Serial neighbour prefetch awaits one segment before starting the next.
+    private func fetchSourceAwaiting(idx: Int, core: CoreClient) async {
+        if cachedSource(for: idx) != nil { return }
+        if loadingSourceIndices.contains(idx), let existing = detailTasks[idx] {
+            await existing.value
+            return
+        }
+        fetchSource(idx: idx, core: core)
+        if let task = detailTasks[idx] {
+            await task.value
         }
     }
 
@@ -3562,6 +3785,29 @@ final class ReaderViewModel: ObservableObject {
         } else {
             collapsedOutlineKeys.insert(key)
         }
+        rebuildOutline()
+    }
+
+    var canBulkToggleOutline: Bool {
+        outlineRows.contains(where: \.isHeader)
+    }
+
+    /// Affordance label: expand when every foldable header is collapsed.
+    var outlineBulkToggleShowsExpand: Bool {
+        let keys = SegmentOutlinePolicy.allFoldableKeys(in: segments)
+        return SegmentOutlinePolicy.isFullyCollapsed(
+            collapsed: collapsedOutlineKeys,
+            foldableKeys: keys
+        )
+    }
+
+    func toggleOutlineBulk() {
+        let keys = SegmentOutlinePolicy.allFoldableKeys(in: segments)
+        guard !keys.isEmpty else { return }
+        collapsedOutlineKeys = SegmentOutlinePolicy.applyingBulkToggle(
+            collapsed: collapsedOutlineKeys,
+            foldableKeys: keys
+        )
         rebuildOutline()
     }
 

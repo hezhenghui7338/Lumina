@@ -1047,3 +1047,24 @@ def test_load_azw3_drm_rejected(tmp_path, monkeypatch):
     monkeypatch.setattr(mobi, "extract", _boom)
     with pytest.raises(ValueError, match="DRM-protected Kindle/MOBI"):
         load_document(azw3, detect_format(azw3))
+
+
+def test_load_azw3_missing_file_names_path(tmp_path):
+    azw3 = tmp_path / "gone.azw3"
+    with pytest.raises(FileNotFoundError) as exc_info:
+        load_document(azw3, "mobi")
+    assert str(azw3) in str(exc_info.value.filename or exc_info.value)
+
+
+def test_load_azw3_extract_filenotfound_includes_book_path(tmp_path, monkeypatch):
+    mobi = pytest.importorskip("mobi")
+    azw3 = tmp_path / "kindle-book.azw3"
+    azw3.write_bytes(b"BOOKMOBI-fake")
+
+    def _boom(_path):
+        raise FileNotFoundError(2, "No such file or directory")
+
+    monkeypatch.setattr(mobi, "extract", _boom)
+    with pytest.raises(RuntimeError, match="无法打开 Kindle/MOBI") as exc_info:
+        load_document(azw3, detect_format(azw3))
+    assert str(azw3) in str(exc_info.value)
