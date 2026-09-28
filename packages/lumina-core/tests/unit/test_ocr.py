@@ -12,14 +12,18 @@ from lumina_core import config
 from lumina_core.config import Settings
 from lumina_core.ingest.ocr import (
     OcrDocumentResult,
+    OcrPageResult,
     _cloud_request,
+    _ocr_images_cloud,
     ocr_available,
     ocr_cloud_configured,
     ocr_dependency_warning,
     ocr_install_hint,
+    ocr_images,
     ocr_metadata_from_result,
     ocr_pdf,
 )
+from lumina_core.ingest.progress import DocumentLoadCancelled
 from lumina_core.ingest.pdf import load_pdf
 from lumina_core.main import smoke_ocr
 from tests.support.ocr_helpers import (
@@ -207,25 +211,212 @@ def test_ocr_pdf_prefers_cloud_without_initializing_local(tmp_path: Path, monkey
     assert ocr_pdf(pdf, settings=settings) is expected
 
 
-def test_cloud_ocr_failure_does_not_fallback_local(tmp_path: Path, monkeypatch):
+def test_ocr_pdf_cloud_unavailable_uses_local(tmp_path: Path, monkeypatch):
+    """A cloud walker that raises must not fail the book; local RapidOCR takes over."""
+    pdf = tmp_path / "scan.pdf"
+    write_blank_pdf(pdf)
+    local = OcrDocumentResult(
+        text="## [p.1]\n本地正文",
+        pages=[OcrPageResult(1, "本地正文", 0.9, False)],
+        engine="rapidocr/pp-ocrv6",
+    )
+
+    def fail_cloud(*_args, **_kwargs):
+        raise RuntimeError("云端 OCR 请求超时")
+
+    monkeypatch.setattr("lumina_core.ingest.ocr._ocr_pdf_cloud", fail_cloud)
+    monkeypatch.setattr("lumina_core.ingest.ocr._ocr_pdf_local", lambda *_args, **_kwargs: local)
+    result = ocr_pdf(pdf, settings=_cloud_settings())
+    assert result is local
+    assert "本地正文" in result.text
+    assert any("已改用本地 RapidOCR" in item for item in result.warnings)
+
+
+def test_load_pdf_cloud_unavailable_keeps_local_text(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(config, "OCR_ENABLED", True)
+    pdf = tmp_path / "scan.pdf"
+    write_blank_pdf(pdf, pages=1)
+    local = OcrDocumentResult(
+        text="## [p.1]\n本地承接",
+        pages=[OcrPageResult(1, "本地承接", 0.9, False)],
+        engine="rapidocr/pp-ocrv6",
+    )
+
+    def fail_cloud(*_args, **_kwargs):
+        raise RuntimeError("云端 OCR 请求超时")
+
+    monkeypatch.setattr("lumina_core.ingest.ocr._ocr_pdf_cloud", fail_cloud)
+    monkeypatch.setattr("lumina_core.ingest.ocr._ocr_pdf_local", lambda *_args, **_kwargs: local)
+    text, meta = load_pdf(pdf, settings=_cloud_settings())
+    assert "本地承接" in text
+    assert meta.get("ocr") is True
+    assert meta.get("ocr_used") is True
+
+
+def test_ocr_pdf_cancel_does_not_fall_back_to_local(tmp_path: Path, monkeypatch):
     pdf = tmp_path / "scan.pdf"
     write_blank_pdf(pdf)
 
-    def fail_cloud(*_args, **_kwargs):
-        raise RuntimeError("云端 OCR 请求受限")
+    def cancel(*_args, **_kwargs):
+        raise DocumentLoadCancelled("已取消")
 
-    monkeypatch.setattr("lumina_core.ingest.ocr._ocr_pdf_cloud", fail_cloud)
+    monkeypatch.setattr("lumina_core.ingest.ocr._ocr_pdf_cloud", cancel)
     monkeypatch.setattr(
         "lumina_core.ingest.ocr._ocr_pdf_local",
-        lambda *_args, **_kwargs: pytest.fail("云端失败时不应回退本地 OCR"),
+        lambda *_args, **_kwargs: pytest.fail("取消时不应改走本地"),
     )
-    settings = Settings(
+    with pytest.raises(DocumentLoadCancelled):
+        ocr_pdf(pdf, settings=_cloud_settings())
+
+
+def test_ocr_images_cloud_unavailable_uses_local(monkeypatch):
+    local = OcrDocumentResult(text="本地图", engine="rapidocr/pp-ocrv6", pages=[])
+
+    def fail_cloud(*_args, **_kwargs):
+        raise httpx.ConnectError("connection refused")
+
+    monkeypatch.setattr("lumina_core.ingest.ocr._ocr_images_cloud", fail_cloud)
+    monkeypatch.setattr("lumina_core.ingest.ocr._ocr_images_local", lambda *_args, **_kwargs: local)
+    result = ocr_images([(1, b"img")], total=1, settings=_cloud_settings())
+    assert "本地图" in result.text
+    assert any("已改用本地 RapidOCR" in item for item in result.warnings)
+
+
+def _cloud_settings() -> Settings:
+    return Settings(
         ocr_cloud_base_url="https://example.test/v1",
         ocr_cloud_model="vision",
         ocr_cloud_api_key="secret",
+        ocr_cloud_timeout_seconds=5,
     )
-    with pytest.raises(RuntimeError, match="请求受限"):
-        ocr_pdf(pdf, settings=settings)
+
+
+def _run_cloud_images(handler, images, monkeypatch, local):
+    monkeypatch.setattr("lumina_core.ingest.ocr._ocr_encoded_image_local", local)
+    transport = httpx.MockTransport(handler)
+    real_client = httpx.Client
+
+    def client_factory(*args, **kwargs):
+        kwargs["transport"] = transport
+        return real_client(*args, **kwargs)
+
+    monkeypatch.setattr("lumina_core.ingest.ocr.httpx.Client", client_factory)
+    return _ocr_images_cloud(
+        images,
+        total=len(images),
+        settings=_cloud_settings(),
+        on_progress=None,
+        cancel_event=None,
+    )
+
+
+def test_cloud_page_timeout_retries_then_local_for_rest(monkeypatch):
+    calls = {"n": 0}
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return httpx.Response(200, json={"choices": [{"message": {"content": "云端页"}}]})
+        raise httpx.ReadTimeout("The read operation timed out")
+
+    local_pages: list[int] = []
+
+    def local(image_bytes: bytes):
+        local_pages.append(len(image_bytes))
+        return "本地页", 0.91
+
+    result = _run_cloud_images(
+        handler,
+        [(1, b"page-one"), (2, b"page-two"), (3, b"page-three")],
+        monkeypatch,
+        local,
+    )
+    assert calls["n"] == 5  # page 1 once, page 2 four times; page 3 stays local
+    assert local_pages == [len(b"page-two"), len(b"page-three")]
+    assert "云端页" in result.text
+    assert result.text.count("本地页") == 2
+    assert "rapidocr/pp-ocrv6" in result.engine
+    assert "openai-compatible/vision" in result.engine
+    assert any("已重试 3 次" in item and "ReadTimeout" in item for item in result.warnings)
+    assert any("自该页起改用本地" in item for item in result.warnings)
+
+
+def test_local_page_failure_skips_and_continues(monkeypatch):
+    def handler(_request: httpx.Request) -> httpx.Response:
+        raise httpx.ReadTimeout("The read operation timed out")
+
+    seen = {"n": 0}
+
+    def local(_image_bytes: bytes):
+        seen["n"] += 1
+        if seen["n"] == 1:
+            raise RuntimeError("rapidocr boom")
+        return "第二页", 0.8
+
+    result = _run_cloud_images(handler, [(1, b"a"), (2, b"bb")], monkeypatch, local)
+    assert result.pages[0].text == "（本页识别出错）"
+    assert "第二页" in result.pages[1].text
+    assert any("p.1 本地 OCR 失败，已跳过" in item for item in result.warnings)
+    assert seen["n"] == 2
+
+
+def test_every_page_failure_keeps_error_notes(monkeypatch):
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(401)
+
+    def local(_image_bytes: bytes):
+        raise RuntimeError("rapidocr boom")
+
+    result = _run_cloud_images(handler, [(1, b"a"), (2, b"b")], monkeypatch, local)
+    assert result.pages[0].text == "（本页识别出错）"
+    assert result.pages[1].text == "（本页识别出错）"
+    assert "（本页识别出错）" in result.text
+    assert any("已跳过" in item for item in result.warnings)
+
+
+def test_load_pdf_keeps_book_when_ocr_pages_are_blank(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(config, "OCR_ENABLED", True)
+
+    def blank_ocr(_path, **_kwargs):
+        return OcrDocumentResult(
+            text="",
+            pages=[
+                OcrPageResult(page_num=1, text="第一页原文", avg_confidence=0.9, low_confidence=False),
+                OcrPageResult(page_num=2, text="", avg_confidence=0.0, low_confidence=False),
+            ],
+        )
+
+    monkeypatch.setattr("lumina_core.ingest.pdf.ocr_pdf", blank_ocr)
+    pdf = tmp_path / "scan.pdf"
+    write_blank_pdf(pdf, pages=2)
+    text, meta = load_pdf(pdf)
+    assert meta.get("ocr_used") is True
+    assert "第一页原文" in text
+    assert "（本页识别出错）" in text
+    assert "## [p.2]" in text
+
+
+def test_cancel_during_cloud_ocr_does_not_retry(monkeypatch):
+    calls = {"n": 0}
+
+    def boom(*_args, **_kwargs):
+        calls["n"] += 1
+        raise DocumentLoadCancelled("已取消")
+
+    monkeypatch.setattr("lumina_core.ingest.ocr._cloud_request", boom)
+    monkeypatch.setattr(
+        "lumina_core.ingest.ocr._ocr_encoded_image_local",
+        lambda *_args, **_kwargs: pytest.fail("取消时不应改走本地"),
+    )
+    with pytest.raises(DocumentLoadCancelled):
+        _ocr_images_cloud(
+            [(1, b"a"), (2, b"b")],
+            total=2,
+            settings=_cloud_settings(),
+            on_progress=None,
+            cancel_event=None,
+        )
+    assert calls["n"] == 1
 
 
 def test_cloud_request_sends_image_and_parses_text():

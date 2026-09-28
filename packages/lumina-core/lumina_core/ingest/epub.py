@@ -21,6 +21,7 @@ from lumina_core.ingest.ocr import (
     OcrProgressCallback,
     ocr_images,
     ocr_metadata_from_result,
+    ocr_result_text,
 )
 
 
@@ -570,14 +571,15 @@ def load_epub(
             on_progress=on_progress,
             cancel_event=cancel_event,
         )
-        if not result.text.strip():
+        text = ocr_result_text(result)
+        if not text.strip():
             raise RuntimeError("图片型 EPUB OCR 失败或内容为空")
         metadata.update(ocr_metadata_from_result(result))
         metadata["ocr"] = True
         metadata["ocr_source"] = "epub_images"
         metadata["epub_image_pages"] = len(page_items)
         metadata["illustrations_status"] = "skipped_ocr"
-        return result.text, metadata
+        return text, metadata
 
     parts: list[str] = []
     structure_roles: list[dict] = []

@@ -101,6 +101,9 @@ struct ReaderView: View {
     /// Search locate flips to original; skip the onChange radius-5 fan-out
     /// (target is fetched in locate; neighbours via debounced visible prefetch).
     @State private var suppressContentModeSourcePrefetch = false
+    /// While set, only this segment may fetch original (search far-jumps).
+    @State private var originalSearchSeekTarget: Int? = nil
+    @State private var originalSearchSeekReleaseTask: Task<Void, Never>?
     @State private var settledReaderViewportHeight: CGFloat = 0
     @State private var viewportHeightSettleTask: Task<Void, Never>?
     @FocusState private var chatFocused: Bool
@@ -506,6 +509,18 @@ struct ReaderView: View {
             count: originalSearchHits.count,
             truncated: originalSearchTruncated
         )
+    }
+
+    /// Single-segment feed while find-in-page is open (avoids far catalog jumps).
+    private var originalSearchFocusSegment: SegmentRow? {
+        guard OriginalSearchHighlight.usesFocusFeed(
+            expanded: originalSearchExpanded,
+            hitCount: originalSearchHits.count
+        ),
+        originalSearchHits.indices.contains(originalSearchIndex)
+        else { return nil }
+        let idx = originalSearchHits[originalSearchIndex].segment_index
+        return viewModel.segments.first(where: { $0.idx == idx })
     }
 
     private func startListening(_ mode: ListenMode) {
@@ -961,6 +976,8 @@ struct ReaderView: View {
             viewModel.noteTopSegment(idx)
             // Debounce: fast scroll / search-next must not fan out hydrate+source
             // on every pin tick (万段书会卡死 MainActor).
+            // Search seek: far TOC hits (~300 segs apart) must not prefetch neighbours.
+            if originalSearchSeekTarget != nil { return }
             viewModel.scheduleVisiblePrefetch(
                 around: idx,
                 core: core,
@@ -1028,7 +1045,9 @@ struct ReaderView: View {
             LuminaSelectionActionPopover.dismiss()
             originalSearchTask?.cancel()
             originalSearchLocateTask?.cancel()
+            originalSearchSeekReleaseTask?.cancel()
             viewportHeightSettleTask?.cancel()
+            originalSearchSeekTarget = nil
             Task {
                 await viewModel.flushProgressSave()
                 NotificationCenter.default.post(name: .luminaLibraryRefresh, object: nil)
@@ -1300,6 +1319,13 @@ struct ReaderView: View {
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(LuminaTheme.summaryPadding)
+                    } else if let focus = originalSearchFocusSegment {
+                        // Find-in-page: one segment only. Far TOC hits (~300 segs
+                        // apart) must not scrollPosition across 9998-row ForEach.
+                        segmentBlock(for: focus)
+                            .id(
+                                "search-focus-\(focus.idx)-\(originalSearchIndex)"
+                            )
                     } else {
                         ForEach(viewModel.segments, id: \.idx) { seg in
                             segmentBlock(for: seg)
@@ -1470,7 +1496,8 @@ struct ReaderView: View {
         let _ = viewModel.sourceCacheVersion
         let cachedSource = viewModel.cachedSource(for: seg.idx)
         let idx = seg.idx
-        let isLast = seg.idx == viewModel.segments.last?.idx
+        let focusFeed = originalSearchFocusSegment != nil
+        let isLast = focusFeed ? true : (seg.idx == viewModel.segments.last?.idx)
         SegmentReadingBlock(
             contentMode: contentMode,
             segment: seg,
@@ -1514,13 +1541,21 @@ struct ReaderView: View {
             onNextSegment: { turnSegment(from: idx, delta: 1) },
             onAdjustBoundary: isLast ? nil : { openBoundaryEditor(at: idx) },
             onSourceAppear: contentMode == .original
-                ? { viewModel.fetchSource(idx: idx, core: core) }
+                ? {
+                    if OriginalSearchHighlight.allowsNeighbourSourceFetch(
+                        seekTarget: originalSearchSeekTarget,
+                        segmentIndex: idx
+                    ) {
+                        viewModel.fetchSource(idx: idx, core: core)
+                    }
+                }
                 : nil,
             originalHighlightUTF16: originalHighlightRange(for: idx, source: cachedSource),
             listenHighlight: listenSession.isActive && listenSession.currentIdx == idx
                 ? listenSession.activeHighlight
                 : nil,
-            illustrationURL: { assetId in core.assetURL(bookId: bookId, assetId: assetId) }
+            illustrationURL: { assetId in core.assetURL(bookId: bookId, assetId: assetId) },
+            usesLightweightOriginalText: focusFeed
         )
         .equatable()
         .readerSelectionNoteAnchor(
@@ -1533,7 +1568,7 @@ struct ReaderView: View {
 
     /// The one and only way to move the reader. Assigning the pinned segment is
     /// the scroll: SwiftUI owns the anchoring, nothing else touches the origin.
-    private func jump(to idx: Int) {
+    private func jump(to idx: Int, animated: Bool = true) {
         LuminaSelectionActionPopover.dismiss()
         freeKeyboardScroll = false
         guard topSegmentIdx != idx else { return }
@@ -1542,7 +1577,8 @@ struct ReaderView: View {
             to: idx,
             in: viewModel.segments
         )
-        if delta <= SegmentRenderWindow.scrollAnimateThreshold {
+        let useAnimation = animated && delta <= SegmentRenderWindow.scrollAnimateThreshold
+        if useAnimation {
             withAnimation(.easeInOut(duration: segmentSwitchDuration)) {
                 topSegmentIdx = idx
             }
@@ -1567,13 +1603,17 @@ struct ReaderView: View {
         navigateToSegment(target, suspendProgress: false)
     }
 
-    private func navigateToSegment(_ idx: Int, suspendProgress: Bool = true) {
+    private func navigateToSegment(
+        _ idx: Int,
+        suspendProgress: Bool = true,
+        animated: Bool = true
+    ) {
         if suspendProgress {
             viewModel.beginProgressSeek(at: idx)
         }
         viewModel.selectedIdx = idx
         readerContentFocused = true
-        jump(to: idx)
+        jump(to: idx, animated: animated)
     }
 
     private func confirmProgressReturn() {
@@ -2005,10 +2045,17 @@ struct ReaderView: View {
     }
 
     private func closeOriginalSearch() {
+        let landing: Int? = {
+            guard originalSearchHits.indices.contains(originalSearchIndex) else {
+                return topSegmentIdx ?? viewModel.selectedIdx
+            }
+            return originalSearchHits[originalSearchIndex].segment_index
+        }()
         originalSearchTask?.cancel()
         originalSearchTask = nil
         originalSearchLocateTask?.cancel()
         originalSearchLocateTask = nil
+        endOriginalSearchSeek(prefetch: false)
         originalSearchExpanded = false
         originalSearchFocused = false
         originalSearching = false
@@ -2017,6 +2064,16 @@ struct ReaderView: View {
         originalSearchLastQuery = ""
         originalSearchTruncated = false
         readerContentFocused = true
+        // Restore full catalog feed at the last hit (one jump, not 22 far seeks).
+        if let landing {
+            navigateToSegment(landing, animated: false)
+            viewModel.scheduleVisiblePrefetch(
+                around: landing,
+                core: core,
+                original: contentMode == .original,
+                radius: 2
+            )
+        }
     }
 
     private func resetOriginalSearch(clearQuery: Bool) {
@@ -2024,6 +2081,7 @@ struct ReaderView: View {
         originalSearchTask = nil
         originalSearchLocateTask?.cancel()
         originalSearchLocateTask = nil
+        endOriginalSearchSeek(prefetch: false)
         originalSearchExpanded = false
         originalSearchFocused = false
         originalSearching = false
@@ -2170,8 +2228,56 @@ struct ReaderView: View {
             suppressContentModeSourcePrefetch = true
             contentMode = .original
         }
-        navigateToSegment(hit.segment_index)
+        beginOriginalSearchSeek(target: hit.segment_index)
+        viewModel.retainSourceCacheOnly(idx: hit.segment_index)
+        viewModel.beginProgressSeek(at: hit.segment_index)
+        viewModel.selectedIdx = hit.segment_index
+        readerContentFocused = true
+        freeKeyboardScroll = false
+        topSegmentIdx = hit.segment_index
         viewModel.fetchSource(idx: hit.segment_index, core: core)
+        // Focus feed is already on: never navigateToSegment across full ForEach.
+        if !OriginalSearchHighlight.usesFocusFeed(
+            expanded: originalSearchExpanded,
+            hitCount: originalSearchHits.count
+        ) {
+            navigateToSegment(hit.segment_index, animated: false)
+        }
+        scheduleEndOriginalSearchSeek()
+    }
+
+    private func beginOriginalSearchSeek(target: Int) {
+        originalSearchSeekReleaseTask?.cancel()
+        originalSearchSeekTarget = target
+        LuminaTextLayoutGeneration.bump()
+        viewModel.cancelSourceWorkExcept(idx: target)
+    }
+
+    private func scheduleEndOriginalSearchSeek() {
+        originalSearchSeekReleaseTask?.cancel()
+        originalSearchSeekReleaseTask = Task { @MainActor in
+            try? await Task.sleep(
+                nanoseconds: OriginalSearchHighlight.seekPrefetchSuppressNanoseconds
+            )
+            guard !Task.isCancelled else { return }
+            // Stay in focus feed until search closes — do not neighbour-prefetch.
+            endOriginalSearchSeek(prefetch: false)
+        }
+    }
+
+    private func endOriginalSearchSeek(prefetch: Bool, around idx: Int? = nil) {
+        originalSearchSeekReleaseTask?.cancel()
+        originalSearchSeekReleaseTask = nil
+        originalSearchSeekTarget = nil
+        guard prefetch, contentMode == .original else { return }
+        let center = idx ?? topSegmentIdx ?? viewModel.selectedIdx
+        guard let center else { return }
+        viewModel.scheduleVisiblePrefetch(
+            around: center,
+            core: core,
+            original: true,
+            radius: 2
+        )
     }
 
     private func scheduleSettledViewportHeight(_ height: CGFloat) {
@@ -2896,6 +3002,36 @@ final class ReaderViewModel: ObservableObject {
             }
             self.visiblePrefetchTask = nil
         }
+    }
+
+    /// Search far-jumps: drop neighbour hydrate so only the hit segment loads.
+    func cancelSourceWorkExcept(idx: Int) {
+        visiblePrefetchTask?.cancel()
+        visiblePrefetchTask = nil
+        sourcePrefetchTask?.cancel()
+        sourcePrefetchTask = nil
+        sourcePrefetchGeneration += 1
+        let obsolete = detailTasks.keys.filter { $0 != idx }
+        for taskIdx in obsolete {
+            detailTasks.removeValue(forKey: taskIdx)?.cancel()
+            loadingSourceIndices.remove(taskIdx)
+            refreshingSourceIndices.remove(taskIdx)
+        }
+        if !obsolete.isEmpty {
+            scheduleSourceUIRefresh()
+        }
+    }
+
+    /// Drop cached originals for other segments so focus-feed cannot paint them.
+    func retainSourceCacheOnly(idx: Int) {
+        cancelSourceWorkExcept(idx: idx)
+        let remove = sourceCache.keys.filter { $0 != idx }
+        guard !remove.isEmpty else { return }
+        for key in remove {
+            sourceCache.removeValue(forKey: key)
+        }
+        sourceCacheOrder.removeAll { remove.contains($0) }
+        scheduleSourceUIRefresh()
     }
 
     func prefetchSources(around idx: Int, core: CoreClient, radius: Int) {

@@ -394,7 +394,7 @@ RapidOCR(params={
 | `ocr_cloud_api_key` | 空；仅存 `secrets.json`，API 返回 `***` |
 | `ocr_cloud_timeout_seconds` | `60` |
 
-**Provider 路由**：Base URL、模型和 Key 三项完整时逐页调用 `chat/completions`，以 JPEG Data URL 传图，并记录 `ocr_engine=openai-compatible/{model}`；任一项为空时使用 RapidOCR。云端 HTTP 401、429、超时、连接或响应格式错误会终止导入并通过 `ingest_failed` 显示，绝不自动回退本地。
+**Provider 路由**：Base URL、模型和 Key 三项完整时逐页调用 `chat/completions`，以 JPEG Data URL 传图，并记录 `ocr_engine=openai-compatible/{model}`；任一项为空时使用 RapidOCR。同一页云端超时、连接、401、429 或其他请求错误后再试 3 次（合计最多 4 次）。仍失败则从该页起改 RapidOCR（`ocr_engine` 带 `+rapidocr/pp-ocrv6`），余页不再打云端。本地页失败或该页没有识别文字时，页正文写「（本页识别出错）」并记入 `ocr_warnings`，继续下一页。单页失败或全书识别结果为空都不把导入标成 `ingest_failed`（文件打不开、零页、取消导入除外）。
 
 **配置与探活 API**：`GET/PUT /settings` 管理非敏感配置与掩码 Key；`GET /settings/ocr/status` 检查本地依赖或云端 `/models` 连通性。macOS 与 Windows 设置页均提示“扫描页会上传云端”。
 

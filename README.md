@@ -235,7 +235,7 @@ xattr -cr /Applications/Lumina.app
 
 > **说明**：Ollama 是免费的本机 AI 运行时（类似本地版 ChatGPT 引擎）。Lumina 已内置阅读引擎，Ollama 仅负责 AI 摘要与对话，数据不出本机。
 >
-> 扫描 PDF 默认使用本地 OCR。若在「设置 → 文档识别」同时填写 OpenAI 兼容 Base URL、视觉模型和 API Key，Lumina 会优先逐页上传到该服务识别；云端失败会明确报错，不会静默改走本地。
+> 扫描 PDF 默认使用本地 OCR。若在「设置 → 文档识别」同时填写 OpenAI 兼容 Base URL、视觉模型和 API Key，Lumina 会优先逐页上传到该服务识别；云端不可用时改用本机 RapidOCR，导入不会因此中断。
 
 ### 日常使用
 

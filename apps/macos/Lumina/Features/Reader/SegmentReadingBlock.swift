@@ -136,6 +136,8 @@ struct SegmentReadingBlock: View, Equatable {
     var listenHighlight: ListenHighlightAnchor? = nil
     /// Resolve EPUB asset id → sidecar URL for inline illustrations.
     var illustrationURL: ((String) -> URL)? = nil
+    /// Find-in-page focus feed: SwiftUI Text instead of NSTextView (no sync ensureLayout).
+    var usesLightweightOriginalText: Bool = false
 
     @State private var lockedViewportHeight: CGFloat?
     @State private var measuredContentHeight: CGFloat = LuminaTheme.segmentContentMinHeight
@@ -762,40 +764,61 @@ struct SegmentReadingBlock: View, Equatable {
 
     @ViewBuilder
     private func originalTextWithIllustrations(_ body: SegmentSourceBody) -> some View {
-        let parts = OriginalTextIllustrationLayout.parts(
-            text: body.rawText,
-            illustrations: body.illustrations
-        )
-        if parts.count == 1, let first = parts.first, case .text(let only) = first {
-            LuminaSelectableText(
-                text: only,
-                fontSize: scaled(LuminaTheme.summaryBulletSize),
-                lineSpacing: lineSpaced(LuminaTheme.summaryBulletLineSpacing),
-                foreground: paper.textSecondary,
-                highlightUTF16: resolvedOriginalHighlight.range,
-                highlightStyle: resolvedOriginalHighlight.style
-            )
+        if usesLightweightOriginalText {
+            lightweightOriginalText(body.rawText)
         } else {
-            VStack(alignment: .leading, spacing: scaled(10)) {
-                ForEach(Array(parts.enumerated()), id: \.offset) { _, part in
-                    switch part {
-                    case .text(let chunk):
-                        if !chunk.isEmpty {
-                            LuminaSelectableText(
-                                text: chunk,
-                                fontSize: scaled(LuminaTheme.summaryBulletSize),
-                                lineSpacing: lineSpaced(LuminaTheme.summaryBulletLineSpacing),
-                                foreground: paper.textSecondary,
-                                highlightUTF16: nil,
-                                highlightStyle: .search
-                            )
+            let parts = OriginalTextIllustrationLayout.parts(
+                text: body.rawText,
+                illustrations: body.illustrations
+            )
+            if parts.count == 1, let first = parts.first, case .text(let only) = first {
+                LuminaSelectableText(
+                    text: only,
+                    fontSize: scaled(LuminaTheme.summaryBulletSize),
+                    lineSpacing: lineSpaced(LuminaTheme.summaryBulletLineSpacing),
+                    foreground: paper.textSecondary,
+                    highlightUTF16: resolvedOriginalHighlight.range,
+                    highlightStyle: resolvedOriginalHighlight.style
+                )
+            } else {
+                VStack(alignment: .leading, spacing: scaled(10)) {
+                    ForEach(Array(parts.enumerated()), id: \.offset) { _, part in
+                        switch part {
+                        case .text(let chunk):
+                            if !chunk.isEmpty {
+                                LuminaSelectableText(
+                                    text: chunk,
+                                    fontSize: scaled(LuminaTheme.summaryBulletSize),
+                                    lineSpacing: lineSpaced(LuminaTheme.summaryBulletLineSpacing),
+                                    foreground: paper.textSecondary,
+                                    highlightUTF16: nil,
+                                    highlightStyle: .search
+                                )
+                            }
+                        case .image(let illustration):
+                            inlineIllustration(illustration)
                         }
-                    case .image(let illustration):
-                        inlineIllustration(illustration)
                     }
                 }
             }
         }
+    }
+
+    /// Search focus feed only — avoid NSTextView full-document ensureLayout on long CJK.
+    @ViewBuilder
+    private func lightweightOriginalText(_ text: String) -> some View {
+        ScrollView {
+            Text(SearchFocusOriginalText.attributed(
+                text: text,
+                highlightUTF16: resolvedOriginalHighlight.range,
+                fontSize: scaled(LuminaTheme.summaryBulletSize),
+                foreground: paper.textSecondary,
+                highlightColor: Color(LuminaTheme.accent).opacity(0.35)
+            ))
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .textSelection(.enabled)
+        }
+        .frame(maxHeight: 520)
     }
 
     @ViewBuilder
@@ -803,24 +826,15 @@ struct SegmentReadingBlock: View, Equatable {
         let url = illustrationURL?(illustration.asset_id)
         Group {
             if let url {
-                AsyncImage(url: url) { phase in
-                    switch phase {
-                    case .success(let image):
-                        image
-                            .resizable()
-                            .scaledToFit()
-                            .frame(maxWidth: .infinity)
-                            .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-                    case .failure:
-                        illustrationPlaceholder(illustration.alt)
-                    case .empty:
-                        ProgressView()
-                            .controlSize(.small)
-                            .frame(maxWidth: .infinity, minHeight: 48)
-                    @unknown default:
-                        illustrationPlaceholder(illustration.alt)
-                    }
+                BookCoverImage(
+                    url: url,
+                    maxPixel: BookCoverImageCache.illustrationMaxPixel,
+                    fillsFrame: false
+                ) {
+                    illustrationPlaceholder(illustration.alt)
                 }
+                .frame(maxWidth: .infinity)
+                .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
             } else {
                 illustrationPlaceholder(illustration.alt)
             }
@@ -879,5 +893,30 @@ struct SegmentReadingBlock: View, Equatable {
             && lhs.canGoNext == rhs.canGoNext
             && lhs.originalHighlightUTF16 == rhs.originalHighlightUTF16
             && lhs.listenHighlight == rhs.listenHighlight
+            && lhs.usesLightweightOriginalText == rhs.usesLightweightOriginalText
+    }
+}
+
+/// Attributed body for find-in-page focus feed (no AppKit layout manager).
+enum SearchFocusOriginalText {
+    static func attributed(
+        text: String,
+        highlightUTF16: NSRange?,
+        fontSize: CGFloat,
+        foreground: Color,
+        highlightColor: Color
+    ) -> AttributedString {
+        var attributed = AttributedString(text)
+        attributed.font = .system(size: fontSize)
+        attributed.foregroundColor = foreground
+        guard let highlightUTF16,
+              highlightUTF16.length > 0,
+              let stringRange = Range(highlightUTF16, in: text),
+              let attrRange = Range(stringRange, in: attributed)
+        else {
+            return attributed
+        }
+        attributed[attrRange].backgroundColor = highlightColor
+        return attributed
     }
 }

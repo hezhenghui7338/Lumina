@@ -34,7 +34,17 @@ enum OriginalSearchLocateKind: Equatable {
 
 enum OriginalSearchHighlight {
     /// Coalesce rapid ⌘G / next-hit navigations so MainActor is not flooded.
-    static let stepCoalesceNanoseconds: UInt64 = 32_000_000
+    /// Far-apart TOC hits (e.g. `# [§曾国藩全集` every ~300 segs) need enough
+    /// delay that only the last target is materialized.
+    static let stepCoalesceNanoseconds: UInt64 = 150_000_000
+    /// After a search jump, keep suppressing neighbour prefetch / onAppear fan-out.
+    static let seekPrefetchSuppressNanoseconds: UInt64 = 280_000_000
+
+    /// While find-in-page is open with hits, render only the current hit segment
+    /// so far jumps never drive scrollPosition across the full catalog ForEach.
+    static func usesFocusFeed(expanded: Bool, hitCount: Int) -> Bool {
+        expanded && hitCount > 0
+    }
 
     static func nsRange(
         startUTF16: Int,
@@ -93,6 +103,15 @@ enum OriginalSearchHighlight {
             return .highlightOnly
         }
         return .navigateAndFetch
+    }
+
+    /// Neighbour onAppear / visible prefetch must stay off while seeking a hit.
+    static func allowsNeighbourSourceFetch(
+        seekTarget: Int?,
+        segmentIndex: Int
+    ) -> Bool {
+        guard let seekTarget else { return true }
+        return seekTarget == segmentIndex
     }
 
     static func statusLabel(index: Int, count: Int, truncated: Bool) -> String {

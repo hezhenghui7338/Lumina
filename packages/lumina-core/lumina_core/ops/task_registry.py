@@ -267,6 +267,12 @@ class TaskRegistry:
         if record.status in ("completed", "failed", "cancelled"):
             if record.id not in self._completed:
                 self._completed.append(record.id)
+            # The ring only remembered ids; the records themselves piled up for
+            # every segment of an overnight summarize (tens of thousands).
+            ring = set(self._completed)
+            for task_id, archived in list(self._tasks.items()):
+                if archived.status in ("completed", "failed", "cancelled") and task_id not in ring:
+                    self._tasks.pop(task_id, None)
 
     def counts(self) -> dict[str, int]:
         counts: dict[str, int] = {

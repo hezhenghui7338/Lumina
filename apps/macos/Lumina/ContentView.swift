@@ -282,6 +282,7 @@ struct ContentView: View {
     }
 
     private func handleExternalOpen(paths: [String]) {
+        AppDelegate.revealMainWindow()
         tab = .library
         selectedBookId = nil
         let classified = LibraryImportPolicy.classify(paths: paths)
@@ -609,6 +610,7 @@ extension Notification.Name {
     static let luminaOpenUsageGuide = Notification.Name("luminaOpenUsageGuide")
     static let luminaImportBook = Notification.Name("luminaImportBook")
     static let luminaOpenFiles = Notification.Name("luminaOpenFiles")
+    static let luminaRevealMainWindow = Notification.Name("luminaRevealMainWindow")
     static let luminaLibraryRefresh = Notification.Name("luminaLibraryRefresh")
     static let luminaReadingProgressDidChange = Notification.Name("luminaReadingProgressDidChange")
 }

@@ -174,7 +174,7 @@ Lumina/
 | **E2E-B13** | §5.3.2 B13 | 阅读器原文搜索定位 | 只命中 raw_text；响应无 raw_text；偏移可高亮 | API + Swift/Win unit | Mock |
 | **E2E-B9** | §5.7 B9 | 100 段导出 Markdown ≤10s | API | Mock |
 | **E2E-ingest-ocr** | §5.2 | 扫描 PDF OCR → 摘要 | API | Mock |
-| **E2E-ingest-ocr-cloud** | §5.2 | 云端配置完整 → 优先云端 OCR；失败不回退 | API | Mock HTTP |
+| **E2E-ingest-ocr-cloud** | §5.2 | 云端配置完整 → 优先云端；单页失败重试 3 次后该页及余页改本地；失败或空白页留识别出错说明，整本仍导入 | API | Mock HTTP |
 | **E2E-N1** | §5.8 N1 | sync 50 篇 RSS ≤60s | API | Mock |
 | **E2E-N2** | §5.8 N2 | 简报列表（时间倒序 + `last_synced_at`） | API | Mock |
 | **E2E-N3** | §5.8 N3 | 单篇精读 + 深聊 | API | Mock |

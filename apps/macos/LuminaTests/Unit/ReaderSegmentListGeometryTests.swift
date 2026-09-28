@@ -900,6 +900,12 @@ final class SegmentTurnKeyPolicyTests: XCTestCase {
 }
 
 final class LuminaTextLayoutSizingTests: XCTestCase {
+    func testLayoutGenerationBumpAdvancesToken() {
+        let before = LuminaTextLayoutGeneration.current
+        LuminaTextLayoutGeneration.bump()
+        XCTAssertNotEqual(before, LuminaTextLayoutGeneration.current)
+    }
+
     func testNarrowWidthDoesNotEnsureLayout() {
         XCTAssertFalse(LuminaTextLayoutSizing.shouldEnsureLayout(containerWidth: 0))
         XCTAssertFalse(LuminaTextLayoutSizing.shouldEnsureLayout(containerWidth: 7))

@@ -17,6 +17,7 @@ from lumina_core.ingest.ocr import (
     ocr_install_hint,
     ocr_metadata_from_result,
     ocr_pdf,
+    ocr_result_text,
 )
 from lumina_core.ingest.progress import (
     DocumentLoadCancelled,
@@ -412,11 +413,13 @@ def _extract_pdf_pages(
             ocr_result = ocr_pdf(path, **ocr_kwargs)
             metadata.update(ocr_metadata_from_result(ocr_result))
             metadata["ocr"] = True
-            if not ocr_result.text.strip():
+            text = ocr_result_text(ocr_result)
+            if not text.strip():
                 raise RuntimeError("扫描版 PDF OCR 失败或内容为空")
-            return ocr_result.text, metadata
+            return text, metadata
 
         ocr_result = ocr_pdf(path, page_nums=empty_page_nums, **ocr_kwargs)
+        ocr_result_text(ocr_result)
         ocr_by_page = {page.page_num: page.text for page in ocr_result.pages}
         merged_body = _merge_ocr_into_parts(filled_parts, ocr_by_page)
         metadata.update(ocr_metadata_from_result(ocr_result))

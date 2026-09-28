@@ -32,10 +32,13 @@ PRD 章程 0：**任何导入、摘要、OCR、联网、切书、深聊都不得
 - 阅读器原文搜索在 handler 内同步扫全书，或把 `raw_text` 放进搜索响应（须 `asyncio.to_thread`；只回段序号 / 偏移 / snippet）
 - 原文搜索在扫全书 `raw_text` 时整段持有 `db_lock`（须按批 `fetch` 后释放锁再跑正则 / UTF-16；大书搜索不得堵住调整分段 / `GET /books`）
 - 原文搜索「下一条」对同段已缓存命中仍 `navigateToSegment`/`fetchSource`，或 `reveal` 对整容器 `ensureLayout`（须 highlightOnly 快路径；有界 glyph `ensureLayout`）
+- 原文搜索远距命中（如 TOC 标记相隔数百段）连跳时仍对邻居 `onAppear`/`prefetchSources` 或长 CJK 同步全文测高（须 search seek 闸门只载目标段；长文延后 `ensureLayout`）
+- 原文搜索打开且有命中时仍用全书 `ForEach`+`scrollPosition` 远跳（须 focus feed 只渲染当前命中段；轻量 Text 非 NSTextView）
 - 调整分段落库后对全书 `COUNT(segments)` / `refresh_summary_progress`（须增量维护 `books.summary_ready_count`；大书 COUNT 会扫带 `raw_text` 的页，占满 `db_lock`）
 - 阅读器为摘要去拉含 `raw_text` 的段详情（须 `GET .../segments/{idx}/summary`）
 - NSTextView 在 `layout`/`setFrameSize`/`viewDidMoveToWindow` 里无条件 `invalidateIntrinsicContentSize`；宽度未稳定时对无空格 CJK `ensureLayout`；系统全屏/live resize 须 debounce 测高
 - 阅读器 feed 对 `contentMode` 做整表高度动画（搜索切原文与摘要↔原文会卡死；允许慢重排但不动画整 feed）
+- macOS Finder「打开方式」/ 单实例转发只投递路径却不激活、不前置或重建主窗口（用户以为卡住；须 `revealMainWindow`：orderFront / deminiaturize / `openWindow` 或 `lumina://reveal`）。前置时须 `orderOut` help tag / tooltip 窗口（如「点击预览新分界」），禁止对 `NSApp.windows` 逐个 `makeKeyAndOrderFront`（tooltip 成为 key window 后文案钉在界面上；仅 tooltip 可见时须当没有主窗口并重建）
 - 在 MainActor 上解码大体量 JSON 或做同步重 I/O
 - 全屏 blocking spinner；不可取消的长任务占死 UI（冷启动 / 重启引擎的品牌就绪遮罩除外；且不得用多步 checklist 取代）
 - 在 lifespan 里 `await recover_on_startup` 或 boot news sync，导致 `/health` 在 recover 完成前不可达

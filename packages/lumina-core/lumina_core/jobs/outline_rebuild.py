@@ -29,6 +29,7 @@ __all__ = [
     "OutlineRealignResult",
     "compress_outline_path",
     "compress_zeng_outline_path",
+    "reattach_sandwiched_zeng_articles",
     "is_year_title",
     "is_zeng_volume_title",
     "year_core_title",
@@ -657,6 +658,50 @@ def nest_year_paths_heuristic(paths: list[list[str]]) -> list[list[str]]:
     return repaired
 
 
+def reattach_sandwiched_zeng_articles(
+    paths: list[list[str]],
+) -> list[list[str]]:
+    """Put a lone批牍 title back under the 《曾国藩全集N》+年 that wraps it.
+
+    A single non-volume, non-year title stored as its own root sits on the same
+    level as the collection and splits that volume (全集13 was cut between
+    咸丰十一年). Only a run squeezed between two identical volume+year paths is
+    rewritten. Volume boundaries, lone years, and every other book stay put.
+    """
+    cleaned = [list(path) for path in paths]
+
+    def _orphan(path: list[str]) -> bool:
+        if len(path) != 1:
+            return False
+        title = clean_structure_title(path[0])
+        if not title:
+            return False
+        if is_volume_title(title) or is_year_title(title):
+            return False
+        return True
+
+    def _anchor(path: list[str]) -> bool:
+        if len(path) < 2:
+            return False
+        return is_zeng_volume_title(path[0]) and bool(is_year_title(path[1]))
+
+    index = 0
+    count = len(cleaned)
+    while index < count:
+        if not _orphan(cleaned[index]):
+            index += 1
+            continue
+        start = index
+        while index < count and _orphan(cleaned[index]):
+            index += 1
+        left = cleaned[start - 1] if start else None
+        right = cleaned[index] if index < count else None
+        if left and right and _anchor(left) and left == right:
+            for cursor in range(start, index):
+                cleaned[cursor] = list(left)
+    return cleaned
+
+
 def rebuild_outline_for_book(
     conn: sqlite3.Connection,
     book_id: str,
@@ -753,6 +798,9 @@ def rebuild_outline_for_book(
                 volume_roots=volume_roots,
             )
             mode = "toc" if toc_paths else mode
+
+    # Lone批牍 titles must not split a volume that still continues on both sides.
+    final_paths = reattach_sandwiched_zeng_articles(final_paths)
 
     updated = 0
     unchanged = 0

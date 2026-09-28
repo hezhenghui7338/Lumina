@@ -621,11 +621,29 @@ class SegmentRepo:
         with db_lock(self.conn):
             row = self.conn.execute(
                 f"SELECT {_SEGMENT_LIST_COLUMNS} FROM segments "
-                "WHERE book_id = ? AND summary_status IN ('pending', 'error') "
+                "WHERE book_id = ? "
+                "AND COALESCE(summary_status, '') != 'ready' "
+                "AND summary_status IN ('pending', 'error') "
                 "ORDER BY idx LIMIT 1",
                 (book_id,),
             ).fetchone()
         return _segment_public(row) if row else None
+
+    def next_untranslated_segment(
+        self, book_id: str, *, after_idx: int
+    ) -> dict[str, Any] | None:
+        """Next segment still missing a translation, without loading raw_text."""
+        with db_lock(self.conn):
+            row = self.conn.execute(
+                """
+                SELECT id, idx FROM segments
+                WHERE book_id = ? AND idx > ?
+                  AND (translation IS NULL OR translation = '')
+                ORDER BY idx LIMIT 1
+                """,
+                (book_id, after_idx),
+            ).fetchone()
+        return dict(row) if row else None
 
     def has_incomplete_summary(self, book_id: str) -> bool:
         """True if any segment is not ready (LIMIT 1 probe, not a full COUNT)."""
@@ -643,7 +661,9 @@ class SegmentRepo:
         with db_lock(self.conn):
             rows = self.conn.execute(
                 f"SELECT {_SEGMENT_LIST_COLUMNS} FROM segments "
-                "WHERE book_id = ? AND summary_status = 'running' "
+                "WHERE book_id = ? "
+                "AND COALESCE(summary_status, '') != 'ready' "
+                "AND summary_status = 'running' "
                 "ORDER BY idx",
                 (book_id,),
             ).fetchall()
@@ -654,7 +674,9 @@ class SegmentRepo:
         with db_transaction(self.conn):
             rows = self.conn.execute(
                 f"SELECT {_SEGMENT_LIST_COLUMNS} FROM segments "
-                "WHERE book_id = ? AND summary_status = 'running' "
+                "WHERE book_id = ? "
+                "AND COALESCE(summary_status, '') != 'ready' "
+                "AND summary_status = 'running' "
                 "ORDER BY idx",
                 (book_id,),
             ).fetchall()
@@ -662,7 +684,9 @@ class SegmentRepo:
                 return []
             self.conn.execute(
                 "UPDATE segments SET summary_status = 'pending' "
-                "WHERE book_id = ? AND summary_status = 'running'",
+                "WHERE book_id = ? "
+                "AND COALESCE(summary_status, '') != 'ready' "
+                "AND summary_status = 'running'",
                 (book_id,),
             )
         return [_segment_public(r) for r in rows]
@@ -672,7 +696,9 @@ class SegmentRepo:
         with db_transaction(self.conn):
             rows = self.conn.execute(
                 f"SELECT {_SEGMENT_LIST_COLUMNS} FROM segments "
-                "WHERE book_id = ? AND summary_status IN ('failed', 'error') "
+                "WHERE book_id = ? "
+                "AND COALESCE(summary_status, '') != 'ready' "
+                "AND summary_status IN ('failed', 'error') "
                 "ORDER BY idx",
                 (book_id,),
             ).fetchall()
@@ -682,7 +708,9 @@ class SegmentRepo:
                 """
                 UPDATE segments
                 SET summary_status = 'pending', retry_count = 0
-                WHERE book_id = ? AND summary_status IN ('failed', 'error')
+                WHERE book_id = ?
+                  AND COALESCE(summary_status, '') != 'ready'
+                  AND summary_status IN ('failed', 'error')
                 """,
                 (book_id,),
             )
@@ -695,7 +723,9 @@ class SegmentRepo:
                 """
                 UPDATE segments
                 SET summary_status = 'pending', retry_count = 0
-                WHERE book_id = ? AND summary_status IN ('failed', 'error')
+                WHERE book_id = ?
+                  AND COALESCE(summary_status, '') != 'ready'
+                  AND summary_status IN ('failed', 'error')
                 """,
                 (book_id,),
             )

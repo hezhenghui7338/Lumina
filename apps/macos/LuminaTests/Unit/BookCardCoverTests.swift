@@ -29,6 +29,16 @@ final class BookCardCoverTests: XCTestCase {
             card.contains("enum BookCoverImageCache"),
             "cover loads must be cached so bookshelf redraws do not flash"
         )
+        XCTAssertTrue(
+            card.contains("kCGImageSourceThumbnailMaxPixelSize"),
+            "covers must decode as thumbnails, not full print bitmaps"
+        )
+        XCTAssertTrue(card.contains("totalCostLimit"))
+        XCTAssertTrue(card.contains("coverMaxPixel = 480"))
+        XCTAssertFalse(
+            card.contains("NSImage(data:"),
+            "NSImage(data:) retains the full decoded bitmap"
+        )
         XCTAssertFalse(
             cover.contains("AsyncImage(url:"),
             "AsyncImage remounts on parent refresh and flashes empty→image"

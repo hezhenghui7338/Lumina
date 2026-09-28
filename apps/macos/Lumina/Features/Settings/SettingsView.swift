@@ -512,7 +512,7 @@ struct SettingsView: View {
         } header: {
             Text("文档识别")
         } footer: {
-            Text("Base URL、模型和 Key 均配置后优先使用云端 OCR，扫描页图片会上传至该服务；任一项为空则仅在本机使用 RapidOCR。云端失败不会静默回退。")
+            Text("Base URL、模型和 Key 均配置后优先使用云端 OCR，扫描页图片会上传至该服务；任一项为空则仅在本机使用 RapidOCR。云端不可用时改用本机 RapidOCR，导入不会因此中断。")
         }
     }
 

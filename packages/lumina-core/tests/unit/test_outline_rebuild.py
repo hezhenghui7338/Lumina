@@ -366,6 +366,39 @@ def test_nest_flat_outline_paths_infers_chapter_section():
     assert nest_flat_outline_paths([("部", "章", "节")]) == [("部", "章", "节")]
 
 
+def test_reattach_sandwiched_zeng_articles_keeps_volume_13_whole():
+    """UI 段 3955–3956 (idx 3954–3955) were stored as their own roots.
+
+    Footnote marks glued into the批牍 title, e.g. 「由(8)五月十六早」, so the
+    path was only the article. That sat beside 曾国藩全集13 and split the volume.
+    """
+    from lumina_core.jobs.outline_rebuild import reattach_sandwiched_zeng_articles
+
+    year = ["曾国藩全集13", "咸丰十一年"]
+    article_0402 = ["0402．批唐镇军义训禀报近日进止机宜由(8)五月十六早"]
+    article_0406 = ["0406．批朱镇军品隆禀陈近日击剿机宜由(12)五月二十二日辰正"]
+    paths = [
+        ["曾国藩全集13", "咸丰十年"],
+        year,
+        article_0402,
+        article_0406,
+        list(year),
+        ["曾国藩全集14"],
+        ["同治元年"],
+        ["曾国藩全集14", "同治元年", "贺年"],
+    ]
+    fixed = reattach_sandwiched_zeng_articles(paths)
+    assert fixed[1] == year
+    assert fixed[2] == year
+    assert fixed[3] == year
+    assert fixed[4] == year
+    # Only this sandwich. A real volume boundary and a lone year stay.
+    assert fixed[0] == ["曾国藩全集13", "咸丰十年"]
+    assert fixed[5] == ["曾国藩全集14"]
+    assert fixed[6] == ["同治元年"]
+    assert fixed[7] == ["曾国藩全集14", "同治元年", "贺年"]
+
+
 def test_compress_zeng_outline_path_keeps_volume_year_only():
     from lumina_core.jobs.outline_rebuild import compress_zeng_outline_path
 

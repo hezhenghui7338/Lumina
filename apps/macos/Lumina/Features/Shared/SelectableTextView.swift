@@ -42,6 +42,16 @@ enum LuminaTextLayoutSizing {
     }
 }
 
+/// Invalidates deferred NSTextView intrinsic work when search seeks far
+/// (old neighbour layouts must not ensureLayout after the jump).
+enum LuminaTextLayoutGeneration {
+    private(set) static var current: UInt64 = 0
+
+    static func bump() {
+        current &+= 1
+    }
+}
+
 /// Mouse-selectable display text with AppKit intrinsic height (reader body copy).
 struct LuminaSelectableText: NSViewRepresentable {
     let text: String
@@ -357,10 +367,13 @@ final class LuminaSelectableTextView: NSTextView {
     private func scheduleDebouncedIntrinsicInvalidation() {
         intrinsicInvalidationPending = true
         pendingInvalidateWorkItem?.cancel()
+        let generation = LuminaTextLayoutGeneration.current
         let work = DispatchWorkItem { [weak self] in
             guard let self else { return }
             self.intrinsicInvalidationPending = false
             self.pendingInvalidateWorkItem = nil
+            // Search far-seek bumped generation: skip stale ensureLayout.
+            guard generation == LuminaTextLayoutGeneration.current else { return }
             self.invalidateIntrinsicContentSize()
             self.superview?.invalidateIntrinsicContentSize()
         }

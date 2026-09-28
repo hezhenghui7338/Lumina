@@ -873,6 +873,97 @@ def test_backfill_queries_use_partial_indexes(tmp_path):
     conn.close()
 
 
+def _plan_text(cur, sql: str, params: tuple = ()) -> str:
+    rows = cur.execute(f"EXPLAIN QUERY PLAN {sql}", params).fetchall()
+    return " ".join(" ".join(str(v) for v in row) for row in rows)
+
+
+def test_hot_path_queries_use_secondary_indexes(tmp_path):
+    """FK / status probes must SEARCH secondary indexes, not SCAN whole tables."""
+    conn = init_db(tmp_path / "hot-path-idx.db")
+    cur = conn.cursor()
+
+    # Seed enough ready rows so the planner prefers the incomplete partial
+    # index over UNIQUE(book_id, idx) for status probes.
+    cur.execute(
+        "INSERT INTO books (id, title, format, file_path, created_at, updated_at) "
+        "VALUES ('b', 'T', 'txt', '/t', 't', 't')"
+    )
+    cur.executemany(
+        "INSERT INTO segments (id, book_id, idx, raw_text, summary_status) "
+        "VALUES (?, 'b', ?, 'x', ?)",
+        [(f"s{i}", i, "ready" if i else "pending") for i in range(64)],
+    )
+    conn.commit()
+
+    for sql, params, needle in (
+        (
+            "SELECT id FROM segments WHERE book_id = ? "
+            "AND COALESCE(summary_status, '') != 'ready' "
+            "AND summary_status IN ('pending', 'error') ORDER BY idx LIMIT 1",
+            ("b",),
+            "idx_segments_incomplete",
+        ),
+        (
+            "SELECT 1 FROM segments WHERE book_id = ? "
+            "AND COALESCE(summary_status, '') != 'ready' LIMIT 1",
+            ("b",),
+            "idx_segments_incomplete",
+        ),
+        (
+            "SELECT id FROM segments WHERE book_id = ? "
+            "AND COALESCE(summary_status, '') != 'ready' "
+            "AND summary_status = 'running' ORDER BY idx",
+            ("b",),
+            "idx_segments_incomplete",
+        ),
+        ("SELECT * FROM notes WHERE book_id = ?", ("x",), "idx_notes_book"),
+        ("SELECT * FROM notes WHERE segment_id = ?", ("x",), "idx_notes_segment"),
+        (
+            "SELECT * FROM chat_sessions WHERE book_id = ? "
+            "ORDER BY updated_at DESC LIMIT 1",
+            ("x",),
+            "idx_chat_sessions_book",
+        ),
+        (
+            "SELECT * FROM chat_messages WHERE session_id = ? ORDER BY created_at",
+            ("x",),
+            "idx_chat_messages_session",
+        ),
+        ("DELETE FROM jobs WHERE book_id = ?", ("x",), "idx_jobs_book"),
+        (
+            "SELECT * FROM jobs WHERE status = 'pending' "
+            "ORDER BY priority DESC, created_at LIMIT 10",
+            (),
+            "idx_jobs_status",
+        ),
+        ("SELECT * FROM books WHERE file_hash = ?", ("x",), "idx_books_file_hash"),
+        (
+            "SELECT * FROM news_articles WHERE source_id = ? "
+            "ORDER BY published_at DESC",
+            ("x",),
+            "idx_news_articles_source",
+        ),
+        (
+            "SELECT * FROM news_chat_messages WHERE article_id = ? "
+            "ORDER BY created_at",
+            ("x",),
+            "idx_news_chat_messages_article",
+        ),
+    ):
+        plan = _plan_text(cur, sql, params)
+        assert needle in plan, f"expected {needle} in plan for {sql!r}: {plan}"
+        assert "SCAN notes" not in plan
+        assert "SCAN chat_sessions" not in plan
+        assert "SCAN chat_messages" not in plan
+        assert "SCAN jobs" not in plan
+        assert "SCAN books" not in plan
+        assert "SCAN news_articles" not in plan
+        assert "SCAN news_chat_messages" not in plan
+
+    conn.close()
+
+
 def test_health_and_books_respond_during_cpu_bound_ingest(client, monkeypatch):
     """Python CPU in ingest must yield the GIL so /health and GET /books stay live."""
     import time
