@@ -67,6 +67,8 @@ CREATE TABLE IF NOT EXISTS notes (
   type        TEXT NOT NULL,
   created_at  TEXT NOT NULL
 );
+CREATE INDEX IF NOT EXISTS idx_notes_book ON notes(book_id);
+CREATE INDEX IF NOT EXISTS idx_notes_segment ON notes(segment_id);
 
 CREATE TABLE IF NOT EXISTS chat_sessions (
   id          TEXT PRIMARY KEY,
@@ -75,6 +77,7 @@ CREATE TABLE IF NOT EXISTS chat_sessions (
   segment_id  TEXT,
   updated_at  TEXT NOT NULL
 );
+CREATE INDEX IF NOT EXISTS idx_chat_sessions_book ON chat_sessions(book_id);
 
 CREATE TABLE IF NOT EXISTS chat_messages (
   id          TEXT PRIMARY KEY,
@@ -85,6 +88,7 @@ CREATE TABLE IF NOT EXISTS chat_messages (
   web_refs_json  TEXT,
   created_at  TEXT NOT NULL
 );
+CREATE INDEX IF NOT EXISTS idx_chat_messages_session ON chat_messages(session_id);
 
 CREATE TABLE IF NOT EXISTS summary_nodes (
   id                 TEXT PRIMARY KEY,
@@ -113,6 +117,8 @@ CREATE TABLE IF NOT EXISTS jobs (
   created_at  TEXT NOT NULL,
   updated_at  TEXT NOT NULL
 );
+CREATE INDEX IF NOT EXISTS idx_jobs_book ON jobs(book_id);
+CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status);
 
 CREATE VIRTUAL TABLE IF NOT EXISTS search_fts USING fts5(
   book_id UNINDEXED, segment_id UNINDEXED, note_id UNINDEXED, kind UNINDEXED, title, body,
@@ -151,6 +157,7 @@ CREATE TABLE IF NOT EXISTS news_articles (
   summary_markdown TEXT,
   summary_status TEXT DEFAULT 'idle'
 );
+CREATE INDEX IF NOT EXISTS idx_news_articles_source ON news_articles(source_id);
 
 CREATE TABLE IF NOT EXISTS news_chat_messages (
   id            TEXT PRIMARY KEY,
@@ -160,6 +167,7 @@ CREATE TABLE IF NOT EXISTS news_chat_messages (
   web_refs_json TEXT,
   created_at    TEXT NOT NULL
 );
+CREATE INDEX IF NOT EXISTS idx_news_chat_messages_article ON news_chat_messages(article_id);
 
 CREATE TABLE IF NOT EXISTS news_sync_meta (
   id              INTEGER PRIMARY KEY CHECK (id = 1),
@@ -193,6 +201,13 @@ CREATE TABLE IF NOT EXISTS segment_illustrations (
 );
 CREATE INDEX IF NOT EXISTS idx_segment_illustrations_book_idx
   ON segment_illustrations(book_id, segment_idx);
+
+-- Hot-path secondary indexes (also ensured in migrate for upgrades).
+-- idx_books_file_hash is created in _ensure_hot_path_indexes after
+-- _migrate_books adds file_hash on legacy DBs.
+CREATE INDEX IF NOT EXISTS idx_segments_incomplete
+  ON segments(book_id, idx)
+  WHERE COALESCE(summary_status, '') != 'ready';
 """
 
 
@@ -354,6 +369,35 @@ def _migrate_segments(conn: sqlite3.Connection) -> None:
           AND (label IS NULL OR TRIM(label) = '')
         """
     )
+    # Summarize probes (next pending / has_incomplete / running) must not
+    # walk every ready row of a large finished book via (book_id, idx).
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_segments_incomplete
+        ON segments(book_id, idx)
+        WHERE COALESCE(summary_status, '') != 'ready'
+        """
+    )
+
+
+def _ensure_hot_path_indexes(conn: sqlite3.Connection) -> None:
+    """Secondary indexes for FK/lookup hot paths (idempotent; survives notes rebuild)."""
+    statements = (
+        "CREATE INDEX IF NOT EXISTS idx_books_file_hash ON books(file_hash)",
+        "CREATE INDEX IF NOT EXISTS idx_notes_book ON notes(book_id)",
+        "CREATE INDEX IF NOT EXISTS idx_notes_segment ON notes(segment_id)",
+        "CREATE INDEX IF NOT EXISTS idx_chat_sessions_book ON chat_sessions(book_id)",
+        "CREATE INDEX IF NOT EXISTS idx_chat_messages_session ON chat_messages(session_id)",
+        "CREATE INDEX IF NOT EXISTS idx_jobs_book ON jobs(book_id)",
+        "CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status)",
+        "CREATE INDEX IF NOT EXISTS idx_news_articles_source ON news_articles(source_id)",
+        (
+            "CREATE INDEX IF NOT EXISTS idx_news_chat_messages_article "
+            "ON news_chat_messages(article_id)"
+        ),
+    )
+    for sql in statements:
+        conn.execute(sql)
 
 
 def _migrate_news_articles(conn: sqlite3.Connection) -> None:
@@ -571,5 +615,7 @@ def init_db(db_path: Path) -> sqlite3.Connection:
     _migrate_illustration_tables(conn)
     migrate_search_fts_map(conn)
     _migrate_notes_require_segment(conn)
+    # After notes table rebuild: recreate note indexes + other hot-path indexes.
+    _ensure_hot_path_indexes(conn)
     conn.commit()
     return conn

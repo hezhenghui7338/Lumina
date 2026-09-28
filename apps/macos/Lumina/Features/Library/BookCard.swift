@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import ImageIO
 
 struct BookCard: View {
     let book: BookSummary
@@ -218,22 +219,93 @@ struct LibraryIngestMeter: View {
     }
 }
 
-/// Process-wide cover cache so bookshelf poll / EnvironmentObject redraws do not
-/// flash AsyncImage empty→image on every refresh.
+/// Process-wide image cache so bookshelf poll / EnvironmentObject redraws do not
+/// flash empty→image on every refresh. Full-resolution bitmaps are not kept:
+/// a page of print-sized covers is tens of megabytes each, and an unbounded
+/// cache of them is what pushed the app past 3GB overnight.
 enum BookCoverImageCache {
+    /// Card covers are ~150pt; 480px covers 3× retina without the print bitmap.
+    static let coverMaxPixel = 480
+    /// Inline figures can be content-width; still far below a 2700px scan.
+    static let illustrationMaxPixel = 1400
+    static let byteBudget = 32 * 1024 * 1024
+    static let countLimit = 48
+
     static let images = NSCache<NSURL, NSImage>()
     private static let lock = NSLock()
     private static var failed = Set<NSURL>()
+    private static let limitsReady: Bool = {
+        images.countLimit = countLimit
+        images.totalCostLimit = byteBudget
+        return true
+    }()
+    /// Do not park full JPEG/PNG bodies in URLCache.shared next to the bitmaps.
+    private static let session: URLSession = {
+        let config = URLSessionConfiguration.ephemeral
+        config.urlCache = nil
+        config.requestCachePolicy = .reloadIgnoringLocalCacheData
+        return URLSession(configuration: config)
+    }()
 
-    static func image(for url: URL) -> NSImage? {
-        images.object(forKey: url as NSURL)
+    static func cacheKey(url: URL, maxPixel: Int) -> NSURL {
+        guard var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
+            return url as NSURL
+        }
+        components.fragment = "px\(maxPixel)"
+        return (components.url ?? url) as NSURL
     }
 
-    static func store(_ image: NSImage, for url: URL) {
-        images.setObject(image, forKey: url as NSURL)
+    static func image(for url: URL, maxPixel: Int) -> NSImage? {
+        _ = limitsReady
+        return images.object(forKey: cacheKey(url: url, maxPixel: maxPixel))
+    }
+
+    static func store(_ image: NSImage, for url: URL, maxPixel: Int) {
+        _ = limitsReady
+        let cost = max(1, Int(image.size.width * image.size.height * 4))
+        images.setObject(image, forKey: cacheKey(url: url, maxPixel: maxPixel), cost: cost)
         lock.lock()
         failed.remove(url as NSURL)
         lock.unlock()
+    }
+
+    /// Decode a display-sized thumbnail so a print-resolution cover is not kept.
+    static func thumbnail(data: Data, maxPixel: Int) -> NSImage? {
+        let sourceOptions = [kCGImageSourceShouldCache: false] as CFDictionary
+        guard let source = CGImageSourceCreateWithData(data as CFData, sourceOptions) else {
+            return nil
+        }
+        let thumbOptions: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceThumbnailMaxPixelSize: max(1, maxPixel),
+            kCGImageSourceShouldCacheImmediately: true,
+        ]
+        guard let cg = CGImageSourceCreateThumbnailAtIndex(source, 0, thumbOptions as CFDictionary) else {
+            return nil
+        }
+        return NSImage(cgImage: cg, size: NSSize(width: cg.width, height: cg.height))
+    }
+
+    static func loadThumbnail(url: URL, maxPixel: Int) async -> NSImage? {
+        if let cached = image(for: url, maxPixel: maxPixel) { return cached }
+        if hasFailed(url) { return nil }
+        do {
+            let (data, response) = try await session.data(from: url)
+            if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+                markFailed(url)
+                return nil
+            }
+            guard let loaded = thumbnail(data: data, maxPixel: maxPixel) else {
+                markFailed(url)
+                return nil
+            }
+            store(loaded, for: url, maxPixel: maxPixel)
+            return loaded
+        } catch {
+            markFailed(url)
+            return nil
+        }
     }
 
     static func markFailed(_ url: URL) {
@@ -252,6 +324,8 @@ enum BookCoverImageCache {
 /// Stable cover loader: keeps the last successful image across parent re-renders.
 struct BookCoverImage<Placeholder: View>: View {
     let url: URL
+    var maxPixel: Int = BookCoverImageCache.coverMaxPixel
+    var fillsFrame: Bool = true
     @ViewBuilder var placeholder: () -> Placeholder
     @State private var image: NSImage?
 
@@ -260,32 +334,13 @@ struct BookCoverImage<Placeholder: View>: View {
             if let image {
                 Image(nsImage: image)
                     .resizable()
-                    .scaledToFill()
+                    .aspectRatio(contentMode: fillsFrame ? .fill : .fit)
             } else {
                 placeholder()
             }
         }
-        .task(id: url) {
-            if let cached = BookCoverImageCache.image(for: url) {
-                image = cached
-                return
-            }
-            if BookCoverImageCache.hasFailed(url) { return }
-            do {
-                let (data, response) = try await URLSession.shared.data(from: url)
-                if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
-                    BookCoverImageCache.markFailed(url)
-                    return
-                }
-                guard let loaded = NSImage(data: data) else {
-                    BookCoverImageCache.markFailed(url)
-                    return
-                }
-                BookCoverImageCache.store(loaded, for: url)
-                image = loaded
-            } catch {
-                BookCoverImageCache.markFailed(url)
-            }
+        .task(id: "\(url.absoluteString)#\(maxPixel)") {
+            image = await BookCoverImageCache.loadThumbnail(url: url, maxPixel: maxPixel)
         }
     }
 }

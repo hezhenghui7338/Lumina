@@ -52,11 +52,29 @@ def should_offload_cpu(path: Path) -> bool:
 
 
 def cpu_worker_command(job_path: Path) -> list[str]:
-    job = str(job_path)
+    job = str(Path(job_path).resolve())
+    exe = sys.executable or ""
+    if not exe:
+        raise RuntimeError("cpu worker: sys.executable is empty")
     if getattr(sys, "frozen", False):
-        return [sys.executable, "--cpu-worker", job]
+        return [exe, "--cpu-worker", job]
     # Unfrozen: skip FastAPI import in the child. Frozen sidecar uses the same binary.
-    return [sys.executable, "-m", "lumina_core.jobs.cpu_worker", job]
+    return [exe, "-m", "lumina_core.jobs.cpu_worker", job]
+
+
+def format_worker_exception(exc: BaseException) -> str:
+    """Surface errno + missing path; bare '[Errno 2] No such file…' is not actionable."""
+    detail = str(exc).strip() or type(exc).__name__
+    filename = getattr(exc, "filename", None)
+    if filename and str(filename) not in detail:
+        detail = f"{detail}: {filename}"
+    cause = exc.__cause__ or exc.__context__
+    if cause is not None and cause is not exc:
+        cause_s = str(cause).strip()
+        cause_name = type(cause).__name__
+        if cause_s and cause_s not in detail:
+            detail = f"{detail} ({cause_name}: {cause_s})"
+    return detail
 
 
 def settings_for_cpu_job(settings: Settings) -> dict[str, Any]:
@@ -226,16 +244,32 @@ def run_cpu_worker_sync(
     max_job = [env_max if env_max is not None else computed_max]
     job_max_locked = env_max is not None
     fmt = str(job.get("fmt") or "")
-    proc = subprocess.Popen(
-        cpu_worker_command(job_path),
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        bufsize=1,
-        env=env,
-    )
+    cmd = cpu_worker_command(job_path)
+    spawn_cwd: str | None = None
+    if getattr(sys, "frozen", False):
+        # Match Swift sidecar launch: _internal lives next to the executable.
+        spawn_cwd = str(Path(cmd[0]).resolve().parent)
+    if not Path(cmd[0]).is_file():
+        raise RuntimeError(f"分段引擎可执行文件不存在：{cmd[0]}")
+    dest_raw = job.get("dest") or job.get("file_path")
+    if dest_raw and not Path(str(dest_raw)).is_file():
+        raise RuntimeError(f"书库原文件不存在，请重新导入：{dest_raw}")
+    try:
+        proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            bufsize=1,
+            env=env,
+            cwd=spawn_cwd,
+        )
+    except FileNotFoundError as exc:
+        raise RuntimeError(
+            f"无法启动分段子进程：{format_worker_exception(exc)}（cmd={cmd[0]!r}）"
+        ) from exc
     last_progress_at = [time.monotonic()]
     last_message = [""]
     timed_out = threading.Event()
@@ -316,7 +350,13 @@ def run_cpu_worker_sync(
                 last_progress_at[0] = time.monotonic()
                 result = msg
             elif kind == "error":
-                raise RuntimeError(str(msg.get("message") or "cpu worker failed"))
+                child_msg = str(msg.get("message") or "cpu worker failed").strip()
+                # stderr traceback often still has the missing path for bare Errno 2.
+                stderr_thread.join(timeout=1.0)
+                err_tail = "".join(stderr_chunks).strip()
+                if err_tail and child_msg == "[Errno 2] No such file or directory":
+                    raise RuntimeError(f"{child_msg}\n{err_tail[-800:]}")
+                raise RuntimeError(child_msg)
         proc.wait()
     except Exception:
         if proc.poll() is None:
@@ -552,7 +592,7 @@ def run_cpu_job_file(job_path: Path) -> int:
     except Exception as exc:
         logger.exception("cpu worker failed")
         try:
-            _emit({"type": "error", "message": str(exc)})
+            _emit({"type": "error", "message": format_worker_exception(exc)})
         except Exception:
             pass
         return 1

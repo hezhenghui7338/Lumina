@@ -208,7 +208,7 @@ CREATE TABLE segments (
   book_id         TEXT NOT NULL REFERENCES books(id),
   idx             INTEGER NOT NULL,       -- 0-based 段序号
   chapter         TEXT,
-  heading_path    TEXT,                   -- JSON 数组，部/章最多 2 项；段列表组树用
+  heading_path    TEXT,                   -- JSON 数组，落库最多 [一级, 二级]；三级进 label
   page_range      TEXT,
   anchor_label    TEXT,                   -- 〔§… · 段 N · p.…〕
   raw_text        TEXT,
@@ -394,7 +394,7 @@ RapidOCR(params={
 | `ocr_cloud_api_key` | 空；仅存 `secrets.json`，API 返回 `***` |
 | `ocr_cloud_timeout_seconds` | `60` |
 
-**Provider 路由**：Base URL、模型和 Key 三项完整时逐页调用 `chat/completions`，以 JPEG Data URL 传图，并记录 `ocr_engine=openai-compatible/{model}`；任一项为空时使用 RapidOCR。云端 HTTP 401、429、超时、连接或响应格式错误会终止导入并通过 `ingest_failed` 显示，绝不自动回退本地。
+**Provider 路由**：Base URL、模型和 Key 三项完整时逐页调用 `chat/completions`，以 JPEG Data URL 传图，并记录 `ocr_engine=openai-compatible/{model}`；任一项为空时使用 RapidOCR。同一页云端超时、连接、401、429 或其他请求错误后再试 3 次（合计最多 4 次）。仍失败则从该页起改 RapidOCR（`ocr_engine` 带 `+rapidocr/pp-ocrv6`），余页不再打云端。本地页失败或该页没有识别文字时，页正文写「（本页识别出错）」并记入 `ocr_warnings`，继续下一页。单页失败或全书识别结果为空都不把导入标成 `ingest_failed`（文件打不开、零页、取消导入除外）。
 
 **配置与探活 API**：`GET/PUT /settings` 管理非敏感配置与掩码 Key；`GET /settings/ocr/status` 检查本地依赖或云端 `/models` 连通性。macOS 与 Windows 设置页均提示“扫描页会上传云端”。
 
@@ -715,7 +715,7 @@ Sidecar 绑定 `127.0.0.1` only；无认证（本机进程）。
 @MainActor
 final class ReaderViewModel: ObservableObject {
   @Published var book: Book
-  @Published var segments: [SegmentRow]      // heading_path 组树（最多 3 层）+ label
+  @Published var segments: [SegmentRow]      // heading_path 组树（落库已 ≤2 层标题）；段叶子用 label
   @Published var currentSegment: SegmentDetail?
   @Published var chatMessages: [ChatMessage]
   @Published var chatScope: ChatScope = .segment
@@ -872,7 +872,7 @@ class ModelRouter:
 - 章标（`BARE_CHAPTER`）只对短行 `match`；禁止对超长正文行或全书跑嵌套装饰符正则。换行扫描不得对每个 `\n` 从文件头 `rfind`。
 - cpu-worker 子进程无进度 1800s，或单本墙钟 `max(1800s, pages×60s, MiB×30s)`（顶 8h）必须失败，不得停在「分段中」。PDF/OCR 按页数拉长墙钟；TXT 字数进度不得当成页数。
 - TXT 解码与分段 **禁止全书 `str` 常驻**：峰值 RAM = 窗口 + 当前段 + 一批 INSERT；覆盖校验用偏移首尾相接，禁止 `join(raw_text)` 全书。
-- `GET /books/{id}/segments` **默认不含** `raw_text`；原文仅 `GET .../segments/{idx}`。目录含 `heading_path`（0–2 个标题）；客户端用已加载瘦段表组最多 3 层树。禁止把全书 `document_tree` 放进书列表/详情。旧段无 `heading_path` 时从 `chapter` 按 ` · ` 拆并去掉 `§`，不强制重新分段。
+- `GET /books/{id}/segments` **默认不含** `raw_text`；原文仅 `GET .../segments/{idx}`。目录含 `heading_path`（落库最多两级标题）；三级目录进 `label`（摘要不覆盖非空 label）。**macOS** 组树最多 2 层标题 + 段叶子；Windows v1.0 不强制改组树 UI。禁止把全书 `document_tree` 放进书列表/详情。旧段无 `heading_path` 时从 `chapter` 按 ` · ` 拆并去掉 `§`，不强制重新分段；带结构书可用 outline 重建只改路径（及结构三级 label）。
 - `GET /books/{id}/original-search` **禁止**同步扫库；**禁止**在 hits 中返回 `raw_text`。
 - `segment_ready` SSE 须携带 UI 所需摘要字段；客户端 **禁止** 为此再拉全量段表。
 - 手动调界只改相邻两段 `raw_text`；客户端在拼接原文上点击只更新预览，点「保存」后才 POST `left_char_count`（服务端吸附），取消不发请求；不再拖动或步进 candidates；SSE `segment_boundary_moved` 后客户端补丁这两行，禁止整表 reload。

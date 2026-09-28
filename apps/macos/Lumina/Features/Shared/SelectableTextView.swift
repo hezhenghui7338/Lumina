@@ -9,6 +9,9 @@ enum LuminaTextLayoutSizing {
     static let placeholderHeight: CGFloat = 1
     /// Used before the first real bounds pass so CJK never lays out at width 0.
     static let fallbackLayoutWidth: CGFloat = 640
+    /// Debounce rapid width changes (system fullscreen / live resize) so every
+    /// animation frame does not sync-ensureLayout long CJK on MainActor.
+    static let widthSettleNanoseconds: UInt64 = 80_000_000
 
     static func shouldEnsureLayout(containerWidth: CGFloat) -> Bool {
         containerWidth >= minLayoutWidth
@@ -27,6 +30,25 @@ enum LuminaTextLayoutSizing {
             return placeholderHeight
         }
         return ceil(usedRectHeight)
+    }
+
+    /// First layout must measure immediately; subsequent width churn is deferred.
+    static func shouldInvalidateIntrinsicsImmediately(isFirstLayout: Bool) -> Bool {
+        isFirstLayout
+    }
+
+    static var widthSettleSeconds: TimeInterval {
+        Double(widthSettleNanoseconds) / 1_000_000_000
+    }
+}
+
+/// Invalidates deferred NSTextView intrinsic work when search seeks far
+/// (old neighbour layouts must not ensureLayout after the jump).
+enum LuminaTextLayoutGeneration {
+    private(set) static var current: UInt64 = 0
+
+    static func bump() {
+        current &+= 1
     }
 }
 
@@ -98,8 +120,7 @@ struct LuminaSelectableText: NSViewRepresentable {
         if textChanged {
             textView.textStorage?.setAttributedString(attributed)
             textView.appliedLineSpacing = lineSpacing
-            textView.invalidateIntrinsicContentSize()
-            textView.superview?.invalidateIntrinsicContentSize()
+            textView.invalidateIntrinsicContentSizeNow()
         }
         Self.applyHighlight(
             highlightUTF16,
@@ -152,8 +173,15 @@ struct LuminaSelectableText: NSViewRepresentable {
               let textContainer = textView.textContainer,
               textView.window != nil
         else { return }
-        layoutManager.ensureLayout(for: textContainer)
-        let glyphRange = layoutManager.glyphRange(forCharacterRange: range, actualCharacterRange: nil)
+        // Bound layout to the hit — full-container ensureLayout freezes long CJK
+        // segments on every search-next.
+        layoutManager.ensureGlyphs(forCharacterRange: range)
+        let glyphRange = layoutManager.glyphRange(
+            forCharacterRange: range,
+            actualCharacterRange: nil
+        )
+        guard glyphRange.location != NSNotFound, glyphRange.length > 0 else { return }
+        layoutManager.ensureLayout(forGlyphRange: glyphRange)
         var rect = layoutManager.boundingRect(forGlyphRange: glyphRange, in: textContainer)
         rect.origin.x += textView.textContainerOrigin.x
         rect.origin.y += textView.textContainerOrigin.y
@@ -170,6 +198,9 @@ struct LuminaSelectableText: NSViewRepresentable {
 
 final class LuminaSelectableTextView: NSTextView {
     private var lastLayoutWidth: CGFloat = -1
+    private var settledIntrinsicHeight: CGFloat?
+    private var intrinsicInvalidationPending = false
+    private var pendingInvalidateWorkItem: DispatchWorkItem?
     var appliedHighlightUTF16: NSRange?
     var appliedHighlightStyle: LuminaSelectableText.TextHighlightStyle?
     var appliedLineSpacing: CGFloat = 0
@@ -226,10 +257,20 @@ final class LuminaSelectableTextView: NSTextView {
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
-        applyLayoutWidth(bounds.width, invalidate: true)
         if window == nil {
             LuminaSelectionActionPopover.dismissIfPresenting(from: self)
+            pendingInvalidateWorkItem?.cancel()
+            pendingInvalidateWorkItem = nil
+            intrinsicInvalidationPending = false
+            return
         }
+        // Align with layout(): only invalidate when width actually changed.
+        // Unconditional invalidate:true freezes on system fullscreen space switches.
+        let widthChanged = LuminaTextLayoutSizing.widthDidChange(
+            from: lastLayoutWidth,
+            to: bounds.width
+        )
+        applyLayoutWidth(bounds.width, invalidate: widthChanged)
     }
 
     private var currentSelectedText: String {
@@ -265,14 +306,19 @@ final class LuminaSelectableTextView: NSTextView {
                 height: LuminaTextLayoutSizing.placeholderHeight
             )
         }
+        if intrinsicInvalidationPending, let settled = settledIntrinsicHeight {
+            return NSSize(width: NSView.noIntrinsicMetric, height: settled)
+        }
         layoutManager.ensureLayout(for: textContainer)
         let usedRect = layoutManager.usedRect(for: textContainer)
+        let height = LuminaTextLayoutSizing.intrinsicHeight(
+            usedRectHeight: usedRect.height,
+            containerWidth: width
+        )
+        settledIntrinsicHeight = height
         return NSSize(
             width: NSView.noIntrinsicMetric,
-            height: LuminaTextLayoutSizing.intrinsicHeight(
-                usedRectHeight: usedRect.height,
-                containerWidth: width
-            )
+            height: height
         )
     }
 
@@ -288,19 +334,54 @@ final class LuminaSelectableTextView: NSTextView {
     func applyLayoutWidth(_ width: CGFloat, invalidate: Bool) {
         guard let textContainer else { return }
         guard let layoutWidth = LuminaTextLayoutSizing.layoutWidth(for: width) else { return }
+        let isFirstLayout = lastLayoutWidth < 0
         let sizeChanged = LuminaTextLayoutSizing.widthDidChange(
             from: textContainer.containerSize.width,
             to: layoutWidth
         )
-        guard sizeChanged || lastLayoutWidth < 0 else { return }
+        guard sizeChanged || isFirstLayout else { return }
         textContainer.containerSize = NSSize(
             width: layoutWidth,
             height: CGFloat.greatestFiniteMagnitude
         )
         lastLayoutWidth = layoutWidth
         if invalidate {
-            invalidateIntrinsicContentSize()
+            if LuminaTextLayoutSizing.shouldInvalidateIntrinsicsImmediately(
+                isFirstLayout: isFirstLayout
+            ) {
+                invalidateIntrinsicContentSizeNow()
+            } else {
+                scheduleDebouncedIntrinsicInvalidation()
+            }
         }
+    }
+
+    func invalidateIntrinsicContentSizeNow() {
+        pendingInvalidateWorkItem?.cancel()
+        pendingInvalidateWorkItem = nil
+        intrinsicInvalidationPending = false
+        invalidateIntrinsicContentSize()
+        superview?.invalidateIntrinsicContentSize()
+    }
+
+    private func scheduleDebouncedIntrinsicInvalidation() {
+        intrinsicInvalidationPending = true
+        pendingInvalidateWorkItem?.cancel()
+        let generation = LuminaTextLayoutGeneration.current
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.intrinsicInvalidationPending = false
+            self.pendingInvalidateWorkItem = nil
+            // Search far-seek bumped generation: skip stale ensureLayout.
+            guard generation == LuminaTextLayoutGeneration.current else { return }
+            self.invalidateIntrinsicContentSize()
+            self.superview?.invalidateIntrinsicContentSize()
+        }
+        pendingInvalidateWorkItem = work
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + LuminaTextLayoutSizing.widthSettleSeconds,
+            execute: work
+        )
     }
 }
 

@@ -132,6 +132,26 @@ public class WindowsParityPolicyTests
     }
 
     [Fact]
+    public void SegmentCatalog_nests_three_title_levels()
+    {
+        var segments = new List<SegmentRow>
+        {
+            new() { Idx = 0, HeadingPath = ["合集", "咸丰元年", "致诸弟"], Label = "家事" },
+            new() { Idx = 1, HeadingPath = ["合集", "咸丰元年", "致诸弟"], Label = "续" },
+            new() { Idx = 2, HeadingPath = ["合集", "咸丰二年", "复胡林翼"], Label = "军务" },
+        };
+        var open = SegmentCatalogPolicy.Build(segments, new HashSet<string>());
+        Assert.Equal(
+            new[] { true, true, true, false, false, true, true, false },
+            open.Select(i => i.IsHeader).ToArray());
+        Assert.Equal(0, open[0].Depth);
+        Assert.Equal(1, open[1].Depth);
+        Assert.Equal(2, open[2].Depth);
+        Assert.Equal(3, open[3].Depth);
+        Assert.Equal(["合集", "年份", "文章"], SegmentCatalogPolicy.FromChapter("§合集 · 年份 · 文章"));
+    }
+
+    [Fact]
     public void SegmentCatalog_flat_when_no_chapters()
     {
         var segments = new List<SegmentRow>

@@ -916,6 +916,83 @@ async def delete_book(book_id: str, request: Request) -> dict[str, str]:
     return {"status": "deleted"}
 
 
+@router.post("/books/{book_id}/outline/rebuild")
+async def rebuild_book_outline(
+    book_id: str,
+    request: Request,
+    realign_markers: bool = Query(
+        False,
+        description="Split mid-segment # [§曾国藩全集N] onto new segment starts",
+    ),
+    resummarize_affected: bool = Query(
+        True,
+        description="Re-queue summaries for segments changed by realign splits",
+    ),
+) -> dict[str, Any]:
+    """Rebuild heading_path/chapter from EPUB TOC without whole-book resegment.
+
+    With ``realign_markers=true``, mid-segment volume markers are split so each
+    ``# [§曾国藩全集N]`` starts a segment; only those split sides are re-summarized
+    when ``resummarize_affected`` is true.
+    """
+    from lumina_core.jobs.outline_rebuild import (
+        realign_volume_markers_for_book,
+        rebuild_outline_for_book,
+    )
+
+    state = _state(request)
+    book = await asyncio.to_thread(BookRepo(state.conn).get, book_id)
+    if not book:
+        raise HTTPException(404, "Book not found")
+    if book.get("status") == "processing":
+        raise HTTPException(409, "Book is already processing")
+
+    resummarize_indices: list[int] = []
+    try:
+        if realign_markers:
+            realign = await asyncio.to_thread(
+                realign_volume_markers_for_book, state.conn, book_id
+            )
+            result = realign.outline
+            resummarize_indices = list(realign.resummarize_indices)
+            splits = realign.splits
+        else:
+            result = await asyncio.to_thread(
+                rebuild_outline_for_book, state.conn, book_id
+            )
+            splits = 0
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except Exception as exc:
+        logger.exception("outline rebuild failed for %s", book_id)
+        raise HTTPException(500, f"outline rebuild failed: {exc}") from exc
+
+    queued = 0
+    if resummarize_affected and resummarize_indices:
+        _wire_job_events(state)
+        for idx in resummarize_indices:
+            try:
+                await _queue_segment_retry(state, book_id, idx)
+                queued += 1
+            except HTTPException:
+                continue
+
+    return {
+        "status": "ok",
+        "book_id": result.book_id,
+        "mode": result.mode,
+        "toc_entries": result.toc_entries,
+        "segment_count": result.segment_count,
+        "updated": result.updated,
+        "unchanged": result.unchanged,
+        "unmatched": result.unmatched,
+        "splits": splits,
+        "resummarize_indices": resummarize_indices,
+        "resummarize_queued": queued,
+        "processing_kind": "outline_rebuild",
+    }
+
+
 @router.post("/books/{book_id}/resegment", status_code=202)
 async def resegment_book(
     book_id: str, body: ResegmentRequest, request: Request

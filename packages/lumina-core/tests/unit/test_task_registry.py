@@ -155,4 +155,5 @@ def test_completed_ring_buffer():
         )
         registry.complete(r.id)
     completed = [t for t in registry.snapshot() if t["status"] == "completed"]
-    assert len(completed) == 4
+    assert len(completed) == 2
+    assert {t["subject_label"] for t in completed} == {"Book 2", "Book 3"}

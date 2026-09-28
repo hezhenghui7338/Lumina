@@ -14,7 +14,7 @@ import httpx
 
 from lumina_core import config
 from lumina_core.config import Settings
-from lumina_core.ingest.progress import report_progress, yield_ui
+from lumina_core.ingest.progress import DocumentLoadCancelled, report_progress, yield_ui
 from lumina_core.models.openai_compat import openai_compat_completions_url
 
 logger = logging.getLogger(__name__)
@@ -145,11 +145,29 @@ def _ensure_engine():
     return _ENGINE
 
 
+_PAGE_OCR_ERROR = "（本页识别出错）"
+
+
 def _format_page_section(page_num: int, text: str) -> str:
-    body = text.strip()
-    if not body:
-        return ""
+    body = text.strip() or _PAGE_OCR_ERROR
     return f"## [p.{page_num}]\n{body}"
+
+
+def _finish_pages(pages: list[OcrPageResult]) -> str:
+    """Keep every OCR page. Blank or failed pages stay in the book with an error note."""
+    chunks: list[str] = []
+    for page in pages:
+        body = page.text.strip() or _PAGE_OCR_ERROR
+        page.text = body
+        chunks.append(f"## [p.{page.page_num}]\n{body}")
+    return "\n\n".join(chunks)
+
+
+def ocr_result_text(result: OcrDocumentResult) -> str:
+    """Join page text. Empty pages become an in-book error note instead of dropping the book."""
+    if result.pages:
+        return _finish_pages(result.pages)
+    return result.text
 
 
 def _lines_from_ocr_output(result) -> tuple[list[str], list[float]]:
@@ -219,20 +237,35 @@ def _ocr_pdf_local(
                 f"扫描版 PDF · 本地 OCR {progress_idx}/{total} 页…",
                 cancel_event,
             )
-            page = doc.load_page(page_num - 1)
-            pix = page.get_pixmap(dpi=render_dpi, alpha=False)
-            samples = memoryview(pix.samples)
-            image = np.frombuffer(samples, dtype=np.uint8).reshape(
-                pix.height, pix.width, pix.n
-            )
-            if pix.n == 4:
-                image = image[:, :, :3].copy()
-            else:
-                image = image.copy()
-            del pix
-
-            text, avg = _run_image_ocr(engine, image)
-            del image
+            image = None
+            try:
+                page = doc.load_page(page_num - 1)
+                pix = page.get_pixmap(dpi=render_dpi, alpha=False)
+                samples = memoryview(pix.samples)
+                image = np.frombuffer(samples, dtype=np.uint8).reshape(
+                    pix.height, pix.width, pix.n
+                )
+                if pix.n == 4:
+                    image = image[:, :, :3].copy()
+                else:
+                    image = image.copy()
+                del pix
+                text, avg = _run_image_ocr(engine, image)
+            except DocumentLoadCancelled:
+                raise
+            except Exception as exc:
+                warnings.append(f"p.{page_num} 本地 OCR 失败，已跳过：{exc}")
+                pages.append(
+                    OcrPageResult(
+                        page_num=page_num,
+                        text="",
+                        avg_confidence=0.0,
+                        low_confidence=False,
+                    )
+                )
+                continue
+            finally:
+                del image
             yield_ui()
             confidences.append(avg)
             low = avg < config.OCR_MIN_CONF and bool(text)
@@ -256,7 +289,7 @@ def _ocr_pdf_local(
 
     avg_conf = sum(confidences) / len(confidences) if confidences else 0.0
     return OcrDocumentResult(
-        text="\n\n".join(sections),
+        text=_finish_pages(pages),
         pages=pages,
         avg_confidence=avg_conf,
         engine="rapidocr/pp-ocrv6",
@@ -340,6 +373,122 @@ def _cloud_request(client: httpx.Client, *, model: str, image_bytes: bytes) -> s
     return _cloud_text(payload)
 
 
+# First request plus three retries. After that, this page and the rest of the book use local OCR.
+_CLOUD_OCR_EXTRA_RETRIES = 3
+
+
+@dataclass
+class _OcrRoute:
+    cloud: bool = True
+    used_cloud: bool = False
+    used_local: bool = False
+
+
+def _describe_cloud_failure(exc: BaseException, *, base_url: str) -> str:
+    if isinstance(exc, httpx.TimeoutException):
+        return f"云端 OCR 请求超时 ({type(exc).__name__}: {exc})"
+    if isinstance(exc, httpx.ConnectError):
+        return f"无法连接云端 OCR：{base_url}"
+    if isinstance(exc, httpx.HTTPError):
+        return f"云端 OCR 网络请求失败：{type(exc).__name__}"
+    text = str(exc).strip() or type(exc).__name__
+    return text
+
+
+def _engine_name(route: _OcrRoute, model: str) -> str:
+    cloud_name = f"openai-compatible/{model}"
+    local_name = "rapidocr/pp-ocrv6"
+    if route.used_cloud and route.used_local:
+        return f"{cloud_name}+{local_name}"
+    if route.used_local:
+        return local_name
+    return cloud_name
+
+
+def _ocr_encoded_image_local(image_bytes: bytes) -> tuple[str, float]:
+    try:
+        import cv2
+        import numpy as np
+    except ImportError as exc:
+        raise RuntimeError(f"OCR image dependencies missing ({exc}). {ocr_install_hint()}") from exc
+    encoded = np.frombuffer(image_bytes, dtype=np.uint8)
+    image = cv2.imdecode(encoded, cv2.IMREAD_COLOR)
+    if image is None:
+        raise RuntimeError("图片无法解码")
+    try:
+        return _run_image_ocr(_ensure_engine(), image)
+    finally:
+        del image
+
+
+def _recognize_page(
+    *,
+    page_num: int,
+    image_bytes: bytes,
+    client: httpx.Client,
+    model: str,
+    base_url: str,
+    route: _OcrRoute,
+    warnings: list[str],
+    on_progress: OcrProgressCallback | None,
+    progress_idx: int,
+    total: int,
+    kind_label: str,
+    cancel_event: threading.Event | None,
+) -> tuple[str, float, bool]:
+    """Return page text, confidence, and whether this page used local OCR."""
+    if route.cloud:
+        last_reason = "云端 OCR 请求失败"
+        attempts = 1 + _CLOUD_OCR_EXTRA_RETRIES
+        for attempt in range(attempts):
+            retry = ""
+            if attempt:
+                retry = f"（重试 {attempt}/{_CLOUD_OCR_EXTRA_RETRIES}）"
+            report_progress(
+                on_progress,
+                progress_idx,
+                total,
+                f"{kind_label} · 云端 OCR {progress_idx}/{total} 页{retry}…",
+                cancel_event,
+            )
+            try:
+                text = _cloud_request(client, model=model, image_bytes=image_bytes)
+            except DocumentLoadCancelled:
+                raise
+            except Exception as exc:
+                last_reason = _describe_cloud_failure(exc, base_url=base_url)
+                logger.warning(
+                    "cloud OCR p.%s attempt %s/%s failed: %s",
+                    page_num,
+                    attempt + 1,
+                    attempts,
+                    last_reason,
+                )
+                continue
+            route.used_cloud = True
+            return text, (1.0 if text else 0.0), False
+        route.cloud = False
+        warnings.append(
+            f"云端 OCR 在 p.{page_num} 失败（已重试 {_CLOUD_OCR_EXTRA_RETRIES} 次：{last_reason}），自该页起改用本地"
+        )
+    report_progress(
+        on_progress,
+        progress_idx,
+        total,
+        f"{kind_label} · 本地 OCR {progress_idx}/{total} 页…",
+        cancel_event,
+    )
+    try:
+        text, avg = _ocr_encoded_image_local(image_bytes)
+    except DocumentLoadCancelled:
+        raise
+    except Exception as exc:
+        warnings.append(f"p.{page_num} 本地 OCR 失败，已跳过：{exc}")
+        return "", 0.0, True
+    route.used_local = True
+    return text, avg, True
+
+
 def _ocr_images_local(
     images: Iterable[tuple[int, bytes]],
     *,
@@ -373,8 +522,16 @@ def _ocr_images_local(
             warnings.append(f"p.{page_num} 图片无法解码，已跳过")
             pages.append(OcrPageResult(page_num, "", 0.0, False))
             continue
-        text, avg = _run_image_ocr(engine, image)
-        del image
+        try:
+            text, avg = _run_image_ocr(engine, image)
+        except DocumentLoadCancelled:
+            raise
+        except Exception as exc:
+            warnings.append(f"p.{page_num} 本地 OCR 失败，已跳过：{exc}")
+            pages.append(OcrPageResult(page_num, "", 0.0, False))
+            continue
+        finally:
+            del image
         yield_ui()
         confidences.append(avg)
         low = avg < config.OCR_MIN_CONF and bool(text)
@@ -385,7 +542,7 @@ def _ocr_images_local(
         if section:
             sections.append(section)
     return OcrDocumentResult(
-        text="\n\n".join(sections),
+        text=_finish_pages(pages),
         pages=pages,
         avg_confidence=sum(confidences) / len(confidences) if confidences else 0.0,
         engine="rapidocr/pp-ocrv6",
@@ -405,39 +562,54 @@ def _ocr_images_cloud(
     model = settings.ocr_cloud_model.strip()
     headers = {"Authorization": f"Bearer {(settings.ocr_cloud_api_key or '').strip()}"}
     pages: list[OcrPageResult] = []
-    sections: list[str] = []
-    try:
-        with httpx.Client(
-            base_url=base_url.rstrip("/") + "/",
-            headers=headers,
-            timeout=settings.ocr_cloud_timeout_seconds,
-        ) as client:
-            for progress_idx, (page_num, image_bytes) in enumerate(images, start=1):
-                report_progress(
-                    on_progress,
-                    progress_idx,
-                    total,
-                    f"图片型 EPUB · 云端 OCR {progress_idx}/{total} 页…",
-                    cancel_event,
-                )
-                text = _cloud_request(client, model=model, image_bytes=image_bytes)
-                pages.append(OcrPageResult(page_num, text, 1.0 if text else 0.0, False))
-                section = _format_page_section(page_num, text)
-                if section:
-                    sections.append(section)
-    except httpx.TimeoutException as exc:
-        raise RuntimeError("云端 OCR 请求超时") from exc
-    except httpx.ConnectError as exc:
-        raise RuntimeError(f"无法连接云端 OCR：{base_url}") from exc
-    except httpx.HTTPError as exc:
-        raise RuntimeError(f"云端 OCR 网络请求失败：{type(exc).__name__}") from exc
-    nonempty = [page.avg_confidence for page in pages if page.text]
+    warnings: list[str] = []
+    route = _OcrRoute()
+    with httpx.Client(
+        base_url=base_url.rstrip("/") + "/",
+        headers=headers,
+        timeout=settings.ocr_cloud_timeout_seconds,
+    ) as client:
+        for progress_idx, (page_num, image_bytes) in enumerate(images, start=1):
+            text, avg, from_local = _recognize_page(
+                page_num=page_num,
+                image_bytes=image_bytes,
+                client=client,
+                model=model,
+                base_url=base_url,
+                route=route,
+                warnings=warnings,
+                on_progress=on_progress,
+                progress_idx=progress_idx,
+                total=total,
+                kind_label="图片型 EPUB",
+                cancel_event=cancel_event,
+            )
+            low = from_local and avg < config.OCR_MIN_CONF and bool(text)
+            if low:
+                warnings.append(f"p.{page_num} OCR 置信度偏低 ({avg:.2f})，建议人工核对原文")
+            pages.append(OcrPageResult(page_num, text, avg, low))
+    nonempty = [page.avg_confidence for page in pages if page.text.strip()]
     return OcrDocumentResult(
-        text="\n\n".join(sections),
+        text=_finish_pages(pages),
         pages=pages,
         avg_confidence=sum(nonempty) / len(nonempty) if nonempty else 0.0,
-        engine=f"openai-compatible/{model}",
+        engine=_engine_name(route, model),
+        warnings=warnings,
     )
+
+
+def _with_local_when_cloud_unavailable(cloud, local, *, base_url: str) -> OcrDocumentResult:
+    """If the cloud walk raises, run local RapidOCR instead of failing the book."""
+    try:
+        return cloud()
+    except DocumentLoadCancelled:
+        raise
+    except Exception as exc:
+        reason = _describe_cloud_failure(exc, base_url=base_url)
+        logger.warning("cloud OCR unavailable, using local RapidOCR: %s", reason)
+        result = local()
+        result.warnings.append(f"云端 OCR 不可用（{reason}），已改用本地 RapidOCR")
+        return result
 
 
 def ocr_images(
@@ -451,12 +623,21 @@ def ocr_images(
     """OCR encoded page images without retaining the whole book in memory."""
     runtime_settings = settings or Settings()
     if ocr_cloud_configured(runtime_settings):
-        return _ocr_images_cloud(
-            images,
-            total=total,
-            settings=runtime_settings,
-            on_progress=on_progress,
-            cancel_event=cancel_event,
+        return _with_local_when_cloud_unavailable(
+            lambda: _ocr_images_cloud(
+                images,
+                total=total,
+                settings=runtime_settings,
+                on_progress=on_progress,
+                cancel_event=cancel_event,
+            ),
+            lambda: _ocr_images_local(
+                images,
+                total=total,
+                on_progress=on_progress,
+                cancel_event=cancel_event,
+            ),
+            base_url=runtime_settings.ocr_cloud_base_url.strip(),
         )
     return _ocr_images_local(
         images,
@@ -489,53 +670,70 @@ def _ocr_pdf_cloud(
         else:
             targets = list(range(1, doc.page_count + 1))
         pages: list[OcrPageResult] = []
-        sections: list[str] = []
+        warnings: list[str] = []
+        route = _OcrRoute()
         with httpx.Client(
             base_url=base_url.rstrip("/") + "/",
             headers=headers,
             timeout=settings.ocr_cloud_timeout_seconds,
         ) as client:
+            total = len(targets)
             for progress_idx, page_num in enumerate(targets, start=1):
-                report_progress(
-                    on_progress,
-                    progress_idx,
-                    len(targets),
-                    f"扫描版 PDF · 云端 OCR {progress_idx}/{len(targets)} 页…",
-                    cancel_event,
-                )
-                page = doc.load_page(page_num - 1)
-                pix = page.get_pixmap(dpi=render_dpi, alpha=False)
-                text = _cloud_request(
-                    client,
+                try:
+                    page = doc.load_page(page_num - 1)
+                    pix = page.get_pixmap(dpi=render_dpi, alpha=False)
+                    try:
+                        image_bytes = pix.tobytes("jpeg", jpg_quality=85)
+                    finally:
+                        del pix
+                except DocumentLoadCancelled:
+                    raise
+                except Exception as exc:
+                    warnings.append(f"p.{page_num} 页面渲染失败，已跳过：{exc}")
+                    pages.append(
+                        OcrPageResult(
+                            page_num=page_num,
+                            text="",
+                            avg_confidence=0.0,
+                            low_confidence=False,
+                        )
+                    )
+                    continue
+                text, avg, from_local = _recognize_page(
+                    page_num=page_num,
+                    image_bytes=image_bytes,
+                    client=client,
                     model=model,
-                    image_bytes=pix.tobytes("jpeg", jpg_quality=85),
+                    base_url=base_url,
+                    route=route,
+                    warnings=warnings,
+                    on_progress=on_progress,
+                    progress_idx=progress_idx,
+                    total=total,
+                    kind_label="扫描版 PDF",
+                    cancel_event=cancel_event,
                 )
+                low = from_local and avg < config.OCR_MIN_CONF and bool(text)
+                if low:
+                    warnings.append(f"p.{page_num} OCR 置信度偏低 ({avg:.2f})，建议人工核对原文")
                 pages.append(
                     OcrPageResult(
                         page_num=page_num,
                         text=text,
-                        avg_confidence=1.0 if text else 0.0,
-                        low_confidence=False,
+                        avg_confidence=avg,
+                        low_confidence=low,
                     )
                 )
-                section = _format_page_section(page_num, text)
-                if section:
-                    sections.append(section)
-    except httpx.TimeoutException as exc:
-        raise RuntimeError("云端 OCR 请求超时") from exc
-    except httpx.ConnectError as exc:
-        raise RuntimeError(f"无法连接云端 OCR：{base_url}") from exc
-    except httpx.HTTPError as exc:
-        raise RuntimeError(f"云端 OCR 网络请求失败：{type(exc).__name__}") from exc
     finally:
         doc.close()
 
-    nonempty = [page.avg_confidence for page in pages if page.text]
+    nonempty = [page.avg_confidence for page in pages if page.text.strip()]
     return OcrDocumentResult(
-        text="\n\n".join(sections),
+        text=_finish_pages(pages),
         pages=pages,
         avg_confidence=sum(nonempty) / len(nonempty) if nonempty else 0.0,
-        engine=f"openai-compatible/{model}",
+        engine=_engine_name(route, model),
+        warnings=warnings,
     )
 
 
@@ -553,22 +751,30 @@ def ocr_pdf(
     if not path.is_file():
         raise RuntimeError(f"PDF not found: {path}")
     runtime_settings = settings or Settings()
-    if ocr_cloud_configured(runtime_settings):
-        return _ocr_pdf_cloud(
+
+    def local() -> OcrDocumentResult:
+        return _ocr_pdf_local(
             path,
-            settings=runtime_settings,
             dpi=dpi,
             page_nums=page_nums,
             on_progress=on_progress,
             cancel_event=cancel_event,
         )
-    return _ocr_pdf_local(
-        path,
-        dpi=dpi,
-        page_nums=page_nums,
-        on_progress=on_progress,
-        cancel_event=cancel_event,
-    )
+
+    if ocr_cloud_configured(runtime_settings):
+        return _with_local_when_cloud_unavailable(
+            lambda: _ocr_pdf_cloud(
+                path,
+                settings=runtime_settings,
+                dpi=dpi,
+                page_nums=page_nums,
+                on_progress=on_progress,
+                cancel_event=cancel_event,
+            ),
+            local,
+            base_url=runtime_settings.ocr_cloud_base_url.strip(),
+        )
+    return local()
 
 
 def ocr_pdf_pages(

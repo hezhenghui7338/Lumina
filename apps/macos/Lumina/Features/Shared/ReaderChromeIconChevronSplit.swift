@@ -19,7 +19,7 @@ struct ReaderChromeIconChevronSplit<MenuContent: View>: View {
             Button(action: primary) {
                 Image(systemName: systemImage)
                     .padding(.horizontal, 6)
-                    .padding(.vertical, 4)
+                    .frame(maxHeight: .infinity)
                     .contentShape(Rectangle())
             }
             .readerChromeIconAction()
@@ -30,7 +30,7 @@ struct ReaderChromeIconChevronSplit<MenuContent: View>: View {
                 Image(systemName: "chevron.down")
                     .imageScale(.small)
                     .padding(.horizontal, 6)
-                    .padding(.vertical, 4)
+                    .frame(maxHeight: .infinity)
                     .contentShape(Rectangle())
             }
             .menuStyle(.borderlessButton)
@@ -38,7 +38,8 @@ struct ReaderChromeIconChevronSplit<MenuContent: View>: View {
             .help(chevronHelp)
             .accessibilityLabel(chevronAccessibilityLabel)
         }
-        .fixedSize()
+        .frame(height: ReaderChromeBarMetrics.height)
+        .fixedSize(horizontal: true, vertical: false)
         .accessibilityIdentifier(accessibilityIdentifier)
     }
 }

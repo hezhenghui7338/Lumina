@@ -112,6 +112,10 @@ final class ReaderCoverPageArchitectureTests: XCTestCase {
             coverBlock.contains(".padding(.bottom, overlayBottomPadding)"),
             "the catalog must sit above the bottom bar and the listen mini-bar"
         )
+        XCTAssertTrue(
+            coverBlock.contains(".padding(.top, ReaderChromeBarMetrics.height)"),
+            "the catalog header must sit below the revealed top chrome bar"
+        )
         XCTAssertFalse(
             coverBlock.contains("zIndex(1)"),
             "zIndex(1) covers the bottom bar so the catalog toggle cannot be reached"
@@ -896,6 +900,12 @@ final class SegmentTurnKeyPolicyTests: XCTestCase {
 }
 
 final class LuminaTextLayoutSizingTests: XCTestCase {
+    func testLayoutGenerationBumpAdvancesToken() {
+        let before = LuminaTextLayoutGeneration.current
+        LuminaTextLayoutGeneration.bump()
+        XCTAssertNotEqual(before, LuminaTextLayoutGeneration.current)
+    }
+
     func testNarrowWidthDoesNotEnsureLayout() {
         XCTAssertFalse(LuminaTextLayoutSizing.shouldEnsureLayout(containerWidth: 0))
         XCTAssertFalse(LuminaTextLayoutSizing.shouldEnsureLayout(containerWidth: 7))
@@ -944,6 +954,63 @@ final class LuminaTextLayoutSizingTests: XCTestCase {
             layout.contains("invalidate: true"),
             "layout() must not invalidate CJK intrinsic height unless width actually changed"
         )
+    }
+
+    func testViewDidMoveToWindowDoesNotUnconditionallyInvalidate() throws {
+        let macosRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(
+            contentsOf: macosRoot.appendingPathComponent(
+                "Lumina/Features/Shared/SelectableTextView.swift"
+            ),
+            encoding: .utf8
+        )
+        guard let start = source.range(of: "override func viewDidMoveToWindow()"),
+              let end = source.range(
+                of: "private var currentSelectedText",
+                range: start.lowerBound..<source.endIndex
+              )
+        else {
+            return XCTFail("missing viewDidMoveToWindow")
+        }
+        let body = String(source[start.lowerBound..<end.lowerBound])
+        XCTAssertTrue(body.contains("widthDidChange"))
+        XCTAssertTrue(body.contains("invalidate: widthChanged"))
+        XCTAssertFalse(
+            body.contains("invalidate: true"),
+            "fullscreen space switch must not force full CJK ensureLayout"
+        )
+    }
+
+    func testWidthSettleDebouncesSubsequentInvalidation() {
+        XCTAssertTrue(
+            LuminaTextLayoutSizing.shouldInvalidateIntrinsicsImmediately(isFirstLayout: true)
+        )
+        XCTAssertFalse(
+            LuminaTextLayoutSizing.shouldInvalidateIntrinsicsImmediately(isFirstLayout: false)
+        )
+        XCTAssertGreaterThan(LuminaTextLayoutSizing.widthSettleNanoseconds, 0)
+        XCTAssertGreaterThan(LuminaTextLayoutSizing.widthSettleSeconds, 0)
+    }
+
+    func testReaderFeedDoesNotAnimateContentMode() throws {
+        let macosRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let reader = try String(
+            contentsOf: macosRoot.appendingPathComponent("Lumina/Features/Reader/ReaderView.swift"),
+            encoding: .utf8
+        )
+        XCTAssertFalse(
+            reader.contains(".animation(.easeOut(duration: 0.2), value: contentMode)"),
+            "feed-wide contentMode animation freezes search→original and mode toggles"
+        )
+        XCTAssertTrue(reader.contains("if evicted"))
+        XCTAssertTrue(reader.contains("suppressContentModeSourcePrefetch"))
+        XCTAssertTrue(reader.contains("scheduleSettledViewportHeight"))
     }
 }
 

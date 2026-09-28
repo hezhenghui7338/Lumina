@@ -29,6 +29,9 @@ for pkg in (
     "tokenizers",
     "fitz",
     "pypdf",
+    "mobi",
+    "ebooklib",
+    "loguru",
 ):
     try:
         _datas, _binaries, _hidden = collect_all(pkg)
@@ -54,6 +57,12 @@ hiddenimports += [
     "multipart.multipart",
     "numpy",
     "charset_normalizer",
+    "mobi",
+    "mobi.extract",
+    "mobi.kindleunpack",
+    "ebooklib",
+    "ebooklib.epub",
+    "loguru",
     "encodings.utf_8",
     "encodings.utf_8_sig",
     "encodings.gb18030",

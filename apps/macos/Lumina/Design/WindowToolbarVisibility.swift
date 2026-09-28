@@ -1,8 +1,8 @@
 import AppKit
 import SwiftUI
 
-/// Re-applying `NSToolbar.isVisible` / `titleVisibility` on every SwiftUI
-/// `updateNSView` retriggers AppKit help tags even when nothing changed.
+/// Re-applying `NSToolbar.isVisible` on every SwiftUI `updateNSView`
+/// retriggers AppKit help tags even when nothing changed.
 enum WindowToolbarVisibilityPolicy {
     static func shouldApply(applied: Bool?, desired: Bool) -> Bool {
         applied != desired
@@ -10,6 +10,11 @@ enum WindowToolbarVisibilityPolicy {
 }
 
 /// Toggles the host window toolbar visibility (macOS 14 compatible).
+///
+/// Only the toolbar row is toggled. `titleVisibility` must stay `.visible`:
+/// hiding the title lets content draw under the still-present traffic-light /
+/// drag strip, so the top of the floating reader chrome (分段 / 摘要 / …)
+/// looks tappable but clicks never reach SwiftUI.
 struct WindowToolbarVisibility: NSViewRepresentable {
     var visible: Bool
 
@@ -51,7 +56,7 @@ final class WindowToolbarVisibilityView: NSView {
                 return
             }
             window.toolbar?.isVisible = visible
-            window.titleVisibility = visible ? .visible : .hidden
+            window.titleVisibility = .visible
             self.applied = visible
         }
     }

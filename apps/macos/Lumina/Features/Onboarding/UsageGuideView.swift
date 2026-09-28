@@ -32,9 +32,14 @@ struct UsageGuideSheet: View {
                 Spacer()
                 Button("好") { isPresented = false }
                     .keyboardShortcut(.defaultAction)
+                    .accessibilityIdentifier("usage-guide-dismiss")
             }
         }
         .padding(32)
         .frame(width: 520, height: 520)
+        // Keep a real window title so a stuck sheet is visible in the window
+        // list / Mission Control instead of looking like an idle bookshelf.
+        .navigationTitle(UsageGuideCopy.title)
+        .interactiveDismissDisabled(false)
     }
 }

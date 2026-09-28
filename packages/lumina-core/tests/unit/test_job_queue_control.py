@@ -506,6 +506,43 @@ async def test_translate_when_different_language(conn):
 
 
 @pytest.mark.asyncio
+async def test_translate_queue_one_per_book(conn):
+    """Overnight summarize must not enqueue one translation job per finished segment."""
+    router = SlowMockRouter(
+        delay=1.0,
+        responses={"summarize": SUMMARY, "translate": "译文"},
+    )
+    q = JobQueue(conn, router, target_language="zh-CN")
+    book_id = _seed_book(conn, n_segments=3)
+    BookRepo(conn).update(book_id, language="en", target_language="zh-CN")
+    segs = SegmentRepo(conn).list_for_book(book_id)
+    for seg in segs:
+        await q.enqueue_translate(book_id, seg["id"], seg["idx"])
+    diag = q.diagnostics()
+    translate_active = [job for job in diag["active_jobs"] if job["kind"] == "translate"]
+    assert diag["queue_depth"] + len(translate_active) <= 1
+    q._shutting_down = True
+
+
+@pytest.mark.asyncio
+async def test_translate_chains_remaining_segments(conn):
+    router = MockModelRouter(responses={"summarize": SUMMARY, "translate": "译文"})
+    q = JobQueue(conn, router, target_language="zh-CN")
+    book_id = _seed_book(conn, n_segments=3)
+    BookRepo(conn).update(book_id, language="en", target_language="zh-CN")
+    first = SegmentRepo(conn).list_for_book(book_id)[0]
+    await q.enqueue_translate(book_id, first["id"], first["idx"])
+    for _ in range(80):
+        rows = SegmentRepo(conn).list_for_book(book_id)
+        if rows and all(row.get("translation") for row in rows):
+            break
+        await asyncio.sleep(0.05)
+    else:
+        pytest.fail("later segments were not translated")
+    q._shutting_down = True
+
+
+@pytest.mark.asyncio
 async def test_enqueue_registers_task_in_registry(conn):
     from lumina_core.ops.task_registry import TaskRegistry
 

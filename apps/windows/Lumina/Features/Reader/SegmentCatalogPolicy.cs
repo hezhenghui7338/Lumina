@@ -55,7 +55,6 @@ public static class SegmentCatalogPolicy
         {
             var cleaned = StripSectionMark(piece);
             if (!string.IsNullOrEmpty(cleaned)) parts.Add(cleaned);
-            if (parts.Count >= 2) break;
         }
         return parts;
     }
@@ -69,7 +68,6 @@ public static class SegmentCatalogPolicy
             {
                 var cleaned = StripSectionMark(item);
                 if (!string.IsNullOrEmpty(cleaned)) stored.Add(cleaned);
-                if (stored.Count >= 2) break;
             }
             if (stored.Count > 0) return stored;
         }

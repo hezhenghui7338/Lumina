@@ -85,4 +85,181 @@ final class ReaderOriginalSearchTests: XCTestCase {
         let dumped = String(data: json, encoding: .utf8)!
         XCTAssertFalse(dumped.contains("raw_text"))
     }
+
+    func testLocateKind_sameSegmentCachedIsHighlightOnly() {
+        XCTAssertEqual(
+            OriginalSearchHighlight.locateKind(
+                hitSegmentIndex: 12,
+                currentSegmentIndex: 12,
+                contentModeIsOriginal: true,
+                sourceCached: true
+            ),
+            .highlightOnly
+        )
+        XCTAssertEqual(
+            OriginalSearchHighlight.locateKind(
+                hitSegmentIndex: 12,
+                currentSegmentIndex: 12,
+                contentModeIsOriginal: true,
+                sourceCached: false
+            ),
+            .navigateAndFetch
+        )
+        XCTAssertEqual(
+            OriginalSearchHighlight.locateKind(
+                hitSegmentIndex: 12,
+                currentSegmentIndex: 11,
+                contentModeIsOriginal: true,
+                sourceCached: true
+            ),
+            .navigateAndFetch
+        )
+        XCTAssertEqual(
+            OriginalSearchHighlight.locateKind(
+                hitSegmentIndex: 12,
+                currentSegmentIndex: 12,
+                contentModeIsOriginal: false,
+                sourceCached: true
+            ),
+            .navigateAndFetch
+        )
+    }
+
+    func testStepCoalesceDelayIsPositiveAndShort() {
+        XCTAssertGreaterThan(OriginalSearchHighlight.stepCoalesceNanoseconds, 0)
+        XCTAssertLessThan(
+            OriginalSearchHighlight.stepCoalesceNanoseconds,
+            ReaderSourcePrefetchPolicy.debounceNanoseconds
+        )
+        XCTAssertGreaterThan(
+            OriginalSearchHighlight.seekPrefetchSuppressNanoseconds,
+            OriginalSearchHighlight.stepCoalesceNanoseconds
+        )
+    }
+
+    func testAllowsNeighbourSourceFetch_onlyTargetDuringSeek() {
+        XCTAssertTrue(
+            OriginalSearchHighlight.allowsNeighbourSourceFetch(
+                seekTarget: nil,
+                segmentIndex: 10
+            )
+        )
+        XCTAssertTrue(
+            OriginalSearchHighlight.allowsNeighbourSourceFetch(
+                seekTarget: 1542,
+                segmentIndex: 1542
+            )
+        )
+        XCTAssertFalse(
+            OriginalSearchHighlight.allowsNeighbourSourceFetch(
+                seekTarget: 1542,
+                segmentIndex: 1543
+            )
+        )
+    }
+
+    func testReaderSameSegmentSearchSkipsNavigate() throws {
+        let macosRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let reader = try String(
+            contentsOf: macosRoot.appendingPathComponent("Lumina/Features/Reader/ReaderView.swift"),
+            encoding: .utf8
+        )
+        guard
+            let start = reader.range(of: "private func stepOriginalSearch(_ delta: Int)"),
+            let end = reader.range(
+                of: "private func scheduleLocateOriginalSearchHit()",
+                range: start.lowerBound..<reader.endIndex
+            )
+        else {
+            return XCTFail("missing stepOriginalSearch")
+        }
+        let body = String(reader[start.lowerBound..<end.lowerBound])
+        XCTAssertTrue(body.contains("locateKind"))
+        XCTAssertTrue(body.contains(".highlightOnly"))
+        XCTAssertTrue(body.contains("scheduleLocateOriginalSearchHit"))
+    }
+
+    func testReaderSearchLocateSuppressesNeighbourFanOut() throws {
+        let macosRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let reader = try String(
+            contentsOf: macosRoot.appendingPathComponent("Lumina/Features/Reader/ReaderView.swift"),
+            encoding: .utf8
+        )
+        XCTAssertTrue(reader.contains("originalSearchFocusSegment"))
+        XCTAssertTrue(reader.contains("search-focus-"))
+        XCTAssertTrue(reader.contains("usesFocusFeed"))
+        XCTAssertTrue(reader.contains("retainSourceCacheOnly"))
+        XCTAssertTrue(reader.contains("usesLightweightOriginalText"))
+        XCTAssertTrue(reader.contains("LuminaTextLayoutGeneration.bump"))
+        guard
+            let start = reader.range(of: "private func locateOriginalSearchHit()"),
+            let end = reader.range(
+                of: "private func beginOriginalSearchSeek(target:",
+                range: start.lowerBound..<reader.endIndex
+            )
+        else {
+            return XCTFail("missing locateOriginalSearchHit")
+        }
+        let body = String(reader[start.lowerBound..<end.lowerBound])
+        XCTAssertTrue(body.contains("beginOriginalSearchSeek"))
+        XCTAssertTrue(
+            body.contains("usesFocusFeed"),
+            "locate must skip full-ForEach navigate while focus feed is active"
+        )
+    }
+
+    func testUsesFocusFeedWhenExpandedWithHits() {
+        XCTAssertTrue(OriginalSearchHighlight.usesFocusFeed(expanded: true, hitCount: 3))
+        XCTAssertFalse(OriginalSearchHighlight.usesFocusFeed(expanded: false, hitCount: 3))
+        XCTAssertFalse(OriginalSearchHighlight.usesFocusFeed(expanded: true, hitCount: 0))
+    }
+
+    func testSearchFocusAttributedHighlight() {
+        let text = "甲乙丙丁"
+        let ns = text as NSString
+        let range = NSRange(location: 0, length: 2)
+        let attributed = SearchFocusOriginalText.attributed(
+            text: text,
+            highlightUTF16: range,
+            fontSize: 14,
+            foreground: .primary,
+            highlightColor: .yellow
+        )
+        XCTAssertEqual(String(attributed.characters), text)
+        XCTAssertEqual(ns.substring(with: range), "甲乙")
+    }
+
+    func testSearchRevealUsesBoundedGlyphLayout() throws {
+        let macosRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(
+            contentsOf: macosRoot.appendingPathComponent(
+                "Lumina/Features/Shared/SelectableTextView.swift"
+            ),
+            encoding: .utf8
+        )
+        guard let start = source.range(of: "private static func reveal("),
+              let end = source.range(
+                of: "// MARK: - AppKit views",
+                range: start.lowerBound..<source.endIndex
+              )
+        else {
+            return XCTFail("missing reveal()")
+        }
+        let body = String(source[start.lowerBound..<end.lowerBound])
+        XCTAssertTrue(body.contains("ensureLayout(forGlyphRange:"))
+        XCTAssertTrue(body.contains("ensureGlyphs(forCharacterRange:"))
+        XCTAssertFalse(
+            body.contains("ensureLayout(for: textContainer)"),
+            "search-next must not full-container ensureLayout long CJK"
+        )
+    }
 }

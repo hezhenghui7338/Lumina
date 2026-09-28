@@ -11,6 +11,7 @@ from typing import Any
 
 from lumina_core.chunker.markers import lumina_chapter_label
 from lumina_core.chunker.tree import (
+    compress_outline_path,
     decode_heading_path,
     encode_heading_path,
     heading_path_from_chapter,
@@ -455,35 +456,53 @@ _SEGMENT_INSERT_BATCH = 200
 _SEGMENT_INSERT_SQL = """
 INSERT INTO segments (
   id, book_id, idx, chapter, heading_path, page_range, anchor_label,
-  raw_text, char_count, summary_status, retry_count
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  raw_text, char_count, summary_status, retry_count, label
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 """
 
 
-def _heading_path_db_value(seg: dict[str, Any]) -> str | None:
+def _prepare_segment_outline(seg: dict[str, Any]) -> tuple[list[str], str | None, str | None]:
+    """Compress heading_path to ≤2 levels; tertiary becomes label."""
     raw = seg.get("heading_path")
     if isinstance(raw, str) and raw.strip().startswith("["):
-        return raw
-    if isinstance(raw, (list, tuple)):
-        encoded = encode_heading_path(raw)
-        if encoded:
-            return encoded
-    return encode_heading_path(heading_path_from_chapter(seg.get("chapter")))
+        path = decode_heading_path(raw, chapter=seg.get("chapter"))
+    elif isinstance(raw, (list, tuple)):
+        path = [str(x) for x in raw]
+    else:
+        path = heading_path_from_chapter(seg.get("chapter"))
+    compressed, tertiary = compress_outline_path(path)
+    chapter = (
+        lumina_chapter_label(" · ".join(compressed))
+        if compressed
+        else lumina_chapter_label(seg.get("chapter"))
+    )
+    existing = str(seg.get("label") or "").strip()
+    label = tertiary or (existing[:20] if existing else None)
+    return compressed, chapter, label
+
+
+def _heading_path_db_value(seg: dict[str, Any]) -> str | None:
+    compressed, _chapter, _label = _prepare_segment_outline(seg)
+    if compressed:
+        return encode_heading_path(compressed)
+    return None
 
 
 def _segment_insert_row(seg: dict[str, Any]) -> tuple[Any, ...]:
+    compressed, chapter, label = _prepare_segment_outline(seg)
     return (
         seg["id"],
         seg["book_id"],
         seg["idx"],
-        lumina_chapter_label(seg.get("chapter")),
-        _heading_path_db_value(seg),
+        chapter,
+        encode_heading_path(compressed) if compressed else None,
         seg.get("page_range"),
         seg.get("anchor_label"),
         seg["raw_text"],
         seg.get("char_count", len(seg.get("raw_text") or "")),
         seg.get("summary_status", "pending"),
         seg.get("retry_count", 0),
+        label,
     )
 
 
@@ -602,11 +621,29 @@ class SegmentRepo:
         with db_lock(self.conn):
             row = self.conn.execute(
                 f"SELECT {_SEGMENT_LIST_COLUMNS} FROM segments "
-                "WHERE book_id = ? AND summary_status IN ('pending', 'error') "
+                "WHERE book_id = ? "
+                "AND COALESCE(summary_status, '') != 'ready' "
+                "AND summary_status IN ('pending', 'error') "
                 "ORDER BY idx LIMIT 1",
                 (book_id,),
             ).fetchone()
         return _segment_public(row) if row else None
+
+    def next_untranslated_segment(
+        self, book_id: str, *, after_idx: int
+    ) -> dict[str, Any] | None:
+        """Next segment still missing a translation, without loading raw_text."""
+        with db_lock(self.conn):
+            row = self.conn.execute(
+                """
+                SELECT id, idx FROM segments
+                WHERE book_id = ? AND idx > ?
+                  AND (translation IS NULL OR translation = '')
+                ORDER BY idx LIMIT 1
+                """,
+                (book_id, after_idx),
+            ).fetchone()
+        return dict(row) if row else None
 
     def has_incomplete_summary(self, book_id: str) -> bool:
         """True if any segment is not ready (LIMIT 1 probe, not a full COUNT)."""
@@ -624,7 +661,9 @@ class SegmentRepo:
         with db_lock(self.conn):
             rows = self.conn.execute(
                 f"SELECT {_SEGMENT_LIST_COLUMNS} FROM segments "
-                "WHERE book_id = ? AND summary_status = 'running' "
+                "WHERE book_id = ? "
+                "AND COALESCE(summary_status, '') != 'ready' "
+                "AND summary_status = 'running' "
                 "ORDER BY idx",
                 (book_id,),
             ).fetchall()
@@ -635,7 +674,9 @@ class SegmentRepo:
         with db_transaction(self.conn):
             rows = self.conn.execute(
                 f"SELECT {_SEGMENT_LIST_COLUMNS} FROM segments "
-                "WHERE book_id = ? AND summary_status = 'running' "
+                "WHERE book_id = ? "
+                "AND COALESCE(summary_status, '') != 'ready' "
+                "AND summary_status = 'running' "
                 "ORDER BY idx",
                 (book_id,),
             ).fetchall()
@@ -643,7 +684,9 @@ class SegmentRepo:
                 return []
             self.conn.execute(
                 "UPDATE segments SET summary_status = 'pending' "
-                "WHERE book_id = ? AND summary_status = 'running'",
+                "WHERE book_id = ? "
+                "AND COALESCE(summary_status, '') != 'ready' "
+                "AND summary_status = 'running'",
                 (book_id,),
             )
         return [_segment_public(r) for r in rows]
@@ -653,7 +696,9 @@ class SegmentRepo:
         with db_transaction(self.conn):
             rows = self.conn.execute(
                 f"SELECT {_SEGMENT_LIST_COLUMNS} FROM segments "
-                "WHERE book_id = ? AND summary_status IN ('failed', 'error') "
+                "WHERE book_id = ? "
+                "AND COALESCE(summary_status, '') != 'ready' "
+                "AND summary_status IN ('failed', 'error') "
                 "ORDER BY idx",
                 (book_id,),
             ).fetchall()
@@ -663,7 +708,9 @@ class SegmentRepo:
                 """
                 UPDATE segments
                 SET summary_status = 'pending', retry_count = 0
-                WHERE book_id = ? AND summary_status IN ('failed', 'error')
+                WHERE book_id = ?
+                  AND COALESCE(summary_status, '') != 'ready'
+                  AND summary_status IN ('failed', 'error')
                 """,
                 (book_id,),
             )
@@ -676,7 +723,9 @@ class SegmentRepo:
                 """
                 UPDATE segments
                 SET summary_status = 'pending', retry_count = 0
-                WHERE book_id = ? AND summary_status IN ('failed', 'error')
+                WHERE book_id = ?
+                  AND COALESCE(summary_status, '') != 'ready'
+                  AND summary_status IN ('failed', 'error')
                 """,
                 (book_id,),
             )
@@ -1137,7 +1186,8 @@ class SegmentRepo:
               raw_text TEXT,
               char_count INTEGER,
               summary_status TEXT,
-              retry_count INTEGER
+              retry_count INTEGER,
+              label TEXT
             )
             """
         )
@@ -1150,8 +1200,8 @@ class SegmentRepo:
                 """
                 INSERT INTO staging_segments (
                   id, book_id, idx, chapter, heading_path, page_range, anchor_label,
-                  raw_text, char_count, summary_status, retry_count
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                  raw_text, char_count, summary_status, retry_count, label
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 [_segment_insert_row(seg) for seg in segments],
             )
@@ -1188,11 +1238,11 @@ class SegmentRepo:
                 """
                 INSERT INTO segments (
                   id, book_id, idx, chapter, heading_path, page_range, anchor_label,
-                  raw_text, char_count, summary_status, retry_count
+                  raw_text, char_count, summary_status, retry_count, label
                 )
                 SELECT
                   id, book_id, idx, chapter, heading_path, page_range, anchor_label,
-                  raw_text, char_count, summary_status, retry_count
+                  raw_text, char_count, summary_status, retry_count, label
                 FROM staging_segments
                 ORDER BY idx
                 """
@@ -1386,11 +1436,20 @@ class SegmentRepo:
         right_anchor: str,
         summary_tier: str,
     ) -> tuple[dict[str, Any], dict[str, Any]]:
-        """Rewrite adjacent segment text, remap notes by quote, and reset summaries."""
+        """Rewrite adjacent segment text, remap notes by quote, and reset summaries.
+
+        Ready-count is adjusted incrementally. Do not ``refresh_summary_progress``
+        here: COUNT over a large book's ``segments`` rows pulls pages full of
+        ``raw_text`` and holds ``db_lock`` for hundreds of ms (never-freeze).
+        """
         from lumina_core.chunker.boundary import remap_note_segment_id
 
         left_id = left["id"]
         right_id = right["id"]
+        ready_delta = 0
+        for side in (left, right):
+            if (side.get("summary_status") or "") == "ready":
+                ready_delta -= 1
         with db_transaction(self.conn):
             notes = self.conn.execute(
                 """
@@ -1429,11 +1488,155 @@ class SegmentRepo:
                 anchor_label=right_anchor,
                 summary_tier=summary_tier,
             )
+            if ready_delta:
+                self.conn.execute(
+                    """
+                    UPDATE books
+                    SET summary_ready_count = MAX(
+                          0, COALESCE(summary_ready_count, 0) + ?
+                        ),
+                        updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (ready_delta, _now(), left["book_id"]),
+                )
         updated_left = self.get(left_id)
         updated_right = self.get(right_id)
         if updated_left is None or updated_right is None:
             raise RuntimeError("Boundary move lost a segment")
-        BookRepo(self.conn).refresh_summary_progress(left["book_id"])
+        return updated_left, updated_right
+
+    def split_segment_at(
+        self,
+        book_id: str,
+        idx: int,
+        offset: int,
+        *,
+        summary_tier: str = "normal",
+        right_id: str | None = None,
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        """Split one segment so ``raw_text[offset:]`` becomes the next segment.
+
+        Shifts all later ``idx`` by +1. Resets summaries on both sides and remaps
+        notes by quote. Does not touch other books' segments.
+        """
+        from lumina_core.chunker.boundary import remap_note_segment_id, segment_anchor_label
+
+        if offset <= 0:
+            raise ValueError("split offset must be > 0")
+        left = self.get_by_index(book_id, idx)
+        if left is None:
+            raise ValueError(f"segment not found: {book_id}#{idx}")
+        text = left.get("raw_text") or ""
+        if offset >= len(text):
+            raise ValueError("split offset must be inside raw_text")
+        left_text = text[:offset]
+        right_text = text[offset:]
+        if not left_text.strip() or not right_text.strip():
+            raise ValueError("split would leave an empty side")
+
+        new_id = right_id or str(uuid.uuid4())
+        ready_delta = -1 if (left.get("summary_status") or "") == "ready" else 0
+        left_anchor = segment_anchor_label(idx, left.get("chapter"), left.get("page_range"))
+        right_anchor = segment_anchor_label(
+            idx + 1, left.get("chapter"), left.get("page_range")
+        )
+
+        with db_transaction(self.conn):
+            # Free idx+1 by parking later rows in negative idx space, then flip.
+            self.conn.execute(
+                """
+                UPDATE segments
+                SET idx = -(idx + 1)
+                WHERE book_id = ? AND idx > ?
+                """,
+                (book_id, idx),
+            )
+            self.conn.execute(
+                """
+                UPDATE segments
+                SET raw_text = ?, char_count = ?, summary_json = NULL, label = NULL,
+                    translation = NULL, summary_status = 'pending', retry_count = 0,
+                    summary_provider = NULL, summary_model = NULL, summary_tier = ?,
+                    summary_duration_s = NULL, summary_llm_attempts = NULL,
+                    summary_preview = NULL, bullet_labels = NULL,
+                    anchor_label = ?
+                WHERE id = ?
+                """,
+                (
+                    left_text,
+                    len(left_text),
+                    summary_tier,
+                    left_anchor,
+                    left["id"],
+                ),
+            )
+            self.conn.execute(
+                _SEGMENT_INSERT_SQL,
+                _segment_insert_row(
+                    {
+                        "id": new_id,
+                        "book_id": book_id,
+                        "idx": idx + 1,
+                        "chapter": left.get("chapter"),
+                        "heading_path": left.get("heading_path"),
+                        "page_range": left.get("page_range"),
+                        "anchor_label": right_anchor,
+                        "raw_text": right_text,
+                        "char_count": len(right_text),
+                        "summary_status": "pending",
+                        "retry_count": 0,
+                        "label": left.get("label"),
+                    }
+                ),
+            )
+            self.conn.execute(
+                """
+                UPDATE segments
+                SET idx = -idx
+                WHERE book_id = ? AND idx < 0
+                """,
+                (book_id,),
+            )
+            notes = self.conn.execute(
+                """
+                SELECT id, segment_id, quote FROM notes
+                WHERE segment_id = ?
+                """,
+                (left["id"],),
+            ).fetchall()
+            for note in notes:
+                next_id = remap_note_segment_id(
+                    note["quote"],
+                    note["segment_id"],
+                    left["id"],
+                    new_id,
+                    left_text,
+                    right_text,
+                )
+                if next_id != note["segment_id"]:
+                    self.conn.execute(
+                        "UPDATE notes SET segment_id = ? WHERE id = ?",
+                        (next_id, note["id"]),
+                    )
+            self.conn.execute(
+                """
+                UPDATE books
+                SET segment_count = COALESCE(segment_count, 0) + 1,
+                    summary_total_count = COALESCE(summary_total_count, 0) + 1,
+                    summary_ready_count = MAX(
+                      0, COALESCE(summary_ready_count, 0) + ?
+                    ),
+                    updated_at = ?
+                WHERE id = ?
+                """,
+                (ready_delta, _now(), book_id),
+            )
+
+        updated_left = self.get(left["id"])
+        updated_right = self.get(new_id)
+        if updated_left is None or updated_right is None:
+            raise RuntimeError("Segment split lost a segment")
         return updated_left, updated_right
 
     def _write_boundary_side(

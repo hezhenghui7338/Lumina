@@ -297,3 +297,54 @@ def test_original_search_handler_uses_to_thread():
     source = inspect.getsource(routes.search_book_original)
     assert "asyncio.to_thread" in source
     assert "search_original" in source
+
+
+def test_search_original_releases_db_lock_between_batches(tmp_path, monkeypatch):
+    """Long-book scan must not hold db_lock across the whole raw_text walk."""
+    import threading
+    import time
+
+    from lumina_core.db.connection import db_lock
+    from lumina_core.search import original as original_mod
+
+    conn = init_db(tmp_path / "lock.db")
+    _seed_book(conn, segment_count=200)
+    SegmentRepo(conn).insert_many(
+        [
+            {
+                "id": f"s{i}",
+                "book_id": "b1",
+                "idx": i,
+                "raw_text": ("正文。" * 40) + ("目标词" if i == 180 else ""),
+                "summary_status": "pending",
+            }
+            for i in range(200)
+        ]
+    )
+    monkeypatch.setattr(original_mod, "_SCAN_BATCH", 8)
+
+    saw_interleave = threading.Event()
+    stop = threading.Event()
+
+    def contender() -> None:
+        while not stop.is_set():
+            acquired = db_lock(conn).acquire(timeout=0.05)
+            if acquired:
+                saw_interleave.set()
+                db_lock(conn).release()
+                return
+            time.sleep(0.001)
+
+    worker = threading.Thread(target=contender)
+    worker.start()
+    try:
+        # Force many batches so the contender can slip in between.
+        result = search_original(conn, "b1", "目标词", limit=1)
+        assert result["hits"]
+        assert result["hits"][0]["segment_index"] == 180
+    finally:
+        stop.set()
+        worker.join(timeout=2)
+
+    assert saw_interleave.is_set(), "search_original held db_lock across batches"
+    conn.close()

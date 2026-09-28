@@ -236,6 +236,24 @@ class JobQueue:
     def _has_scheduled_summarize_job(self, book_id: str) -> bool:
         return self._has_active_summarize_job(book_id) or self._has_queued_summarize_jobs(book_id)
 
+    def _has_scheduled_translate_job(self, book_id: str) -> bool:
+        """One in-flight translation per book. A per-segment backlog grows all night."""
+        if any(
+            item.book_id == book_id and item.kind == JobKind.TRANSLATE
+            for item in self._active.values()
+        ):
+            return True
+        if any(
+            item.book_id == book_id and item.kind == JobKind.TRANSLATE
+            for item in self._paused_backlog.values()
+        ):
+            return True
+        marker = f":{JobKind.TRANSLATE.value}"
+        prefix = f"{book_id}:"
+        return any(
+            key.startswith(prefix) and key.endswith(marker) for key in self._queued_keys
+        )
+
     def has_book_work(self, book_id: str) -> bool:
         # Resegment-only path: still scans _queued_keys. List/polling uses
         # _summarize_queued_by_book (O(1)), not this helper.
@@ -704,6 +722,8 @@ class JobQueue:
     ) -> None:
         if self.is_user_paused(book_id):
             return
+        if self._has_scheduled_translate_job(book_id):
+            return
         if not await self._run_db(lambda: self._book_needs_translation(book_id)):
             return
         job = JobItem(
@@ -720,6 +740,21 @@ class JobQueue:
         await self._queue.put(job)
         self._add_queued_key(key)
         self.ensure_workers()
+
+    async def _enqueue_next_translation(self, book_id: str, *, after_idx: int) -> None:
+        """Chain the next untranslated segment. Never queue one job per finished summary."""
+        if self._shutting_down or self.is_user_paused(book_id):
+            return
+        if self._has_scheduled_translate_job(book_id):
+            return
+        seg = await self._run_db(
+            lambda: self._segments_repo.next_untranslated_segment(
+                book_id, after_idx=after_idx
+            )
+        )
+        if seg is None:
+            return
+        await self.enqueue_translate(book_id, seg["id"], int(seg["idx"]))
 
     async def clear_book_index(self, book_id: str) -> None:
         """Drop persisted tree and cancel in-flight rollup for this book."""
@@ -1508,6 +1543,18 @@ class JobQueue:
                                     "Failed to enqueue next summary for %s",
                                     item.book_id,
                                 )
+                    elif item.kind == JobKind.TRANSLATE:
+                        paused = was_cancelled and self.is_user_paused(item.book_id)
+                        if not paused and not self._shutting_down:
+                            try:
+                                await self._enqueue_next_translation(
+                                    item.book_id, after_idx=item.segment_idx
+                                )
+                            except Exception:
+                                logger.exception(
+                                    "Failed to enqueue next translation for %s",
+                                    item.book_id,
+                                )
             except Exception:
                 logger.exception("Job failed: %s", item)
                 self._active.pop(key, None)
@@ -1562,10 +1609,14 @@ class JobQueue:
         summary_llm_attempts: int,
         summary_quality_relaxed: bool = False,
     ) -> bool:
+        # Structure tertiary (ingest/outline) wins: do not overwrite non-empty label.
+        existing = self._segments_repo.get(segment_id) or {}
+        existing_label = str(existing.get("label") or "").strip()
+        stored_label = existing_label[:20] if existing_label else label
         self._segments_repo.update_summary(
             segment_id,
             summary_json=summary_json,
-            label=label,
+            label=stored_label,
             anchor_label=anchor_label,
             status="ready",
             summary_provider=resource_id,

@@ -11,15 +11,13 @@ from lumina_core.config import (
     CHUNK_MIN_CHARS,
     CHUNK_TARGET_CHARS,
     SEMANTIC_TOPIC_SHIFT_THRESHOLD,
-    ChunkBudget,
-)
+    ChunkBudget)
 from lumina_core.chunker.coop import (
     LARGE_ATOM_EMBED_LIMIT,
     LARGE_TEXT_EMBED_CHARS,
     GilYielder,
     coerce_char_progress,
-    iter_text_lines,
-)
+    iter_text_lines)
 from lumina_core.chunker.embeddings import RuleBoundaryScorer
 from lumina_core.chunker.markers import (
     PAGE_MARKER,
@@ -27,14 +25,13 @@ from lumina_core.chunker.markers import (
     clean_structure_title,
     lumina_chapter_label,
     match_bare_chapter,
-    may_be_hash_heading_line,
-)
+    may_be_hash_heading_line)
 from lumina_core.chunker.semantic import PairScorer, adaptive_merge, atomize_text
 from lumina_core.chunker.tree import (
     DocumentNode,
     build_document_tree,
     heading_path_at,
-)
+    heading_path_offset_in_span)
 
 
 @dataclass(frozen=True)
@@ -60,8 +57,7 @@ class TextMarkers:
 
 def index_text_markers(
     text: str,
-    yielder: GilYielder | None = None,
-) -> TextMarkers:
+    yielder: GilYielder | None = None) -> TextMarkers:
     """Scan PAGE_MARKER and BARE_CHAPTER once, line by line. Never finditer the book."""
     coop = yielder or GilYielder()
     page_offsets: list[int] = []
@@ -101,8 +97,7 @@ def chunk_text(
     document_tree: DocumentNode | None = None,
     cancel_event: threading.Event | None = None,
     on_progress=None,
-    strip_text: bool = True,
-) -> list[ChunkSegment]:
+    strip_text: bool = True) -> list[ChunkSegment]:
     """Split text by structural completeness, local density, and topic changes."""
     if budget is not None:
         target_chars = budget.target_chars
@@ -120,24 +115,24 @@ def chunk_text(
         cancel_event,
         on_progress=reporter,
         progress_total=len(text),
-        progress_message="正在识别结构树…",
-    )
+        progress_message="正在识别结构树…")
     tree = document_tree or build_document_tree(
-        text, structure_roles=structure_roles, yielder=yielder
+        text,
+        structure_roles=structure_roles,
+        yielder=yielder)
+    markers = index_text_markers(
+        text, yielder
     )
-    markers = index_text_markers(text, yielder)
     yielder.set_stage("正在拆分自然段…", reset=False)
     atoms = atomize_text(
         text,
         target_chars=target_chars,
         max_chars=max_chars,
-        yielder=yielder,
-    )
+        yielder=yielder)
     units = document_map if document_map is not None else heuristic_document_map(
         text,
         structure_roles=structure_roles,
-        yielder=yielder,
-    )
+        yielder=yielder)
     atoms = assign_roles_to_atoms(atoms, units)
     resolved_scorer = scorer or RuleBoundaryScorer()
     if len(atoms) > LARGE_ATOM_EMBED_LIMIT or len(text) > LARGE_TEXT_EMBED_CHARS:
@@ -151,12 +146,19 @@ def chunk_text(
         max_chars=max_chars,
         min_chars=min_chars,
         topic_shift_threshold=topic_shift_threshold,
-        yielder=yielder,
-    )
+        yielder=yielder)
     yielder.set_stage("正在生成段落…", reset=False)
     segments: list[ChunkSegment] = []
     for index, (start, end) in enumerate(spans):
-        segments.append(_make_segment(index, text, start, end, tree, markers))
+        segments.append(
+            _make_segment(
+                index,
+                text,
+                start,
+                end,
+                tree,
+                markers)
+        )
         yielder.bump(end - start)
     _assert_coverage(text, segments)
     return segments
@@ -167,12 +169,19 @@ def rebuild_chunks(
     spans: list[tuple[int, int]],
     *,
     structure_roles: list | None = None,
-    document_tree: DocumentNode | None = None,
-) -> list[ChunkSegment]:
-    tree = document_tree or build_document_tree(text, structure_roles=structure_roles)
+    document_tree: DocumentNode | None = None) -> list[ChunkSegment]:
+    tree = document_tree or build_document_tree(
+        text,
+        structure_roles=structure_roles)
     markers = index_text_markers(text)
     segments = [
-        _make_segment(index, text, start, end, tree, markers)
+        _make_segment(
+            index,
+            text,
+            start,
+            end,
+            tree,
+            markers)
         for index, (start, end) in enumerate(spans)
     ]
     _assert_coverage(text, segments)
@@ -185,10 +194,19 @@ def _make_segment(
     start: int,
     end: int,
     tree: DocumentNode | None = None,
-    markers: TextMarkers | None = None,
-) -> ChunkSegment:
-    resolved = markers or index_text_markers(text)
-    path = _heading_path_at(text, start, tree=tree, markers=resolved)
+    markers: TextMarkers | None = None) -> ChunkSegment:
+    resolved = markers or index_text_markers(
+        text
+    )
+    resolved_tree = tree or build_document_tree(
+        text
+    )
+    path_offset = heading_path_offset_in_span(resolved_tree, start, end)
+    path = _heading_path_at(
+        text,
+        path_offset,
+        tree=resolved_tree,
+        markers=resolved)
     return ChunkSegment(
         index=idx,
         raw_text=text[start:end],
@@ -196,45 +214,50 @@ def _make_segment(
         end_offset=end,
         chapter=lumina_chapter_label(" · ".join(path)) if path else None,
         heading_path=path,
-        page_range=_page_range_in(text, start, end, markers=resolved),
-    )
+        page_range=_page_range_in(text, start, end, markers=resolved))
 
 
 def _heading_path_at(
     text: str,
     offset: int,
     tree: DocumentNode | None = None,
-    markers: TextMarkers | None = None,
-) -> tuple[str, ...]:
-    resolved_tree = tree or build_document_tree(text)
+    markers: TextMarkers | None = None) -> tuple[str, ...]:
+    resolved_tree = tree or build_document_tree(
+        text
+    )
     path = heading_path_at(resolved_tree, offset)
     if path:
         cleaned = tuple(
             title
-            for title in (clean_structure_title(part) for part in path[:2])
+            for title in (clean_structure_title(part) for part in path)
             if title
         )
         if cleaned:
             return cleaned
 
-    resolved = markers or index_text_markers(text)
+    resolved = markers or index_text_markers(
+        text
+    )
     if not resolved.chapter_offsets:
         return ()
     index = bisect.bisect_right(resolved.chapter_offsets, offset) - 1
     if index < 0:
         return ()
     title = clean_structure_title(resolved.chapter_titles[index])
-    return (title,) if title else ()
+    return (title) if title else ()
 
 
 def _chapter_at(
     text: str,
     offset: int,
     tree: DocumentNode | None = None,
-    markers: TextMarkers | None = None,
-) -> str | None:
+    markers: TextMarkers | None = None) -> str | None:
     """Extract chapter path from the structure tree, falling back to markers."""
-    path = _heading_path_at(text, offset, tree=tree, markers=markers)
+    path = _heading_path_at(
+        text,
+        offset,
+        tree=tree,
+        markers=markers)
     if not path:
         return None
     return lumina_chapter_label(" · ".join(path))
@@ -244,8 +267,7 @@ def _page_range_in(
     text: str,
     start: int,
     end: int,
-    markers: TextMarkers | None = None,
-) -> str | None:
+    markers: TextMarkers | None = None) -> str | None:
     """Build p.N or p.N-M from PDF page markers within [start, end)."""
     resolved = markers or index_text_markers(text)
     if not resolved.page_offsets:
