@@ -52,6 +52,32 @@ enum LuminaTextLayoutGeneration {
     }
 }
 
+/// Decide when `LuminaSelectableText.updateNSView` may rewrite storage / invalidate
+/// intrinsic height.
+///
+/// Never read back `NSTextView.font` or `textColor` for this decision: setting an
+/// attributed string often leaves those properties stale, so every SwiftUI update
+/// looks like a content change, calls `invalidateIntrinsicContentSize`, and
+/// re-enters `ScrollViewCommitMutation` once summary rows paint selectable text.
+enum LuminaSelectableTextContentPolicy {
+    /// Text / font size / weight / line spacing affect measured height.
+    static func heightAffectingContentChanged(
+        appliedText: String,
+        appliedFontSize: CGFloat,
+        appliedFontWeight: CGFloat,
+        appliedLineSpacing: CGFloat,
+        text: String,
+        fontSize: CGFloat,
+        fontWeight: CGFloat,
+        lineSpacing: CGFloat
+    ) -> Bool {
+        appliedText != text
+            || abs(appliedFontSize - fontSize) > 0.001
+            || abs(appliedFontWeight - fontWeight) > 0.001
+            || abs(appliedLineSpacing - lineSpacing) > 0.001
+    }
+}
+
 /// Mouse-selectable display text with AppKit intrinsic height (reader body copy).
 struct LuminaSelectableText: NSViewRepresentable {
     let text: String
@@ -113,22 +139,40 @@ struct LuminaSelectableText: NSViewRepresentable {
         LuminaLayoutPerf.trace(.configure) {
             let paragraphStyle = NSMutableParagraphStyle()
             paragraphStyle.lineSpacing = lineSpacing
+            let nsForeground = NSColor(foreground)
+            let weightValue = fontWeight.rawValue
 
-            let attributes: [NSAttributedString.Key: Any] = [
-                .font: NSFont.systemFont(ofSize: fontSize, weight: fontWeight),
-                .foregroundColor: NSColor(foreground),
-                .paragraphStyle: paragraphStyle,
-            ]
-
-            let attributed = NSAttributedString(string: text, attributes: attributes)
-            let textChanged = textView.textStorage?.string != text
-                || textView.font?.pointSize != fontSize
-                || textView.textColor != NSColor(foreground)
-                || abs(textView.appliedLineSpacing - lineSpacing) > 0.001
+            let heightChanged = LuminaSelectableTextContentPolicy.heightAffectingContentChanged(
+                appliedText: textView.appliedText,
+                appliedFontSize: textView.appliedFontSize,
+                appliedFontWeight: textView.appliedFontWeight,
+                appliedLineSpacing: textView.appliedLineSpacing,
+                text: text,
+                fontSize: fontSize,
+                fontWeight: weightValue,
+                lineSpacing: lineSpacing
+            )
+            let colorChanged = textView.appliedForeground.map { !$0.isEqual(nsForeground) } ?? true
+            let textChanged = heightChanged || colorChanged
             if textChanged {
-                textView.textStorage?.setAttributedString(attributed)
+                let attributes: [NSAttributedString.Key: Any] = [
+                    .font: NSFont.systemFont(ofSize: fontSize, weight: fontWeight),
+                    .foregroundColor: nsForeground,
+                    .paragraphStyle: paragraphStyle,
+                ]
+                textView.textStorage?.setAttributedString(
+                    NSAttributedString(string: text, attributes: attributes)
+                )
+                textView.appliedText = text
+                textView.appliedFontSize = fontSize
+                textView.appliedFontWeight = weightValue
                 textView.appliedLineSpacing = lineSpacing
-                textView.invalidateIntrinsicContentSizeNow()
+                textView.appliedForeground = nsForeground
+                // Color-only updates must not invalidate height — that re-enters
+                // ScrollViewCommitMutation while the summary LazyVStack is committing.
+                if heightChanged {
+                    textView.invalidateIntrinsicContentSizeNow()
+                }
             }
             Self.applyHighlight(
                 highlightUTF16,
@@ -212,7 +256,11 @@ final class LuminaSelectableTextView: NSTextView {
     private var pendingInvalidateWorkItem: DispatchWorkItem?
     var appliedHighlightUTF16: NSRange?
     var appliedHighlightStyle: LuminaSelectableText.TextHighlightStyle?
+    var appliedText: String = ""
+    var appliedFontSize: CGFloat = 0
+    var appliedFontWeight: CGFloat = NSFont.Weight.regular.rawValue
     var appliedLineSpacing: CGFloat = 0
+    var appliedForeground: NSColor?
 
     var appliedLayoutWidth: CGFloat { lastLayoutWidth }
 

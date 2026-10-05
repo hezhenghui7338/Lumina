@@ -818,266 +818,318 @@ struct ReaderView: View {
     }
 
     private var readerLayout: some View {
+        readerLayoutSession(readerLayoutScroll(readerLayoutChromeControls(readerLayoutChrome)))
+    }
+
+    private var readerLayoutChrome: some View {
+        readerLayoutStack
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .animation(.easeInOut(duration: 0.25), value: overlay)
+            .animation(.easeInOut(duration: 0.25), value: chromeMode)
+            .animation(.easeInOut(duration: 0.25), value: coverPage)
+            .animation(.easeInOut(duration: 0.25), value: listenSession.isActive)
+    }
+
+    @ViewBuilder
+    private var readerLayoutStack: some View {
         ZStack {
             segmentContent
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+            readerDimOverlay
+            readerNotesOverlay
+            readerChatOverlay
+            readerSegmentCoverOverlay
+            readerProgressReturnOverlay
+            readerChromeBarsOverlay
+            readerListenMiniBarOverlay
+        }
+    }
 
-            if overlay != .none {
-                Color.black.opacity(0.18)
-                    .ignoresSafeArea()
-                    .contentShape(Rectangle())
-                    .onTapGesture { closeOverlay() }
-                    .transition(.opacity)
-            }
+    @ViewBuilder
+    private var readerDimOverlay: some View {
+        if overlay != .none {
+            Color.black.opacity(0.18)
+                .ignoresSafeArea()
+                .contentShape(Rectangle())
+                .onTapGesture { closeOverlay() }
+                .transition(.opacity)
+        }
+    }
 
+    @ViewBuilder
+    private var readerNotesOverlay: some View {
+        // Mount only while open. A closed-but-offset drawer still sits in
+        // this ZStack's sizeThatFits tree and can peg the main thread.
+        if overlay == .notes {
             HStack(spacing: 0) {
                 Spacer(minLength: 0)
                 notesDrawer
                     .padding(.top, ReaderChromeBarMetrics.height)
                     .padding(.bottom, overlayBottomPadding)
-                    .offset(x: overlay == .notes ? 0 : notesWidth)
             }
-            .allowsHitTesting(overlay == .notes)
+            .transition(.move(edge: .trailing))
+        }
+    }
 
+    @ViewBuilder
+    private var readerChatOverlay: some View {
+        if overlay == .chat {
             VStack(spacing: 0) {
                 Spacer(minLength: 0)
                 chatDrawer
-                    .offset(y: overlay == .chat ? 0 : chatHeight + 40)
             }
             .padding(.bottom, overlayBottomPadding)
-            .allowsHitTesting(overlay == .chat)
+            .transition(.move(edge: .bottom))
+        }
+    }
 
-            if coverPage == .segments {
-                ReaderCoverPageShell {
-                    segmentCoverPanel
-                }
-                // Top chrome stays revealed while the catalog is open; without this
-                // inset the cover header (导出 / 收起全部 / 多选) sits under the bar.
-                .padding(.top, ReaderChromeBarMetrics.height)
-                .padding(.bottom, overlayBottomPadding)
-                .transition(.move(edge: .bottom).combined(with: .opacity))
+    @ViewBuilder
+    private var readerSegmentCoverOverlay: some View {
+        if coverPage == .segments {
+            ReaderCoverPageShell {
+                segmentCoverPanel
             }
+            // Top chrome stays revealed while the catalog is open; without this
+            // inset the cover header (导出 / 收起全部 / 多选) sits under the bar.
+            .padding(.top, ReaderChromeBarMetrics.height)
+            .padding(.bottom, overlayBottomPadding)
+            .transition(.move(edge: .bottom).combined(with: .opacity))
+        }
+    }
 
-            // Above the segment cover so a catalog jump still shows the offer
-            // while the cover is dismissing. Hugs banner height under the chrome
-            // spacer; chrome is drawn after this so top-bar clicks stay live.
-            if let offer = viewModel.progressReturnOffer {
-                VStack(spacing: 0) {
-                    Color.clear
-                        .frame(height: ReaderChromeBarMetrics.height)
-                        .allowsHitTesting(false)
-                    ProgressReturnBanner(
-                        savedIndex: offer.savedIndex,
-                        onReturn: { confirmProgressReturn() },
-                        onStay: {
-                            let idx = topSegmentIdx
-                                ?? viewModel.selectedIdx
-                                ?? offer.savedIndex
-                            viewModel.dismissProgressReturnOffer(at: idx)
-                        }
-                    )
-                    .readingColumn()
-                    .padding(.horizontal, LuminaTheme.summaryPadding)
-                    Spacer(minLength: 0)
-                        .allowsHitTesting(false)
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-                .transition(.opacity)
-            }
-
-            if barsVisible {
-                // Opacity only: `.move(edge:)` desyncs the hit-test frame from
-                // the drawn bar, so the top of 分段 looks live but clicks miss.
-                readerChromeBarOverlay
-                    .transition(.opacity)
-            }
-
-            if barsVisible {
-                readerBottomBarOverlay
-                    .transition(.opacity)
-            }
-
-            if listenSession.isActive {
-                VStack(spacing: 0) {
-                    Spacer(minLength: 0)
-                        .allowsHitTesting(false)
-                    ListenMiniBar(session: listenSession) {
-                        listenSession.stop()
+    @ViewBuilder
+    private var readerProgressReturnOverlay: some View {
+        // Above the segment cover so a catalog jump still shows the offer
+        // while the cover is dismissing. Hugs banner height under the chrome
+        // spacer; chrome is drawn after this so top-bar clicks stay live.
+        if let offer = viewModel.progressReturnOffer {
+            VStack(spacing: 0) {
+                Color.clear
+                    .frame(height: ReaderChromeBarMetrics.height)
+                    .allowsHitTesting(false)
+                ProgressReturnBanner(
+                    savedIndex: offer.savedIndex,
+                    onReturn: { confirmProgressReturn() },
+                    onStay: {
+                        let idx = topSegmentIdx
+                            ?? viewModel.selectedIdx
+                            ?? offer.savedIndex
+                        viewModel.dismissProgressReturnOffer(at: idx)
                     }
-                    .padding(
-                        .bottom,
-                        ReaderBottomStackPolicy.miniBarBottomPadding(barsVisible: barsVisible)
-                    )
+                )
+                .readingColumn()
+                .padding(.horizontal, LuminaTheme.summaryPadding)
+                Spacer(minLength: 0)
+                    .allowsHitTesting(false)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            .transition(.opacity)
+        }
+    }
+
+    @ViewBuilder
+    private var readerChromeBarsOverlay: some View {
+        if barsVisible {
+            // Opacity only: `.move(edge:)` desyncs the hit-test frame from
+            // the drawn bar, so the top of 分段 looks live but clicks miss.
+            readerChromeBarOverlay
+                .transition(.opacity)
+        }
+        if barsVisible {
+            readerBottomBarOverlay
+                .transition(.opacity)
+        }
+    }
+
+    @ViewBuilder
+    private var readerListenMiniBarOverlay: some View {
+        if listenSession.isActive {
+            VStack(spacing: 0) {
+                Spacer(minLength: 0)
+                    .allowsHitTesting(false)
+                ListenMiniBar(session: listenSession) {
+                    listenSession.stop()
+                }
+                .padding(
+                    .bottom,
+                    ReaderBottomStackPolicy.miniBarBottomPadding(barsVisible: barsVisible)
+                )
+            }
+        }
+    }
+
+    private func readerLayoutChromeControls<Content: View>(_ content: Content) -> some View {
+        content
+            .onExitCommand { handleExitCommand() }
+            .onChange(of: overlay) { _, newValue in
+                chatFocused = newValue == .chat && overlayEngaged
+                readerOverlayActive = newValue != .none
+                if newValue != .none {
+                    setChromeMode(.revealed)
+                } else {
+                    readerContentFocused = true
+                    setChromeMode(.revealed)
                 }
             }
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .animation(.easeInOut(duration: 0.25), value: overlay)
-        .animation(.easeInOut(duration: 0.25), value: chromeMode)
-        .animation(.easeInOut(duration: 0.25), value: coverPage)
-        .animation(.easeInOut(duration: 0.25), value: listenSession.isActive)
-        .onExitCommand { handleExitCommand() }
-        .onChange(of: overlay) { _, newValue in
-            chatFocused = newValue == .chat && overlayEngaged
-            readerOverlayActive = newValue != .none
-            if newValue != .none {
-                setChromeMode(.revealed)
-            } else {
-                readerContentFocused = true
-                setChromeMode(.revealed)
+            .onChange(of: coverPage) { _, newValue in
+                if newValue != .none {
+                    overlay = .none
+                    overlayEngaged = false
+                    showAppearancePopover = false
+                    showSegmentPopover = false
+                }
             }
-        }
-        .onChange(of: coverPage) { _, newValue in
-            if newValue != .none {
+            .onChange(of: chromeMode) { _, mode in
+                if mode == .hidden {
+                    showAppearancePopover = false
+                    showSegmentPopover = false
+                }
+            }
+            .onChange(of: overlayEngaged) { _, engaged in
+                if engaged, overlay == .chat { chatFocused = true }
+            }
+            .onChange(of: viewModel.bookStatus) { _, status in
+                if status == "processing" {
+                    setChromeMode(.revealed)
+                }
+            }
+            .onAppear {
+                readerOverlayActive = overlay != .none
+                revealChromeIfTouringReader()
+                ShortcutKeyMonitor.isReaderActive = true
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .luminaReaderShortcutAction)) { note in
+                guard let action = ShortcutActionUserInfo.action(from: note) else { return }
+                handleShortcut(action)
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .luminaFullscreenTransition)) { note in
+                handleFullscreenFeedTransition(note)
+            }
+            .onChange(of: tour.step) { _, _ in
+                revealChromeIfTouringReader()
+            }
+    }
+
+    private func readerLayoutScroll<Content: View>(_ content: Content) -> some View {
+        content
+            .onChange(of: viewModel.selectedIdx) { _, idx in
+                guard let idx else { return }
+                viewModel.selectSegment(idx)
+                // A selection that came from the pinned segment must not scroll back.
+                guard !viewModel.consumeTopSegmentSelection(idx) else { return }
+                jump(to: idx)
+            }
+            .onChange(of: topSegmentIdx) { _, idx in
+                guard let idx else { return }
+                if viewModel.progressPhase == .restoring {
+                    // Correct a stray pin while the feed is still materializing.
+                    if let target = viewModel.restoreTarget, target != idx {
+                        topSegmentIdx = target
+                    }
+                    return
+                }
+                viewModel.noteTopSegment(idx)
+                // Debounce: fast scroll / search-next must not fan out hydrate+source
+                // on every pin tick (万段书会卡死 MainActor).
+                // Search seek: far TOC hits (~300 segs apart) must not prefetch neighbours.
+                if originalSearchSeekTarget != nil { return }
+                if FullscreenFeedGate.shouldSuppressFeedChurn(gated: fullscreenFeedGated) {
+                    return
+                }
+                viewModel.scheduleVisiblePrefetch(
+                    around: idx,
+                    core: core,
+                    original: contentMode == .original,
+                    radius: 3
+                )
+            }
+            .onPreferenceChange(ReaderGlobalFrameKey.self) { frame in
+                LuminaLayoutPerf.trace(.readerPreference) {
+                    LuminaLayoutPerf.noteReaderPreference()
+                    LuminaLayoutPerf.noteReaderContext(
+                        segmentCount: viewModel.segments.count,
+                        contentMode: contentMode == .original ? "original" : "summary"
+                    )
+                    readerGlobalFrame = frame
+                    scheduleSettledViewportHeight(frame.height)
+                }
+            }
+    }
+
+    private func readerLayoutSession<Content: View>(_ content: Content) -> some View {
+        content
+            .onChange(of: contentMode) { _, mode in
+                LuminaLayoutPerf.trace(.readerContentMode) {
+                    LuminaLayoutPerf.noteReaderContentMode()
+                    LuminaLayoutPerf.noteReaderContext(
+                        segmentCount: viewModel.segments.count,
+                        contentMode: mode == .original ? "original" : "summary"
+                    )
+                    ReaderPreferences.setContentMode(mode, for: bookId)
+                    viewModel.setContentMode(mode)
+                    if mode == .original {
+                        if suppressContentModeSourcePrefetch {
+                            suppressContentModeSourcePrefetch = false
+                        } else {
+                            let idx = topSegmentIdx ?? viewModel.selectedIdx ?? viewModel.segments.first?.idx ?? 0
+                            viewModel.prefetchSources(around: idx, core: core, radius: 5)
+                        }
+                    }
+                }
+            }
+            .task(id: bookId) {
+                listenSession.stop()
                 overlay = .none
                 overlayEngaged = false
-                showAppearancePopover = false
-                showSegmentPopover = false
-            }
-        }
-        .onChange(of: chromeMode) { _, mode in
-            if mode == .hidden {
-                showAppearancePopover = false
-                showSegmentPopover = false
-            }
-        }
-        .onChange(of: overlayEngaged) { _, engaged in
-            if engaged, overlay == .chat { chatFocused = true }
-        }
-        .onChange(of: viewModel.bookStatus) { _, status in
-            if status == "processing" {
-                setChromeMode(.revealed)
-            }
-        }
-        .onAppear {
-            readerOverlayActive = overlay != .none
-            revealChromeIfTouringReader()
-            ShortcutKeyMonitor.isReaderActive = true
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .luminaReaderShortcutAction)) { note in
-            guard let action = ShortcutActionUserInfo.action(from: note) else { return }
-            handleShortcut(action)
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .luminaFullscreenTransition)) { note in
-            handleFullscreenFeedTransition(note)
-        }
-        .onChange(of: tour.step) { _, _ in
-            revealChromeIfTouringReader()
-        }
-        .onChange(of: viewModel.selectedIdx) { _, idx in
-            guard let idx else { return }
-            viewModel.selectSegment(idx)
-            // A selection that came from the pinned segment must not scroll back.
-            guard !viewModel.consumeTopSegmentSelection(idx) else { return }
-            jump(to: idx)
-        }
-        .onChange(of: topSegmentIdx) { _, idx in
-            guard let idx else { return }
-            if viewModel.progressPhase == .restoring {
-                // Correct a stray pin while the feed is still materializing.
-                if let target = viewModel.restoreTarget, target != idx {
-                    topSegmentIdx = target
+                coverPage = .none
+                chromeMode = .revealed
+                expandedSourceSegments = []
+                expandedSummarySegments = []
+                resetOriginalSearch(clearQuery: true)
+                contentMode = ReaderPreferences.contentMode(for: bookId)
+                viewModel.setContentMode(contentMode)
+                topSegmentIdx = nil
+                // The resume index is delivered before the segments are published so
+                // the feed's very first layout already renders at the saved segment.
+                await viewModel.load(
+                    bookId: bookId,
+                    core: core,
+                    initialSegmentIndex: initialSegmentIndex
+                ) { resumeIdx in
+                    topSegmentIdx = resumeIdx
                 }
-                return
-            }
-            viewModel.noteTopSegment(idx)
-            // Debounce: fast scroll / search-next must not fan out hydrate+source
-            // on every pin tick (万段书会卡死 MainActor).
-            // Search seek: far TOC hits (~300 segs apart) must not prefetch neighbours.
-            if originalSearchSeekTarget != nil { return }
-            if FullscreenFeedGate.shouldSuppressFeedChurn(gated: fullscreenFeedGated) {
-                return
-            }
-            viewModel.scheduleVisiblePrefetch(
-                around: idx,
-                core: core,
-                original: contentMode == .original,
-                radius: 3
-            )
-        }
-        .onPreferenceChange(ReaderGlobalFrameKey.self) { frame in
-            LuminaLayoutPerf.trace(.readerPreference) {
-                LuminaLayoutPerf.noteReaderPreference()
-                LuminaLayoutPerf.noteReaderContext(
-                    segmentCount: viewModel.segments.count,
-                    contentMode: contentMode == .original ? "original" : "summary"
-                )
-                readerGlobalFrame = frame
-                scheduleSettledViewportHeight(frame.height)
-            }
-        }
-        .onChange(of: contentMode) { _, mode in
-            LuminaLayoutPerf.trace(.readerContentMode) {
-                LuminaLayoutPerf.noteReaderContentMode()
-                LuminaLayoutPerf.noteReaderContext(
-                    segmentCount: viewModel.segments.count,
-                    contentMode: mode == .original ? "original" : "summary"
-                )
-                ReaderPreferences.setContentMode(mode, for: bookId)
-                viewModel.setContentMode(mode)
-                if mode == .original {
-                    if suppressContentModeSourcePrefetch {
-                        suppressContentModeSourcePrefetch = false
-                    } else {
-                        let idx = topSegmentIdx ?? viewModel.selectedIdx ?? viewModel.segments.first?.idx ?? 0
-                        viewModel.prefetchSources(around: idx, core: core, radius: 5)
-                    }
+                readerContentFocused = true
+                if contentMode == .original, let idx = viewModel.selectedIdx {
+                    viewModel.prefetchSources(around: idx, core: core, radius: 5)
+                }
+                if let idx = viewModel.selectedIdx {
+                    viewModel.prefetchSummaries(around: idx, core: core, radius: 5)
+                }
+                listenSession.updateSegmentCount(viewModel.segments.count)
+                if let settings = try? await core.fetchSettings() {
+                    ListenPreferences.syncFromSettings(settings.models.tts)
                 }
             }
-        }
-        .task(id: bookId) {
-            listenSession.stop()
-            overlay = .none
-            overlayEngaged = false
-            coverPage = .none
-            chromeMode = .revealed
-            expandedSourceSegments = []
-            expandedSummarySegments = []
-            resetOriginalSearch(clearQuery: true)
-            contentMode = ReaderPreferences.contentMode(for: bookId)
-            viewModel.setContentMode(contentMode)
-            topSegmentIdx = nil
-            // The resume index is delivered before the segments are published so
-            // the feed's very first layout already renders at the saved segment.
-            await viewModel.load(
-                bookId: bookId,
-                core: core,
-                initialSegmentIndex: initialSegmentIndex
-            ) { resumeIdx in
-                topSegmentIdx = resumeIdx
+            .onChange(of: scenePhase) { _, phase in
+                if phase == .background {
+                    Task { await viewModel.flushProgressSave() }
+                }
             }
-            readerContentFocused = true
-            if contentMode == .original, let idx = viewModel.selectedIdx {
-                viewModel.prefetchSources(around: idx, core: core, radius: 5)
+            .onDisappear {
+                ShortcutKeyMonitor.isReaderActive = false
+                listenSession.stop()
+                LuminaSelectionActionPopover.dismiss()
+                originalSearchTask?.cancel()
+                originalSearchLocateTask?.cancel()
+                originalSearchSeekReleaseTask?.cancel()
+                viewportHeightSettleTask?.cancel()
+                originalSearchSeekTarget = nil
+                Task {
+                    await viewModel.flushProgressSave()
+                    NotificationCenter.default.post(name: .luminaLibraryRefresh, object: nil)
+                    viewModel.cancelAllTasks()
+                }
             }
-            if let idx = viewModel.selectedIdx {
-                viewModel.prefetchSummaries(around: idx, core: core, radius: 5)
-            }
-            listenSession.updateSegmentCount(viewModel.segments.count)
-            if let settings = try? await core.fetchSettings() {
-                ListenPreferences.syncFromSettings(settings.models.tts)
-            }
-        }
-        .onChange(of: scenePhase) { _, phase in
-            if phase == .background {
-                Task { await viewModel.flushProgressSave() }
-            }
-        }
-        .onDisappear {
-            ShortcutKeyMonitor.isReaderActive = false
-            listenSession.stop()
-            LuminaSelectionActionPopover.dismiss()
-            originalSearchTask?.cancel()
-            originalSearchLocateTask?.cancel()
-            originalSearchSeekReleaseTask?.cancel()
-            viewportHeightSettleTask?.cancel()
-            originalSearchSeekTarget = nil
-            Task {
-                await viewModel.flushProgressSave()
-                NotificationCenter.default.post(name: .luminaLibraryRefresh, object: nil)
-                viewModel.cancelAllTasks()
-            }
-        }
     }
 
     // MARK: - Shortcuts

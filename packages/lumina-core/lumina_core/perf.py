@@ -78,6 +78,11 @@ class PerfRecorder:
             perf_dir.mkdir(parents=True, exist_ok=True)
             ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%f")
             path = perf_dir / f"session-{ts}-{os.getpid()}.jsonl"
+            # Windows timer resolution can collide two starts in the same µs.
+            suffix = 0
+            while path.exists():
+                suffix += 1
+                path = perf_dir / f"session-{ts}-{os.getpid()}-{suffix}.jsonl"
             self._path = path
             self._file = open(path, "a", encoding="utf-8")  # noqa: SIM115
             self._stop.clear()
