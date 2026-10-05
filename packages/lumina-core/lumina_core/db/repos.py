@@ -23,6 +23,11 @@ from lumina_core.search.fts import (
     delete_book_segments_from_fts,
     delete_note_from_fts,
 )
+from lumina_core.search.original_index import (
+    delete_book_original_index,
+    index_book_original,
+    index_original_segment,
+)
 from lumina_core.summarize.preview import segment_list_fields
 from lumina_core.summarize.schema import normalize_summary_data, resolve_segment_label
 
@@ -86,7 +91,7 @@ _SQL_FILTERS = frozenset(
 )
 _QUEUE_FILTERS = frozenset({"summarizing", "idle", "segmenting"})
 BOOK_FILTERS = _SQL_FILTERS | _QUEUE_FILTERS
-BOOK_SORTS = frozenset({"recent", "added", "title", "favorite", "segments", "progress"})
+BOOK_SORTS = frozenset({"recent", "added", "title", "favorite", "segments", "progress", "rating"})
 
 # Reading-progress percent: unread / single-segment → 0; last segment → 1;
 # otherwise index / segment_count. Matches client ReadingProgress.percent.
@@ -100,6 +105,12 @@ _PROGRESS_SORT_SQL = (
     " END DESC, title COLLATE NOCASE ASC"
 )
 
+# Unrated (NULL or outside 1–5) sorts as 3 stars, then title A→Z.
+_RATING_SORT_SQL = (
+    "COALESCE(CASE WHEN rating BETWEEN 1 AND 5 THEN rating END, 3) DESC, "
+    "title COLLATE NOCASE ASC"
+)
+
 _SORT_ORDER: dict[str, str] = {
     "recent": "last_opened_at IS NULL, last_opened_at DESC, updated_at DESC",
     "added": "created_at DESC",
@@ -107,6 +118,7 @@ _SORT_ORDER: dict[str, str] = {
     "favorite": "is_favorite DESC, last_opened_at IS NULL, last_opened_at DESC, updated_at DESC",
     "segments": "COALESCE(segment_count, 0) DESC, title COLLATE NOCASE ASC",
     "progress": _PROGRESS_SORT_SQL,
+    "rating": _RATING_SORT_SQL,
 }
 
 # Reading progress is derived from last_opened_at + segment index — not books.status
@@ -336,6 +348,7 @@ class BookRepo:
 
     def delete(self, book_id: str) -> None:
         delete_book_from_fts(self.conn, book_id)
+        delete_book_original_index(self.conn, book_id)
         with db_transaction(self.conn):
             self.conn.execute("DELETE FROM notes WHERE book_id = ?", (book_id,))
             self.conn.execute(
@@ -1132,6 +1145,7 @@ class SegmentRepo:
                     book_id,
                 ),
             )
+        index_book_original(self.conn, book_id, replace=True)
 
     def complete_ingest(
         self,
@@ -1170,6 +1184,7 @@ class SegmentRepo:
                     book_id,
                 ),
             )
+        index_book_original(self.conn, book_id, replace=True)
 
     def begin_segment_staging(self) -> None:
         self.conn.execute("DROP TABLE IF EXISTS temp.staging_segments")
@@ -1219,6 +1234,7 @@ class SegmentRepo:
             raise RuntimeError("分段结果为空")
         now = _now()
         delete_book_segments_from_fts(self.conn, book_id)
+        delete_book_original_index(self.conn, book_id)
         with db_transaction(self.conn):
             self.conn.execute("DELETE FROM notes WHERE book_id = ?", (book_id,))
             self.conn.execute(
@@ -1265,6 +1281,7 @@ class SegmentRepo:
                 ),
             )
         self.conn.execute("DROP TABLE IF EXISTS temp.staging_segments")
+        index_book_original(self.conn, book_id, replace=True)
 
     def replace_for_book(
         self,
@@ -1277,6 +1294,7 @@ class SegmentRepo:
         """Atomically replace segment-bound data after a successful rechunk."""
         now = _now()
         delete_book_segments_from_fts(self.conn, book_id)
+        delete_book_original_index(self.conn, book_id)
         with db_transaction(self.conn):
             self.conn.execute("DELETE FROM notes WHERE book_id = ?", (book_id,))
             self.conn.execute(
@@ -1311,6 +1329,7 @@ class SegmentRepo:
                     book_id,
                 ),
             )
+        index_book_original(self.conn, book_id, replace=True)
 
     def update_summary(
         self,

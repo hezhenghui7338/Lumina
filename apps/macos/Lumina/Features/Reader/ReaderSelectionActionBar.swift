@@ -1,7 +1,7 @@
 import AppKit
 import SwiftUI
 
-/// Copy / write-idea menu that appears after a reader body selection.
+/// Copy / write-idea / highlight menu that appears after a reader body selection.
 struct ReaderSelectionActionBar: View {
     @ObservedObject var model: ReaderSelectionActionModel
     @FocusState private var ideaFocused: Bool
@@ -19,7 +19,13 @@ struct ReaderSelectionActionBar: View {
                         model.beginComposing()
                     }
                     .accessibilityIdentifier("lumina.reader.selection.writeIdea")
-                    .disabled(model.isComposing)
+                    .disabled(model.isComposing || model.isHighlighting)
+
+                    Button("划线") {
+                        model.highlight()
+                    }
+                    .accessibilityIdentifier("lumina.reader.selection.highlight")
+                    .disabled(model.isComposing || model.isHighlighting)
                 }
             }
             .buttonStyle(.borderless)
@@ -56,10 +62,15 @@ struct ReaderSelectionActionBar: View {
                     .tint(LuminaTheme.accent)
                     .controlSize(.small)
                 }
+            } else if let error = model.error, !error.isEmpty {
+                Text(error)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .frame(maxWidth: 260, alignment: .leading)
             }
         }
         .padding(10)
-        .frame(minWidth: model.isComposing ? 244 : 108, alignment: .leading)
+        .frame(minWidth: model.isComposing ? 244 : 140, alignment: .leading)
         .onChange(of: model.isComposing) { _, composing in
             if composing { ideaFocused = true }
         }
@@ -75,12 +86,14 @@ final class ReaderSelectionActionModel: ObservableObject {
     @Published var draft = ""
     @Published var error: String?
     @Published var isSaving = false
+    @Published var isHighlighting = false
 
     private let core: CoreClient?
     private let anchor: ReaderSelectionNoteAnchor?
     private let onSaved: (() -> Void)?
     private let onDismiss: () -> Void
     private let onComposerOpened: () -> Void
+    private let onNeedsResize: () -> Void
     private var saveTask: Task<Void, Never>?
 
     var canSave: Bool {
@@ -93,7 +106,8 @@ final class ReaderSelectionActionModel: ObservableObject {
         anchor: ReaderSelectionNoteAnchor?,
         onSaved: (() -> Void)?,
         onDismiss: @escaping () -> Void,
-        onComposerOpened: @escaping () -> Void
+        onComposerOpened: @escaping () -> Void,
+        onNeedsResize: @escaping () -> Void = {}
     ) {
         self.quote = quote
         self.core = core
@@ -102,6 +116,7 @@ final class ReaderSelectionActionModel: ObservableObject {
         self.onSaved = onSaved
         self.onDismiss = onDismiss
         self.onComposerOpened = onComposerOpened
+        self.onNeedsResize = onNeedsResize
     }
 
     func copyToPasteboard() {
@@ -111,9 +126,41 @@ final class ReaderSelectionActionModel: ObservableObject {
     }
 
     func beginComposing() {
-        guard canWriteNote, !isComposing else { return }
+        guard canWriteNote, !isComposing, !isHighlighting else { return }
         isComposing = true
         onComposerOpened()
+    }
+
+    func highlight() {
+        guard canWriteNote, !isComposing, !isHighlighting else { return }
+        guard let core, let anchor else { return }
+        isHighlighting = true
+        error = nil
+        saveTask?.cancel()
+        saveTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                _ = try await core.createNote(
+                    bookId: anchor.bookId,
+                    content: self.quote,
+                    segmentId: anchor.segmentId,
+                    quote: self.quote,
+                    type: "highlight"
+                )
+                guard !Task.isCancelled else { return }
+                self.onSaved?()
+                self.onDismiss()
+            } catch {
+                guard !Task.isCancelled else { return }
+                self.isHighlighting = false
+                if let message = error.userFacingMessage, !message.isEmpty {
+                    self.error = message
+                } else if !error.isCancellation {
+                    self.error = "划线失败"
+                }
+                self.onNeedsResize()
+            }
+        }
     }
 
     func save() {
@@ -154,7 +201,7 @@ final class ReaderSelectionActionModel: ObservableObject {
     }
 }
 
-/// One reader-wide selection popover. Transient for the two buttons; semitransient
+/// One reader-wide selection popover. Transient for the action buttons; semitransient
 /// once the idea field needs first-responder so the popover does not self-dismiss.
 @MainActor
 enum LuminaSelectionActionPopover {
@@ -209,7 +256,8 @@ enum LuminaSelectionActionPopover {
                 anchor: anchor,
                 onSaved: onSaved,
                 onDismiss: { [weak self] in self?.dismiss() },
-                onComposerOpened: { [weak self] in self?.enterComposerMode() }
+                onComposerOpened: { [weak self] in self?.enterComposerMode() },
+                onNeedsResize: { [weak self] in self?.fitSize() }
             )
             let hosting = NSHostingController(rootView: ReaderSelectionActionBar(model: model))
             hosting.sizingOptions = [.intrinsicContentSize, .preferredContentSize]

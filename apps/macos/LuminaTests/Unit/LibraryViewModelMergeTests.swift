@@ -16,7 +16,8 @@ final class LibraryViewModelMergeTests: XCTestCase {
         isFavorite: Bool? = nil,
         category: String? = nil,
         createdAt: String? = nil,
-        readingPercent: Double? = nil
+        readingPercent: Double? = nil,
+        rating: Int? = nil
     ) -> BookSummary {
         BookSummary(
             id: id,
@@ -31,6 +32,7 @@ final class LibraryViewModelMergeTests: XCTestCase {
             summary_ready_count: summaryReady,
             summary_total_count: summaryTotal,
             summarize_state: summarizeState,
+            rating: rating,
             readingPercent: readingPercent
         )
     }
@@ -502,6 +504,43 @@ final class LibraryViewModelMergeTests: XCTestCase {
         XCTAssertEqual(LibrarySort.recent.defaultOrder, .descending)
         XCTAssertEqual(LibrarySort.segments.defaultOrder, .descending)
         XCTAssertEqual(LibrarySort.favorite.defaultOrder, .descending)
+        XCTAssertEqual(LibrarySort.rating.defaultOrder, .descending)
+    }
+
+    func testSortByRatingTreatsUnratedAsThreeStars() {
+        let books = [
+            book(id: "five", title: "Five", rating: 5),
+            book(id: "one", title: "One", rating: 1),
+            book(id: "bare", title: "Bare"),
+            book(id: "three", title: "Three", rating: 3),
+            book(id: "also", title: "Also", rating: 3),
+        ]
+        XCTAssertEqual(
+            LibraryViewModel.sorted(books, by: .rating, order: .descending).map(\.id),
+            ["five", "also", "bare", "three", "one"]
+        )
+        XCTAssertEqual(
+            LibraryViewModel.sorted(books, by: .rating, order: .ascending).map(\.id),
+            ["one", "three", "bare", "also", "five"]
+        )
+    }
+
+    func testRatingTapSetsAndClears() {
+        XCTAssertEqual(BookRating.nextValue(current: nil, tapped: 3), 3)
+        XCTAssertEqual(BookRating.nextValue(current: 3, tapped: 3), nil)
+        XCTAssertEqual(BookRating.nextValue(current: 4, tapped: 2), 2)
+        XCTAssertNil(BookSummary(
+            id: "x",
+            title: "X",
+            status: "unread",
+            segment_count: 1
+        ).starRating)
+        XCTAssertEqual(BookSummary(
+            id: "x",
+            title: "X",
+            status: "unread",
+            segment_count: 1
+        ).sortRating, 3)
     }
 
     func testRecentAscendingStillPinsSummarizeActivity() {
@@ -733,6 +772,67 @@ final class LibraryViewModelMergeTests: XCTestCase {
         XCTAssertEqual(BookshelfPaging.clampedPageIndex(-1, pageCount: 3), 0)
         XCTAssertEqual(BookshelfPaging.clampedPageIndex(3, pageCount: 3), 2)
         XCTAssertEqual(BookshelfPaging.clampedPageIndex(0, pageCount: 0), 0)
+    }
+
+    func testBookshelfPaging_nearbyPageIndicesAndTokens() {
+        XCTAssertEqual(BookshelfPaging.nearbyPageIndices(current: 0, pageCount: 0), [])
+        XCTAssertEqual(BookshelfPaging.nearbyPageIndices(current: 2, pageCount: 5), [0, 1, 2, 3, 4])
+        XCTAssertEqual(BookshelfPaging.nearbyPageIndices(current: 0, pageCount: 7), Array(0..<7))
+
+        XCTAssertEqual(
+            BookshelfPaging.nearbyPageIndices(current: 5, pageCount: 20),
+            [0, 3, 4, 5, 6, 7, 19]
+        )
+        XCTAssertEqual(
+            BookshelfPaging.nearbyPageIndices(current: 0, pageCount: 20),
+            [0, 1, 2, 19]
+        )
+        XCTAssertEqual(
+            BookshelfPaging.nearbyPageIndices(current: 19, pageCount: 20),
+            [0, 17, 18, 19]
+        )
+
+        XCTAssertEqual(
+            BookshelfPaging.pagePickerTokens(current: 5, pageCount: 20),
+            [
+                .page(0), .ellipsis,
+                .page(3), .page(4), .page(5), .page(6), .page(7),
+                .ellipsis, .page(19),
+            ]
+        )
+        XCTAssertEqual(
+            BookshelfPaging.pagePickerTokens(current: 0, pageCount: 20),
+            [.page(0), .page(1), .page(2), .ellipsis, .page(19)]
+        )
+    }
+
+    func testBookshelfPaging_pageIndexFromUserInput() {
+        XCTAssertNil(BookshelfPaging.pageIndex(fromUserInput: "", pageCount: 10))
+        XCTAssertNil(BookshelfPaging.pageIndex(fromUserInput: "  ", pageCount: 10))
+        XCTAssertNil(BookshelfPaging.pageIndex(fromUserInput: "abc", pageCount: 10))
+        XCTAssertNil(BookshelfPaging.pageIndex(fromUserInput: "1", pageCount: 0))
+
+        XCTAssertEqual(BookshelfPaging.pageIndex(fromUserInput: "1", pageCount: 10), 0)
+        XCTAssertEqual(BookshelfPaging.pageIndex(fromUserInput: "10", pageCount: 10), 9)
+        XCTAssertEqual(BookshelfPaging.pageIndex(fromUserInput: " 3 ", pageCount: 10), 2)
+        XCTAssertEqual(BookshelfPaging.pageIndex(fromUserInput: "0", pageCount: 10), 0)
+        XCTAssertEqual(BookshelfPaging.pageIndex(fromUserInput: "99", pageCount: 10), 9)
+        XCTAssertEqual(BookshelfPaging.pageIndex(fromUserInput: "-5", pageCount: 10), 0)
+    }
+
+    func testSetPageFromUserInput() {
+        let viewModel = LibraryViewModel()
+        viewModel.pageSize = 10
+        viewModel.books = (0..<25).map { book(id: "\($0)", title: "T\($0)") }
+
+        XCTAssertFalse(viewModel.setPage(fromUserInput: "nope"))
+        XCTAssertEqual(viewModel.pageIndex, 0)
+
+        XCTAssertTrue(viewModel.setPage(fromUserInput: "3"))
+        XCTAssertEqual(viewModel.pageIndex, 2)
+
+        XCTAssertTrue(viewModel.setPage(fromUserInput: "99"))
+        XCTAssertEqual(viewModel.pageIndex, 2)
     }
 
     func testPagedBooks_slicesMatchedAndResetsOnFacetChange() {

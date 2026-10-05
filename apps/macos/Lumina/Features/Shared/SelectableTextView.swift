@@ -52,6 +52,32 @@ enum LuminaTextLayoutGeneration {
     }
 }
 
+/// Decide when `LuminaSelectableText.updateNSView` may rewrite storage / invalidate
+/// intrinsic height.
+///
+/// Never read back `NSTextView.font` or `textColor` for this decision: setting an
+/// attributed string often leaves those properties stale, so every SwiftUI update
+/// looks like a content change, calls `invalidateIntrinsicContentSize`, and
+/// re-enters `ScrollViewCommitMutation` once summary rows paint selectable text.
+enum LuminaSelectableTextContentPolicy {
+    /// Text / font size / weight / line spacing affect measured height.
+    static func heightAffectingContentChanged(
+        appliedText: String,
+        appliedFontSize: CGFloat,
+        appliedFontWeight: CGFloat,
+        appliedLineSpacing: CGFloat,
+        text: String,
+        fontSize: CGFloat,
+        fontWeight: CGFloat,
+        lineSpacing: CGFloat
+    ) -> Bool {
+        appliedText != text
+            || abs(appliedFontSize - fontSize) > 0.001
+            || abs(appliedFontWeight - fontWeight) > 0.001
+            || abs(appliedLineSpacing - lineSpacing) > 0.001
+    }
+}
+
 /// Mouse-selectable display text with AppKit intrinsic height (reader body copy).
 struct LuminaSelectableText: NSViewRepresentable {
     let text: String
@@ -78,18 +104,25 @@ struct LuminaSelectableText: NSViewRepresentable {
     }
 
     func makeNSView(context: Context) -> IntrinsicSizingTextContainer {
-        let container = IntrinsicSizingTextContainer()
-        let textView = LuminaSelectableTextView()
-        configure(textView)
-        applySelectionContext(textView, environment: context.environment)
-        container.embed(textView)
+        var container: IntrinsicSizingTextContainer!
+        LuminaLayoutPerf.trace(.makeNSView) {
+            LuminaLayoutPerf.noteMakeNSView()
+            container = IntrinsicSizingTextContainer()
+            let textView = LuminaSelectableTextView()
+            configure(textView)
+            applySelectionContext(textView, environment: context.environment)
+            container.embed(textView)
+        }
         return container
     }
 
     func updateNSView(_ container: IntrinsicSizingTextContainer, context: Context) {
-        guard let textView = container.textView else { return }
-        configure(textView)
-        applySelectionContext(textView, environment: context.environment)
+        LuminaLayoutPerf.trace(.updateNSView) {
+            LuminaLayoutPerf.noteUpdateNSView()
+            guard let textView = container.textView else { return }
+            configure(textView)
+            applySelectionContext(textView, environment: context.environment)
+        }
     }
 
     private func applySelectionContext(
@@ -103,31 +136,51 @@ struct LuminaSelectableText: NSViewRepresentable {
     }
 
     private func configure(_ textView: LuminaSelectableTextView) {
-        let paragraphStyle = NSMutableParagraphStyle()
-        paragraphStyle.lineSpacing = lineSpacing
+        LuminaLayoutPerf.trace(.configure) {
+            let paragraphStyle = NSMutableParagraphStyle()
+            paragraphStyle.lineSpacing = lineSpacing
+            let nsForeground = NSColor(foreground)
+            let weightValue = fontWeight.rawValue
 
-        let attributes: [NSAttributedString.Key: Any] = [
-            .font: NSFont.systemFont(ofSize: fontSize, weight: fontWeight),
-            .foregroundColor: NSColor(foreground),
-            .paragraphStyle: paragraphStyle,
-        ]
-
-        let attributed = NSAttributedString(string: text, attributes: attributes)
-        let textChanged = textView.textStorage?.string != text
-            || textView.font?.pointSize != fontSize
-            || textView.textColor != NSColor(foreground)
-            || abs(textView.appliedLineSpacing - lineSpacing) > 0.001
-        if textChanged {
-            textView.textStorage?.setAttributedString(attributed)
-            textView.appliedLineSpacing = lineSpacing
-            textView.invalidateIntrinsicContentSizeNow()
+            let heightChanged = LuminaSelectableTextContentPolicy.heightAffectingContentChanged(
+                appliedText: textView.appliedText,
+                appliedFontSize: textView.appliedFontSize,
+                appliedFontWeight: textView.appliedFontWeight,
+                appliedLineSpacing: textView.appliedLineSpacing,
+                text: text,
+                fontSize: fontSize,
+                fontWeight: weightValue,
+                lineSpacing: lineSpacing
+            )
+            let colorChanged = textView.appliedForeground.map { !$0.isEqual(nsForeground) } ?? true
+            let textChanged = heightChanged || colorChanged
+            if textChanged {
+                let attributes: [NSAttributedString.Key: Any] = [
+                    .font: NSFont.systemFont(ofSize: fontSize, weight: fontWeight),
+                    .foregroundColor: nsForeground,
+                    .paragraphStyle: paragraphStyle,
+                ]
+                textView.textStorage?.setAttributedString(
+                    NSAttributedString(string: text, attributes: attributes)
+                )
+                textView.appliedText = text
+                textView.appliedFontSize = fontSize
+                textView.appliedFontWeight = weightValue
+                textView.appliedLineSpacing = lineSpacing
+                textView.appliedForeground = nsForeground
+                // Color-only updates must not invalidate height — that re-enters
+                // ScrollViewCommitMutation while the summary LazyVStack is committing.
+                if heightChanged {
+                    textView.invalidateIntrinsicContentSizeNow()
+                }
+            }
+            Self.applyHighlight(
+                highlightUTF16,
+                style: highlightStyle,
+                on: textView,
+                textChanged: textChanged
+            )
         }
-        Self.applyHighlight(
-            highlightUTF16,
-            style: highlightStyle,
-            on: textView,
-            textChanged: textChanged
-        )
     }
 
     private static func applyHighlight(
@@ -203,7 +256,11 @@ final class LuminaSelectableTextView: NSTextView {
     private var pendingInvalidateWorkItem: DispatchWorkItem?
     var appliedHighlightUTF16: NSRange?
     var appliedHighlightStyle: LuminaSelectableText.TextHighlightStyle?
+    var appliedText: String = ""
+    var appliedFontSize: CGFloat = 0
+    var appliedFontWeight: CGFloat = NSFont.Weight.regular.rawValue
     var appliedLineSpacing: CGFloat = 0
+    var appliedForeground: NSColor?
 
     var appliedLayoutWidth: CGFloat { lastLayoutWidth }
 
@@ -256,21 +313,25 @@ final class LuminaSelectableTextView: NSTextView {
     }
 
     override func viewDidMoveToWindow() {
-        super.viewDidMoveToWindow()
-        if window == nil {
-            LuminaSelectionActionPopover.dismissIfPresenting(from: self)
-            pendingInvalidateWorkItem?.cancel()
-            pendingInvalidateWorkItem = nil
-            intrinsicInvalidationPending = false
-            return
+        LuminaLayoutPerf.trace(.viewDidMove) {
+            super.viewDidMoveToWindow()
+            if window == nil {
+                LuminaSelectionActionPopover.dismissIfPresenting(from: self)
+                pendingInvalidateWorkItem?.cancel()
+                pendingInvalidateWorkItem = nil
+                intrinsicInvalidationPending = false
+                LuminaLayoutPerf.noteViewDidMoveToWindow(hasWindow: false)
+                return
+            }
+            // Align with layout(): only invalidate when width actually changed.
+            // Unconditional invalidate:true freezes on system fullscreen space switches.
+            let widthChanged = LuminaTextLayoutSizing.widthDidChange(
+                from: lastLayoutWidth,
+                to: bounds.width
+            )
+            LuminaLayoutPerf.noteViewDidMoveToWindow(hasWindow: true)
+            applyLayoutWidth(bounds.width, invalidate: widthChanged, source: "viewDidMoveToWindow")
         }
-        // Align with layout(): only invalidate when width actually changed.
-        // Unconditional invalidate:true freezes on system fullscreen space switches.
-        let widthChanged = LuminaTextLayoutSizing.widthDidChange(
-            from: lastLayoutWidth,
-            to: bounds.width
-        )
-        applyLayoutWidth(bounds.width, invalidate: widthChanged)
     }
 
     private var currentSelectedText: String {
@@ -296,72 +357,104 @@ final class LuminaSelectableTextView: NSTextView {
     }
 
     override var intrinsicContentSize: NSSize {
-        guard let layoutManager, let textContainer else {
-            return super.intrinsicContentSize
-        }
-        let width = textContainer.containerSize.width
-        guard LuminaTextLayoutSizing.shouldEnsureLayout(containerWidth: width) else {
-            return NSSize(
-                width: NSView.noIntrinsicMetric,
-                height: LuminaTextLayoutSizing.placeholderHeight
-            )
-        }
-        if intrinsicInvalidationPending, let settled = settledIntrinsicHeight {
-            return NSSize(width: NSView.noIntrinsicMetric, height: settled)
-        }
-        layoutManager.ensureLayout(for: textContainer)
-        let usedRect = layoutManager.usedRect(for: textContainer)
-        let height = LuminaTextLayoutSizing.intrinsicHeight(
-            usedRectHeight: usedRect.height,
-            containerWidth: width
-        )
-        settledIntrinsicHeight = height
-        return NSSize(
+        var result = NSSize(
             width: NSView.noIntrinsicMetric,
-            height: height
+            height: LuminaTextLayoutSizing.placeholderHeight
         )
+        LuminaLayoutPerf.trace(.intrinsic) {
+            guard let layoutManager, let textContainer else {
+                result = super.intrinsicContentSize
+                return
+            }
+            let width = textContainer.containerSize.width
+            guard LuminaTextLayoutSizing.shouldEnsureLayout(containerWidth: width) else {
+                result = NSSize(
+                    width: NSView.noIntrinsicMetric,
+                    height: LuminaTextLayoutSizing.placeholderHeight
+                )
+                return
+            }
+            if intrinsicInvalidationPending, let settled = settledIntrinsicHeight {
+                result = NSSize(width: NSView.noIntrinsicMetric, height: settled)
+                return
+            }
+            let chars = string.utf16.count
+            LuminaLayoutPerf.traceEnsureLayout(
+                chars: chars,
+                width: width,
+                pendingFastPath: false
+            ) {
+                layoutManager.ensureLayout(for: textContainer)
+                let usedRect = layoutManager.usedRect(for: textContainer)
+                let height = LuminaTextLayoutSizing.intrinsicHeight(
+                    usedRectHeight: usedRect.height,
+                    containerWidth: width
+                )
+                settledIntrinsicHeight = height
+                result = NSSize(
+                    width: NSView.noIntrinsicMetric,
+                    height: height
+                )
+            }
+        }
+        return result
     }
 
     override func setFrameSize(_ newSize: NSSize) {
-        let widthChanged = LuminaTextLayoutSizing.widthDidChange(
-            from: lastLayoutWidth,
-            to: newSize.width
-        )
-        super.setFrameSize(newSize)
-        applyLayoutWidth(newSize.width, invalidate: widthChanged)
+        LuminaLayoutPerf.trace(.setFrameSize) {
+            let widthChanged = LuminaTextLayoutSizing.widthDidChange(
+                from: lastLayoutWidth,
+                to: newSize.width
+            )
+            super.setFrameSize(newSize)
+            applyLayoutWidth(newSize.width, invalidate: widthChanged, source: "setFrameSize")
+        }
     }
 
-    func applyLayoutWidth(_ width: CGFloat, invalidate: Bool) {
-        guard let textContainer else { return }
-        guard let layoutWidth = LuminaTextLayoutSizing.layoutWidth(for: width) else { return }
-        let isFirstLayout = lastLayoutWidth < 0
-        let sizeChanged = LuminaTextLayoutSizing.widthDidChange(
-            from: textContainer.containerSize.width,
-            to: layoutWidth
-        )
-        guard sizeChanged || isFirstLayout else { return }
-        textContainer.containerSize = NSSize(
-            width: layoutWidth,
-            height: CGFloat.greatestFiniteMagnitude
-        )
-        lastLayoutWidth = layoutWidth
-        if invalidate {
-            if LuminaTextLayoutSizing.shouldInvalidateIntrinsicsImmediately(
-                isFirstLayout: isFirstLayout
-            ) {
-                invalidateIntrinsicContentSizeNow()
-            } else {
-                scheduleDebouncedIntrinsicInvalidation()
+    func applyLayoutWidth(
+        _ width: CGFloat,
+        invalidate: Bool,
+        source: StaticString = "applyLayoutWidth"
+    ) {
+        LuminaLayoutPerf.trace(.applyLayoutWidth) {
+            guard let textContainer else { return }
+            guard let layoutWidth = LuminaTextLayoutSizing.layoutWidth(for: width) else { return }
+            let isFirstLayout = lastLayoutWidth < 0
+            let previousWidth = textContainer.containerSize.width
+            let sizeChanged = LuminaTextLayoutSizing.widthDidChange(
+                from: previousWidth,
+                to: layoutWidth
+            )
+            guard sizeChanged || isFirstLayout else { return }
+            textContainer.containerSize = NSSize(
+                width: layoutWidth,
+                height: CGFloat.greatestFiniteMagnitude
+            )
+            lastLayoutWidth = layoutWidth
+            if invalidate {
+                let immediate = LuminaTextLayoutSizing.shouldInvalidateIntrinsicsImmediately(
+                    isFirstLayout: isFirstLayout
+                )
+                LuminaLayoutPerf.noteWidthSettle(immediate: immediate)
+                if immediate {
+                    invalidateIntrinsicContentSizeNow()
+                } else {
+                    scheduleDebouncedIntrinsicInvalidation()
+                }
             }
+            _ = source
+            _ = previousWidth
         }
     }
 
     func invalidateIntrinsicContentSizeNow() {
-        pendingInvalidateWorkItem?.cancel()
-        pendingInvalidateWorkItem = nil
-        intrinsicInvalidationPending = false
-        invalidateIntrinsicContentSize()
-        superview?.invalidateIntrinsicContentSize()
+        LuminaLayoutPerf.trace(.invalidateNow) {
+            pendingInvalidateWorkItem?.cancel()
+            pendingInvalidateWorkItem = nil
+            intrinsicInvalidationPending = false
+            invalidateIntrinsicContentSize()
+            superview?.invalidateIntrinsicContentSize()
+        }
     }
 
     private func scheduleDebouncedIntrinsicInvalidation() {
@@ -373,7 +466,9 @@ final class LuminaSelectableTextView: NSTextView {
             self.intrinsicInvalidationPending = false
             self.pendingInvalidateWorkItem = nil
             // Search far-seek bumped generation: skip stale ensureLayout.
-            guard generation == LuminaTextLayoutGeneration.current else { return }
+            let stale = generation != LuminaTextLayoutGeneration.current
+            LuminaLayoutPerf.noteDebounceFired(cancelledByGeneration: stale)
+            guard !stale else { return }
             self.invalidateIntrinsicContentSize()
             self.superview?.invalidateIntrinsicContentSize()
         }
@@ -416,18 +511,24 @@ final class IntrinsicSizingTextContainer: NSView {
     }
 
     override func layout() {
-        super.layout()
-        guard let textView else { return }
-        let widthChanged = LuminaTextLayoutSizing.widthDidChange(
-            from: textView.appliedLayoutWidth,
-            to: bounds.width
-        )
-        textView.applyLayoutWidth(bounds.width, invalidate: widthChanged)
+        LuminaLayoutPerf.trace(.containerLayout) {
+            super.layout()
+            guard let textView else { return }
+            let widthChanged = LuminaTextLayoutSizing.widthDidChange(
+                from: textView.appliedLayoutWidth,
+                to: bounds.width
+            )
+            textView.applyLayoutWidth(bounds.width, invalidate: widthChanged, source: "container.layout")
+        }
     }
 
     override var intrinsicContentSize: NSSize {
-        guard let textView else { return super.intrinsicContentSize }
-        let textHeight = textView.intrinsicContentSize.height
-        return NSSize(width: NSView.noIntrinsicMetric, height: textHeight)
+        var result = super.intrinsicContentSize
+        LuminaLayoutPerf.trace(.intrinsic) {
+            guard let textView else { return }
+            let textHeight = textView.intrinsicContentSize.height
+            result = NSSize(width: NSView.noIntrinsicMetric, height: textHeight)
+        }
+        return result
     }
 }

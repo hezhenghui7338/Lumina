@@ -202,8 +202,25 @@ def _stall_timeout_message(stall: float, stage: str) -> str:
     return f"分段超时：超过 {minutes} 分钟没有进度（阶段：{label}）"
 
 
+def _configure_stdio_utf8() -> None:
+    """Windows pipes default to cp1252; Chinese progress/errors must not crash."""
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if callable(reconfigure):
+            try:
+                reconfigure(encoding="utf-8", errors="replace")
+            except Exception:
+                pass
+
+
 def _emit(payload: dict[str, Any]) -> None:
-    sys.stdout.write(json.dumps(payload, ensure_ascii=False) + "\n")
+    line = json.dumps(payload, ensure_ascii=False) + "\n"
+    buffer = getattr(sys.stdout, "buffer", None)
+    if buffer is not None:
+        buffer.write(line.encode("utf-8"))
+        buffer.flush()
+        return
+    sys.stdout.write(line)
     sys.stdout.flush()
 
 
@@ -230,6 +247,8 @@ def run_cpu_worker_sync(
         pass
     env = os.environ.copy()
     env["PYTHONUNBUFFERED"] = "1"
+    env["PYTHONIOENCODING"] = "utf-8"
+    env["PYTHONUTF8"] = "1"
     env[CPU_WORKER_ENV] = "1"
     if ocr_cloud_api_key:
         env[CPU_OCR_KEY_ENV] = ocr_cloud_api_key
@@ -579,6 +598,7 @@ def execute_resegment_cpu(job: dict[str, Any]) -> None:
 
 def run_cpu_job_file(job_path: Path) -> int:
     os.environ[CPU_WORKER_ENV] = "1"
+    _configure_stdio_utf8()
     try:
         job = json.loads(job_path.read_text(encoding="utf-8"))
         kind = str(job.get("kind") or "")
@@ -599,6 +619,7 @@ def run_cpu_job_file(job_path: Path) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    _configure_stdio_utf8()
     args = list(sys.argv[1:] if argv is None else argv)
     if not args:
         print("usage: python -m lumina_core.jobs.cpu_worker JOB.json", file=sys.stderr)

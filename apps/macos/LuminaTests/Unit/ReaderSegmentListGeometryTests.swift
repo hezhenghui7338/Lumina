@@ -1011,6 +1011,94 @@ final class LuminaTextLayoutSizingTests: XCTestCase {
         XCTAssertTrue(reader.contains("if evicted"))
         XCTAssertTrue(reader.contains("suppressContentModeSourcePrefetch"))
         XCTAssertTrue(reader.contains("scheduleSettledViewportHeight"))
+        XCTAssertTrue(
+            reader.contains("LuminaLayoutPerf.noteViewportSettle"),
+            "viewport settle must emit layout diagnostics for fullscreen freezes"
+        )
+        XCTAssertTrue(reader.contains("LuminaLayoutPerf.trace(.viewportSettle)"))
+    }
+
+    func testLayoutPerfInstrumentationIsPresentAndSideEffectFree() throws {
+        let macosRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let perf = try String(
+            contentsOf: macosRoot.appendingPathComponent(
+                "Lumina/Features/Shared/LuminaLayoutPerf.swift"
+            ),
+            encoding: .utf8
+        )
+        let textView = try String(
+            contentsOf: macosRoot.appendingPathComponent(
+                "Lumina/Features/Shared/SelectableTextView.swift"
+            ),
+            encoding: .utf8
+        )
+        let app = try String(
+            contentsOf: macosRoot.appendingPathComponent("Lumina/LuminaApp.swift"),
+            encoding: .utf8
+        )
+
+        XCTAssertTrue(perf.contains("subsystem: \"app.lumina\""))
+        XCTAssertTrue(perf.contains("category: \"layout\""))
+        XCTAssertTrue(perf.contains("willEnterFullScreenNotification"))
+        XCTAssertTrue(perf.contains("didEnterFullScreenNotification"))
+        XCTAssertTrue(perf.contains("willExitFullScreenNotification"))
+        XCTAssertTrue(perf.contains("didExitFullScreenNotification"))
+        XCTAssertFalse(
+            perf.contains("didResizeNotification"),
+            "didResize would spam main-thread logs during fullscreen animation"
+        )
+        XCTAssertFalse(
+            perf.contains("invalidateIntrinsicContentSize"),
+            "layout perf must not trigger layout itself"
+        )
+        XCTAssertFalse(
+            perf.contains("DispatchQueue.global"),
+            "layout perf must stay MainActor-only (no cross-thread sync)"
+        )
+        XCTAssertFalse(
+            perf.contains("FileManager") || perf.contains("write(to:"),
+            "layout perf must not do file I/O on the ensureLayout path"
+        )
+        XCTAssertTrue(perf.contains("mainStall"))
+        XCTAssertTrue(perf.contains("unaccounted_ms"))
+        XCTAssertTrue(perf.contains("CFRunLoopObserverCreateWithHandler"))
+        XCTAssertTrue(perf.contains("readerSegmentBlock"))
+        XCTAssertTrue(perf.contains("readerFeedLayout"))
+        XCTAssertTrue(perf.contains("LuminaReaderLayoutProbe"))
+        XCTAssertTrue(perf.contains("seg_block="))
+        XCTAssertGreaterThan(LuminaLayoutPerf.ensureInfoThresholdMs, 0)
+        XCTAssertGreaterThan(
+            LuminaLayoutPerf.ensureErrorThresholdMs,
+            LuminaLayoutPerf.ensureInfoThresholdMs
+        )
+        XCTAssertGreaterThan(LuminaLayoutPerf.maxEnsureDetailLogsPerSession, 0)
+        XCTAssertGreaterThan(LuminaLayoutPerf.stallThresholdMs, 0)
+
+        XCTAssertTrue(textView.contains("LuminaLayoutPerf.traceEnsureLayout"))
+        XCTAssertTrue(textView.contains("LuminaLayoutPerf.noteWidthSettle"))
+        XCTAssertTrue(textView.contains("LuminaLayoutPerf.noteViewDidMoveToWindow"))
+        XCTAssertTrue(textView.contains("LuminaLayoutPerf.trace(.makeNSView)"))
+        XCTAssertTrue(textView.contains("LuminaLayoutPerf.trace(.setFrameSize)"))
+        XCTAssertTrue(textView.contains("LuminaLayoutPerf.trace(.viewDidMove)"))
+        XCTAssertTrue(app.contains("LuminaLayoutPerf.installWindowObserversIfNeeded"))
+
+        let reader = try String(
+            contentsOf: macosRoot.appendingPathComponent("Lumina/Features/Reader/ReaderView.swift"),
+            encoding: .utf8
+        )
+        let segmentBlock = try String(
+            contentsOf: macosRoot.appendingPathComponent(
+                "Lumina/Features/Reader/SegmentReadingBlock.swift"
+            ),
+            encoding: .utf8
+        )
+        XCTAssertTrue(reader.contains("LuminaReaderLayoutProbe"))
+        XCTAssertTrue(reader.contains("LuminaLayoutPerf.noteReaderSegmentBlock"))
+        XCTAssertTrue(reader.contains("LuminaLayoutPerf.trace(.readerPreference)"))
+        XCTAssertTrue(segmentBlock.contains("LuminaLayoutPerf.noteReaderSegmentBody"))
     }
 }
 

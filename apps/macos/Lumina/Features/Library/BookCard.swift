@@ -2,6 +2,37 @@ import SwiftUI
 import AppKit
 import ImageIO
 
+struct BookRatingStars: View {
+    let rating: Int?
+    let onTap: (Int) -> Void
+
+    var body: some View {
+        HStack(spacing: 2) {
+            Text("评分")
+                .font(.caption2)
+                .foregroundStyle(LuminaTheme.textSecondary)
+            ForEach(1...5, id: \.self) { star in
+                Button {
+                    onTap(star)
+                } label: {
+                    Image(systemName: (rating ?? 0) >= star ? "star.fill" : "star")
+                        .font(.caption2)
+                        .foregroundStyle((rating ?? 0) >= star ? Color.orange : LuminaTheme.textSecondary)
+                        .frame(width: 14, height: 14)
+                }
+                .buttonStyle(.borderless)
+                .accessibilityLabel(starLabel(star))
+            }
+        }
+        .help(rating.map { "\($0) 星，再点该星清除" } ?? "未评分，排序按 3 星")
+    }
+
+    private func starLabel(_ star: Int) -> String {
+        if rating == star { return "清除评分" }
+        return "评为 \(star) 星"
+    }
+}
+
 struct BookCard: View {
     let book: BookSummary
     let isClassifying: Bool
@@ -17,60 +48,66 @@ struct BookCard: View {
     let onResegment: () -> Void
     let onExport: () -> Void
     let onDelete: () -> Void
+    var onRate: ((Int) -> Void)? = nil
     var onStartSummarize: ((SummaryTier) -> Void)? = nil
     var onStopSummarize: (() -> Void)? = nil
 
     var body: some View {
-        Button(action: handleTap) {
-            VStack(alignment: .leading, spacing: 8) {
-                ZStack(alignment: .topTrailing) {
-                    cover
-                    if isSelectionMode {
-                        Image(systemName: isChecked ? "checkmark.circle.fill" : "circle")
-                            .font(.title3)
-                            .foregroundStyle(isChecked ? LuminaTheme.accent : .white.opacity(0.9))
-                            .padding(8)
-                    } else if book.isFavorite {
-                        Image(systemName: "star.fill")
-                            .font(.caption)
-                            .foregroundStyle(.yellow)
-                            .padding(8)
-                    }
-                }
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(book.title)
-                        .font(.headline)
-                        .foregroundStyle(LuminaTheme.textPrimary)
-                        .lineLimit(2)
-                        .multilineTextAlignment(.leading)
-                    Text(statusLine)
-                        .font(.caption)
-                        .foregroundStyle(LuminaTheme.textSecondary)
-                        .lineLimit(2)
-                        .frame(
-                            maxWidth: .infinity,
-                            minHeight: BookshelfGridCardMetrics.statusReservedHeight,
-                            alignment: .topLeading
-                        )
-                    if showsProgressMeter {
-                        progressMeter
-                            .frame(height: BookshelfGridCardMetrics.meterReservedHeight)
-                    }
-                    HStack(spacing: 6) {
-                        BookSummaryStateBadge(book: book)
-                        Text(book.segmentCountLabel)
-                        if let category = book.category, !category.isEmpty {
-                            Text(category)
+        VStack(alignment: .leading, spacing: 8) {
+            Button(action: handleTap) {
+                VStack(alignment: .leading, spacing: 8) {
+                    ZStack(alignment: .topTrailing) {
+                        cover
+                        if isSelectionMode {
+                            Image(systemName: isChecked ? "checkmark.circle.fill" : "circle")
+                                .font(.title3)
+                                .foregroundStyle(isChecked ? LuminaTheme.accent : .white.opacity(0.9))
+                                .padding(8)
+                        } else if book.isFavorite {
+                            Image(systemName: "star.fill")
+                                .font(.caption)
+                                .foregroundStyle(.yellow)
+                                .padding(8)
                         }
                     }
-                    .font(.caption2)
-                    .foregroundStyle(LuminaTheme.textSecondary)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(book.title)
+                            .font(.headline)
+                            .foregroundStyle(LuminaTheme.textPrimary)
+                            .lineLimit(2)
+                            .multilineTextAlignment(.leading)
+                        Text(statusLine)
+                            .font(.caption)
+                            .foregroundStyle(LuminaTheme.textSecondary)
+                            .lineLimit(2)
+                            .frame(
+                                maxWidth: .infinity,
+                                minHeight: BookshelfGridCardMetrics.statusReservedHeight,
+                                alignment: .topLeading
+                            )
+                        if showsProgressMeter {
+                            progressMeter
+                                .frame(height: BookshelfGridCardMetrics.meterReservedHeight)
+                        }
+                        HStack(spacing: 6) {
+                            BookSummaryStateBadge(book: book)
+                            Text(book.segmentCountLabel)
+                            if let category = book.category, !category.isEmpty {
+                                Text(category)
+                            }
+                        }
+                        .font(.caption2)
+                        .foregroundStyle(LuminaTheme.textSecondary)
+                    }
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .contentShape(Rectangle())
+            .buttonStyle(.plain)
+            if let onRate {
+                BookRatingStars(rating: book.starRating, onTap: onRate)
+            }
         }
-        .buttonStyle(.plain)
         .contextMenu { contextMenu }
     }
 

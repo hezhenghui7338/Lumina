@@ -1045,6 +1045,39 @@ final class ReaderBodyTextSelectionPolicyTests: XCTestCase {
             bar.contains("quote: self.quote") || bar.contains("quote: quote"),
             "the saved note must keep the selected phrase as quote"
         )
+        XCTAssertTrue(
+            bar.contains("Button(\"划线\")"),
+            "selection menu must offer highlight after copy / write-idea"
+        )
+        XCTAssertTrue(
+            bar.contains("type: \"highlight\""),
+            "划线 must persist as note type highlight without opening the idea composer"
+        )
+        XCTAssertTrue(
+            bar.contains("type: \"manual\""),
+            "写想法 must keep saving as manual notes"
+        )
+        XCTAssertTrue(
+            bar.contains("func copyToPasteboard()"),
+            "copy must remain a separate path from highlight / write-idea"
+        )
+        XCTAssertFalse(
+            bar.contains("invalidateIntrinsicContentSize"),
+            "selection actions must not relayout body text"
+        )
+    }
+
+    func testHighlightDoesNotReplaceCopyOrWriteIdea() throws {
+        let bar = try source("Lumina/Features/Reader/ReaderSelectionActionBar.swift")
+        XCTAssertTrue(bar.contains("Button(\"复制\")"))
+        XCTAssertTrue(bar.contains("Button(\"写想法\")"))
+        XCTAssertTrue(bar.contains("Button(\"划线\")"))
+        // Order: copy, write-idea, then highlight.
+        let copyIdx = try XCTUnwrap(bar.range(of: "Button(\"复制\")")?.lowerBound)
+        let ideaIdx = try XCTUnwrap(bar.range(of: "Button(\"写想法\")")?.lowerBound)
+        let highlightIdx = try XCTUnwrap(bar.range(of: "Button(\"划线\")")?.lowerBound)
+        XCTAssertLessThan(copyIdx, ideaIdx)
+        XCTAssertLessThan(ideaIdx, highlightIdx)
     }
 }
 

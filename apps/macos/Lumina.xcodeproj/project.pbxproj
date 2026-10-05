@@ -83,6 +83,9 @@
 		A10005C3 /* SegmentListGroupingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10005C2 /* SegmentListGroupingTests.swift */; };
 		A1000281 /* SummaryProgressBanner.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000280 /* SummaryProgressBanner.swift */; };
 		A1000283 /* SelectableTextView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000282 /* SelectableTextView.swift */; };
+		A10006A1 /* LuminaLayoutPerf.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10006A0 /* LuminaLayoutPerf.swift */; };
+		A10006B1 /* FullscreenFeedGate.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10006B0 /* FullscreenFeedGate.swift */; };
+		A10006B3 /* FullscreenFeedGateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10006B2 /* FullscreenFeedGateTests.swift */; };
 		A1000285 /* ReaderSegmentListGeometry.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000284 /* ReaderSegmentListGeometry.swift */; };
 		A1000411 /* ReaderChromeClickPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000410 /* ReaderChromeClickPolicy.swift */; };
 		A1000287 /* ReaderSegmentListGeometryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000286 /* ReaderSegmentListGeometryTests.swift */; };
@@ -211,6 +214,9 @@
 		A1000296 /* ChatMetricsFormatter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatMetricsFormatter.swift; sourceTree = "<group>"; };
 		A1000280 /* SummaryProgressBanner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SummaryProgressBanner.swift; sourceTree = "<group>"; };
 		A1000282 /* SelectableTextView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SelectableTextView.swift; sourceTree = "<group>"; };
+		A10006A0 /* LuminaLayoutPerf.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LuminaLayoutPerf.swift; sourceTree = "<group>"; };
+		A10006B0 /* FullscreenFeedGate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FullscreenFeedGate.swift; sourceTree = "<group>"; };
+		A10006B2 /* FullscreenFeedGateTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FullscreenFeedGateTests.swift; sourceTree = "<group>"; };
 		A1000284 /* ReaderSegmentListGeometry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderSegmentListGeometry.swift; sourceTree = "<group>"; };
 		A1000410 /* ReaderChromeClickPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderChromeClickPolicy.swift; sourceTree = "<group>"; };
 		A1000286 /* ReaderSegmentListGeometryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderSegmentListGeometryTests.swift; sourceTree = "<group>"; };
@@ -368,6 +374,7 @@
 				A1000410 /* ReaderChromeClickPolicy.swift */,
 				A1000530 /* ReaderOriginalSearch.swift */,
 				A1000630 /* ReaderSourcePrefetchPolicy.swift */,
+				A10006B0 /* FullscreenFeedGate.swift */,
 				A1000440 /* ReaderSelectionActionBar.swift */,
 				A1000472 /* Listen */,
 				A1000278 /* SegmentSidebarView.swift */,
@@ -424,6 +431,7 @@
 				A1000480 /* SummarizeChevronSplit.swift */,
 				A1000482 /* ReaderChromeIconChevronSplit.swift */,
 				A1000282 /* SelectableTextView.swift */,
+				A10006A0 /* LuminaLayoutPerf.swift */,
 			);
 			path = Shared;
 			sourceTree = "<group>";
@@ -522,6 +530,7 @@
 				A1000412 /* ReaderChromeClickPolicyTests.swift */,
 				A1000532 /* ReaderOriginalSearchTests.swift */,
 				A1000632 /* ReaderSourcePrefetchPolicyTests.swift */,
+				A10006B2 /* FullscreenFeedGateTests.swift */,
 				A10005E2 /* SegmentBoundaryOffsetTests.swift */,
 				A1000542 /* BookCardCoverTests.swift */,
 				A1000294 /* LibrarySidebarVisibilityPolicyTests.swift */,
@@ -701,6 +710,7 @@
 				A1000411 /* ReaderChromeClickPolicy.swift in Sources */,
 				A1000531 /* ReaderOriginalSearch.swift in Sources */,
 				A1000631 /* ReaderSourcePrefetchPolicy.swift in Sources */,
+				A10006B1 /* FullscreenFeedGate.swift in Sources */,
 				A1000441 /* ReaderSelectionActionBar.swift in Sources */,
 				A1000461 /* ListenScript.swift in Sources */,
 				A1000463 /* ListenFollowHighlight.swift in Sources */,
@@ -729,6 +739,7 @@
 				A1000481 /* SummarizeChevronSplit.swift in Sources */,
 				A1000483 /* ReaderChromeIconChevronSplit.swift in Sources */,
 				A1000283 /* SelectableTextView.swift in Sources */,
+				A10006A1 /* LuminaLayoutPerf.swift in Sources */,
 				A1000143 /* NewsSummaryMarkdown.swift in Sources */,
 				A1000154 /* NewsStructuredSummaryView.swift in Sources */,
 				A1000145 /* NewsSourcesSettingsView.swift in Sources */,
@@ -787,6 +798,7 @@
 				A1000413 /* ReaderChromeClickPolicyTests.swift in Sources */,
 				A1000533 /* ReaderOriginalSearchTests.swift in Sources */,
 				A1000633 /* ReaderSourcePrefetchPolicyTests.swift in Sources */,
+				A10006B3 /* FullscreenFeedGateTests.swift in Sources */,
 				A10005E3 /* SegmentBoundaryOffsetTests.swift in Sources */,
 				A1000543 /* BookCardCoverTests.swift in Sources */,
 				A1000295 /* LibrarySidebarVisibilityPolicyTests.swift in Sources */,
@@ -867,7 +879,7 @@
 				CODE_SIGN_IDENTITY = "-";
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 1.4.5;
+				CURRENT_PROJECT_VERSION = 1.4.7;
 				DEVELOPMENT_TEAM = "";
 				ENABLE_APP_SANDBOX = NO;
 				ENABLE_HARDENED_RUNTIME = NO;
@@ -878,7 +890,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 1.4.5;
+				MARKETING_VERSION = 1.4.7;
 				PRODUCT_BUNDLE_IDENTIFIER = com.lumina.app;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
@@ -893,7 +905,7 @@
 				CODE_SIGN_IDENTITY = "-";
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 1.4.5;
+				CURRENT_PROJECT_VERSION = 1.4.7;
 				DEVELOPMENT_TEAM = "";
 				ENABLE_APP_SANDBOX = NO;
 				ENABLE_HARDENED_RUNTIME = NO;
@@ -904,7 +916,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 1.4.5;
+				MARKETING_VERSION = 1.4.7;
 				PRODUCT_BUNDLE_IDENTIFIER = com.lumina.app;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
@@ -917,11 +929,11 @@
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1.4.5;
+				CURRENT_PROJECT_VERSION = 1.4.7;
 				DEVELOPMENT_TEAM = "";
 				GENERATE_INFOPLIST_FILE = YES;
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
-				MARKETING_VERSION = 1.4.5;
+				MARKETING_VERSION = 1.4.7;
 				PRODUCT_BUNDLE_IDENTIFIER = com.lumina.app.tests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = NO;
@@ -935,11 +947,11 @@
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1.4.5;
+				CURRENT_PROJECT_VERSION = 1.4.7;
 				DEVELOPMENT_TEAM = "";
 				GENERATE_INFOPLIST_FILE = YES;
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
-				MARKETING_VERSION = 1.4.5;
+				MARKETING_VERSION = 1.4.7;
 				PRODUCT_BUNDLE_IDENTIFIER = com.lumina.app.tests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = NO;

@@ -148,7 +148,7 @@ def test_search_original_multiple_hits_and_limit(tmp_path):
 
 
 def test_search_original_after_cursor_pages_past_limit(tmp_path):
-    """Clients must continue past the 80-hit window without wrapping to hit 0."""
+    """Clients must continue past the hit window without wrapping to hit 0."""
     conn = init_db(tmp_path / "t.db")
     _seed_book(conn, segment_count=2)
     SegmentRepo(conn).insert_many(
@@ -226,7 +226,9 @@ def test_original_search_api_accepts_after_cursor(client):
 def test_search_original_empty_query(tmp_path):
     conn = init_db(tmp_path / "t.db")
     _seed_book(conn)
-    assert search_original(conn, "b1", "   ")["hits"] == []
+    empty = search_original(conn, "b1", "   ")
+    assert empty["hits"] == []
+    assert empty["truncated"] is False
 
 
 def test_search_original_does_not_cross_books(tmp_path):

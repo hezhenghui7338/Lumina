@@ -97,6 +97,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        LuminaLayoutPerf.installWindowObserversIfNeeded()
         // File-open cold start can finish launch with no key window; reveal once.
         DispatchQueue.main.async {
             Self.revealMainWindow()

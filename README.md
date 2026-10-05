@@ -58,6 +58,15 @@ macOS 主界面（Windows 功能对等，交互为 WinUI 惯用导航）。
 
 ## 最近更新
 
+### v1.4.7 — 原文搜索命中列表与独立索引
+
+相对 v1.4.6 的主要变化：
+
+- **原文搜索**：macOS 先展示命中列表再点选定位；底栏可返回结果 / 上一条 / 下一条；搜完不自动跳第一条
+- **检索性能**：独立原文索引后台回填；索引就绪后大书首屏检索更快；启动回填正确注入 DB 连接
+- **正式发布仅 macOS**：Windows 安装包与 Release CI 停用（源码仍在 `apps/windows`）
+- **工程治理**：版本同步至 1.4.7；badcase catalog 同步
+
 ### v1.4.1 — 阅读体验首次流畅版本（重要里程碑）
 
 相对 v1.4.0 的主要变化：
@@ -178,9 +187,8 @@ macOS 主界面（Windows 功能对等，交互为 WinUI 惯用导航）。
 | 平台 | 要求 | 下载 |
 |------|------|------|
 | macOS 14+（Apple Silicon / Intel） | 约 250 MB 安装包（安装后约 500 MB）+ 首次 AI 模型 ~3 GB | **[GitHub Releases 下载 DMG](https://github.com/hezhenghui7338/Lumina/releases/latest)** |
-| Windows 10/11 x64（P0） | ZIP 自包含目录 + 首次 AI 模型 ~3 GB | **[GitHub Releases 下载 Windows ZIP](https://github.com/hezhenghui7338/Lumina/releases/latest)** |
 
-Release 页提供 **Lumina-*-macOS.dmg** 与 **Lumina-*-Windows-x64.zip**（GitHub Actions 构建）。Windows 与 macOS **功能对等**（WinUI 惯用交互：书库 / 阅读 / 笔记 / Ctrl+K / 资讯 / 设置 / 任务管理）。
+Release 页提供 **Lumina-*-macOS.dmg** / **Lumina-*-macOS.zip**（GitHub Actions 构建）。Windows 安装包当前不发布（源码仍在 `apps/windows`，发布链路已停用）。
 
 ### 安装（两步）
 
@@ -255,21 +263,12 @@ xattr -cr /Applications/Lumina.app
 
 > **说明**：**Cursor** 预设资源走 OpenAI 兼容 HTTP 路径（`POST /v1/chat/completions`），需在设置中配置代理 Base URL 与 API Key（Cursor 官方暂无原生 chat/completions endpoint）。默认亦支持 Ollama、OpenAI、OpenRouter 等。
 
-### Windows 安装
-
-1. 下载 **Lumina-*-Windows-x64.zip** 并解压  
-2. 运行解压目录中的 **Lumina.exe**  
-3. 若 SmartScreen 提示「Windows 已保护你的电脑」：点 **更多信息** → **仍要运行**（当前 Release 尚未 Authenticode 签名）
-
-Windows 数据目录：`%APPDATA%\Lumina\`
-
 ### 数据在哪
 
 全部在本机：
 
 ```
 macOS:   ~/Library/Application Support/Lumina/
-Windows: %APPDATA%\Lumina\
 ```
 
 ### 常见问题

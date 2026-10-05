@@ -923,6 +923,11 @@ def realign_volume_markers_for_book(
         index_segment(conn, book_dict, left)
         index_segment(conn, book_dict, right)
 
+    if splits:
+        from lumina_core.search.original_index import index_book_original
+
+        index_book_original(conn, book_id, replace=True)
+
     outline = rebuild_outline_for_book(
         conn, book_id, epub_path=epub_path, use_heuristic=False
     )

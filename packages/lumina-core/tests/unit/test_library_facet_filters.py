@@ -47,8 +47,11 @@ def test_macos_bookshelf_facets_have_all_and_combine():
         ROOT / "apps/macos/Lumina/Features/Library/BookshelfView.swift"
     ).read_text(encoding="utf-8")
     assert "paginationBar" in bookshelf
+    assert "pagePickerControls" in bookshelf
     assert "viewModel.pagedBooks" in bookshelf
     assert "matchedBooks.count" in bookshelf
+    assert "nearbyPageIndices" in vm
+    assert "pageIndex(fromUserInput" in vm
     row = (ROOT / "apps/macos/Lumina/Features/Library/BookRow.swift").read_text(
         encoding="utf-8"
     )

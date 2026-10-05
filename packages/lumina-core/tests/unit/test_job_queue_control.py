@@ -992,6 +992,26 @@ async def test_startup_does_not_flood_rollup(conn):
 
 
 @pytest.mark.asyncio
+async def test_original_index_backfill_passes_conn(conn):
+    """Startup original-index backfill must inject conn into _run_db."""
+    from lumina_core.search.original_index import is_original_index_ready
+
+    router = MockModelRouter(responses={"summarize": SUMMARY, "translate": "译文"})
+    q = JobQueue(conn, router)
+    book_id = _seed_book(conn, book_id="orig-idx", n_segments=2)
+    assert is_original_index_ready(conn, book_id) is False
+
+    q._schedule_original_index_backfill()
+    task = q._original_index_backfill_task
+    assert task is not None
+    await asyncio.wait_for(asyncio.shield(task), timeout=10)
+
+    assert task.done()
+    assert task.exception() is None
+    assert is_original_index_ready(conn, book_id) is True
+
+
+@pytest.mark.asyncio
 async def test_startup_resets_orphan_building_index(conn):
     """A 'building' index with no worker is a crash orphan, not live work."""
     router = MockModelRouter(responses={"summarize": SUMMARY, "translate": "译文"})

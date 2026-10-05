@@ -91,6 +91,7 @@ struct ReaderView: View {
     @State private var summarizeActionInFlight = false
     @State private var originalSearchQuery = ""
     @State private var originalSearchExpanded = false
+    @State private var originalSearchPhase: OriginalSearchPhase = .list
     @State private var originalSearchHits: [OriginalSearchHit] = []
     @State private var originalSearchIndex = 0
     @State private var originalSearching = false
@@ -106,6 +107,10 @@ struct ReaderView: View {
     @State private var originalSearchSeekReleaseTask: Task<Void, Never>?
     @State private var settledReaderViewportHeight: CGFloat = 0
     @State private var viewportHeightSettleTask: Task<Void, Never>?
+    /// System fullscreen will/did: thin feed slice so 万段 ForEach does not freeze.
+    @State private var fullscreenFeedGated = false
+    @State private var fullscreenFeedPin: Int? = nil
+    @State private var fullscreenFeedReleaseTask: Task<Void, Never>?
     @FocusState private var chatFocused: Bool
     @FocusState private var readerContentFocused: Bool
     @FocusState private var originalSearchFocused: Bool
@@ -128,6 +133,7 @@ struct ReaderView: View {
             || chromeMode == .revealed
             || overlay != .none
             || coverPage != .none
+            || (originalSearchExpanded && originalSearchPhase == .reading)
     }
 
     private var librarySummarizeOverviewActive: Bool {
@@ -456,24 +462,6 @@ struct ReaderView: View {
                         .monospacedDigit()
                 }
                 Button {
-                    stepOriginalSearch(-1)
-                } label: {
-                    Image(systemName: "chevron.up")
-                }
-                .buttonStyle(.plain)
-                .disabled(originalSearchHits.isEmpty)
-            .help("上一条（\(ShortcutStore.shared.display(for: .searchPrev))）")
-                .accessibilityIdentifier("lumina.reader.originalSearch.prev")
-                Button {
-                    stepOriginalSearch(1)
-                } label: {
-                    Image(systemName: "chevron.down")
-                }
-                .buttonStyle(.plain)
-                .disabled(originalSearchHits.isEmpty)
-                .help("下一条（\(ShortcutStore.shared.display(for: .searchNext))）")
-                .accessibilityIdentifier("lumina.reader.originalSearch.next")
-                Button {
                     closeOriginalSearch()
                 } label: {
                     Image(systemName: "xmark")
@@ -504,6 +492,12 @@ struct ReaderView: View {
 
     private var originalSearchStatusText: String {
         if originalSearchLastQuery.isEmpty { return "" }
+        if originalSearchPhase == .list {
+            return OriginalSearchHighlight.listStatusLabel(
+                count: originalSearchHits.count,
+                truncated: originalSearchTruncated
+            )
+        }
         return OriginalSearchHighlight.statusLabel(
             index: originalSearchIndex,
             count: originalSearchHits.count,
@@ -511,11 +505,12 @@ struct ReaderView: View {
         )
     }
 
-    /// Single-segment feed while find-in-page is open (avoids far catalog jumps).
+    /// Single-segment feed while reading a selected hit (avoids far catalog jumps).
     private var originalSearchFocusSegment: SegmentRow? {
         guard OriginalSearchHighlight.usesFocusFeed(
             expanded: originalSearchExpanded,
-            hitCount: originalSearchHits.count
+            hitCount: originalSearchHits.count,
+            phase: originalSearchPhase
         ),
         originalSearchHits.indices.contains(originalSearchIndex)
         else { return nil }
@@ -739,8 +734,55 @@ struct ReaderView: View {
         VStack(spacing: 0) {
             Spacer(minLength: 0)
                 .allowsHitTesting(false)
-            readerBottomBar
+            if originalSearchExpanded, originalSearchPhase == .reading {
+                originalSearchReadingBottomBar
+            } else {
+                readerBottomBar
+            }
         }
+    }
+
+    private var originalSearchReadingBottomBar: some View {
+        HStack(spacing: 0) {
+            Button {
+                returnToOriginalSearchList()
+            } label: {
+                Text("返回搜索结果")
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help("返回搜索结果")
+            .accessibilityIdentifier("lumina.reader.originalSearch.backToResults")
+            Button {
+                stepOriginalSearch(-1)
+            } label: {
+                Text("上一条")
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .disabled(originalSearchHits.isEmpty)
+            .help("上一条（\(ShortcutStore.shared.display(for: .searchPrev))）")
+            .accessibilityIdentifier("lumina.reader.originalSearch.prev")
+            Button {
+                stepOriginalSearch(1)
+            } label: {
+                Text("下一条")
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .disabled(originalSearchHits.isEmpty)
+            .help("下一条（\(ShortcutStore.shared.display(for: .searchNext))）")
+            .accessibilityIdentifier("lumina.reader.originalSearch.next")
+        }
+        .font(ReaderChromeBarMetrics.labelFont)
+        .foregroundStyle(LuminaTheme.textPrimary)
+        .frame(height: ReaderChromeBarMetrics.height)
+        .background(.ultraThinMaterial)
+        .overlay(alignment: .top) { Divider() }
+        .absorbsReaderChromeClicks()
     }
 
     private var readerBottomBar: some View {
@@ -814,246 +856,318 @@ struct ReaderView: View {
     }
 
     private var readerLayout: some View {
+        readerLayoutSession(readerLayoutScroll(readerLayoutChromeControls(readerLayoutChrome)))
+    }
+
+    private var readerLayoutChrome: some View {
+        readerLayoutStack
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .animation(.easeInOut(duration: 0.25), value: overlay)
+            .animation(.easeInOut(duration: 0.25), value: chromeMode)
+            .animation(.easeInOut(duration: 0.25), value: coverPage)
+            .animation(.easeInOut(duration: 0.25), value: listenSession.isActive)
+    }
+
+    @ViewBuilder
+    private var readerLayoutStack: some View {
         ZStack {
             segmentContent
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+            readerDimOverlay
+            readerNotesOverlay
+            readerChatOverlay
+            readerSegmentCoverOverlay
+            readerProgressReturnOverlay
+            readerChromeBarsOverlay
+            readerListenMiniBarOverlay
+        }
+    }
 
-            if overlay != .none {
-                Color.black.opacity(0.18)
-                    .ignoresSafeArea()
-                    .contentShape(Rectangle())
-                    .onTapGesture { closeOverlay() }
-                    .transition(.opacity)
-            }
+    @ViewBuilder
+    private var readerDimOverlay: some View {
+        if overlay != .none {
+            Color.black.opacity(0.18)
+                .ignoresSafeArea()
+                .contentShape(Rectangle())
+                .onTapGesture { closeOverlay() }
+                .transition(.opacity)
+        }
+    }
 
+    @ViewBuilder
+    private var readerNotesOverlay: some View {
+        // Mount only while open. A closed-but-offset drawer still sits in
+        // this ZStack's sizeThatFits tree and can peg the main thread.
+        if overlay == .notes {
             HStack(spacing: 0) {
                 Spacer(minLength: 0)
                 notesDrawer
                     .padding(.top, ReaderChromeBarMetrics.height)
                     .padding(.bottom, overlayBottomPadding)
-                    .offset(x: overlay == .notes ? 0 : notesWidth)
             }
-            .allowsHitTesting(overlay == .notes)
+            .transition(.move(edge: .trailing))
+        }
+    }
 
+    @ViewBuilder
+    private var readerChatOverlay: some View {
+        if overlay == .chat {
             VStack(spacing: 0) {
                 Spacer(minLength: 0)
                 chatDrawer
-                    .offset(y: overlay == .chat ? 0 : chatHeight + 40)
             }
             .padding(.bottom, overlayBottomPadding)
-            .allowsHitTesting(overlay == .chat)
+            .transition(.move(edge: .bottom))
+        }
+    }
 
-            if coverPage == .segments {
-                ReaderCoverPageShell {
-                    segmentCoverPanel
-                }
-                // Top chrome stays revealed while the catalog is open; without this
-                // inset the cover header (导出 / 收起全部 / 多选) sits under the bar.
-                .padding(.top, ReaderChromeBarMetrics.height)
-                .padding(.bottom, overlayBottomPadding)
-                .transition(.move(edge: .bottom).combined(with: .opacity))
+    @ViewBuilder
+    private var readerSegmentCoverOverlay: some View {
+        if coverPage == .segments {
+            ReaderCoverPageShell {
+                segmentCoverPanel
             }
+            // Top chrome stays revealed while the catalog is open; without this
+            // inset the cover header (导出 / 收起全部 / 多选) sits under the bar.
+            .padding(.top, ReaderChromeBarMetrics.height)
+            .padding(.bottom, overlayBottomPadding)
+            .transition(.move(edge: .bottom).combined(with: .opacity))
+        }
+    }
 
-            // Above the segment cover so a catalog jump still shows the offer
-            // while the cover is dismissing. Hugs banner height under the chrome
-            // spacer; chrome is drawn after this so top-bar clicks stay live.
-            if let offer = viewModel.progressReturnOffer {
-                VStack(spacing: 0) {
-                    Color.clear
-                        .frame(height: ReaderChromeBarMetrics.height)
-                        .allowsHitTesting(false)
-                    ProgressReturnBanner(
-                        savedIndex: offer.savedIndex,
-                        onReturn: { confirmProgressReturn() },
-                        onStay: {
-                            let idx = topSegmentIdx
-                                ?? viewModel.selectedIdx
-                                ?? offer.savedIndex
-                            viewModel.dismissProgressReturnOffer(at: idx)
-                        }
-                    )
-                    .readingColumn()
-                    .padding(.horizontal, LuminaTheme.summaryPadding)
-                    Spacer(minLength: 0)
-                        .allowsHitTesting(false)
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-                .transition(.opacity)
-            }
-
-            if barsVisible {
-                // Opacity only: `.move(edge:)` desyncs the hit-test frame from
-                // the drawn bar, so the top of 分段 looks live but clicks miss.
-                readerChromeBarOverlay
-                    .transition(.opacity)
-            }
-
-            if barsVisible {
-                readerBottomBarOverlay
-                    .transition(.opacity)
-            }
-
-            if listenSession.isActive {
-                VStack(spacing: 0) {
-                    Spacer(minLength: 0)
-                        .allowsHitTesting(false)
-                    ListenMiniBar(session: listenSession) {
-                        listenSession.stop()
+    @ViewBuilder
+    private var readerProgressReturnOverlay: some View {
+        // Above the segment cover so a catalog jump still shows the offer
+        // while the cover is dismissing. Hugs banner height under the chrome
+        // spacer; chrome is drawn after this so top-bar clicks stay live.
+        if let offer = viewModel.progressReturnOffer {
+            VStack(spacing: 0) {
+                Color.clear
+                    .frame(height: ReaderChromeBarMetrics.height)
+                    .allowsHitTesting(false)
+                ProgressReturnBanner(
+                    savedIndex: offer.savedIndex,
+                    onReturn: { confirmProgressReturn() },
+                    onStay: {
+                        let idx = topSegmentIdx
+                            ?? viewModel.selectedIdx
+                            ?? offer.savedIndex
+                        viewModel.dismissProgressReturnOffer(at: idx)
                     }
-                    .padding(
-                        .bottom,
-                        ReaderBottomStackPolicy.miniBarBottomPadding(barsVisible: barsVisible)
-                    )
+                )
+                .readingColumn()
+                .padding(.horizontal, LuminaTheme.summaryPadding)
+                Spacer(minLength: 0)
+                    .allowsHitTesting(false)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            .transition(.opacity)
+        }
+    }
+
+    @ViewBuilder
+    private var readerChromeBarsOverlay: some View {
+        if barsVisible {
+            // Opacity only: `.move(edge:)` desyncs the hit-test frame from
+            // the drawn bar, so the top of 分段 looks live but clicks miss.
+            readerChromeBarOverlay
+                .transition(.opacity)
+        }
+        if barsVisible {
+            readerBottomBarOverlay
+                .transition(.opacity)
+        }
+    }
+
+    @ViewBuilder
+    private var readerListenMiniBarOverlay: some View {
+        if listenSession.isActive {
+            VStack(spacing: 0) {
+                Spacer(minLength: 0)
+                    .allowsHitTesting(false)
+                ListenMiniBar(session: listenSession) {
+                    listenSession.stop()
+                }
+                .padding(
+                    .bottom,
+                    ReaderBottomStackPolicy.miniBarBottomPadding(barsVisible: barsVisible)
+                )
+            }
+        }
+    }
+
+    private func readerLayoutChromeControls<Content: View>(_ content: Content) -> some View {
+        content
+            .onExitCommand { handleExitCommand() }
+            .onChange(of: overlay) { _, newValue in
+                chatFocused = newValue == .chat && overlayEngaged
+                readerOverlayActive = newValue != .none
+                if newValue != .none {
+                    setChromeMode(.revealed)
+                } else {
+                    readerContentFocused = true
+                    setChromeMode(.revealed)
                 }
             }
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .animation(.easeInOut(duration: 0.25), value: overlay)
-        .animation(.easeInOut(duration: 0.25), value: chromeMode)
-        .animation(.easeInOut(duration: 0.25), value: coverPage)
-        .animation(.easeInOut(duration: 0.25), value: listenSession.isActive)
-        .onExitCommand { handleExitCommand() }
-        .onChange(of: overlay) { _, newValue in
-            chatFocused = newValue == .chat && overlayEngaged
-            readerOverlayActive = newValue != .none
-            if newValue != .none {
-                setChromeMode(.revealed)
-            } else {
-                readerContentFocused = true
-                setChromeMode(.revealed)
+            .onChange(of: coverPage) { _, newValue in
+                if newValue != .none {
+                    overlay = .none
+                    overlayEngaged = false
+                    showAppearancePopover = false
+                    showSegmentPopover = false
+                }
             }
-        }
-        .onChange(of: coverPage) { _, newValue in
-            if newValue != .none {
+            .onChange(of: chromeMode) { _, mode in
+                if mode == .hidden {
+                    showAppearancePopover = false
+                    showSegmentPopover = false
+                }
+            }
+            .onChange(of: overlayEngaged) { _, engaged in
+                if engaged, overlay == .chat { chatFocused = true }
+            }
+            .onChange(of: viewModel.bookStatus) { _, status in
+                if status == "processing" {
+                    setChromeMode(.revealed)
+                }
+            }
+            .onAppear {
+                readerOverlayActive = overlay != .none
+                revealChromeIfTouringReader()
+                ShortcutKeyMonitor.isReaderActive = true
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .luminaReaderShortcutAction)) { note in
+                guard let action = ShortcutActionUserInfo.action(from: note) else { return }
+                handleShortcut(action)
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .luminaFullscreenTransition)) { note in
+                handleFullscreenFeedTransition(note)
+            }
+            .onChange(of: tour.step) { _, _ in
+                revealChromeIfTouringReader()
+            }
+    }
+
+    private func readerLayoutScroll<Content: View>(_ content: Content) -> some View {
+        content
+            .onChange(of: viewModel.selectedIdx) { _, idx in
+                guard let idx else { return }
+                viewModel.selectSegment(idx)
+                // A selection that came from the pinned segment must not scroll back.
+                guard !viewModel.consumeTopSegmentSelection(idx) else { return }
+                jump(to: idx)
+            }
+            .onChange(of: topSegmentIdx) { _, idx in
+                guard let idx else { return }
+                if viewModel.progressPhase == .restoring {
+                    // Correct a stray pin while the feed is still materializing.
+                    if let target = viewModel.restoreTarget, target != idx {
+                        topSegmentIdx = target
+                    }
+                    return
+                }
+                viewModel.noteTopSegment(idx)
+                // Debounce: fast scroll / search-next must not fan out hydrate+source
+                // on every pin tick (万段书会卡死 MainActor).
+                // Search seek: far TOC hits (~300 segs apart) must not prefetch neighbours.
+                if originalSearchSeekTarget != nil { return }
+                if FullscreenFeedGate.shouldSuppressFeedChurn(gated: fullscreenFeedGated) {
+                    return
+                }
+                viewModel.scheduleVisiblePrefetch(
+                    around: idx,
+                    core: core,
+                    original: contentMode == .original,
+                    radius: 3
+                )
+            }
+            .onPreferenceChange(ReaderGlobalFrameKey.self) { frame in
+                LuminaLayoutPerf.trace(.readerPreference) {
+                    LuminaLayoutPerf.noteReaderPreference()
+                    LuminaLayoutPerf.noteReaderContext(
+                        segmentCount: viewModel.segments.count,
+                        contentMode: contentMode == .original ? "original" : "summary"
+                    )
+                    readerGlobalFrame = frame
+                    scheduleSettledViewportHeight(frame.height)
+                }
+            }
+    }
+
+    private func readerLayoutSession<Content: View>(_ content: Content) -> some View {
+        content
+            .onChange(of: contentMode) { _, mode in
+                LuminaLayoutPerf.trace(.readerContentMode) {
+                    LuminaLayoutPerf.noteReaderContentMode()
+                    LuminaLayoutPerf.noteReaderContext(
+                        segmentCount: viewModel.segments.count,
+                        contentMode: mode == .original ? "original" : "summary"
+                    )
+                    ReaderPreferences.setContentMode(mode, for: bookId)
+                    viewModel.setContentMode(mode)
+                    if mode == .original {
+                        if suppressContentModeSourcePrefetch {
+                            suppressContentModeSourcePrefetch = false
+                        } else {
+                            let idx = topSegmentIdx ?? viewModel.selectedIdx ?? viewModel.segments.first?.idx ?? 0
+                            viewModel.prefetchSources(around: idx, core: core, radius: 5)
+                        }
+                    }
+                }
+            }
+            .task(id: bookId) {
+                listenSession.stop()
                 overlay = .none
                 overlayEngaged = false
-                showAppearancePopover = false
-                showSegmentPopover = false
-            }
-        }
-        .onChange(of: chromeMode) { _, mode in
-            if mode == .hidden {
-                showAppearancePopover = false
-                showSegmentPopover = false
-            }
-        }
-        .onChange(of: overlayEngaged) { _, engaged in
-            if engaged, overlay == .chat { chatFocused = true }
-        }
-        .onChange(of: viewModel.bookStatus) { _, status in
-            if status == "processing" {
-                setChromeMode(.revealed)
-            }
-        }
-        .onAppear {
-            readerOverlayActive = overlay != .none
-            revealChromeIfTouringReader()
-            ShortcutKeyMonitor.isReaderActive = true
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .luminaReaderShortcutAction)) { note in
-            guard let action = ShortcutActionUserInfo.action(from: note) else { return }
-            handleShortcut(action)
-        }
-        .onChange(of: tour.step) { _, _ in
-            revealChromeIfTouringReader()
-        }
-        .onChange(of: viewModel.selectedIdx) { _, idx in
-            guard let idx else { return }
-            viewModel.selectSegment(idx)
-            // A selection that came from the pinned segment must not scroll back.
-            guard !viewModel.consumeTopSegmentSelection(idx) else { return }
-            jump(to: idx)
-        }
-        .onChange(of: topSegmentIdx) { _, idx in
-            guard let idx else { return }
-            if viewModel.progressPhase == .restoring {
-                // Correct a stray pin while the feed is still materializing.
-                if let target = viewModel.restoreTarget, target != idx {
-                    topSegmentIdx = target
+                coverPage = .none
+                chromeMode = .revealed
+                expandedSourceSegments = []
+                expandedSummarySegments = []
+                resetOriginalSearch(clearQuery: true)
+                contentMode = ReaderPreferences.contentMode(for: bookId)
+                viewModel.setContentMode(contentMode)
+                topSegmentIdx = nil
+                // The resume index is delivered before the segments are published so
+                // the feed's very first layout already renders at the saved segment.
+                await viewModel.load(
+                    bookId: bookId,
+                    core: core,
+                    initialSegmentIndex: initialSegmentIndex
+                ) { resumeIdx in
+                    topSegmentIdx = resumeIdx
                 }
-                return
-            }
-            viewModel.noteTopSegment(idx)
-            // Debounce: fast scroll / search-next must not fan out hydrate+source
-            // on every pin tick (万段书会卡死 MainActor).
-            // Search seek: far TOC hits (~300 segs apart) must not prefetch neighbours.
-            if originalSearchSeekTarget != nil { return }
-            viewModel.scheduleVisiblePrefetch(
-                around: idx,
-                core: core,
-                original: contentMode == .original,
-                radius: 3
-            )
-        }
-        .onPreferenceChange(ReaderGlobalFrameKey.self) { frame in
-            readerGlobalFrame = frame
-            scheduleSettledViewportHeight(frame.height)
-        }
-        .onChange(of: contentMode) { _, mode in
-            ReaderPreferences.setContentMode(mode, for: bookId)
-            viewModel.setContentMode(mode)
-            if mode == .original {
-                if suppressContentModeSourcePrefetch {
-                    suppressContentModeSourcePrefetch = false
-                } else {
-                    let idx = topSegmentIdx ?? viewModel.selectedIdx ?? viewModel.segments.first?.idx ?? 0
+                readerContentFocused = true
+                if contentMode == .original, let idx = viewModel.selectedIdx {
                     viewModel.prefetchSources(around: idx, core: core, radius: 5)
                 }
+                if let idx = viewModel.selectedIdx {
+                    viewModel.prefetchSummaries(around: idx, core: core, radius: 5)
+                }
+                listenSession.updateSegmentCount(viewModel.segments.count)
+                if let settings = try? await core.fetchSettings() {
+                    ListenPreferences.syncFromSettings(settings.models.tts)
+                }
             }
-        }
-        .task(id: bookId) {
-            listenSession.stop()
-            overlay = .none
-            overlayEngaged = false
-            coverPage = .none
-            chromeMode = .revealed
-            expandedSourceSegments = []
-            expandedSummarySegments = []
-            resetOriginalSearch(clearQuery: true)
-            contentMode = ReaderPreferences.contentMode(for: bookId)
-            viewModel.setContentMode(contentMode)
-            topSegmentIdx = nil
-            // The resume index is delivered before the segments are published so
-            // the feed's very first layout already renders at the saved segment.
-            await viewModel.load(
-                bookId: bookId,
-                core: core,
-                initialSegmentIndex: initialSegmentIndex
-            ) { resumeIdx in
-                topSegmentIdx = resumeIdx
+            .onChange(of: scenePhase) { _, phase in
+                if phase == .background {
+                    Task { await viewModel.flushProgressSave() }
+                }
             }
-            readerContentFocused = true
-            if contentMode == .original, let idx = viewModel.selectedIdx {
-                viewModel.prefetchSources(around: idx, core: core, radius: 5)
+            .onDisappear {
+                ShortcutKeyMonitor.isReaderActive = false
+                listenSession.stop()
+                LuminaSelectionActionPopover.dismiss()
+                originalSearchTask?.cancel()
+                originalSearchLocateTask?.cancel()
+                originalSearchSeekReleaseTask?.cancel()
+                viewportHeightSettleTask?.cancel()
+                originalSearchSeekTarget = nil
+                Task {
+                    await viewModel.flushProgressSave()
+                    NotificationCenter.default.post(name: .luminaLibraryRefresh, object: nil)
+                    viewModel.cancelAllTasks()
+                }
             }
-            if let idx = viewModel.selectedIdx {
-                viewModel.prefetchSummaries(around: idx, core: core, radius: 5)
-            }
-            listenSession.updateSegmentCount(viewModel.segments.count)
-            if let settings = try? await core.fetchSettings() {
-                ListenPreferences.syncFromSettings(settings.models.tts)
-            }
-        }
-        .onChange(of: scenePhase) { _, phase in
-            if phase == .background {
-                Task { await viewModel.flushProgressSave() }
-            }
-        }
-        .onDisappear {
-            ShortcutKeyMonitor.isReaderActive = false
-            listenSession.stop()
-            LuminaSelectionActionPopover.dismiss()
-            originalSearchTask?.cancel()
-            originalSearchLocateTask?.cancel()
-            originalSearchSeekReleaseTask?.cancel()
-            viewportHeightSettleTask?.cancel()
-            originalSearchSeekTarget = nil
-            Task {
-                await viewModel.flushProgressSave()
-                NotificationCenter.default.post(name: .luminaLibraryRefresh, object: nil)
-                viewModel.cancelAllTasks()
-            }
-        }
     }
 
     // MARK: - Shortcuts
@@ -1068,10 +1182,16 @@ struct ReaderView: View {
         case .originalSearch:
             openOriginalSearch()
         case .searchNext:
-            guard originalSearchExpanded, !originalSearchHits.isEmpty else { return }
+            guard originalSearchExpanded,
+                  originalSearchPhase == .reading,
+                  !originalSearchHits.isEmpty
+            else { return }
             stepOriginalSearch(1)
         case .searchPrev:
-            guard originalSearchExpanded, !originalSearchHits.isEmpty else { return }
+            guard originalSearchExpanded,
+                  originalSearchPhase == .reading,
+                  !originalSearchHits.isEmpty
+            else { return }
             stepOriginalSearch(-1)
         case .startSummarize:
             guard viewModel.bookStatus != "processing" else { return }
@@ -1319,20 +1439,44 @@ struct ReaderView: View {
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(LuminaTheme.summaryPadding)
+                    } else if OriginalSearchHighlight.showsHitList(
+                        expanded: originalSearchExpanded,
+                        phase: originalSearchPhase,
+                        hasSubmittedQuery: !originalSearchLastQuery.isEmpty
+                    ) {
+                        originalSearchHitListContent
                     } else if let focus = originalSearchFocusSegment {
-                        // Find-in-page: one segment only. Far TOC hits (~300 segs
-                        // apart) must not scrollPosition across 9998-row ForEach.
+                        // Reading a selected hit: one segment only. Far TOC hits
+                        // (~300 segs apart) must not scrollPosition across ForEach.
                         segmentBlock(for: focus)
                             .id(
                                 "search-focus-\(focus.idx)-\(originalSearchIndex)"
                             )
+                    } else if fullscreenFeedGated {
+                        // System fullscreen transition: full ForEach re-evaluates
+                        // thousands of rows and freezes MainActor — slice only.
+                        ForEach(
+                            FullscreenFeedGate.slice(
+                                segments: viewModel.segments,
+                                pinIndex: fullscreenFeedPin ?? topSegmentIdx
+                            ),
+                            id: \.idx
+                        ) { seg in
+                            segmentBlock(for: seg)
+                        }
                     } else {
+                        // Compat full slim catalog (no around) — intentional d383158.
                         ForEach(viewModel.segments, id: \.idx) { seg in
                             segmentBlock(for: seg)
                         }
                     }
                 }
                 .scrollTargetLayout()
+                .background {
+                    LuminaReaderLayoutProbe(label: "lazyFeed")
+                        .allowsHitTesting(false)
+                        .accessibilityHidden(true)
+                }
 
                 if !viewModel.segments.isEmpty {
                     Color.clear
@@ -1493,6 +1637,7 @@ struct ReaderView: View {
 
     @ViewBuilder
     private func segmentBlock(for seg: SegmentRow) -> some View {
+        let _ = LuminaLayoutPerf.noteReaderSegmentBlock()
         let _ = viewModel.sourceCacheVersion
         let cachedSource = viewModel.cachedSource(for: seg.idx)
         let idx = seg.idx
@@ -2024,13 +2169,73 @@ struct ReaderView: View {
         }
     }
 
+    private var originalSearchHitListContent: some View {
+        Group {
+            if originalSearching, originalSearchHits.isEmpty {
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text("搜索中…")
+                        .font(.caption)
+                        .foregroundStyle(theme.readerPaper.textSecondary)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(LuminaTheme.summaryPadding)
+            } else if originalSearchHits.isEmpty {
+                Text("无匹配")
+                    .font(.body)
+                    .foregroundStyle(theme.readerPaper.textSecondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(LuminaTheme.summaryPadding)
+                    .accessibilityIdentifier("lumina.reader.originalSearch.empty")
+            } else {
+                ForEach(Array(originalSearchHits.enumerated()), id: \.element.id) { index, hit in
+                    Button {
+                        selectOriginalSearchHit(at: index)
+                    } label: {
+                        VStack(alignment: .leading, spacing: 4) {
+                            if let label = hit.segment_label, !label.isEmpty {
+                                Text(label)
+                                    .font(.caption)
+                                    .foregroundStyle(theme.readerPaper.textSecondary)
+                                    .lineLimit(1)
+                            }
+                            Text(OriginalSearchHighlight.snippetAttributed(hit.snippet))
+                                .font(.body)
+                                .foregroundStyle(theme.readerPaper.textPrimary)
+                                .multilineTextAlignment(.leading)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        .padding(.horizontal, LuminaTheme.summaryPadding)
+                        .padding(.vertical, 10)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("lumina.reader.originalSearch.hit.\(index)")
+                    .onAppear {
+                        if index == originalSearchHits.count - 1, originalSearchTruncated {
+                            loadMoreOriginalSearch(fromList: true)
+                        }
+                    }
+                    if index < originalSearchHits.count - 1 {
+                        Divider()
+                            .padding(.leading, LuminaTheme.summaryPadding)
+                    }
+                }
+            }
+        }
+    }
+
     private func handleExitCommand() {
         if coverPage != .none {
             closeCoverPage()
             return
         }
         if originalSearchExpanded {
-            closeOriginalSearch()
+            if originalSearchPhase == .reading {
+                returnToOriginalSearchList()
+            } else {
+                closeOriginalSearch()
+            }
             return
         }
         closeOverlay()
@@ -2039,14 +2244,25 @@ struct ReaderView: View {
     private func openOriginalSearch() {
         setChromeMode(.revealed)
         originalSearchExpanded = true
+        originalSearchPhase = .list
         DispatchQueue.main.async {
             originalSearchFocused = true
         }
     }
 
+    private func returnToOriginalSearchList() {
+        originalSearchLocateTask?.cancel()
+        originalSearchLocateTask = nil
+        endOriginalSearchSeek(prefetch: false)
+        originalSearchPhase = .list
+        originalSearchFocused = true
+    }
+
     private func closeOriginalSearch() {
         let landing: Int? = {
-            guard originalSearchHits.indices.contains(originalSearchIndex) else {
+            guard originalSearchPhase == .reading,
+                  originalSearchHits.indices.contains(originalSearchIndex)
+            else {
                 return topSegmentIdx ?? viewModel.selectedIdx
             }
             return originalSearchHits[originalSearchIndex].segment_index
@@ -2057,6 +2273,7 @@ struct ReaderView: View {
         originalSearchLocateTask = nil
         endOriginalSearchSeek(prefetch: false)
         originalSearchExpanded = false
+        originalSearchPhase = .list
         originalSearchFocused = false
         originalSearching = false
         originalSearchHits = []
@@ -2083,6 +2300,7 @@ struct ReaderView: View {
         originalSearchLocateTask = nil
         endOriginalSearchSeek(prefetch: false)
         originalSearchExpanded = false
+        originalSearchPhase = .list
         originalSearchFocused = false
         originalSearching = false
         originalSearchHits = []
@@ -2098,7 +2316,7 @@ struct ReaderView: View {
         let q = OriginalSearchHighlight.normalizedQuery(originalSearchQuery)
         guard !q.isEmpty else { return }
         if q == originalSearchLastQuery, !originalSearchHits.isEmpty {
-            stepOriginalSearch(1)
+            originalSearchPhase = .list
             return
         }
         runOriginalSearch(q)
@@ -2108,6 +2326,7 @@ struct ReaderView: View {
         originalSearchTask?.cancel()
         originalSearching = true
         originalSearchLastQuery = query
+        originalSearchPhase = .list
         let book = bookId
         originalSearchTask = Task {
             defer {
@@ -2119,8 +2338,7 @@ struct ReaderView: View {
                 originalSearchHits = result.hits
                 originalSearchTruncated = result.truncated
                 originalSearchIndex = 0
-                if result.hits.isEmpty { return }
-                locateOriginalSearchHit()
+                originalSearchPhase = .list
             } catch {
                 guard !Task.isCancelled else { return }
                 originalSearchHits = []
@@ -2130,7 +2348,16 @@ struct ReaderView: View {
         }
     }
 
+    private func selectOriginalSearchHit(at index: Int) {
+        guard originalSearchHits.indices.contains(index) else { return }
+        originalSearchIndex = index
+        originalSearchPhase = .reading
+        setChromeMode(.revealed)
+        locateOriginalSearchHit()
+    }
+
     private func stepOriginalSearch(_ delta: Int) {
+        guard originalSearchPhase == .reading else { return }
         guard let action = OriginalSearchHighlight.navigate(
             current: originalSearchIndex,
             delta: delta,
@@ -2139,7 +2366,7 @@ struct ReaderView: View {
         ) else { return }
         switch action {
         case .loadMore:
-            loadMoreOriginalSearch()
+            loadMoreOriginalSearch(fromList: false)
         case .step(let next):
             originalSearchIndex = next
             guard originalSearchHits.indices.contains(next) else { return }
@@ -2169,15 +2396,17 @@ struct ReaderView: View {
         }
     }
 
-    private func loadMoreOriginalSearch() {
+    private func loadMoreOriginalSearch(fromList: Bool = false) {
         let q = originalSearchLastQuery
         guard !q.isEmpty, let last = originalSearchHits.last else { return }
+        if originalSearching { return }
         originalSearchTask?.cancel()
         originalSearching = true
         let book = bookId
         let afterSegment = last.segment_index
         let afterStart = last.start
         let priorCount = originalSearchHits.count
+        let stayOnList = fromList || originalSearchPhase == .list
         originalSearchTask = Task {
             defer {
                 if !Task.isCancelled { originalSearching = false }
@@ -2192,11 +2421,13 @@ struct ReaderView: View {
                 guard !Task.isCancelled else { return }
                 if result.hits.isEmpty {
                     originalSearchTruncated = false
-                    if let next = OriginalSearchHighlight.steppedIndex(
+                    if !stayOnList,
+                       let next = OriginalSearchHighlight.steppedIndex(
                         current: originalSearchIndex,
                         delta: 1,
                         count: originalSearchHits.count
-                    ) {
+                       )
+                    {
                         originalSearchIndex = next
                         locateOriginalSearchHit()
                     }
@@ -2204,8 +2435,10 @@ struct ReaderView: View {
                 }
                 originalSearchHits.append(contentsOf: result.hits)
                 originalSearchTruncated = result.truncated
-                originalSearchIndex = priorCount
-                locateOriginalSearchHit()
+                if !stayOnList {
+                    originalSearchIndex = priorCount
+                    locateOriginalSearchHit()
+                }
             } catch {
                 guard !Task.isCancelled else { return }
                 actionError = error.localizedDescription
@@ -2239,7 +2472,8 @@ struct ReaderView: View {
         // Focus feed is already on: never navigateToSegment across full ForEach.
         if !OriginalSearchHighlight.usesFocusFeed(
             expanded: originalSearchExpanded,
-            hitCount: originalSearchHits.count
+            hitCount: originalSearchHits.count,
+            phase: originalSearchPhase
         ) {
             navigateToSegment(hit.segment_index, animated: false)
         }
@@ -2281,6 +2515,9 @@ struct ReaderView: View {
     }
 
     private func scheduleSettledViewportHeight(_ height: CGFloat) {
+        if FullscreenFeedGate.shouldSuppressFeedChurn(gated: fullscreenFeedGated) {
+            return
+        }
         let previous = settledReaderViewportHeight
         if previous > 0,
            !LuminaTextLayoutSizing.widthDidChange(from: previous, to: height)
@@ -2288,17 +2525,54 @@ struct ReaderView: View {
             return
         }
         if previous <= 0 {
-            settledReaderViewportHeight = height
+            LuminaLayoutPerf.trace(.viewportSettle) {
+                LuminaLayoutPerf.noteViewportSettle(committed: true)
+                settledReaderViewportHeight = height
+            }
             return
         }
+        LuminaLayoutPerf.noteViewportSettle(committed: false)
         viewportHeightSettleTask?.cancel()
         viewportHeightSettleTask = Task { @MainActor in
             try? await Task.sleep(
                 nanoseconds: LuminaTextLayoutSizing.widthSettleNanoseconds
             )
             guard !Task.isCancelled else { return }
-            settledReaderViewportHeight = height
+            if FullscreenFeedGate.shouldSuppressFeedChurn(gated: fullscreenFeedGated) {
+                return
+            }
+            LuminaLayoutPerf.trace(.viewportSettle) {
+                LuminaLayoutPerf.noteViewportSettle(committed: true)
+                settledReaderViewportHeight = height
+            }
             viewportHeightSettleTask = nil
+        }
+    }
+
+    private func handleFullscreenFeedTransition(_ note: Notification) {
+        guard let raw = note.userInfo?["kind"] as? String,
+              let event = FullscreenFeedGate.Event(rawValue: raw)
+        else { return }
+        if event.engagesGate {
+            fullscreenFeedReleaseTask?.cancel()
+            fullscreenFeedReleaseTask = nil
+            fullscreenFeedPin = topSegmentIdx ?? viewModel.selectedIdx
+            fullscreenFeedGated = true
+            viewportHeightSettleTask?.cancel()
+            viewportHeightSettleTask = nil
+            return
+        }
+        fullscreenFeedReleaseTask?.cancel()
+        fullscreenFeedReleaseTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: FullscreenFeedGate.settleNanoseconds)
+            guard !Task.isCancelled else { return }
+            fullscreenFeedGated = false
+            fullscreenFeedPin = nil
+            fullscreenFeedReleaseTask = nil
+            // Re-arm viewport settle with the current frame after restore.
+            if readerGlobalFrame.height > 0 {
+                scheduleSettledViewportHeight(readerGlobalFrame.height)
+            }
         }
     }
 
@@ -2409,8 +2683,22 @@ private final class ReaderFeedScrollAnchorNSView: NSView {
     }
 
     override func layout() {
-        super.layout()
-        registerFeedScrollView()
+        LuminaLayoutPerf.trace(.readerFeedLayout) {
+            super.layout()
+            registerFeedScrollView()
+            if let scroll = enclosingScrollView {
+                LuminaLayoutPerf.trace(.readerScrollLayout) {
+                    _ = scroll.bounds
+                    _ = scroll.contentSize
+                }
+                if let doc = scroll.documentView {
+                    LuminaLayoutPerf.trace(.readerScrollDocLayout) {
+                        _ = doc.bounds
+                        _ = doc.subviews.count
+                    }
+                }
+            }
+        }
     }
 
     func registerFeedScrollView() {

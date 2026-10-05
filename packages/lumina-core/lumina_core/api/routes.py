@@ -72,6 +72,7 @@ from lumina_core.news.store import NewsSourceRepo, NewsStore
 from lumina_core.news.sync import sync_all
 from lumina_core.search.fts import index_book, index_note, index_segment, search
 from lumina_core.search.original import search_original
+from lumina_core.search.original_index import index_original_segment
 from lumina_core.tts.script import LISTEN_MODES, ListenMode
 from lumina_core.tts.service import load_listen_script
 from lumina_core.resource_probe import probe_ocr, probe_resource
@@ -175,6 +176,7 @@ class BookPatchUpdate(BaseModel):
     is_favorite: bool | None = None
     category: str | None = None
     title: str | None = None
+    rating: int | None = None
 
 
 class ContextProbeRequest(BaseModel):
@@ -365,6 +367,11 @@ def book_public_dict(
     out = dict(row)
     if "is_favorite" in out and out["is_favorite"] is not None:
         out["is_favorite"] = bool(out["is_favorite"])
+    raw_rating = out.get("rating")
+    if isinstance(raw_rating, bool) or not isinstance(raw_rating, int) or not 1 <= raw_rating <= 5:
+        out["rating"] = None
+    else:
+        out["rating"] = raw_rating
 
     meta: dict[str, Any] = {}
     if out.get("metadata_json"):
@@ -890,6 +897,13 @@ async def patch_book(
             raise HTTPException(400, "title cannot be empty")
         updates["title"] = title
         updates["metadata_json"] = metadata_with_title_user_set(book)
+    if "rating" in body.model_fields_set:
+        if body.rating is None:
+            updates["rating"] = None
+        elif body.rating < 1 or body.rating > 5:
+            raise HTTPException(400, "rating must be an integer from 1 to 5")
+        else:
+            updates["rating"] = body.rating
 
     if not updates:
         return _book_public_with_queue(state, book)
@@ -1240,6 +1254,7 @@ async def search_book_original(
     book_id: str,
     request: Request,
     q: str = Query(""),
+    limit: int | None = Query(None, ge=1, le=50),
     after_segment: int | None = Query(None, ge=0),
     after_start: int | None = Query(None, ge=0),
 ) -> dict[str, Any]:
@@ -1249,12 +1264,17 @@ async def search_book_original(
         book = BookRepo(state.conn).get(book_id)
         if not book:
             return {"missing_book": True}
+        kwargs: dict[str, Any] = {
+            "after_segment_index": after_segment,
+            "after_start": after_start,
+        }
+        if limit is not None:
+            kwargs["limit"] = limit
         result = search_original(
             state.conn,
             book_id,
             q,
-            after_segment_index=after_segment,
-            after_start=after_start,
+            **kwargs,
         )
         return result
 
@@ -1490,6 +1510,20 @@ async def move_segment_boundary(
         )
         index_segment(state.conn, book, updated_left)
         index_segment(state.conn, book, updated_right)
+        index_original_segment(
+            state.conn,
+            book_id=book_id,
+            segment_id=str(updated_left["id"]),
+            segment_idx=int(updated_left["idx"]),
+            raw_text=updated_left.get("raw_text") or "",
+        )
+        index_original_segment(
+            state.conn,
+            book_id=book_id,
+            segment_id=str(updated_right["id"]),
+            segment_idx=int(updated_right["idx"]),
+            raw_text=updated_right.get("raw_text") or "",
+        )
         return updated_left, updated_right, moved.oversized, True
 
     try:

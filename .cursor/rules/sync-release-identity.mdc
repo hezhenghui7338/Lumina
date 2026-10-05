@@ -6,13 +6,13 @@ alwaysApply: false
 
 # 发布身份随构建同步
 
-`just release` / `scripts/build-release.sh` / `scripts/build-release-windows.ps1` **第一步**必须跑 `scripts/sync-release-identity.py`。
+正式发布只走 macOS：`just release` / `scripts/build-release.sh` **第一步**必须跑 `scripts/sync-release-identity.py`。`scripts/build-release-windows.ps1` 已停用（直接报错退出），不要再接回 CI。
 
 真源：
 
 - 应用 / 引擎版本：`packages/lumina-core/pyproject.toml` 的 `version`（可用 `LUMINA_VERSION` 覆盖并写回）
 - 切分算法号：`CHUNKER_VERSION`（只在切分行为变化时手改）
 
-同步目标不得手写分叉：`CORE_VERSION`、`lumina_core.__version__`、Xcode `MARKETING_VERSION` / `CURRENT_PROJECT_VERSION`、Windows `<Version>`、Swift `expectedChunkerVersion`、C# `ExpectedChunkerVersion`。
+同步目标不得手写分叉：`CORE_VERSION`、`lumina_core.__version__`、Xcode `MARKETING_VERSION` / `CURRENT_PROJECT_VERSION`、Windows `<Version>`、Swift `expectedChunkerVersion`、C# `ExpectedChunkerVersion`（csproj / C# 握手仍同步，便于本地 WinUI 开发，不代表会打 Windows 安装包）。
 
-打包时还要把同一版本传给 `xcodebuild MARKETING_VERSION=` 和 `dotnet publish -p:Version=`。不要在构建脚本里再写死 `0.8.1`。
+macOS 打包时还要把同一版本传给 `xcodebuild MARKETING_VERSION=`。不要在构建脚本里再写死 `0.8.1`。

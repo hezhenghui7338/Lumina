@@ -13,6 +13,8 @@ struct BookRow: View {
     let onResegment: () -> Void
     let onExport: () -> Void
     let onDelete: () -> Void
+    var onRate: ((Int) -> Void)? = nil
+    var onPrimary: (() -> Void)? = nil
     var onStartSummarize: ((SummaryTier) -> Void)? = nil
     var onStopSummarize: (() -> Void)? = nil
 
@@ -73,47 +75,15 @@ struct BookRow: View {
                 .labelsHidden()
             }
 
-            VStack(alignment: .leading, spacing: 4) {
-                HStack(spacing: 6) {
-                    if book.isFavorite {
-                        Image(systemName: "star.fill")
-                            .font(.caption)
-                            .foregroundStyle(LuminaTheme.accent)
-                    }
-                    Text(book.title)
-                        .font(.headline)
-                        .foregroundStyle(LuminaTheme.textPrimary)
-                        .lineLimit(2)
-                }
-                if book.summarize_state == "running" || book.summarize_active != nil {
-                    TimelineView(.periodic(from: .now, by: 1)) { context in
-                        Text(liveStatusText(at: context.date))
-                            .font(.caption)
-                            .foregroundStyle(LuminaTheme.textSecondary)
-                    }
-                } else {
-                    Text(statusText)
-                        .font(.caption)
-                        .foregroundStyle(LuminaTheme.textSecondary)
-                }
-                if book.isSegmenting {
-                    LibraryIngestMeter(progress: ingestProgress)
-                } else if book.summaryTotal > 0, !book.hasCompletedSummary {
-                    LibraryIngestMeter(
-                        fraction: Double(book.summaryReady) / Double(book.summaryTotal)
-                    )
-                }
-                HStack(spacing: 6) {
-                    summarizeStateBadge
-                    categoryBadge
-                    if let count = book.segment_count, count > 0 {
-                        Text("\(count) 段")
-                            .font(.caption2)
-                            .foregroundStyle(LuminaTheme.textSecondary)
-                    }
-                }
+            Button(action: { onPrimary?() }) {
+                rowBody
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
             }
-            Spacer(minLength: 0)
+            .buttonStyle(.plain)
+            if let onRate {
+                BookRatingStars(rating: book.starRating, onTap: onRate)
+            }
         }
         .padding(.vertical, 2)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -129,6 +99,49 @@ struct BookRow: View {
                 onStartSummarize: onStartSummarize,
                 onStopSummarize: onStopSummarize
             )
+        }
+    }
+
+    private var rowBody: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 6) {
+                if book.isFavorite {
+                    Image(systemName: "star.fill")
+                        .font(.caption)
+                        .foregroundStyle(LuminaTheme.accent)
+                }
+                Text(book.title)
+                    .font(.headline)
+                    .foregroundStyle(LuminaTheme.textPrimary)
+                    .lineLimit(2)
+            }
+            if book.summarize_state == "running" || book.summarize_active != nil {
+                TimelineView(.periodic(from: .now, by: 1)) { context in
+                    Text(liveStatusText(at: context.date))
+                        .font(.caption)
+                        .foregroundStyle(LuminaTheme.textSecondary)
+                }
+            } else {
+                Text(statusText)
+                    .font(.caption)
+                    .foregroundStyle(LuminaTheme.textSecondary)
+            }
+            if book.isSegmenting {
+                LibraryIngestMeter(progress: ingestProgress)
+            } else if book.summaryTotal > 0, !book.hasCompletedSummary {
+                LibraryIngestMeter(
+                    fraction: Double(book.summaryReady) / Double(book.summaryTotal)
+                )
+            }
+            HStack(spacing: 6) {
+                summarizeStateBadge
+                categoryBadge
+                if let count = book.segment_count, count > 0 {
+                    Text("\(count) 段")
+                        .font(.caption2)
+                        .foregroundStyle(LuminaTheme.textSecondary)
+                }
+            }
         }
     }
 

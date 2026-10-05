@@ -1,18 +1,26 @@
 ---
 name: build-release
 description: >-
-  Run Lumina release packaging via ./scripts/build-release.sh or just release,
-  and on failure auto-diagnose and minimally fix in the same Agent chat for at
-  most 3 rounds before reporting the full error to the user. Use when the user
-  asks to build-release, run build-release.sh, just release, package a release,
-  or when a release build fails in Agent.
+  Run Lumina macOS release packaging via ./scripts/build-release.sh or just
+  release, and on failure auto-diagnose and minimally fix in the same Agent
+  chat for at most 3 rounds before reporting the full error to the user. Use
+  when the user asks to build-release, run build-release.sh, just release,
+  package a release, or when a release build fails in Agent. Never package or
+  re-enable Windows release CI unless the user explicitly asks.
 ---
 
 # build-release 失败自修
 
-在 **Agent 对话**内跑发布构建。失败则同一对话最小修复并重跑，最多 **3 轮**；仍失败则完整报错给用户。系统终端直接跑脚本不触发本 skill。
+在 **Agent 对话**内跑 **macOS** 发布构建。失败则同一对话最小修复并重跑，最多 **3 轮**；仍失败则完整报错给用户。系统终端直接跑脚本不触发本 skill。
 
 配套 hook（硬顶）：`.cursor/hooks.json` 的 `stop` 使用 `loop_limit: 3`；状态文件 `.cursor/hooks/state/build-release.json`。
+
+## 范围（仅 macOS）
+
+- **只跑** `./scripts/build-release.sh` / `just release`（macOS DMG + ZIP）。
+- **不要**跑 `scripts/build-release-windows.ps1`、不要恢复 / 触发 `.github/workflows/release-windows.yml`、不要把 Windows ZIP 挂到 GitHub Release。
+- 用户若要求「打包 / 发布」且未点名 Windows：一律按 macOS 处理。
+- WinUI 源码可继续存在于 `apps/windows`；发布链路默认不碰。
 
 ## 何时用
 
@@ -22,7 +30,7 @@ description: >-
 ## 流程
 
 1. 读本 skill（及失败若涉 badcase 门禁则读 `badcase` skill）。
-2. 执行 `./scripts/build-release.sh`（或用户指定的等价命令，如带 `LUMINA_VERSION=…`）。
+2. 执行 `./scripts/build-release.sh`（或用户指定的等价 **macOS** 命令，如带 `LUMINA_VERSION=…`）。
 3. **成功**：结束；勿再开修复轮。
 4. **失败**：进入修复轮（见下）。遇到「禁止自动修」项 → 直接按模板上报，不消耗无意义的修轮。
 5. 每轮：诊断日志 → 最小改动 → **再跑同一条构建命令**。
@@ -47,6 +55,7 @@ description: >-
 - 放宽体积上限、跳过 / 削弱测试或 `check-badcases`
 - 删 draft 不升格；改 PRD；未请求的 commit / force push
 - 任何会违反 never-freeze-ui 章程的「为过构建而改产品行为」
+- 为「修 Windows CI」而重开 Windows 发布打包（除非用户明确要求）
 
 ## 失败报告模板
 

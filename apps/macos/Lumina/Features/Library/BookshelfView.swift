@@ -39,7 +39,10 @@ struct BookshelfView: View {
     @State private var showAdvancedStartConfirm = false
     @State private var showSummarizePopover = false
     @State private var dropTargeted = false
+    @State private var isEditingPageNumber = false
+    @State private var pageNumberDraft = ""
     @FocusState private var titleFilterFocused: Bool
+    @FocusState private var pageNumberFocused: Bool
 
     var body: some View {
         VStack(spacing: 0) {
@@ -348,10 +351,7 @@ struct BookshelfView: View {
             .disabled(!viewModel.canGoPreviousPage)
             .help("上一页（←）")
 
-            Text("第 \(viewModel.pageIndex + 1) / \(max(viewModel.pageCount, 1)) 页")
-                .font(.caption)
-                .foregroundStyle(LuminaTheme.textSecondary)
-                .monospacedDigit()
+            pagePickerControls
 
             Button {
                 viewModel.nextPage()
@@ -381,6 +381,116 @@ struct BookshelfView: View {
         .padding(.vertical, 8)
         .frame(maxWidth: .infinity)
         .background(.bar)
+        .onChange(of: viewModel.pageIndex) { _, _ in
+            if isEditingPageNumber {
+                cancelPageNumberEdit()
+            }
+        }
+        .onChange(of: viewModel.pageCount) { _, _ in
+            if isEditingPageNumber {
+                cancelPageNumberEdit()
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var pagePickerControls: some View {
+        HStack(spacing: 6) {
+            if viewModel.pageCount > 1 {
+                ForEach(Array(viewModel.pagePickerTokens.enumerated()), id: \.offset) { _, token in
+                    switch token {
+                    case .page(let index):
+                        pageNumberButton(index)
+                    case .ellipsis:
+                        Text("…")
+                            .font(.caption)
+                            .foregroundStyle(LuminaTheme.textSecondary)
+                            .padding(.horizontal, 2)
+                    }
+                }
+            }
+
+            if isEditingPageNumber {
+                HStack(spacing: 4) {
+                    Text("第")
+                        .font(.caption)
+                        .foregroundStyle(LuminaTheme.textSecondary)
+                    TextField("页码", text: $pageNumberDraft)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 48)
+                        .focused($pageNumberFocused)
+                        .onSubmit { commitPageNumberEdit() }
+                        .onExitCommand { cancelPageNumberEdit() }
+                    Text("/ \(max(viewModel.pageCount, 1)) 页")
+                        .font(.caption)
+                        .foregroundStyle(LuminaTheme.textSecondary)
+                        .monospacedDigit()
+                }
+                .onAppear {
+                    pageNumberDraft = "\(viewModel.pageIndex + 1)"
+                    pageNumberFocused = true
+                }
+                .onChange(of: pageNumberFocused) { _, focused in
+                    if !focused && isEditingPageNumber {
+                        commitPageNumberEdit()
+                    }
+                }
+            } else {
+                Button {
+                    beginPageNumberEdit()
+                } label: {
+                    Text("第 \(viewModel.pageIndex + 1) / \(max(viewModel.pageCount, 1)) 页")
+                        .font(.caption)
+                        .foregroundStyle(LuminaTheme.textSecondary)
+                        .monospacedDigit()
+                }
+                .buttonStyle(.plain)
+                .help("点击输入页码跳转")
+            }
+        }
+    }
+
+    private func pageNumberButton(_ index: Int) -> some View {
+        let isCurrent = index == viewModel.pageIndex
+        return Button {
+            viewModel.setPage(index)
+        } label: {
+            Text("\(index + 1)")
+                .font(.caption.weight(isCurrent ? .semibold : .regular))
+                .monospacedDigit()
+                .frame(minWidth: 22, minHeight: 22)
+                .padding(.horizontal, 4)
+                .background(
+                    RoundedRectangle(cornerRadius: 4, style: .continuous)
+                        .fill(isCurrent ? LuminaTheme.accentMuted : Color.clear)
+                )
+                .foregroundStyle(isCurrent ? LuminaTheme.accent : LuminaTheme.textSecondary)
+        }
+        .buttonStyle(.plain)
+        .disabled(isCurrent)
+        .help("第 \(index + 1) 页")
+    }
+
+    private func beginPageNumberEdit() {
+        pageNumberDraft = "\(viewModel.pageIndex + 1)"
+        isEditingPageNumber = true
+    }
+
+    private func commitPageNumberEdit() {
+        guard isEditingPageNumber else { return }
+        _ = viewModel.setPage(fromUserInput: pageNumberDraft)
+        finishPageNumberEdit()
+    }
+
+    private func cancelPageNumberEdit() {
+        guard isEditingPageNumber else { return }
+        finishPageNumberEdit()
+    }
+
+    private func finishPageNumberEdit() {
+        isEditingPageNumber = false
+        pageNumberFocused = false
+        pageNumberDraft = ""
     }
 
     private var pageSizeBinding: Binding<Int> {
@@ -445,6 +555,9 @@ struct BookshelfView: View {
                                     onResegment: { presentResegment(for: book) },
                                     onExport: { presentExport(for: book) },
                                     onDelete: { bookPendingDelete = book },
+                                    onRate: { stars in
+                                        Task { await setRating(book, stars: stars) }
+                                    },
                                     onStartSummarize: { tier in
                                         Task { await startSummarize(for: book.id, summaryTier: tier) }
                                     },
@@ -485,7 +598,7 @@ struct BookshelfView: View {
 
     @ViewBuilder
     private func listRow(_ book: BookSummary) -> some View {
-        let row = BookRow(
+        BookRow(
             book: book,
             isClassifying: viewModel.classifyingIds.contains(book.id),
             ingestProgress: viewModel.ingestProgress[book.id],
@@ -498,6 +611,16 @@ struct BookshelfView: View {
             onResegment: { presentResegment(for: book) },
             onExport: { presentExport(for: book) },
             onDelete: { bookPendingDelete = book },
+            onRate: { stars in
+                Task { await setRating(book, stars: stars) }
+            },
+            onPrimary: {
+                if isSelectionMode {
+                    toggleCheck(book.id)
+                } else {
+                    openBook(book)
+                }
+            },
             onStartSummarize: { tier in
                 Task { await startSummarize(for: book.id, summaryTier: tier) }
             },
@@ -505,19 +628,6 @@ struct BookshelfView: View {
                 Task { await stopSummarize(for: book.id) }
             }
         )
-
-        Group {
-            if isSelectionMode {
-                row
-                    .contentShape(Rectangle())
-                    .onTapGesture { toggleCheck(book.id) }
-            } else {
-                Button { openBook(book) } label: {
-                    row.contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-            }
-        }
         .listRowInsets(EdgeInsets(top: 6, leading: 10, bottom: 6, trailing: 10))
     }
 
@@ -754,6 +864,14 @@ struct BookshelfView: View {
     private func toggleFavorite(_ book: BookSummary) async {
         do {
             try await viewModel.toggleFavorite(book, using: core)
+        } catch {
+            actionError = ConnectionError.userMessage(for: error)
+        }
+    }
+
+    private func setRating(_ book: BookSummary, stars: Int) async {
+        do {
+            try await viewModel.setRating(book, stars: stars, using: core)
         } catch {
             actionError = ConnectionError.userMessage(for: error)
         }

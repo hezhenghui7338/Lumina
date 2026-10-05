@@ -51,20 +51,11 @@ $env:LUMINA_CORE_DIR = "<repo>\packages\lumina-core"
 dotnet test Lumina.Tests\Lumina.Tests.csproj -c Debug
 ```
 
-完整 UI 验收需在 Windows 本机或 `release-windows` CI 上运行。
+完整 UI 验收需在 Windows 本机运行。
 
 ## 发布包
 
-在 Windows 上：
-
-```powershell
-.\scripts\build-release-windows.ps1
-# 或指定版本
-$env:LUMINA_VERSION = "0.7.0"
-.\scripts\build-release-windows.ps1
-```
-
-产出：`dist\Lumina-{version}-Windows-x64.zip`（含 `Lumina.exe` + `lumina-core\`）。
+**已停用。** 正式发布只打 macOS（`./scripts/build-release.sh` / `just release`）。`scripts/build-release-windows.ps1` 会直接退出并提示停用；不要恢复 GitHub `Release Windows` workflow，除非明确重新发布 Windows。
 
 ## 章程 0
 

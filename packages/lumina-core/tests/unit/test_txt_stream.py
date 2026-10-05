@@ -30,8 +30,11 @@ def _rss_bytes() -> int:
 def test_iter_txt_chunks_covers_file_without_join(tmp_path):
     line = "　　双方继续对峙，这是一段用于滑窗切分的中文句子。\n"
     path = tmp_path / "window.txt"
-    path.write_text("第一章 开篇\n\n" + line * 400, encoding="utf-8")
-    expected = path.read_text(encoding="utf-8").strip()
+    # Binary write: Path.write_text on Windows expands \n → \r\n, while the
+    # streamer reads bytes; compare against the on-disk decode.
+    raw = ("第一章 开篇\n\n" + line * 400).encode("utf-8")
+    path.write_bytes(raw)
+    expected = raw.decode("utf-8").strip()
     pieces: list[str] = []
     last_end = 0
     for _plan, chunk in iter_txt_chunks(path, window_chars=8_000):

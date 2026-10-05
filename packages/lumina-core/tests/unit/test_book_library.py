@@ -215,6 +215,24 @@ def test_list_books_sort_by_segment_count(db_conn):
     assert titles == ["Long", "Mid", "Short"]
 
 
+def test_list_books_sort_by_rating(db_conn):
+    """Unrated books sort as 3 stars and share that tier with explicit 3s."""
+    repo = BookRepo(db_conn)
+    low = _insert_book(db_conn, title="Low")
+    high = _insert_book(db_conn, title="High")
+    mid = _insert_book(db_conn, title="Mid")
+    also = _insert_book(db_conn, title="Also")
+    bare = _insert_book(db_conn, title="Bare")
+    aaa = _insert_book(db_conn, title="Aaa")
+    repo.update(low["id"], rating=1)
+    repo.update(high["id"], rating=5)
+    repo.update(mid["id"], rating=3)
+    repo.update(also["id"], rating=3)
+
+    titles = [b["title"] for b in repo.list_books(sort="rating")]
+    assert titles == ["High", "Aaa", "Also", "Bare", "Mid", "Low"]
+
+
 def test_list_books_sort_by_reading_progress_desc(db_conn):
     repo = BookRepo(db_conn)
     _insert_book(

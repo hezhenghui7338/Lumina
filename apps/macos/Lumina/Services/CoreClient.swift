@@ -25,6 +25,8 @@ struct BookSummary: Codable, Identifiable, Hashable {
     var processing_kind: String?
     var index_status: String?
     var ingest_error: String?
+    /// 1–5 when the user has rated the book; nil is unrated (sorts as 3).
+    var rating: Int?
     /// nil = unknown (may probe); false = confirmed none; true = saved cover.
     var has_cover: Bool?
     /// Local overlay only — not decoded from the API.
@@ -36,7 +38,7 @@ struct BookSummary: Codable, Identifiable, Hashable {
         case total_char_count, chunk_target_chars, summary_ready_count, summary_total_count, chunker_version
         case language, target_language, summarize_active, summarize_state
         case summarize_queued_count, summary_tier, processing_kind, index_status, ingest_error
-        case has_cover
+        case has_cover, rating
     }
 
     init(
@@ -64,6 +66,7 @@ struct BookSummary: Codable, Identifiable, Hashable {
         processing_kind: String? = nil,
         index_status: String? = nil,
         ingest_error: String? = nil,
+        rating: Int? = nil,
         has_cover: Bool? = nil,
         readingPercent: Double? = nil
     ) {
@@ -91,6 +94,7 @@ struct BookSummary: Codable, Identifiable, Hashable {
         self.processing_kind = processing_kind
         self.index_status = index_status
         self.ingest_error = ingest_error
+        self.rating = rating
         self.has_cover = has_cover
         self.readingPercent = readingPercent
     }
@@ -129,6 +133,7 @@ struct BookSummary: Codable, Identifiable, Hashable {
         processing_kind = try c.decodeIfPresent(String.self, forKey: .processing_kind)
         index_status = try c.decodeIfPresent(String.self, forKey: .index_status)
         ingest_error = try c.decodeIfPresent(String.self, forKey: .ingest_error)
+        rating = try c.decodeIfPresent(Int.self, forKey: .rating)
         has_cover = try c.decodeIfPresent(Bool.self, forKey: .has_cover)
         readingPercent = nil
     }
@@ -147,6 +152,15 @@ struct BookSummary: Codable, Identifiable, Hashable {
     }
 
     var isFavorite: Bool { is_favorite ?? false }
+
+    /// Stored 1–5 star rating. Values outside that range count as unrated.
+    var starRating: Int? {
+        guard let rating, (1...5).contains(rating) else { return nil }
+        return rating
+    }
+
+    /// Unrated books sort with the 3-star tier.
+    var sortRating: Int { starRating ?? 3 }
 
     var summaryTotal: Int { summary_total_count ?? segment_count ?? 0 }
 
@@ -724,7 +738,7 @@ enum LibraryCollectionSection: String, CaseIterable, Identifiable {
 }
 
 enum LibrarySort: String, CaseIterable, Identifiable {
-    case recent, added, title, segments, progress, favorite
+    case recent, added, title, segments, progress, favorite, rating
 
     var id: String { rawValue }
 
@@ -736,6 +750,7 @@ enum LibrarySort: String, CaseIterable, Identifiable {
         case .segments: return "段落数"
         case .progress: return "阅读进度"
         case .favorite: return "收藏优先"
+        case .rating: return "评分"
         }
     }
 
@@ -744,6 +759,14 @@ enum LibrarySort: String, CaseIterable, Identifiable {
     /// Title defaults to A→Z; every other field defaults to high/new/favorite first.
     var defaultOrder: LibrarySortOrder {
         self == .title ? .ascending : .descending
+    }
+}
+
+enum BookRating {
+    /// Tap the current star again to clear; any other star stores that score.
+    static func nextValue(current: Int?, tapped: Int) -> Int? {
+        guard (1...5).contains(tapped) else { return current }
+        return current == tapped ? nil : tapped
     }
 }
 
@@ -1387,6 +1410,26 @@ final class CoreClient: ObservableObject {
         return try await Self.decode(BookSummary.self, from: data)
     }
 
+    func updateBookRating(id: String, rating: Int?) async throws -> BookSummary {
+        struct Body: Encodable {
+            let rating: Int?
+
+            func encode(to encoder: Encoder) throws {
+                var container = encoder.container(keyedBy: CodingKeys.self)
+                if let rating {
+                    try container.encode(rating, forKey: .rating)
+                } else {
+                    try container.encodeNil(forKey: .rating)
+                }
+            }
+
+            enum CodingKeys: String, CodingKey { case rating }
+        }
+        let body = try JSONEncoder().encode(Body(rating: rating))
+        let data = try await patch(path: "/books/\(id)", body: body)
+        return try await Self.decode(BookSummary.self, from: data)
+    }
+
     func deleteBook(id: String) async throws {
         _ = try await delete(path: "/books/\(id)")
     }
@@ -1999,7 +2042,8 @@ final class CoreClient: ObservableObject {
         bookId: String,
         query: String,
         afterSegment: Int? = nil,
-        afterStart: Int? = nil
+        afterStart: Int? = nil,
+        limit: Int? = nil
     ) async throws -> OriginalSearchResponse {
         var items = [URLQueryItem(name: "q", value: query)]
         if let afterSegment {
@@ -2007,6 +2051,9 @@ final class CoreClient: ObservableObject {
         }
         if let afterStart {
             items.append(URLQueryItem(name: "after_start", value: String(afterStart)))
+        }
+        if let limit {
+            items.append(URLQueryItem(name: "limit", value: String(limit)))
         }
         let data = try await get(
             path: "/books/\(bookId)/original-search",

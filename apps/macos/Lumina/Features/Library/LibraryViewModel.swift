@@ -46,6 +46,8 @@ enum BookDisplayTitle {
 enum BookshelfPaging {
     static let defaultPageSize = 10
     static let allowedPageSizes = [10, 20, 50, 100]
+    /// Half-width of the nearby page window around the current page (exclusive of always-on ends).
+    static let nearbyRadius = 2
 
     static func normalizedPageSize(_ value: Int) -> Int {
         allowedPageSizes.contains(value) ? value : defaultPageSize
@@ -69,6 +71,64 @@ enum BookshelfPaging {
         guard start < items.count else { return [] }
         let end = min(start + pageSize, items.count)
         return Array(items[start..<end])
+    }
+
+    /// Zero-based page indices for the bottom-bar page picker.
+    /// Few pages → all; otherwise current ± radius plus first/last.
+    static func nearbyPageIndices(
+        current: Int,
+        pageCount: Int,
+        radius: Int = nearbyRadius
+    ) -> [Int] {
+        guard pageCount > 0 else { return [] }
+        let safeRadius = max(0, radius)
+        let current = clampedPageIndex(current, pageCount: pageCount)
+        if pageCount <= safeRadius * 2 + 3 {
+            return Array(0..<pageCount)
+        }
+        var indices = Set<Int>()
+        indices.insert(0)
+        indices.insert(pageCount - 1)
+        let lower = max(0, current - safeRadius)
+        let upper = min(pageCount - 1, current + safeRadius)
+        for index in lower...upper {
+            indices.insert(index)
+        }
+        return indices.sorted()
+    }
+
+    enum PagePickerToken: Equatable {
+        case page(Int)
+        case ellipsis
+    }
+
+    static func pagePickerTokens(
+        current: Int,
+        pageCount: Int,
+        radius: Int = nearbyRadius
+    ) -> [PagePickerToken] {
+        let indices = nearbyPageIndices(current: current, pageCount: pageCount, radius: radius)
+        guard !indices.isEmpty else { return [] }
+        var tokens: [PagePickerToken] = []
+        var previous: Int?
+        for index in indices {
+            if let previous, index > previous + 1 {
+                tokens.append(.ellipsis)
+            }
+            tokens.append(.page(index))
+            previous = index
+        }
+        return tokens
+    }
+
+    /// Parses 1-based page text into a clamped zero-based index.
+    /// Empty / non-numeric input returns `nil` (caller must not jump).
+    static func pageIndex(fromUserInput text: String, pageCount: Int) -> Int? {
+        guard pageCount > 0 else { return nil }
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        guard let number = Int(trimmed) else { return nil }
+        return clampedPageIndex(number - 1, pageCount: pageCount)
     }
 }
 
@@ -402,6 +462,11 @@ final class LibraryViewModel: ObservableObject {
                     return left > right
                 }
             }
+        case .rating:
+            base = books.sorted { lhs, rhs in
+                if lhs.sortRating != rhs.sortRating { return lhs.sortRating > rhs.sortRating }
+                return lhs.title.localizedStandardCompare(rhs.title) == .orderedAscending
+            }
         }
         return resolved == sort.defaultOrder ? base : Array(base.reversed())
     }
@@ -434,6 +499,19 @@ final class LibraryViewModel: ObservableObject {
 
     func setPage(_ index: Int) {
         pageIndex = BookshelfPaging.clampedPageIndex(index, pageCount: pageCount)
+    }
+
+    @discardableResult
+    func setPage(fromUserInput text: String) -> Bool {
+        guard let index = BookshelfPaging.pageIndex(fromUserInput: text, pageCount: pageCount) else {
+            return false
+        }
+        setPage(index)
+        return true
+    }
+
+    var pagePickerTokens: [BookshelfPaging.PagePickerToken] {
+        BookshelfPaging.pagePickerTokens(current: pageIndex, pageCount: pageCount)
     }
 
     func clampPageIndexIfNeeded() {
@@ -479,6 +557,12 @@ final class LibraryViewModel: ObservableObject {
 
     func toggleFavorite(_ book: BookSummary, using core: CoreClient) async throws {
         let updated = try await core.updateBook(id: book.id, isFavorite: !book.isFavorite)
+        replace(updated)
+    }
+
+    func setRating(_ book: BookSummary, stars: Int, using core: CoreClient) async throws {
+        let next = BookRating.nextValue(current: book.starRating, tapped: stars)
+        let updated = try await core.updateBookRating(id: book.id, rating: next)
         replace(updated)
     }
 
