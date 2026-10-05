@@ -735,6 +735,67 @@ final class LibraryViewModelMergeTests: XCTestCase {
         XCTAssertEqual(BookshelfPaging.clampedPageIndex(0, pageCount: 0), 0)
     }
 
+    func testBookshelfPaging_nearbyPageIndicesAndTokens() {
+        XCTAssertEqual(BookshelfPaging.nearbyPageIndices(current: 0, pageCount: 0), [])
+        XCTAssertEqual(BookshelfPaging.nearbyPageIndices(current: 2, pageCount: 5), [0, 1, 2, 3, 4])
+        XCTAssertEqual(BookshelfPaging.nearbyPageIndices(current: 0, pageCount: 7), Array(0..<7))
+
+        XCTAssertEqual(
+            BookshelfPaging.nearbyPageIndices(current: 5, pageCount: 20),
+            [0, 3, 4, 5, 6, 7, 19]
+        )
+        XCTAssertEqual(
+            BookshelfPaging.nearbyPageIndices(current: 0, pageCount: 20),
+            [0, 1, 2, 19]
+        )
+        XCTAssertEqual(
+            BookshelfPaging.nearbyPageIndices(current: 19, pageCount: 20),
+            [0, 17, 18, 19]
+        )
+
+        XCTAssertEqual(
+            BookshelfPaging.pagePickerTokens(current: 5, pageCount: 20),
+            [
+                .page(0), .ellipsis,
+                .page(3), .page(4), .page(5), .page(6), .page(7),
+                .ellipsis, .page(19),
+            ]
+        )
+        XCTAssertEqual(
+            BookshelfPaging.pagePickerTokens(current: 0, pageCount: 20),
+            [.page(0), .page(1), .page(2), .ellipsis, .page(19)]
+        )
+    }
+
+    func testBookshelfPaging_pageIndexFromUserInput() {
+        XCTAssertNil(BookshelfPaging.pageIndex(fromUserInput: "", pageCount: 10))
+        XCTAssertNil(BookshelfPaging.pageIndex(fromUserInput: "  ", pageCount: 10))
+        XCTAssertNil(BookshelfPaging.pageIndex(fromUserInput: "abc", pageCount: 10))
+        XCTAssertNil(BookshelfPaging.pageIndex(fromUserInput: "1", pageCount: 0))
+
+        XCTAssertEqual(BookshelfPaging.pageIndex(fromUserInput: "1", pageCount: 10), 0)
+        XCTAssertEqual(BookshelfPaging.pageIndex(fromUserInput: "10", pageCount: 10), 9)
+        XCTAssertEqual(BookshelfPaging.pageIndex(fromUserInput: " 3 ", pageCount: 10), 2)
+        XCTAssertEqual(BookshelfPaging.pageIndex(fromUserInput: "0", pageCount: 10), 0)
+        XCTAssertEqual(BookshelfPaging.pageIndex(fromUserInput: "99", pageCount: 10), 9)
+        XCTAssertEqual(BookshelfPaging.pageIndex(fromUserInput: "-5", pageCount: 10), 0)
+    }
+
+    func testSetPageFromUserInput() {
+        let viewModel = LibraryViewModel()
+        viewModel.pageSize = 10
+        viewModel.books = (0..<25).map { book(id: "\($0)", title: "T\($0)") }
+
+        XCTAssertFalse(viewModel.setPage(fromUserInput: "nope"))
+        XCTAssertEqual(viewModel.pageIndex, 0)
+
+        XCTAssertTrue(viewModel.setPage(fromUserInput: "3"))
+        XCTAssertEqual(viewModel.pageIndex, 2)
+
+        XCTAssertTrue(viewModel.setPage(fromUserInput: "99"))
+        XCTAssertEqual(viewModel.pageIndex, 2)
+    }
+
     func testPagedBooks_slicesMatchedAndResetsOnFacetChange() {
         let viewModel = LibraryViewModel()
         viewModel.pageSize = 10
