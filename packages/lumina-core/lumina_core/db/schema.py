@@ -135,6 +135,25 @@ CREATE TABLE IF NOT EXISTS search_fts_map (
 );
 CREATE INDEX IF NOT EXISTS idx_search_fts_map_book ON search_fts_map(book_id);
 
+CREATE VIRTUAL TABLE IF NOT EXISTS original_fts USING fts5(
+  book_id UNINDEXED, segment_id UNINDEXED, segment_idx UNINDEXED, body,
+  tokenize='trigram'
+);
+CREATE TABLE IF NOT EXISTS original_fts_map (
+  segment_id TEXT PRIMARY KEY,
+  book_id    TEXT NOT NULL,
+  fts_rowid  INTEGER NOT NULL UNIQUE
+);
+CREATE INDEX IF NOT EXISTS idx_original_fts_map_book ON original_fts_map(book_id);
+CREATE TABLE IF NOT EXISTS original_char_seg (
+  book_id      TEXT NOT NULL,
+  ch           TEXT NOT NULL,
+  segment_idx  INTEGER NOT NULL,
+  PRIMARY KEY (book_id, ch, segment_idx)
+);
+CREATE INDEX IF NOT EXISTS idx_original_char_seg_lookup
+  ON original_char_seg(book_id, ch, segment_idx);
+
 CREATE TABLE IF NOT EXISTS news_sources (
   id          TEXT PRIMARY KEY,
   url         TEXT NOT NULL UNIQUE,
@@ -617,6 +636,9 @@ def init_db(db_path: Path) -> sqlite3.Connection:
     _migrate_illustration_tables(conn)
     migrate_search_fts_map(conn)
     _migrate_notes_require_segment(conn)
+    from lumina_core.search.original_index import ensure_original_index_schema
+
+    ensure_original_index_schema(conn)
     # After notes table rebuild: recreate note indexes + other hot-path indexes.
     _ensure_hot_path_indexes(conn)
     conn.commit()

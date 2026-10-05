@@ -91,6 +91,7 @@ struct ReaderView: View {
     @State private var summarizeActionInFlight = false
     @State private var originalSearchQuery = ""
     @State private var originalSearchExpanded = false
+    @State private var originalSearchPhase: OriginalSearchPhase = .list
     @State private var originalSearchHits: [OriginalSearchHit] = []
     @State private var originalSearchIndex = 0
     @State private var originalSearching = false
@@ -132,6 +133,7 @@ struct ReaderView: View {
             || chromeMode == .revealed
             || overlay != .none
             || coverPage != .none
+            || (originalSearchExpanded && originalSearchPhase == .reading)
     }
 
     private var librarySummarizeOverviewActive: Bool {
@@ -460,24 +462,6 @@ struct ReaderView: View {
                         .monospacedDigit()
                 }
                 Button {
-                    stepOriginalSearch(-1)
-                } label: {
-                    Image(systemName: "chevron.up")
-                }
-                .buttonStyle(.plain)
-                .disabled(originalSearchHits.isEmpty)
-            .help("上一条（\(ShortcutStore.shared.display(for: .searchPrev))）")
-                .accessibilityIdentifier("lumina.reader.originalSearch.prev")
-                Button {
-                    stepOriginalSearch(1)
-                } label: {
-                    Image(systemName: "chevron.down")
-                }
-                .buttonStyle(.plain)
-                .disabled(originalSearchHits.isEmpty)
-                .help("下一条（\(ShortcutStore.shared.display(for: .searchNext))）")
-                .accessibilityIdentifier("lumina.reader.originalSearch.next")
-                Button {
                     closeOriginalSearch()
                 } label: {
                     Image(systemName: "xmark")
@@ -508,6 +492,12 @@ struct ReaderView: View {
 
     private var originalSearchStatusText: String {
         if originalSearchLastQuery.isEmpty { return "" }
+        if originalSearchPhase == .list {
+            return OriginalSearchHighlight.listStatusLabel(
+                count: originalSearchHits.count,
+                truncated: originalSearchTruncated
+            )
+        }
         return OriginalSearchHighlight.statusLabel(
             index: originalSearchIndex,
             count: originalSearchHits.count,
@@ -515,11 +505,12 @@ struct ReaderView: View {
         )
     }
 
-    /// Single-segment feed while find-in-page is open (avoids far catalog jumps).
+    /// Single-segment feed while reading a selected hit (avoids far catalog jumps).
     private var originalSearchFocusSegment: SegmentRow? {
         guard OriginalSearchHighlight.usesFocusFeed(
             expanded: originalSearchExpanded,
-            hitCount: originalSearchHits.count
+            hitCount: originalSearchHits.count,
+            phase: originalSearchPhase
         ),
         originalSearchHits.indices.contains(originalSearchIndex)
         else { return nil }
@@ -743,8 +734,55 @@ struct ReaderView: View {
         VStack(spacing: 0) {
             Spacer(minLength: 0)
                 .allowsHitTesting(false)
-            readerBottomBar
+            if originalSearchExpanded, originalSearchPhase == .reading {
+                originalSearchReadingBottomBar
+            } else {
+                readerBottomBar
+            }
         }
+    }
+
+    private var originalSearchReadingBottomBar: some View {
+        HStack(spacing: 0) {
+            Button {
+                returnToOriginalSearchList()
+            } label: {
+                Text("返回搜索结果")
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help("返回搜索结果")
+            .accessibilityIdentifier("lumina.reader.originalSearch.backToResults")
+            Button {
+                stepOriginalSearch(-1)
+            } label: {
+                Text("上一条")
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .disabled(originalSearchHits.isEmpty)
+            .help("上一条（\(ShortcutStore.shared.display(for: .searchPrev))）")
+            .accessibilityIdentifier("lumina.reader.originalSearch.prev")
+            Button {
+                stepOriginalSearch(1)
+            } label: {
+                Text("下一条")
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .disabled(originalSearchHits.isEmpty)
+            .help("下一条（\(ShortcutStore.shared.display(for: .searchNext))）")
+            .accessibilityIdentifier("lumina.reader.originalSearch.next")
+        }
+        .font(ReaderChromeBarMetrics.labelFont)
+        .foregroundStyle(LuminaTheme.textPrimary)
+        .frame(height: ReaderChromeBarMetrics.height)
+        .background(.ultraThinMaterial)
+        .overlay(alignment: .top) { Divider() }
+        .absorbsReaderChromeClicks()
     }
 
     private var readerBottomBar: some View {
@@ -1144,10 +1182,16 @@ struct ReaderView: View {
         case .originalSearch:
             openOriginalSearch()
         case .searchNext:
-            guard originalSearchExpanded, !originalSearchHits.isEmpty else { return }
+            guard originalSearchExpanded,
+                  originalSearchPhase == .reading,
+                  !originalSearchHits.isEmpty
+            else { return }
             stepOriginalSearch(1)
         case .searchPrev:
-            guard originalSearchExpanded, !originalSearchHits.isEmpty else { return }
+            guard originalSearchExpanded,
+                  originalSearchPhase == .reading,
+                  !originalSearchHits.isEmpty
+            else { return }
             stepOriginalSearch(-1)
         case .startSummarize:
             guard viewModel.bookStatus != "processing" else { return }
@@ -1395,9 +1439,15 @@ struct ReaderView: View {
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(LuminaTheme.summaryPadding)
+                    } else if OriginalSearchHighlight.showsHitList(
+                        expanded: originalSearchExpanded,
+                        phase: originalSearchPhase,
+                        hasSubmittedQuery: !originalSearchLastQuery.isEmpty
+                    ) {
+                        originalSearchHitListContent
                     } else if let focus = originalSearchFocusSegment {
-                        // Find-in-page: one segment only. Far TOC hits (~300 segs
-                        // apart) must not scrollPosition across 9998-row ForEach.
+                        // Reading a selected hit: one segment only. Far TOC hits
+                        // (~300 segs apart) must not scrollPosition across ForEach.
                         segmentBlock(for: focus)
                             .id(
                                 "search-focus-\(focus.idx)-\(originalSearchIndex)"
@@ -2119,13 +2169,73 @@ struct ReaderView: View {
         }
     }
 
+    private var originalSearchHitListContent: some View {
+        Group {
+            if originalSearching, originalSearchHits.isEmpty {
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text("搜索中…")
+                        .font(.caption)
+                        .foregroundStyle(theme.readerPaper.textSecondary)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(LuminaTheme.summaryPadding)
+            } else if originalSearchHits.isEmpty {
+                Text("无匹配")
+                    .font(.body)
+                    .foregroundStyle(theme.readerPaper.textSecondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(LuminaTheme.summaryPadding)
+                    .accessibilityIdentifier("lumina.reader.originalSearch.empty")
+            } else {
+                ForEach(Array(originalSearchHits.enumerated()), id: \.element.id) { index, hit in
+                    Button {
+                        selectOriginalSearchHit(at: index)
+                    } label: {
+                        VStack(alignment: .leading, spacing: 4) {
+                            if let label = hit.segment_label, !label.isEmpty {
+                                Text(label)
+                                    .font(.caption)
+                                    .foregroundStyle(theme.readerPaper.textSecondary)
+                                    .lineLimit(1)
+                            }
+                            Text(OriginalSearchHighlight.snippetAttributed(hit.snippet))
+                                .font(.body)
+                                .foregroundStyle(theme.readerPaper.textPrimary)
+                                .multilineTextAlignment(.leading)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        .padding(.horizontal, LuminaTheme.summaryPadding)
+                        .padding(.vertical, 10)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("lumina.reader.originalSearch.hit.\(index)")
+                    .onAppear {
+                        if index == originalSearchHits.count - 1, originalSearchTruncated {
+                            loadMoreOriginalSearch(fromList: true)
+                        }
+                    }
+                    if index < originalSearchHits.count - 1 {
+                        Divider()
+                            .padding(.leading, LuminaTheme.summaryPadding)
+                    }
+                }
+            }
+        }
+    }
+
     private func handleExitCommand() {
         if coverPage != .none {
             closeCoverPage()
             return
         }
         if originalSearchExpanded {
-            closeOriginalSearch()
+            if originalSearchPhase == .reading {
+                returnToOriginalSearchList()
+            } else {
+                closeOriginalSearch()
+            }
             return
         }
         closeOverlay()
@@ -2134,14 +2244,25 @@ struct ReaderView: View {
     private func openOriginalSearch() {
         setChromeMode(.revealed)
         originalSearchExpanded = true
+        originalSearchPhase = .list
         DispatchQueue.main.async {
             originalSearchFocused = true
         }
     }
 
+    private func returnToOriginalSearchList() {
+        originalSearchLocateTask?.cancel()
+        originalSearchLocateTask = nil
+        endOriginalSearchSeek(prefetch: false)
+        originalSearchPhase = .list
+        originalSearchFocused = true
+    }
+
     private func closeOriginalSearch() {
         let landing: Int? = {
-            guard originalSearchHits.indices.contains(originalSearchIndex) else {
+            guard originalSearchPhase == .reading,
+                  originalSearchHits.indices.contains(originalSearchIndex)
+            else {
                 return topSegmentIdx ?? viewModel.selectedIdx
             }
             return originalSearchHits[originalSearchIndex].segment_index
@@ -2152,6 +2273,7 @@ struct ReaderView: View {
         originalSearchLocateTask = nil
         endOriginalSearchSeek(prefetch: false)
         originalSearchExpanded = false
+        originalSearchPhase = .list
         originalSearchFocused = false
         originalSearching = false
         originalSearchHits = []
@@ -2178,6 +2300,7 @@ struct ReaderView: View {
         originalSearchLocateTask = nil
         endOriginalSearchSeek(prefetch: false)
         originalSearchExpanded = false
+        originalSearchPhase = .list
         originalSearchFocused = false
         originalSearching = false
         originalSearchHits = []
@@ -2193,7 +2316,7 @@ struct ReaderView: View {
         let q = OriginalSearchHighlight.normalizedQuery(originalSearchQuery)
         guard !q.isEmpty else { return }
         if q == originalSearchLastQuery, !originalSearchHits.isEmpty {
-            stepOriginalSearch(1)
+            originalSearchPhase = .list
             return
         }
         runOriginalSearch(q)
@@ -2203,6 +2326,7 @@ struct ReaderView: View {
         originalSearchTask?.cancel()
         originalSearching = true
         originalSearchLastQuery = query
+        originalSearchPhase = .list
         let book = bookId
         originalSearchTask = Task {
             defer {
@@ -2214,8 +2338,7 @@ struct ReaderView: View {
                 originalSearchHits = result.hits
                 originalSearchTruncated = result.truncated
                 originalSearchIndex = 0
-                if result.hits.isEmpty { return }
-                locateOriginalSearchHit()
+                originalSearchPhase = .list
             } catch {
                 guard !Task.isCancelled else { return }
                 originalSearchHits = []
@@ -2225,7 +2348,16 @@ struct ReaderView: View {
         }
     }
 
+    private func selectOriginalSearchHit(at index: Int) {
+        guard originalSearchHits.indices.contains(index) else { return }
+        originalSearchIndex = index
+        originalSearchPhase = .reading
+        setChromeMode(.revealed)
+        locateOriginalSearchHit()
+    }
+
     private func stepOriginalSearch(_ delta: Int) {
+        guard originalSearchPhase == .reading else { return }
         guard let action = OriginalSearchHighlight.navigate(
             current: originalSearchIndex,
             delta: delta,
@@ -2234,7 +2366,7 @@ struct ReaderView: View {
         ) else { return }
         switch action {
         case .loadMore:
-            loadMoreOriginalSearch()
+            loadMoreOriginalSearch(fromList: false)
         case .step(let next):
             originalSearchIndex = next
             guard originalSearchHits.indices.contains(next) else { return }
@@ -2264,15 +2396,17 @@ struct ReaderView: View {
         }
     }
 
-    private func loadMoreOriginalSearch() {
+    private func loadMoreOriginalSearch(fromList: Bool = false) {
         let q = originalSearchLastQuery
         guard !q.isEmpty, let last = originalSearchHits.last else { return }
+        if originalSearching { return }
         originalSearchTask?.cancel()
         originalSearching = true
         let book = bookId
         let afterSegment = last.segment_index
         let afterStart = last.start
         let priorCount = originalSearchHits.count
+        let stayOnList = fromList || originalSearchPhase == .list
         originalSearchTask = Task {
             defer {
                 if !Task.isCancelled { originalSearching = false }
@@ -2287,11 +2421,13 @@ struct ReaderView: View {
                 guard !Task.isCancelled else { return }
                 if result.hits.isEmpty {
                     originalSearchTruncated = false
-                    if let next = OriginalSearchHighlight.steppedIndex(
+                    if !stayOnList,
+                       let next = OriginalSearchHighlight.steppedIndex(
                         current: originalSearchIndex,
                         delta: 1,
                         count: originalSearchHits.count
-                    ) {
+                       )
+                    {
                         originalSearchIndex = next
                         locateOriginalSearchHit()
                     }
@@ -2299,8 +2435,10 @@ struct ReaderView: View {
                 }
                 originalSearchHits.append(contentsOf: result.hits)
                 originalSearchTruncated = result.truncated
-                originalSearchIndex = priorCount
-                locateOriginalSearchHit()
+                if !stayOnList {
+                    originalSearchIndex = priorCount
+                    locateOriginalSearchHit()
+                }
             } catch {
                 guard !Task.isCancelled else { return }
                 actionError = error.localizedDescription
@@ -2334,7 +2472,8 @@ struct ReaderView: View {
         // Focus feed is already on: never navigateToSegment across full ForEach.
         if !OriginalSearchHighlight.usesFocusFeed(
             expanded: originalSearchExpanded,
-            hitCount: originalSearchHits.count
+            hitCount: originalSearchHits.count,
+            phase: originalSearchPhase
         ) {
             navigateToSegment(hit.segment_index, animated: false)
         }

@@ -2,6 +2,8 @@
 
 面向开发者，说明如何构建普通用户可下载的安装包。
 
+**正式发布仅 macOS。** Windows 安装包打包与 `Release Windows` CI 已停用；`apps/windows` 源码可本地开发，但不走发布链路。
+
 ## 产出物
 
 | 文件 | 说明 |
@@ -9,9 +11,8 @@
 | `dist/Lumina.app` | 内嵌 `lumina-core` 的 macOS 应用 |
 | `dist/Lumina-{version}-macOS.zip` | 压缩包，可直接分发 |
 | `dist/Lumina-{version}-macOS.dmg` | 磁盘映像，含拖入 Applications 引导 |
-| `dist/Lumina-{version}-Windows-x64.zip` | Windows 自包含目录（`Lumina.exe` + `lumina-core\`） |
 
-用户**无需**安装 Python、uv、Xcode / Visual Studio。
+用户**无需**安装 Python、uv、Xcode。
 
 ## 安装包体积（v0.2 精简版）
 
@@ -24,23 +25,12 @@ Sidecar 已裁剪：冗余 OCR small 模型、非中英文 Babel 语言包、onn
 
 ## 前置条件
 
-### macOS
-
 - macOS 14+
 - Xcode 15+（`xcodebuild`）
 - [uv](https://docs.astral.sh/uv/)（Python **3.11+**，仓库根目录 `.python-version` 默认 3.11）
 - [Ollama](https://ollama.com) 运行中且已拉取 `qwen3.5:4b`（release 测试含 live 用例）
 
-### Windows
-
-- Windows 10/11 x64
-- [.NET 8 SDK](https://dotnet.microsoft.com/download) + Windows App SDK 工作负载
-- [uv](https://docs.astral.sh/uv/)（Python **3.11+**）
-- PowerShell 7+（推荐）
-
 ## 构建
-
-### macOS
 
 ```bash
 ./scripts/build-release.sh
@@ -49,21 +39,13 @@ Sidecar 已裁剪：冗余 OCR small 模型、非中英文 Babel 语言包、onn
 LUMINA_VERSION=0.7.0 ./scripts/build-release.sh
 ```
 
-### Windows
+等价：`just release`。GitHub Actions：`Release` workflow（`macos-15`，tag `v*` 或手动触发）。
 
-```powershell
-.\scripts\build-release-windows.ps1
-
-$env:LUMINA_VERSION = "0.7.0"
-.\scripts\build-release-windows.ps1
-```
-
-步骤：`pytest tests/unit` → PyInstaller → `prune-sidecar.ps1` → `--smoke-ocr` → `dotnet publish` → 嵌入 sidecar → ZIP。  
-GitHub Actions：`Release Windows` workflow（`windows-latest`）。
+`scripts/build-release-windows.ps1` 会直接失败并提示已停用；不要恢复 `.github/workflows/release-windows.yml`，除非明确要重新发布 Windows。
 
 ## 构建步骤（脚本内部）
 
-0. `scripts/sync-release-identity.py`：以 `packages/lumina-core/pyproject.toml` 的 version（或 `LUMINA_VERSION`）为真源，同步 `CORE_VERSION`、`__version__`、Xcode `MARKETING_VERSION` / `CURRENT_PROJECT_VERSION`、Windows `<Version>`、Swift/C# `CHUNKER_VERSION` 握手常量；随后按该版本号命名产物并传给 `xcodebuild` / `dotnet publish`
+0. `scripts/sync-release-identity.py`：以 `packages/lumina-core/pyproject.toml` 的 version（或 `LUMINA_VERSION`）为真源，同步 `CORE_VERSION`、`__version__`、Xcode `MARKETING_VERSION` / `CURRENT_PROJECT_VERSION`、Windows `<Version>`、Swift/C# `CHUNKER_VERSION` 握手常量；随后按该版本号命名产物并传给 `xcodebuild`
 1. `pytest -m "not perf"`（单元 + e2e + live；失败则中止，不进入打包）
 2. `uv sync --extra release` + PyInstaller → `packages/lumina-core/dist/lumina-core/`
 3. `scripts/prune-sidecar.sh` 裁剪冗余 sidecar 文件并校验 `_internal/` 不含误打包的 `cursor_sdk/`（Cursor SDK 仅允许装到用户数据目录）
@@ -112,5 +94,3 @@ AI 模型体积约 3 GB+，不适合打进主安装包。App 内引导用户安�
 - ad-hoc 包在部分机器上仍可能无法「全部更改」为默认；可单次「打开方式」，或本机再执行：
   `codesign --force --deep --options runtime --sign - /Applications/Lumina.app`
 - 有证书时设 `CODESIGN_IDENTITY="Developer ID Application: …"` 再跑发布脚本；正式对外还需 `notarytool` 公证（后续）
-
-Windows 首发 ZIP **未做 Authenticode 签名**；SmartScreen 可能提示「仍要运行」。签名与 MSIX/安装器列为后续。

@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import SwiftUI
 
 struct OriginalSearchHit: Codable, Equatable, Hashable, Identifiable {
     var id: String { "\(segment_index):\(start_utf16):\(end_utf16)" }
@@ -9,12 +10,33 @@ struct OriginalSearchHit: Codable, Equatable, Hashable, Identifiable {
     let start_utf16: Int
     let end_utf16: Int
     let snippet: String
+    let segment_label: String?
 }
 
 struct OriginalSearchResponse: Codable, Equatable {
     let query: String
     let hits: [OriginalSearchHit]
     let truncated: Bool
+    let index_ready: Bool?
+
+    init(
+        query: String,
+        hits: [OriginalSearchHit],
+        truncated: Bool,
+        index_ready: Bool? = nil
+    ) {
+        self.query = query
+        self.hits = hits
+        self.truncated = truncated
+        self.index_ready = index_ready
+    }
+}
+
+enum OriginalSearchPhase: Equatable {
+    /// Hit rows with context; no auto-jump.
+    case list
+    /// Focus feed on the selected hit; bottom bar for back / prev / next.
+    case reading
 }
 
 enum OriginalSearchNav: Equatable {
@@ -40,10 +62,22 @@ enum OriginalSearchHighlight {
     /// After a search jump, keep suppressing neighbour prefetch / onAppear fan-out.
     static let seekPrefetchSuppressNanoseconds: UInt64 = 280_000_000
 
-    /// While find-in-page is open with hits, render only the current hit segment
-    /// so far jumps never drive scrollPosition across the full catalog ForEach.
-    static func usesFocusFeed(expanded: Bool, hitCount: Int) -> Bool {
-        expanded && hitCount > 0
+    /// While reading a selected hit, render only that segment so far jumps never
+    /// drive scrollPosition across the full catalog ForEach.
+    static func usesFocusFeed(
+        expanded: Bool,
+        hitCount: Int,
+        phase: OriginalSearchPhase
+    ) -> Bool {
+        expanded && hitCount > 0 && phase == .reading
+    }
+
+    static func showsHitList(
+        expanded: Bool,
+        phase: OriginalSearchPhase,
+        hasSubmittedQuery: Bool
+    ) -> Bool {
+        expanded && phase == .list && hasSubmittedQuery
     }
 
     static func nsRange(
@@ -120,8 +154,41 @@ enum OriginalSearchHighlight {
         return "\(index + 1)/\(count)\(suffix)"
     }
 
+    static func listStatusLabel(count: Int, truncated: Bool) -> String {
+        guard count > 0 else { return "无匹配" }
+        return truncated ? "\(count)+" : "\(count)"
+    }
+
     static func normalizedQuery(_ raw: String) -> String {
         raw.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// Render API snippets whose match is wrapped in `[…]`.
+    static func snippetAttributed(_ snippet: String) -> AttributedString {
+        var result = AttributedString()
+        var remaining = snippet[...]
+        while let open = remaining.firstIndex(of: "["),
+              let close = remaining[open...].firstIndex(of: "]"),
+              close > open
+        {
+            let before = remaining[..<open]
+            if !before.isEmpty {
+                result.append(AttributedString(String(before)))
+            }
+            let matchStart = remaining.index(after: open)
+            let match = remaining[matchStart..<close]
+            if !match.isEmpty {
+                var attr = AttributedString(String(match))
+                attr.backgroundColor = Color.yellow.opacity(0.45)
+                attr.foregroundColor = Color.primary
+                result.append(attr)
+            }
+            remaining = remaining[remaining.index(after: close)...]
+        }
+        if !remaining.isEmpty {
+            result.append(AttributedString(String(remaining)))
+        }
+        return result
     }
 }
 

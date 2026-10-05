@@ -69,14 +69,13 @@ def test_release_scripts_pin_cpython_from_python_version():
     mac_wf = (ROOT / ".github" / "workflows" / "release.yml").read_text(
         encoding="utf-8"
     )
-    win_wf = (ROOT / ".github" / "workflows" / "release-windows.yml").read_text(
-        encoding="utf-8"
-    )
-    for body in (sh, tests, ps1):
+    for body in (sh, tests):
         assert "UV_PYTHON" in body
         assert ".python-version" in body
     assert 'python-version: "3.11"' in mac_wf
-    assert 'python-version: "3.11"' in win_wf
+    # Windows packaging is discontinued; stub must stay disabled (no CI workflow).
+    assert "discontinued" in ps1.lower() or "disabled" in ps1.lower()
+    assert not (ROOT / ".github" / "workflows" / "release-windows.yml").exists()
 
 
 def test_app_size_cap_is_not_tighter_than_sidecar():

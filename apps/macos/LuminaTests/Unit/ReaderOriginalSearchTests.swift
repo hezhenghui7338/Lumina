@@ -214,10 +214,128 @@ final class ReaderOriginalSearchTests: XCTestCase {
         )
     }
 
-    func testUsesFocusFeedWhenExpandedWithHits() {
-        XCTAssertTrue(OriginalSearchHighlight.usesFocusFeed(expanded: true, hitCount: 3))
-        XCTAssertFalse(OriginalSearchHighlight.usesFocusFeed(expanded: false, hitCount: 3))
-        XCTAssertFalse(OriginalSearchHighlight.usesFocusFeed(expanded: true, hitCount: 0))
+    func testUsesFocusFeedOnlyInReadingPhase() {
+        XCTAssertTrue(
+            OriginalSearchHighlight.usesFocusFeed(
+                expanded: true,
+                hitCount: 3,
+                phase: .reading
+            )
+        )
+        XCTAssertFalse(
+            OriginalSearchHighlight.usesFocusFeed(
+                expanded: true,
+                hitCount: 3,
+                phase: .list
+            )
+        )
+        XCTAssertFalse(
+            OriginalSearchHighlight.usesFocusFeed(
+                expanded: false,
+                hitCount: 3,
+                phase: .reading
+            )
+        )
+        XCTAssertFalse(
+            OriginalSearchHighlight.usesFocusFeed(
+                expanded: true,
+                hitCount: 0,
+                phase: .reading
+            )
+        )
+    }
+
+    func testShowsHitListInListPhaseAfterSubmit() {
+        XCTAssertTrue(
+            OriginalSearchHighlight.showsHitList(
+                expanded: true,
+                phase: .list,
+                hasSubmittedQuery: true
+            )
+        )
+        XCTAssertFalse(
+            OriginalSearchHighlight.showsHitList(
+                expanded: true,
+                phase: .reading,
+                hasSubmittedQuery: true
+            )
+        )
+        XCTAssertFalse(
+            OriginalSearchHighlight.showsHitList(
+                expanded: true,
+                phase: .list,
+                hasSubmittedQuery: false
+            )
+        )
+    }
+
+    func testListStatusLabel() {
+        XCTAssertEqual(
+            OriginalSearchHighlight.listStatusLabel(count: 0, truncated: false),
+            "无匹配"
+        )
+        XCTAssertEqual(
+            OriginalSearchHighlight.listStatusLabel(count: 12, truncated: false),
+            "12"
+        )
+        XCTAssertEqual(
+            OriginalSearchHighlight.listStatusLabel(count: 30, truncated: true),
+            "30+"
+        )
+    }
+
+    func testSnippetAttributedHighlightsBracketedMatch() {
+        let attr = OriginalSearchHighlight.snippetAttributed("子曰：[学而]时习")
+        XCTAssertEqual(String(attr.characters), "子曰：学而时习")
+    }
+
+    func testOriginalSearchResponse_decodesIndexReadyAndLabel() throws {
+        let json = """
+        {"query":"学而","hits":[{"segment_index":4,"start":10,"end":12,"start_utf16":10,"end_utf16":12,"snippet":"子曰：[学而]时习","segment_label":"开篇"}],"truncated":false,"index_ready":true}
+        """.data(using: .utf8)!
+        let resp = try JSONDecoder().decode(OriginalSearchResponse.self, from: json)
+        XCTAssertEqual(resp.hits[0].segment_label, "开篇")
+        XCTAssertEqual(resp.index_ready, true)
+    }
+
+    func testReaderSubmitDoesNotAutoLocate() throws {
+        let macosRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let reader = try String(
+            contentsOf: macosRoot.appendingPathComponent("Lumina/Features/Reader/ReaderView.swift"),
+            encoding: .utf8
+        )
+        guard
+            let start = reader.range(of: "private func runOriginalSearch(_ query: String)"),
+            let end = reader.range(
+                of: "private func selectOriginalSearchHit(at index: Int)",
+                range: start.lowerBound..<reader.endIndex
+            )
+        else {
+            return XCTFail("missing runOriginalSearch")
+        }
+        let body = String(reader[start.lowerBound..<end.lowerBound])
+        XCTAssertFalse(
+            body.contains("locateOriginalSearchHit()"),
+            "submit must stay on hit list without auto-locating"
+        )
+        XCTAssertTrue(body.contains("originalSearchPhase = .list"))
+    }
+
+    func testReaderHasSearchReadingBottomBar() throws {
+        let macosRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let reader = try String(
+            contentsOf: macosRoot.appendingPathComponent("Lumina/Features/Reader/ReaderView.swift"),
+            encoding: .utf8
+        )
+        XCTAssertTrue(reader.contains("originalSearchReadingBottomBar"))
+        XCTAssertTrue(reader.contains("返回搜索结果"))
+        XCTAssertTrue(reader.contains("returnToOriginalSearchList"))
     }
 
     func testSearchFocusAttributedHighlight() {

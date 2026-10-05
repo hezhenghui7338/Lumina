@@ -72,6 +72,7 @@ from lumina_core.news.store import NewsSourceRepo, NewsStore
 from lumina_core.news.sync import sync_all
 from lumina_core.search.fts import index_book, index_note, index_segment, search
 from lumina_core.search.original import search_original
+from lumina_core.search.original_index import index_original_segment
 from lumina_core.tts.script import LISTEN_MODES, ListenMode
 from lumina_core.tts.service import load_listen_script
 from lumina_core.resource_probe import probe_ocr, probe_resource
@@ -1253,6 +1254,7 @@ async def search_book_original(
     book_id: str,
     request: Request,
     q: str = Query(""),
+    limit: int | None = Query(None, ge=1, le=50),
     after_segment: int | None = Query(None, ge=0),
     after_start: int | None = Query(None, ge=0),
 ) -> dict[str, Any]:
@@ -1262,12 +1264,17 @@ async def search_book_original(
         book = BookRepo(state.conn).get(book_id)
         if not book:
             return {"missing_book": True}
+        kwargs: dict[str, Any] = {
+            "after_segment_index": after_segment,
+            "after_start": after_start,
+        }
+        if limit is not None:
+            kwargs["limit"] = limit
         result = search_original(
             state.conn,
             book_id,
             q,
-            after_segment_index=after_segment,
-            after_start=after_start,
+            **kwargs,
         )
         return result
 
@@ -1503,6 +1510,20 @@ async def move_segment_boundary(
         )
         index_segment(state.conn, book, updated_left)
         index_segment(state.conn, book, updated_right)
+        index_original_segment(
+            state.conn,
+            book_id=book_id,
+            segment_id=str(updated_left["id"]),
+            segment_idx=int(updated_left["idx"]),
+            raw_text=updated_left.get("raw_text") or "",
+        )
+        index_original_segment(
+            state.conn,
+            book_id=book_id,
+            segment_id=str(updated_right["id"]),
+            segment_idx=int(updated_right["idx"]),
+            raw_text=updated_right.get("raw_text") or "",
+        )
         return updated_left, updated_right, moved.oversized, True
 
     try:

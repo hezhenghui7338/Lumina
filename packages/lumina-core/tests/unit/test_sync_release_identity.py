@@ -78,12 +78,10 @@ def test_release_scripts_sync_identity_before_packaging():
         encoding="utf-8"
     )
     assert "sync-release-identity.py" in sh
-    assert "sync-release-identity.py" in ps1
     assert sh.find("sync-release-identity.py") < sh.find("pyinstaller")
     assert sh.find("sync-release-identity.py") < sh.find("xcodebuild")
     assert "MARKETING_VERSION=\"$VERSION\"" in sh
     assert "CURRENT_PROJECT_VERSION=\"$VERSION\"" in sh
-    assert ps1.lower().find("sync-release-identity.py") < ps1.lower().find(
-        "pyinstaller"
-    )
-    assert "-p:Version=$Version" in ps1
+    # Windows packaging stub must refuse rather than package without identity sync.
+    assert "exit 1" in ps1
+    assert "discontinued" in ps1.lower() or "disabled" in ps1.lower()

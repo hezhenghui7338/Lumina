@@ -23,6 +23,11 @@ from lumina_core.search.fts import (
     delete_book_segments_from_fts,
     delete_note_from_fts,
 )
+from lumina_core.search.original_index import (
+    delete_book_original_index,
+    index_book_original,
+    index_original_segment,
+)
 from lumina_core.summarize.preview import segment_list_fields
 from lumina_core.summarize.schema import normalize_summary_data, resolve_segment_label
 
@@ -343,6 +348,7 @@ class BookRepo:
 
     def delete(self, book_id: str) -> None:
         delete_book_from_fts(self.conn, book_id)
+        delete_book_original_index(self.conn, book_id)
         with db_transaction(self.conn):
             self.conn.execute("DELETE FROM notes WHERE book_id = ?", (book_id,))
             self.conn.execute(
@@ -1139,6 +1145,7 @@ class SegmentRepo:
                     book_id,
                 ),
             )
+        index_book_original(self.conn, book_id, replace=True)
 
     def complete_ingest(
         self,
@@ -1177,6 +1184,7 @@ class SegmentRepo:
                     book_id,
                 ),
             )
+        index_book_original(self.conn, book_id, replace=True)
 
     def begin_segment_staging(self) -> None:
         self.conn.execute("DROP TABLE IF EXISTS temp.staging_segments")
@@ -1226,6 +1234,7 @@ class SegmentRepo:
             raise RuntimeError("分段结果为空")
         now = _now()
         delete_book_segments_from_fts(self.conn, book_id)
+        delete_book_original_index(self.conn, book_id)
         with db_transaction(self.conn):
             self.conn.execute("DELETE FROM notes WHERE book_id = ?", (book_id,))
             self.conn.execute(
@@ -1272,6 +1281,7 @@ class SegmentRepo:
                 ),
             )
         self.conn.execute("DROP TABLE IF EXISTS temp.staging_segments")
+        index_book_original(self.conn, book_id, replace=True)
 
     def replace_for_book(
         self,
@@ -1284,6 +1294,7 @@ class SegmentRepo:
         """Atomically replace segment-bound data after a successful rechunk."""
         now = _now()
         delete_book_segments_from_fts(self.conn, book_id)
+        delete_book_original_index(self.conn, book_id)
         with db_transaction(self.conn):
             self.conn.execute("DELETE FROM notes WHERE book_id = ?", (book_id,))
             self.conn.execute(
@@ -1318,6 +1329,7 @@ class SegmentRepo:
                     book_id,
                 ),
             )
+        index_book_original(self.conn, book_id, replace=True)
 
     def update_summary(
         self,

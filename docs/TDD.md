@@ -283,6 +283,28 @@ CREATE TABLE search_fts_map (
 );
 CREATE INDEX idx_search_fts_map_book ON search_fts_map(book_id);
 
+-- 书内原文查找（完整 raw_text；与跨书 search_fts 分离）
+-- 更新/删除必须经 original_fts_map 按 rowid；禁止 UNINDEXED 列 DELETE。
+CREATE VIRTUAL TABLE IF NOT EXISTS original_fts USING fts5(
+  book_id UNINDEXED, segment_id UNINDEXED, segment_idx UNINDEXED, body,
+  tokenize='trigram'
+);
+CREATE TABLE original_fts_map (
+  segment_id TEXT PRIMARY KEY,
+  book_id    TEXT NOT NULL,
+  fts_rowid  INTEGER NOT NULL UNIQUE
+);
+CREATE INDEX idx_original_fts_map_book ON original_fts_map(book_id);
+
+-- 1–2 字短查询：段内出现过的字符 → 段号（trigram 对短串无效）
+CREATE TABLE original_char_seg (
+  book_id      TEXT NOT NULL,
+  ch           TEXT NOT NULL,
+  segment_idx  INTEGER NOT NULL,
+  PRIMARY KEY (book_id, ch, segment_idx)
+);
+CREATE INDEX idx_original_char_seg_lookup ON original_char_seg(book_id, ch, segment_idx);
+
 -- sqlite-vec 段向量（可选 v1.0 spike 后启用）
 -- CREATE VIRTUAL TABLE segment_embeddings USING vec0(...);
 ```
@@ -673,7 +695,7 @@ Sidecar 绑定 `127.0.0.1` only；无认证（本机进程）。
 | GET | `/books/{id}/chat/sessions` | 会话列表 |
 | POST | `/books/{id}/export` | 导出 Markdown；body `{ include_notes?, mode?: full\|sentences }`，默认 `full` 含译文；`sentences` 仅各段三句话（忽略笔记） |
 | GET | `/books/{id}/segments/{idx}/listen-script` | 听稿；`mode=summary\|detailed\|original`（summary=简要摘要，detailed=完整摘要）。summary/detailed **只读摘要列**，禁止为听简要/完整摘要读 `raw_text`。detailed 含要点、不含 notes。朗读在客户端用系统语音，无 `POST .../speech` |
-| GET | `/books/{id}/original-search?q=` | 书内原文查找。只扫 `raw_text`（不搜摘要/译文/笔记）；`asyncio.to_thread`；响应 `{query, hits, truncated}`，hit 含 `segment_index`、`start`/`end`（Unicode）、`start_utf16`/`end_utf16`、`snippet`；**不含** `raw_text`。空查询 → `hits=[]`。默认最多 80 条 |
+| GET | `/books/{id}/original-search?q=` | 书内原文查找。只搜 `raw_text`（不搜摘要/译文/笔记）；走 `original_fts` / `original_char_seg` 候选段再精确偏移；`asyncio.to_thread`；可选 `limit`（默认 30，硬顶 50）、`after_segment`/`after_start` 游标；响应 `{query, hits, truncated, index_ready}`，hit 含 `segment_index`、`start`/`end`（Unicode）、`start_utf16`/`end_utf16`、`snippet`、可选 `segment_label`；**不含** `raw_text`。空查询 → `hits=[]`。`truncated`=还有更多（兼容旧客户端） |
 
 ### 5.3 笔记与搜索
 
@@ -874,7 +896,7 @@ class ModelRouter:
 - cpu-worker 子进程无进度 1800s，或单本墙钟 `max(1800s, pages×60s, MiB×30s)`（顶 8h）必须失败，不得停在「分段中」。PDF/OCR 按页数拉长墙钟；TXT 字数进度不得当成页数。
 - TXT 解码与分段 **禁止全书 `str` 常驻**：峰值 RAM = 窗口 + 当前段 + 一批 INSERT；覆盖校验用偏移首尾相接，禁止 `join(raw_text)` 全书。
 - `GET /books/{id}/segments` **默认不含** `raw_text`；原文仅 `GET .../segments/{idx}`。目录含 `heading_path`（落库最多两级标题）；三级目录进 `label`（摘要不覆盖非空 label）。**macOS** 组树最多 2 层标题 + 段叶子；Windows v1.0 不强制改组树 UI。禁止把全书 `document_tree` 放进书列表/详情。旧段无 `heading_path` 时从 `chapter` 按 ` · ` 拆并去掉 `§`，不强制重新分段；带结构书可用 outline 重建只改路径（及结构三级 label）。
-- `GET /books/{id}/original-search` **禁止**同步扫库；**禁止**在 hits 中返回 `raw_text`。
+- `GET /books/{id}/original-search` **禁止**同步扫库；**禁止**在 hits 中返回 `raw_text`。原文索引写入挂 ingest/resegment/边界；已有书后台 backfill，不得阻塞 `/health` / `GET /books`。
 - `segment_ready` SSE 须携带 UI 所需摘要字段；客户端 **禁止** 为此再拉全量段表。
 - 手动调界只改相邻两段 `raw_text`；客户端在拼接原文上点击只更新预览，点「保存」后才 POST `left_char_count`（服务端吸附），取消不发请求；不再拖动或步进 candidates；SSE `segment_boundary_moved` 后客户端补丁这两行，禁止整表 reload。
 - Swift：网络收发与大 JSON 解码不得堵 MainActor；切书请求须可取消。

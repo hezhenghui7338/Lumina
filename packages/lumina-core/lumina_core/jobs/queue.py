@@ -132,6 +132,7 @@ class JobQueue:
         self._startup_deferred_task: asyncio.Task[None] | None = None
         # Backward-compatible alias used by older tests / call sites.
         self._catalog_backfill_task: asyncio.Task[None] | None = None
+        self._original_index_backfill_task: asyncio.Task[None] | None = None
         # Background summarize/start finishers (HTTP ack returns before these).
         self._start_tasks: set[asyncio.Task[None]] = set()
 
@@ -918,6 +919,8 @@ class JobQueue:
             await asyncio.sleep(0)
             if self._shutting_down:
                 return
+            # Original-search index: fire-and-forget; must not gate cache / health.
+            self._schedule_original_index_backfill()
             await self._resume_summarize_after_startup()
         except asyncio.CancelledError:
             raise
@@ -963,6 +966,45 @@ class JobQueue:
 
             await asyncio.to_thread(_one)
             await asyncio.sleep(0)
+
+    def _schedule_original_index_backfill(self) -> None:
+        """Background original-search index; never awaited by /health or book list."""
+        if self._shutting_down:
+            return
+        existing = self._original_index_backfill_task
+        if existing is not None and not existing.done():
+            return
+
+        async def _run() -> None:
+            try:
+                from lumina_core.search.original_index import (
+                    backfill_original_indexes,
+                    books_needing_original_index,
+                )
+
+                while not self._shutting_down:
+                    # _run_db expects a zero-arg callable; free functions need conn.
+                    ids = await self._run_db(
+                        lambda: books_needing_original_index(self.conn)
+                    )
+                    if not ids:
+                        return
+                    book_id = ids[0]
+
+                    def _one(bid: str = book_id) -> None:
+                        backfill_original_indexes(self.conn, max_books=1)
+
+                    await asyncio.to_thread(_one)
+                    await asyncio.sleep(0.05)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("original index backfill failed")
+
+        self._original_index_backfill_task = asyncio.create_task(
+            _run(),
+            name="lumina-original-index-backfill",
+        )
 
     async def _resume_summarize_after_startup(self) -> None:
         """Rehydrate intent cache and re-enqueue active summarize books.
@@ -1206,6 +1248,14 @@ class JobQueue:
                 pass
         self._startup_deferred_task = None
         self._catalog_backfill_task = None
+        original_bf = self._original_index_backfill_task
+        if original_bf is not None and not original_bf.done():
+            original_bf.cancel()
+            try:
+                await original_bf
+            except asyncio.CancelledError:
+                pass
+        self._original_index_backfill_task = None
         self._startup_cache_progress = None
         self._startup_cache_detail = None
         tasks = [

@@ -26,8 +26,6 @@ test-macos:
     @if pgrep -x Lumina >/dev/null 2>&1; then echo "先退出正在运行的 Lumina：xcodebuild 无法再启动同一个 App 作为测试宿主"; exit 1; fi
     xcodebuild test -project apps/macos/Lumina.xcodeproj -scheme Lumina -destination 'platform=macOS' -parallel-testing-enabled NO
 
+# Official release is macOS only (DMG + ZIP). Windows packaging is disabled.
 release:
     ./scripts/build-release.sh
-
-# Windows release must run on Windows (PowerShell):
-#   .\scripts\build-release-windows.ps1

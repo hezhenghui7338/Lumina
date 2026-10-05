@@ -925,6 +925,7 @@ public sealed class OriginalSearchHit
     public int StartUtf16 { get; set; }
     public int EndUtf16 { get; set; }
     public string Snippet { get; set; } = "";
+    public string? SegmentLabel { get; set; }
 }
 
 public sealed class OriginalSearchResponse
@@ -932,6 +933,7 @@ public sealed class OriginalSearchResponse
     public string Query { get; set; } = "";
     public List<OriginalSearchHit> Hits { get; set; } = [];
     public bool Truncated { get; set; }
+    public bool? IndexReady { get; set; }
 }
 
 public sealed class NewsArticleCard

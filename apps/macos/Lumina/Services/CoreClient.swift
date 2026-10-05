@@ -2042,7 +2042,8 @@ final class CoreClient: ObservableObject {
         bookId: String,
         query: String,
         afterSegment: Int? = nil,
-        afterStart: Int? = nil
+        afterStart: Int? = nil,
+        limit: Int? = nil
     ) async throws -> OriginalSearchResponse {
         var items = [URLQueryItem(name: "q", value: query)]
         if let afterSegment {
@@ -2050,6 +2051,9 @@ final class CoreClient: ObservableObject {
         }
         if let afterStart {
             items.append(URLQueryItem(name: "after_start", value: String(afterStart)))
+        }
+        if let limit {
+            items.append(URLQueryItem(name: "limit", value: String(limit)))
         }
         let data = try await get(
             path: "/books/\(bookId)/original-search",
