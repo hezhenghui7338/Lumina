@@ -28,7 +28,7 @@ struct AllNotesView: View {
                 ContentUnavailableView(
                     "还没有笔记",
                     systemImage: "note.text",
-                    description: Text("在阅读器右侧写笔记，或把深聊回答存为笔记。每条笔记都会挂在具体段落上。")
+                    description: Text("在阅读器选区划线或写想法，或把深聊回答存为笔记。每条笔记都会挂在具体段落上。")
                 )
             } else {
                 VStack(spacing: 0) {
@@ -205,21 +205,25 @@ struct AllNotesView: View {
                     .font(.caption)
                     .foregroundStyle(LuminaTheme.accent)
             }
-            Text(note.content)
-                .font(.subheadline)
-                .foregroundStyle(.primary)
-                .lineLimit(3)
-                .multilineTextAlignment(.leading)
+            if note.type == "highlight", let quote = note.quote, !quote.isEmpty {
+                Text("「\(quote)」")
+                    .font(.subheadline)
+                    .foregroundStyle(.primary)
+                    .lineLimit(3)
+                    .multilineTextAlignment(.leading)
+            } else {
+                Text(note.content)
+                    .font(.subheadline)
+                    .foregroundStyle(.primary)
+                    .lineLimit(3)
+                    .multilineTextAlignment(.leading)
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private func typeLabel(_ type: String) -> String {
-        switch type {
-        case "ai": return "AI"
-        case "highlight": return "划线"
-        default: return "手动"
-        }
+        NoteTypeLabel.display(type)
     }
 
     private func toggleSelectionMode() {

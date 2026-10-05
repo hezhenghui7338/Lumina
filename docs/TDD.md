@@ -1001,7 +1001,7 @@ JobQueue：`asyncio.PriorityQueue` + worker pool；每书一个摘要链锁，�
 | 预置 RSS URL 清单 | 待定 | 产品确认 |
 | 证据充分性实现 | 待定 | Spike：LLM self-check vs 召回分数阈值 |
 | segment 缓存 2GB 默认 | ✅ 暂定 | 可配置；Spike 验证 |
-| 笔记划线 offset | 待定 | EPUB 重排风险；v1.0 存 quote 文本 |
+| 笔记划线 offset | 待定 | EPUB 重排风险；v1.0 存 quote 文本；macOS 选区「划线」只落笔记、不画正文持久底色 |
 | Sidecar 崩溃恢复 | 待定 | job 状态 SQLite 持久化 |
 
 ---

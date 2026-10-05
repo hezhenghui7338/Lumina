@@ -261,23 +261,28 @@ struct NotesPanel: View {
     @ViewBuilder
     private func noteCard(_ note: NoteRow) -> some View {
         VStack(alignment: .leading, spacing: 4) {
-            if let label = note.segment_label, !label.isEmpty {
-                Text(label)
+            HStack {
+                if let label = note.segment_label, !label.isEmpty {
+                    Text(label)
+                        .font(.caption2)
+                        .foregroundStyle(LuminaTheme.accent)
+                }
+                Spacer(minLength: 0)
+                Text(NoteTypeLabel.display(note.type))
                     .font(.caption2)
-                    .foregroundStyle(LuminaTheme.accent)
+                    .foregroundStyle(.secondary)
             }
             if let quote = note.quote, !quote.isEmpty {
                 Text("「\(quote)」")
                     .font(.caption)
                     .foregroundStyle(LuminaTheme.accent)
             }
-            Text(note.content)
-                .font(.subheadline)
-                .foregroundStyle(.primary)
-                .multilineTextAlignment(.leading)
-            Text(note.type)
-                .font(.caption2)
-                .foregroundStyle(.secondary)
+            if note.type != "highlight" || note.content != (note.quote ?? "") {
+                Text(note.content)
+                    .font(.subheadline)
+                    .foregroundStyle(.primary)
+                    .multilineTextAlignment(.leading)
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .luminaCard()
@@ -369,6 +374,16 @@ struct NotesPanel: View {
                 self.error = message
                 await reload()
             }
+        }
+    }
+}
+
+struct NoteTypeLabel {
+    static func display(_ type: String) -> String {
+        switch type {
+        case "ai": return "AI"
+        case "highlight": return "划线"
+        default: return "手动"
         }
     }
 }

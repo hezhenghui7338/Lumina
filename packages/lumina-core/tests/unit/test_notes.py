@@ -91,6 +91,26 @@ def test_note_delete_not_found(conn):
     assert repo.delete("missing-note-id") is False
 
 
+def test_highlight_note_create(conn):
+    book_id, segment_id = _seed_book_with_segment(conn)
+    repo = NoteRepo(conn)
+    note = repo.create(
+        book_id=book_id,
+        content="反向传播",
+        segment_id=segment_id,
+        note_type="highlight",
+        quote="反向传播",
+    )
+    assert note["type"] == "highlight"
+    assert note["quote"] == "反向传播"
+    assert note["content"] == "反向传播"
+    assert note["segment_id"] == segment_id
+
+    listed = repo.list_for_book(book_id)
+    assert len(listed) == 1
+    assert listed[0]["type"] == "highlight"
+
+
 def test_migrate_drops_orphan_notes(tmp_path):
     db = tmp_path / "legacy.db"
     raw = sqlite3.connect(str(db))
