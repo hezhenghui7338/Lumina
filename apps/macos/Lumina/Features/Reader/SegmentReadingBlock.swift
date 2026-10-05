@@ -151,6 +151,7 @@ struct SegmentReadingBlock: View, Equatable {
     }
 
     var body: some View {
+        let _ = LuminaLayoutPerf.noteReaderSegmentBody()
         Group {
             VStack(alignment: .leading, spacing: LuminaTheme.summarySectionSpacing) {
                 segmentHeaderRow

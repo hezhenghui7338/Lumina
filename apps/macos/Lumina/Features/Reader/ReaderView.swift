@@ -106,6 +106,10 @@ struct ReaderView: View {
     @State private var originalSearchSeekReleaseTask: Task<Void, Never>?
     @State private var settledReaderViewportHeight: CGFloat = 0
     @State private var viewportHeightSettleTask: Task<Void, Never>?
+    /// System fullscreen will/did: thin feed slice so 万段 ForEach does not freeze.
+    @State private var fullscreenFeedGated = false
+    @State private var fullscreenFeedPin: Int? = nil
+    @State private var fullscreenFeedReleaseTask: Task<Void, Never>?
     @FocusState private var chatFocused: Bool
     @FocusState private var readerContentFocused: Bool
     @FocusState private var originalSearchFocused: Bool
@@ -954,6 +958,9 @@ struct ReaderView: View {
             guard let action = ShortcutActionUserInfo.action(from: note) else { return }
             handleShortcut(action)
         }
+        .onReceive(NotificationCenter.default.publisher(for: .luminaFullscreenTransition)) { note in
+            handleFullscreenFeedTransition(note)
+        }
         .onChange(of: tour.step) { _, _ in
             revealChromeIfTouringReader()
         }
@@ -978,6 +985,9 @@ struct ReaderView: View {
             // on every pin tick (万段书会卡死 MainActor).
             // Search seek: far TOC hits (~300 segs apart) must not prefetch neighbours.
             if originalSearchSeekTarget != nil { return }
+            if FullscreenFeedGate.shouldSuppressFeedChurn(gated: fullscreenFeedGated) {
+                return
+            }
             viewModel.scheduleVisiblePrefetch(
                 around: idx,
                 core: core,
@@ -986,18 +996,32 @@ struct ReaderView: View {
             )
         }
         .onPreferenceChange(ReaderGlobalFrameKey.self) { frame in
-            readerGlobalFrame = frame
-            scheduleSettledViewportHeight(frame.height)
+            LuminaLayoutPerf.trace(.readerPreference) {
+                LuminaLayoutPerf.noteReaderPreference()
+                LuminaLayoutPerf.noteReaderContext(
+                    segmentCount: viewModel.segments.count,
+                    contentMode: contentMode == .original ? "original" : "summary"
+                )
+                readerGlobalFrame = frame
+                scheduleSettledViewportHeight(frame.height)
+            }
         }
         .onChange(of: contentMode) { _, mode in
-            ReaderPreferences.setContentMode(mode, for: bookId)
-            viewModel.setContentMode(mode)
-            if mode == .original {
-                if suppressContentModeSourcePrefetch {
-                    suppressContentModeSourcePrefetch = false
-                } else {
-                    let idx = topSegmentIdx ?? viewModel.selectedIdx ?? viewModel.segments.first?.idx ?? 0
-                    viewModel.prefetchSources(around: idx, core: core, radius: 5)
+            LuminaLayoutPerf.trace(.readerContentMode) {
+                LuminaLayoutPerf.noteReaderContentMode()
+                LuminaLayoutPerf.noteReaderContext(
+                    segmentCount: viewModel.segments.count,
+                    contentMode: mode == .original ? "original" : "summary"
+                )
+                ReaderPreferences.setContentMode(mode, for: bookId)
+                viewModel.setContentMode(mode)
+                if mode == .original {
+                    if suppressContentModeSourcePrefetch {
+                        suppressContentModeSourcePrefetch = false
+                    } else {
+                        let idx = topSegmentIdx ?? viewModel.selectedIdx ?? viewModel.segments.first?.idx ?? 0
+                        viewModel.prefetchSources(around: idx, core: core, radius: 5)
+                    }
                 }
             }
         }
@@ -1326,13 +1350,31 @@ struct ReaderView: View {
                             .id(
                                 "search-focus-\(focus.idx)-\(originalSearchIndex)"
                             )
+                    } else if fullscreenFeedGated {
+                        // System fullscreen transition: full ForEach re-evaluates
+                        // thousands of rows and freezes MainActor — slice only.
+                        ForEach(
+                            FullscreenFeedGate.slice(
+                                segments: viewModel.segments,
+                                pinIndex: fullscreenFeedPin ?? topSegmentIdx
+                            ),
+                            id: \.idx
+                        ) { seg in
+                            segmentBlock(for: seg)
+                        }
                     } else {
+                        // Compat full slim catalog (no around) — intentional d383158.
                         ForEach(viewModel.segments, id: \.idx) { seg in
                             segmentBlock(for: seg)
                         }
                     }
                 }
                 .scrollTargetLayout()
+                .background {
+                    LuminaReaderLayoutProbe(label: "lazyFeed")
+                        .allowsHitTesting(false)
+                        .accessibilityHidden(true)
+                }
 
                 if !viewModel.segments.isEmpty {
                     Color.clear
@@ -1493,6 +1535,7 @@ struct ReaderView: View {
 
     @ViewBuilder
     private func segmentBlock(for seg: SegmentRow) -> some View {
+        let _ = LuminaLayoutPerf.noteReaderSegmentBlock()
         let _ = viewModel.sourceCacheVersion
         let cachedSource = viewModel.cachedSource(for: seg.idx)
         let idx = seg.idx
@@ -2281,6 +2324,9 @@ struct ReaderView: View {
     }
 
     private func scheduleSettledViewportHeight(_ height: CGFloat) {
+        if FullscreenFeedGate.shouldSuppressFeedChurn(gated: fullscreenFeedGated) {
+            return
+        }
         let previous = settledReaderViewportHeight
         if previous > 0,
            !LuminaTextLayoutSizing.widthDidChange(from: previous, to: height)
@@ -2288,17 +2334,54 @@ struct ReaderView: View {
             return
         }
         if previous <= 0 {
-            settledReaderViewportHeight = height
+            LuminaLayoutPerf.trace(.viewportSettle) {
+                LuminaLayoutPerf.noteViewportSettle(committed: true)
+                settledReaderViewportHeight = height
+            }
             return
         }
+        LuminaLayoutPerf.noteViewportSettle(committed: false)
         viewportHeightSettleTask?.cancel()
         viewportHeightSettleTask = Task { @MainActor in
             try? await Task.sleep(
                 nanoseconds: LuminaTextLayoutSizing.widthSettleNanoseconds
             )
             guard !Task.isCancelled else { return }
-            settledReaderViewportHeight = height
+            if FullscreenFeedGate.shouldSuppressFeedChurn(gated: fullscreenFeedGated) {
+                return
+            }
+            LuminaLayoutPerf.trace(.viewportSettle) {
+                LuminaLayoutPerf.noteViewportSettle(committed: true)
+                settledReaderViewportHeight = height
+            }
             viewportHeightSettleTask = nil
+        }
+    }
+
+    private func handleFullscreenFeedTransition(_ note: Notification) {
+        guard let raw = note.userInfo?["kind"] as? String,
+              let event = FullscreenFeedGate.Event(rawValue: raw)
+        else { return }
+        if event.engagesGate {
+            fullscreenFeedReleaseTask?.cancel()
+            fullscreenFeedReleaseTask = nil
+            fullscreenFeedPin = topSegmentIdx ?? viewModel.selectedIdx
+            fullscreenFeedGated = true
+            viewportHeightSettleTask?.cancel()
+            viewportHeightSettleTask = nil
+            return
+        }
+        fullscreenFeedReleaseTask?.cancel()
+        fullscreenFeedReleaseTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: FullscreenFeedGate.settleNanoseconds)
+            guard !Task.isCancelled else { return }
+            fullscreenFeedGated = false
+            fullscreenFeedPin = nil
+            fullscreenFeedReleaseTask = nil
+            // Re-arm viewport settle with the current frame after restore.
+            if readerGlobalFrame.height > 0 {
+                scheduleSettledViewportHeight(readerGlobalFrame.height)
+            }
         }
     }
 
@@ -2409,8 +2492,22 @@ private final class ReaderFeedScrollAnchorNSView: NSView {
     }
 
     override func layout() {
-        super.layout()
-        registerFeedScrollView()
+        LuminaLayoutPerf.trace(.readerFeedLayout) {
+            super.layout()
+            registerFeedScrollView()
+            if let scroll = enclosingScrollView {
+                LuminaLayoutPerf.trace(.readerScrollLayout) {
+                    _ = scroll.bounds
+                    _ = scroll.contentSize
+                }
+                if let doc = scroll.documentView {
+                    LuminaLayoutPerf.trace(.readerScrollDocLayout) {
+                        _ = doc.bounds
+                        _ = doc.subviews.count
+                    }
+                }
+            }
+        }
     }
 
     func registerFeedScrollView() {
