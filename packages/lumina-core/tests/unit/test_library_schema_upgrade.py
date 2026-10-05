@@ -21,6 +21,7 @@ SEG_ID = "s1"
 REQUIRED_BOOK_COLUMNS = frozenset(
     {
         "is_favorite",
+        "rating",
         "category",
         "last_opened_at",
         "index_status",

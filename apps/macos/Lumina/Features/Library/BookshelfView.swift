@@ -555,6 +555,9 @@ struct BookshelfView: View {
                                     onResegment: { presentResegment(for: book) },
                                     onExport: { presentExport(for: book) },
                                     onDelete: { bookPendingDelete = book },
+                                    onRate: { stars in
+                                        Task { await setRating(book, stars: stars) }
+                                    },
                                     onStartSummarize: { tier in
                                         Task { await startSummarize(for: book.id, summaryTier: tier) }
                                     },
@@ -595,7 +598,7 @@ struct BookshelfView: View {
 
     @ViewBuilder
     private func listRow(_ book: BookSummary) -> some View {
-        let row = BookRow(
+        BookRow(
             book: book,
             isClassifying: viewModel.classifyingIds.contains(book.id),
             ingestProgress: viewModel.ingestProgress[book.id],
@@ -608,6 +611,16 @@ struct BookshelfView: View {
             onResegment: { presentResegment(for: book) },
             onExport: { presentExport(for: book) },
             onDelete: { bookPendingDelete = book },
+            onRate: { stars in
+                Task { await setRating(book, stars: stars) }
+            },
+            onPrimary: {
+                if isSelectionMode {
+                    toggleCheck(book.id)
+                } else {
+                    openBook(book)
+                }
+            },
             onStartSummarize: { tier in
                 Task { await startSummarize(for: book.id, summaryTier: tier) }
             },
@@ -615,19 +628,6 @@ struct BookshelfView: View {
                 Task { await stopSummarize(for: book.id) }
             }
         )
-
-        Group {
-            if isSelectionMode {
-                row
-                    .contentShape(Rectangle())
-                    .onTapGesture { toggleCheck(book.id) }
-            } else {
-                Button { openBook(book) } label: {
-                    row.contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-            }
-        }
         .listRowInsets(EdgeInsets(top: 6, leading: 10, bottom: 6, trailing: 10))
     }
 
@@ -864,6 +864,14 @@ struct BookshelfView: View {
     private func toggleFavorite(_ book: BookSummary) async {
         do {
             try await viewModel.toggleFavorite(book, using: core)
+        } catch {
+            actionError = ConnectionError.userMessage(for: error)
+        }
+    }
+
+    private func setRating(_ book: BookSummary, stars: Int) async {
+        do {
+            try await viewModel.setRating(book, stars: stars, using: core)
         } catch {
             actionError = ConnectionError.userMessage(for: error)
         }

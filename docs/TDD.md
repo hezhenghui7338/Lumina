@@ -195,6 +195,7 @@ CREATE TABLE books (
   translation_mode TEXT DEFAULT 'auto', -- auto|original|bilingual
   segment_count INTEGER DEFAULT 0,
   current_segment_index INTEGER DEFAULT 0,
+  rating        INTEGER,                -- 1–5；NULL 为未评分。书架按评分排序时未评分按 3 星计
   status        TEXT DEFAULT 'unread',  -- unread|reading|summarized|processing|error；processing 时公开 summarize_state=segmenting；error 为书架摘要维「导入失败」（含取消导入），不占未摘要/分段中/摘要中/已摘要；书架「未读/在读/已读完」按 last_opened_at + 段进度推导，不用此列
   index_status  TEXT DEFAULT 'idle',    -- idle|building|ready|error · 全书分层索引
   file_hash     TEXT,                   -- 缓存失效

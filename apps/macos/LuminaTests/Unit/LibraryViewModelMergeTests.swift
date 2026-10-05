@@ -16,7 +16,8 @@ final class LibraryViewModelMergeTests: XCTestCase {
         isFavorite: Bool? = nil,
         category: String? = nil,
         createdAt: String? = nil,
-        readingPercent: Double? = nil
+        readingPercent: Double? = nil,
+        rating: Int? = nil
     ) -> BookSummary {
         BookSummary(
             id: id,
@@ -31,6 +32,7 @@ final class LibraryViewModelMergeTests: XCTestCase {
             summary_ready_count: summaryReady,
             summary_total_count: summaryTotal,
             summarize_state: summarizeState,
+            rating: rating,
             readingPercent: readingPercent
         )
     }
@@ -502,6 +504,43 @@ final class LibraryViewModelMergeTests: XCTestCase {
         XCTAssertEqual(LibrarySort.recent.defaultOrder, .descending)
         XCTAssertEqual(LibrarySort.segments.defaultOrder, .descending)
         XCTAssertEqual(LibrarySort.favorite.defaultOrder, .descending)
+        XCTAssertEqual(LibrarySort.rating.defaultOrder, .descending)
+    }
+
+    func testSortByRatingTreatsUnratedAsThreeStars() {
+        let books = [
+            book(id: "five", title: "Five", rating: 5),
+            book(id: "one", title: "One", rating: 1),
+            book(id: "bare", title: "Bare"),
+            book(id: "three", title: "Three", rating: 3),
+            book(id: "also", title: "Also", rating: 3),
+        ]
+        XCTAssertEqual(
+            LibraryViewModel.sorted(books, by: .rating, order: .descending).map(\.id),
+            ["five", "also", "bare", "three", "one"]
+        )
+        XCTAssertEqual(
+            LibraryViewModel.sorted(books, by: .rating, order: .ascending).map(\.id),
+            ["one", "three", "bare", "also", "five"]
+        )
+    }
+
+    func testRatingTapSetsAndClears() {
+        XCTAssertEqual(BookRating.nextValue(current: nil, tapped: 3), 3)
+        XCTAssertEqual(BookRating.nextValue(current: 3, tapped: 3), nil)
+        XCTAssertEqual(BookRating.nextValue(current: 4, tapped: 2), 2)
+        XCTAssertNil(BookSummary(
+            id: "x",
+            title: "X",
+            status: "unread",
+            segment_count: 1
+        ).starRating)
+        XCTAssertEqual(BookSummary(
+            id: "x",
+            title: "X",
+            status: "unread",
+            segment_count: 1
+        ).sortRating, 3)
     }
 
     func testRecentAscendingStillPinsSummarizeActivity() {

@@ -86,7 +86,7 @@ _SQL_FILTERS = frozenset(
 )
 _QUEUE_FILTERS = frozenset({"summarizing", "idle", "segmenting"})
 BOOK_FILTERS = _SQL_FILTERS | _QUEUE_FILTERS
-BOOK_SORTS = frozenset({"recent", "added", "title", "favorite", "segments", "progress"})
+BOOK_SORTS = frozenset({"recent", "added", "title", "favorite", "segments", "progress", "rating"})
 
 # Reading-progress percent: unread / single-segment → 0; last segment → 1;
 # otherwise index / segment_count. Matches client ReadingProgress.percent.
@@ -100,6 +100,12 @@ _PROGRESS_SORT_SQL = (
     " END DESC, title COLLATE NOCASE ASC"
 )
 
+# Unrated (NULL or outside 1–5) sorts as 3 stars, then title A→Z.
+_RATING_SORT_SQL = (
+    "COALESCE(CASE WHEN rating BETWEEN 1 AND 5 THEN rating END, 3) DESC, "
+    "title COLLATE NOCASE ASC"
+)
+
 _SORT_ORDER: dict[str, str] = {
     "recent": "last_opened_at IS NULL, last_opened_at DESC, updated_at DESC",
     "added": "created_at DESC",
@@ -107,6 +113,7 @@ _SORT_ORDER: dict[str, str] = {
     "favorite": "is_favorite DESC, last_opened_at IS NULL, last_opened_at DESC, updated_at DESC",
     "segments": "COALESCE(segment_count, 0) DESC, title COLLATE NOCASE ASC",
     "progress": _PROGRESS_SORT_SQL,
+    "rating": _RATING_SORT_SQL,
 }
 
 # Reading progress is derived from last_opened_at + segment index — not books.status

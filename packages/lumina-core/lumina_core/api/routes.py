@@ -175,6 +175,7 @@ class BookPatchUpdate(BaseModel):
     is_favorite: bool | None = None
     category: str | None = None
     title: str | None = None
+    rating: int | None = None
 
 
 class ContextProbeRequest(BaseModel):
@@ -365,6 +366,11 @@ def book_public_dict(
     out = dict(row)
     if "is_favorite" in out and out["is_favorite"] is not None:
         out["is_favorite"] = bool(out["is_favorite"])
+    raw_rating = out.get("rating")
+    if isinstance(raw_rating, bool) or not isinstance(raw_rating, int) or not 1 <= raw_rating <= 5:
+        out["rating"] = None
+    else:
+        out["rating"] = raw_rating
 
     meta: dict[str, Any] = {}
     if out.get("metadata_json"):
@@ -890,6 +896,13 @@ async def patch_book(
             raise HTTPException(400, "title cannot be empty")
         updates["title"] = title
         updates["metadata_json"] = metadata_with_title_user_set(book)
+    if "rating" in body.model_fields_set:
+        if body.rating is None:
+            updates["rating"] = None
+        elif body.rating < 1 or body.rating > 5:
+            raise HTTPException(400, "rating must be an integer from 1 to 5")
+        else:
+            updates["rating"] = body.rating
 
     if not updates:
         return _book_public_with_queue(state, book)

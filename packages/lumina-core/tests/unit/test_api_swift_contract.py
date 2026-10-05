@@ -73,6 +73,32 @@ def test_books_patch_returns_bool_favorite(client):
     assert cleared.json()["is_favorite"] is False
 
 
+def test_patch_book_rating(client):
+    book_id = _import_sample(client)
+
+    missing = client.get(f"/books/{book_id}")
+    assert missing.status_code == 200
+    assert missing.json()["rating"] is None
+
+    bad = client.patch(f"/books/{book_id}", json={"rating": 0})
+    assert bad.status_code == 400
+    high = client.patch(f"/books/{book_id}", json={"rating": 6})
+    assert high.status_code == 400
+
+    rated = client.patch(f"/books/{book_id}", json={"rating": 4})
+    assert rated.status_code == 200
+    assert rated.json()["rating"] == 4
+
+    favorite = client.patch(f"/books/{book_id}", json={"is_favorite": True})
+    assert favorite.status_code == 200
+    assert favorite.json()["is_favorite"] is True
+    assert favorite.json()["rating"] == 4
+
+    cleared = client.patch(f"/books/{book_id}", json={"rating": None})
+    assert cleared.status_code == 200
+    assert cleared.json()["rating"] is None
+
+
 def test_books_get_returns_bool_favorite(client):
     book_id = _import_sample(client)
     client.patch(f"/books/{book_id}", json={"is_favorite": True})

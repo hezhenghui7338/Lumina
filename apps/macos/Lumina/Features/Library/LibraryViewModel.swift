@@ -462,6 +462,11 @@ final class LibraryViewModel: ObservableObject {
                     return left > right
                 }
             }
+        case .rating:
+            base = books.sorted { lhs, rhs in
+                if lhs.sortRating != rhs.sortRating { return lhs.sortRating > rhs.sortRating }
+                return lhs.title.localizedStandardCompare(rhs.title) == .orderedAscending
+            }
         }
         return resolved == sort.defaultOrder ? base : Array(base.reversed())
     }
@@ -552,6 +557,12 @@ final class LibraryViewModel: ObservableObject {
 
     func toggleFavorite(_ book: BookSummary, using core: CoreClient) async throws {
         let updated = try await core.updateBook(id: book.id, isFavorite: !book.isFavorite)
+        replace(updated)
+    }
+
+    func setRating(_ book: BookSummary, stars: Int, using core: CoreClient) async throws {
+        let next = BookRating.nextValue(current: book.starRating, tapped: stars)
+        let updated = try await core.updateBookRating(id: book.id, rating: next)
         replace(updated)
     }
 
