@@ -122,7 +122,7 @@ def _key_configured(resource: ModelResource) -> bool:
 
 
 def _model_configured(resource: ModelResource) -> bool:
-    return bool((resource.model or "").strip())
+    return bool(resource.primary_model)
 
 
 async def probe_resource(
@@ -208,8 +208,8 @@ async def _probe_cursor(
     # Soft-fail catalog: SDK importable + key is enough for ready when list fails.
     probe_ok = True
     message = "Cursor SDK 已就绪（cloud 无仓库）"
-    if available and resource.model and resource.model not in available:
-        message = f"已连通；当前模型 {resource.model} 可能不在账号可用列表中"
+    if available and resource.primary_model and resource.primary_model not in available:
+        message = f"已连通；首选模型 {resource.primary_model} 可能不在账号可用列表中"
     return ResourceProbeResult(
         resource_id=resource.id,
         provider="cursor",
@@ -226,12 +226,12 @@ async def _probe_cursor(
 
 async def _probe_ollama(resource: ModelResource) -> ResourceProbeResult:
     base_url = resource.base_url or "http://127.0.0.1:11434"
-    status = await check_ollama_status(base_url, resource.model or None)
+    status = await check_ollama_status(base_url, resource.primary_model or None)
     model_ok = _model_configured(resource)
     ready = status.probe_ok and status.model_ready and model_ok
     message = status.message or status.probe_detail or ""
     if status.probe_ok and not status.model_ready:
-        message = message or f"模型未下载（{status.selected_model or resource.model}）"
+        message = message or f"模型未下载（{status.selected_model or resource.primary_model}）"
     elif not status.probe_ok and not message:
         message = status.probe_detail or "Ollama 服务不可达"
     if not model_ok:

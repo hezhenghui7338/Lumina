@@ -7,8 +7,9 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from lumina_core.chunker.stream import iter_txt_chunks
 from lumina_core.chunker.coop import CharProgressFn, coerce_char_progress
+from lumina_core.chunker.stream import iter_txt_chunks
+from lumina_core.chunker.units import count_units
 from lumina_core.config import (
     CHUNKER_VERSION,
     ModelsConfig,
@@ -41,7 +42,7 @@ def _chunk_to_row(book_id: str, chunk) -> dict[str, Any]:
         "page_range": chunk.page_range,
         "anchor_label": f"〔{anchor}〕",
         "raw_text": chunk.raw_text,
-        "char_count": len(chunk.raw_text),
+        "char_count": count_units(chunk.raw_text),
         "summary_status": "pending",
         "retry_count": 0,
     }
@@ -115,7 +116,7 @@ def persist_streamed_txt_ingest(
                 if chunk.start_offset != last_end:
                     raise RuntimeError("分段偏移必须首尾相接")
                 last_end = chunk.end_offset
-                total_chars += len(chunk.raw_text)
+                total_chars += count_units(chunk.raw_text)
                 if sum(len(part) for part in lang_parts) < _LANG_SAMPLE_CHARS:
                     lang_parts.append(chunk.raw_text[:_LANG_SAMPLE_CHARS])
                 batch.append(_chunk_to_row(book_id, chunk))
@@ -217,7 +218,7 @@ def persist_streamed_txt_resegment(
                 if chunk.start_offset != last_end:
                     raise RuntimeError("分段偏移必须首尾相接")
                 last_end = chunk.end_offset
-                total_chars += len(chunk.raw_text)
+                total_chars += count_units(chunk.raw_text)
                 batch.append(_chunk_to_row(book_id, chunk))
                 if len(batch) >= 200:
                     flush_batch()

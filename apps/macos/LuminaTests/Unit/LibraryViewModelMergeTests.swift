@@ -577,6 +577,7 @@ final class LibraryViewModelMergeTests: XCTestCase {
         XCTAssertEqual(LibraryFacetQuery.fromLegacyCollection("summarized").summary, .summarized)
         XCTAssertEqual(LibraryFacetQuery.fromLegacyCollection("segmenting").summary, .segmenting)
         XCTAssertEqual(LibraryFacetQuery.fromLegacyCollection("error").summary, .ingestFailed)
+        XCTAssertTrue(LibraryFacetQuery.fromLegacyCollection("favorite").isDefault)
     }
 
     func testIngestFailedCollectionIsFindableAndExcludedFromOtherSummaryFacets() {
@@ -730,17 +731,20 @@ final class LibraryViewModelMergeTests: XCTestCase {
     }
 
     func testFacetQueryCodableRoundTrip() throws {
-        var query = LibraryFacetQuery(
+        let query = LibraryFacetQuery(
             summary: .summarized,
             reading: .unread,
-            category: .category("历史"),
-            favoriteOnly: true
+            category: .category("历史")
         )
         let data = try JSONEncoder().encode(query)
         let decoded = try JSONDecoder().decode(LibraryFacetQuery.self, from: data)
         XCTAssertEqual(decoded, query)
-        query.apply(.favorite)
-        XCTAssertFalse(query.favoriteOnly)
+    }
+
+    func testFacetQueryIgnoresLegacyFavoriteKey() throws {
+        let data = Data(#"{"summary":"all","reading":"all","category":"all","favorite":true}"#.utf8)
+        let decoded = try JSONDecoder().decode(LibraryFacetQuery.self, from: data)
+        XCTAssertTrue(decoded.isDefault)
     }
 
     func testIngestProgressLabel_includesPercentWhenTotalKnown() {

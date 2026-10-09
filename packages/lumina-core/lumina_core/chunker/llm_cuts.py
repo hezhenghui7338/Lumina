@@ -14,6 +14,7 @@ from lumina_core.chunker.semantic import (
     _paragraph_cut_offsets,
     _sentence_cut_offsets,
 )
+from lumina_core.chunker.units import advance_units, count_units, unit_count_exceeds
 from lumina_core.config import DOCUMENT_MAP_TIMEOUT_SECONDS, PromptsConfig, load_prompts_config
 from lumina_core.models.router import parse_json_response
 from lumina_core.prompts_defaults import DEFAULT_BOUNDARY_CUTS
@@ -40,11 +41,14 @@ def needs_llm_cut(chunk: str, *, max_chars: int) -> bool:
     """True for hard-capped or unpunctuated blocks that rules cannot split well."""
     if len(chunk) < max_chars * 0.8:
         return False
+    units = count_units(chunk)
+    if units < max_chars * 0.8:
+        return False
     if _SENTENCE_END.search(chunk) and "\n\n" in chunk:
         return False
     if not _SENTENCE_END.search(chunk):
         return True
-    return len(chunk) >= max_chars
+    return units >= max_chars
 
 
 async def refine_spans_with_llm(
@@ -99,7 +103,7 @@ async def _llm_offsets(
     cancel_event: threading.Event | None,
     timeout: float,
 ) -> list[int]:
-    prompt = template.format(length=len(chunk), text=chunk[:8000])
+    prompt = template.format(length=count_units(chunk), text=chunk[:8000])
 
     async def _call() -> str:
         return await router.complete(prompt, profile="summarize", json_mode=True)
@@ -156,8 +160,10 @@ def _snap_offset(
 ) -> int | None:
     paragraphs = _paragraph_cut_offsets(text, start, end)
     sentences = _sentence_cut_offsets(text, start, end)
-    lo = start + max(1, min(min_chars, (end - start) // 4))
-    hi = end - max(1, min(min_chars, (end - start) // 4))
+    span_units = count_units(text[start:end])
+    margin = max(1, min(min_chars, span_units // 4))
+    lo = advance_units(text, start, margin, end)
+    hi = advance_units(text, start, max(0, span_units - margin), end)
     for group in (paragraphs, sentences):
         window = [point for point in group if lo <= point <= hi]
         if window:
@@ -166,6 +172,6 @@ def _snap_offset(
         window = [point for point in group if start < point < end]
         if window:
             return min(window, key=lambda point: (abs(point - target), point))
-    if start < target < end and target - start <= max_chars:
+    if start < target < end and not unit_count_exceeds(text, start, target, max_chars):
         return target
     return None

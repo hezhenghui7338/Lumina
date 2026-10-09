@@ -161,7 +161,7 @@ struct SegmentBoundarySheet: View {
             )
             let split = SegmentBoundaryOffset.split(
                 concat,
-                unicodeOffset: result.left_char_count
+                unicodeOffset: result.snapped_offset ?? result.left_char_count
             )
             onApplied(result, split.0, split.1)
         } catch {

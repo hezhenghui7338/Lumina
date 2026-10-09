@@ -24,7 +24,7 @@ public enum HealthPollDecision
 /// Decisions for replacing a leftover lumina-core process on the fixed sidecar port.
 public static class SidecarReadiness
 {
-    public const string ExpectedChunkerVersion = "16";
+    public const string ExpectedChunkerVersion = "17";
     public const double HealthPollBudgetSeconds = 30;
     public const string MessageTimeout = "AI 引擎启动超时，请重试或退出。";
     public const string MessageProcessExited = "AI 引擎进程已退出，请重试。";

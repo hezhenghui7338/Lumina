@@ -97,6 +97,7 @@ class AppState:
     context_probe_status: dict[str, Any] = field(default_factory=dict)
     cursor_sdk_install_task: asyncio.Task[Any] | None = field(default=None, repr=False)
     cpu_job_lock: asyncio.Semaphore = field(default_factory=lambda: asyncio.Semaphore(1))
+    news_sync_lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
     # Cold-start gate: pending|running|done|failed
     startup_news_phase: str = "pending"
     startup_news_detail: str | None = None
@@ -173,14 +174,14 @@ class AppState:
                 except RuntimeError:
                     return
 
-        threading.Thread(
-            target=_run, name="lumina-boot-news", daemon=True
-        ).start()
-
         try:
-            results = await asyncio.wait_for(
-                result_fut, timeout=BOOT_NEWS_SYNC_TIMEOUT_S
-            )
+            async with self.news_sync_lock:
+                threading.Thread(
+                    target=_run, name="lumina-boot-news", daemon=True
+                ).start()
+                results = await asyncio.wait_for(
+                    result_fut, timeout=BOOT_NEWS_SYNC_TIMEOUT_S
+                )
             errors = [r.error for r in results if r.error]
             if errors:
                 self.startup_news_phase = "failed"

@@ -7,6 +7,7 @@ import re
 import pytest
 
 from lumina_core.chunker.chunker import chunk_text
+from lumina_core.chunker.units import count_units
 from lumina_core.chunker.embeddings import FallbackBoundaryScorer, RuleBoundaryScorer
 from lumina_core.chunker.semantic import (
     BoundaryStrength,
@@ -333,14 +334,14 @@ def test_spaced_chapter_title_after_max_pack_does_not_keep_tail():
 def test_separator_glued_chapter_title_does_not_merge_next_chapter():
     """TXT dash-prefixed 第N章 is HARD; （第N回完） is not a cut."""
     budget = ChunkBudget(target_chars=1500, max_chars=2400, min_chars=500)
-    previous = "段誉心中焦急，说道：“木姑娘，你让我下马吧，你一个人容易脱身。”" * 16
+    previous = "段誉心中焦急，说道：“木姑娘，你让我下马吧，你一个人容易脱身。”" * 22
     reveal = (
         "木婉清向段誉招了招手，说道：“你过来。”段誉一跛一拐的走到她身前。"
         "木婉清背脊向着南海鳄神，低声道：“你是世上第一个见到我容貌的男子！”"
         "缓缓拉开了面幕。"
     )
     heading = "————————————第四章崖高人远"
-    sequel = "奔出数里，黑玫瑰走上了一条长岭，山岭渐见崎岖。" * 8
+    sequel = "奔出数里，黑玫瑰走上了一条长岭，山岭渐见崎岖。" * 12
     text = (
         f"{previous}\n"
         "　　（第三回完）\n"
@@ -383,8 +384,8 @@ def test_bare_chapter_line_inside_toc_is_not_a_hard_cut():
 
 
 def test_topic_shift_can_cut_below_min_chars():
-    left = "山林生态研究记录了松树、溪流、鸟类和季节变化。" * 24
-    right = "数据库事务讨论锁、日志、索引、提交与故障恢复。" * 24
+    left = "山林生态研究记录了松树、溪流、鸟类和季节变化。" * 28
+    right = "数据库事务讨论锁、日志、索引、提交与故障恢复。" * 28
     budget = ChunkBudget(target_chars=1200, max_chars=1600, min_chars=700)
     segments = chunk_text(
         f"{left}\n\n{right}",
@@ -447,7 +448,7 @@ def test_final_tail_keeps_whole_paragraphs():
         scorer=FixedScorer(0.0),
     )
     assert "".join(segment.raw_text for segment in segments) == text
-    assert all(len(segment.raw_text) <= 900 for segment in segments)
+    assert all(count_units(segment.raw_text) <= 900 for segment in segments)
     for paragraph in paragraphs:
         holders = [segment for segment in segments if paragraph in segment.raw_text]
         assert len(holders) == 1, paragraph[:20]
@@ -576,7 +577,7 @@ def test_global_500_char_floor_for_unstructured_text(length: int):
         scorer=FixedScorer(0.0),
     )
     assert "".join(segment.raw_text for segment in segments) == "文" * length
-    assert all(len(segment.raw_text) <= 1000 for segment in segments)
+    assert all(count_units(segment.raw_text) <= 1000 for segment in segments)
     if length >= 500:
         assert all(len(segment.raw_text) >= 500 for segment in segments)
 
@@ -592,7 +593,7 @@ def test_small_target_does_not_collapse_long_prose(target: int):
     segments = chunk_text(text, budget=budget, scorer=FixedScorer(0.0))
     assert "".join(segment.raw_text for segment in segments) == text
     assert len(segments) >= 2
-    assert all(len(segment.raw_text) <= budget.max_chars for segment in segments)
+    assert all(count_units(segment.raw_text) <= budget.max_chars for segment in segments)
     for segment in segments[:-1]:
         assert len(segment.raw_text) >= budget.min_chars
 
@@ -608,7 +609,7 @@ def test_small_target_unstructured_text_still_splits(target: int):
     )
     assert "".join(segment.raw_text for segment in segments) == "文" * length
     assert len(segments) >= 2
-    assert all(len(segment.raw_text) <= budget.max_chars for segment in segments)
+    assert all(count_units(segment.raw_text) <= budget.max_chars for segment in segments)
 
 
 def test_scorer_chain_falls_back_after_failure():

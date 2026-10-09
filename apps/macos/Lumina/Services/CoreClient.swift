@@ -452,7 +452,6 @@ enum LibraryCollection: Hashable, Identifiable {
     case unread
     case reading
     case finished
-    case favorite
     case categoryAll
     case category(String)
 
@@ -470,7 +469,6 @@ enum LibraryCollection: Hashable, Identifiable {
         case .unread: return "unread"
         case .reading: return "reading"
         case .finished: return "finished"
-        case .favorite: return "favorite"
         case .categoryAll: return "category-all"
         case .category(let name): return name
         }
@@ -495,7 +493,6 @@ enum LibraryCollection: Hashable, Identifiable {
         case .unread: return "未读"
         case .reading: return "在读"
         case .finished: return "已读完"
-        case .favorite: return "收藏"
         case .category(let name): return name
         }
     }
@@ -512,7 +509,6 @@ enum LibraryCollection: Hashable, Identifiable {
         case .unread: return "book.closed"
         case .reading: return "book"
         case .finished: return "checkmark.circle.fill"
-        case .favorite: return "star.fill"
         case .categoryAll: return "tag"
         case .category(let name):
             return LibraryFilter.category(name).systemImage
@@ -523,7 +519,6 @@ enum LibraryCollection: Hashable, Identifiable {
         switch self {
         case .summaryAll, .idle, .segmenting, .summarizing, .summarized, .ingestFailed: return .summary
         case .readingAll, .unread, .reading, .finished: return .reading
-        case .favorite: return .favorite
         case .categoryAll, .category: return .category
         }
     }
@@ -554,8 +549,6 @@ enum LibraryCollection: Hashable, Identifiable {
             return book.readingProgressBucket == .reading
         case .finished:
             return book.readingProgressBucket == .finished
-        case .favorite:
-            return book.isFavorite
         case .category(let name):
             return book.category == name
         }
@@ -599,24 +592,21 @@ enum LibraryCollection: Hashable, Identifiable {
         return [
             .summaryAll, .idle, .segmenting, .summarizing, .summarized, .ingestFailed,
             .readingAll, .unread, .reading, .finished,
-            .favorite,
             .categoryAll,
         ] + cats.map { .category($0) }
     }
 }
 
-/// Combined bookshelf filters: summary × reading × category (AND), plus optional 收藏.
+/// Combined bookshelf filters: summary × reading × category (AND).
 struct LibraryFacetQuery: Equatable {
     var summary: LibraryCollection = .summaryAll
     var reading: LibraryCollection = .readingAll
     var category: LibraryCollection = .categoryAll
-    var favoriteOnly: Bool = false
 
     var isDefault: Bool {
         summary == .summaryAll
             && reading == .readingAll
             && category == .categoryAll
-            && !favoriteOnly
     }
 
     var title: String {
@@ -624,7 +614,6 @@ struct LibraryFacetQuery: Equatable {
         var parts: [String] = []
         if summary != .summaryAll { parts.append(summary.label) }
         if reading != .readingAll { parts.append(reading.label) }
-        if favoriteOnly { parts.append(LibraryCollection.favorite.label) }
         if category != .categoryAll { parts.append(category.label) }
         return parts.joined(separator: " · ")
     }
@@ -633,12 +622,10 @@ struct LibraryFacetQuery: Equatable {
         summary.matches(book)
             && reading.matches(book)
             && category.matches(book)
-            && (!favoriteOnly || book.isFavorite)
     }
 
     func isSelected(_ item: LibraryCollection) -> Bool {
         switch item {
-        case .favorite: return favoriteOnly
         case .summaryAll, .idle, .segmenting, .summarizing, .summarized, .ingestFailed: return summary == item
         case .readingAll, .unread, .reading, .finished: return reading == item
         case .categoryAll, .category: return category == item
@@ -651,27 +638,21 @@ struct LibraryFacetQuery: Equatable {
             summary = item
         case .readingAll, .unread, .reading, .finished:
             reading = item
-        case .favorite:
-            favoriteOnly.toggle()
         case .categoryAll, .category:
             category = item
         }
     }
 
-    /// Query that would apply if `item` were selected (收藏 counts as on, not toggled).
+    /// Query that would apply if `item` were selected.
     func projecting(_ item: LibraryCollection) -> LibraryFacetQuery {
         var copy = self
-        if item == .favorite {
-            copy.favoriteOnly = true
-        } else {
-            copy.apply(item)
-        }
+        copy.apply(item)
         return copy
     }
 
     static func fromLegacyCollection(_ raw: String) -> LibraryFacetQuery {
         switch raw {
-        case "all", "recent", "summary-all", "reading-all", "category-all", "":
+        case "all", "recent", "summary-all", "reading-all", "category-all", "", "favorite":
             return LibraryFacetQuery()
         case "idle":
             return LibraryFacetQuery(summary: .idle)
@@ -689,8 +670,6 @@ struct LibraryFacetQuery: Equatable {
             return LibraryFacetQuery(reading: .reading)
         case "finished":
             return LibraryFacetQuery(reading: .finished)
-        case "favorite":
-            return LibraryFacetQuery(favoriteOnly: true)
         default:
             return LibraryFacetQuery(category: .category(raw))
         }
@@ -707,7 +686,8 @@ extension LibraryFacetQuery: Codable {
         summary = .summaryFacet(from: try container.decodeIfPresent(String.self, forKey: .summary) ?? "all")
         reading = .readingFacet(from: try container.decodeIfPresent(String.self, forKey: .reading) ?? "all")
         category = .categoryFacet(from: try container.decodeIfPresent(String.self, forKey: .category) ?? "all")
-        favoriteOnly = try container.decodeIfPresent(Bool.self, forKey: .favorite) ?? false
+        // Legacy key `favorite` ignored: sidebar 收藏集合已移除。
+        _ = try container.decodeIfPresent(Bool.self, forKey: .favorite)
     }
 
     func encode(to encoder: Encoder) throws {
@@ -715,14 +695,12 @@ extension LibraryFacetQuery: Codable {
         try container.encode(summary.facetToken, forKey: .summary)
         try container.encode(reading.facetToken, forKey: .reading)
         try container.encode(category.facetToken, forKey: .category)
-        try container.encode(favoriteOnly, forKey: .favorite)
     }
 }
 
 enum LibraryCollectionSection: String, CaseIterable, Identifiable {
     case summary
     case reading
-    case favorite
     case category
 
     var id: String { rawValue }
@@ -731,7 +709,6 @@ enum LibraryCollectionSection: String, CaseIterable, Identifiable {
         switch self {
         case .summary: return "摘要"
         case .reading: return "阅读"
-        case .favorite: return nil
         case .category: return "分类"
         }
     }
@@ -858,6 +835,8 @@ struct SegmentBoundaryMoveResult: Codable {
     let right_idx: Int
     let left_char_count: Int
     let right_char_count: Int
+    /// Unicode scalar cut used to split the concatenated pair. Display counts are `left_char_count`.
+    let snapped_offset: Int?
     let left_anchor_label: String?
     let right_anchor_label: String?
     let left_chapter: String?

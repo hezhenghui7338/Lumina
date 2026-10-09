@@ -123,6 +123,17 @@ class ProfileModelRouter:
     def _resources_for(self, profile: Profile) -> list[ModelResource]:
         return self.models.resources_for_profile(profile)
 
+    @staticmethod
+    def _expand_model_candidates(resources: list[ModelResource]) -> list[ModelResource]:
+        """Expand semicolon-delimited model fields into ordered route entries."""
+        expanded: list[ModelResource] = []
+        for resource in resources:
+            models = list(dict.fromkeys(
+                part.strip() for part in (resource.model or "").split(";") if part.strip()
+            ))
+            expanded.extend(resource.model_copy(update={"model": model}) for model in models)
+        return expanded
+
     def _client_for(self, resource: ModelResource, *, timeout: float = 120.0) -> httpx.AsyncClient:
         key = f"{resource.base_url}|{resource.api_key or ''}|{timeout}"
         if key not in self._clients:
@@ -297,10 +308,11 @@ class ProfileModelRouter:
         if profile == "summarize":
             resources = [
                 resource.model_copy(
-                    update={"model": resource.summary_model(summary_tier)}
+                    update={"model": ";".join(resource.summary_models(summary_tier))}
                 )
                 for resource in resources
             ]
+        resources = self._expand_model_candidates(resources)
         return await self._complete_with_fallback(
             resources,
             prompt,
@@ -360,6 +372,7 @@ class ProfileModelRouter:
         resources = self._resources_for(profile)
         if not resources:
             raise RuntimeError(f"no resources configured for profile {profile}")
+        resources = self._expand_model_candidates(resources)
         self.clear_chat_metrics()
         if stream:
             return self._chat_stream_with_fallback(

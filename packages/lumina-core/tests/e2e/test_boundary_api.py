@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
+from lumina_core.chunker.units import count_units
 from lumina_core.config import Settings
 from lumina_core.db.repos import BookRepo
 from lumina_core.main import create_app
@@ -41,9 +42,11 @@ def client(tmp_path, monkeypatch):
 def _import_long_book(client: TestClient, tmp_path: Path) -> str:
     sample = tmp_path / "boundary-book.txt"
     sample.write_text(
+        # 混合语言计数不计空格和标点。80 段约 2960 字，低于 Ollama 硬上限 3000，
+        # 会收成一段，边界接口没有右邻。220 段超过云端硬上限 6000，保证至少两段。
         "\n\n".join(
             f"第 {i} 段。这是一段用于验证手动调整语义边界的测试文字，包含完整句子和稳定段落。"
-            for i in range(80)
+            for i in range(220)
         ),
         encoding="utf-8",
     )
@@ -108,6 +111,8 @@ def test_move_boundary_rewrites_pair_and_requeues_summaries(client, tmp_path):
 
     new_left = client.get(f"/books/{book_id}/segments/0").json()
     new_right = client.get(f"/books/{book_id}/segments/1").json()
+    assert payload["snapped_offset"] == len(new_left["raw_text"])
+    assert new_left["char_count"] == count_units(new_left["raw_text"])
     assert new_left["raw_text"] + new_right["raw_text"] == original
     assert new_left["id"] == left["id"]
     assert new_right["id"] == right["id"]

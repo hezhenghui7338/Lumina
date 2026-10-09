@@ -24,7 +24,6 @@ public sealed partial class LibraryPage : Page
     private string _summary = LibraryFacets.All;
     private string _reading = LibraryFacets.All;
     private string _category = LibraryFacets.All;
-    private bool _favoriteOnly;
     private string _sort = LibrarySorts.Recent;
     private string _sortOrder = LibrarySorts.Desc;
     private string _titleQuery = "";
@@ -40,7 +39,6 @@ public sealed partial class LibraryPage : Page
         _summary = LocalPrefs.LibrarySummary;
         _reading = LocalPrefs.LibraryReading;
         _category = LocalPrefs.LibraryCategory;
-        _favoriteOnly = LocalPrefs.LibraryFavoriteOnly;
         _sort = LocalPrefs.LibrarySort;
         _sortOrder = LibrarySorts.NormalizeOrder(LocalPrefs.LibrarySortOrder, _sort);
         _gridMode = LocalPrefs.LibraryGridMode;
@@ -182,17 +180,6 @@ public sealed partial class LibraryPage : Page
         AddRadio(LibraryFacets.ReadingGroup, "在读", LibraryCollections.Reading, _reading);
         AddRadio(LibraryFacets.ReadingGroup, "已读完", LibraryCollections.Finished, _reading);
 
-        var favorite = new CheckBox
-        {
-            Content = "收藏",
-            Tag = LibraryCollections.Favorite,
-            IsChecked = _favoriteOnly,
-            Margin = new Thickness(0, 12, 0, 4),
-        };
-        favorite.Checked += FavoriteFilter_Changed;
-        favorite.Unchecked += FavoriteFilter_Changed;
-        FilterPane.Children.Add(favorite);
-
         AddHeader("分类");
         AddRadio(LibraryFacets.CategoryGroup, "全部", LibraryFacets.All, _category);
         foreach (var c in categories.Concat(LibraryCollections.FallbackCategories).Distinct())
@@ -232,11 +219,11 @@ public sealed partial class LibraryPage : Page
     private void ApplyLocalFilters()
     {
         IEnumerable<BookSummary> q = _allBooks.Where(b =>
-            LibraryFacets.Matches(b, _summary, _reading, _category, _favoriteOnly));
+            LibraryFacets.Matches(b, _summary, _reading, _category));
         if (!string.IsNullOrWhiteSpace(_titleQuery))
             q = q.Where(b => b.Title.Contains(_titleQuery, StringComparison.CurrentCultureIgnoreCase));
         var list = LibrarySorts.Sorted(q, _sort, _sortOrder).ToList();
-        if (LibraryFacets.IsDefault(_summary, _reading, _category, _favoriteOnly)
+        if (LibraryFacets.IsDefault(_summary, _reading, _category)
             && _sort == LibrarySorts.Recent)
         {
             list = LibrarySorts.PrioritizeSummarizeActivity(list).ToList();
@@ -246,7 +233,7 @@ public sealed partial class LibraryPage : Page
         BooksList.ItemsSource = list;
         BooksGrid.ItemsSource = list;
         _visibleBooks = list;
-        TitleText.Text = LibraryFacets.Title(_summary, _reading, _category, _favoriteOnly);
+        TitleText.Text = LibraryFacets.Title(_summary, _reading, _category);
         StatusText.Text = _allBooks.Count == 0
             ? "暂无书籍，点击「导入」开始"
             : list.Count == 0
@@ -262,7 +249,7 @@ public sealed partial class LibraryPage : Page
         LocalPrefs.LibrarySummary = _summary;
         LocalPrefs.LibraryReading = _reading;
         LocalPrefs.LibraryCategory = _category;
-        LocalPrefs.LibraryFavoriteOnly = _favoriteOnly;
+        LocalPrefs.LibraryFavoriteOnly = false;
         LocalPrefs.LibrarySort = _sort;
         LocalPrefs.LibrarySortOrder = _sortOrder;
         LocalPrefs.LibraryGridMode = _gridMode;
@@ -275,15 +262,8 @@ public sealed partial class LibraryPage : Page
             if (radio.Tag is not string tag || radio.GroupName is not string group) continue;
             var label = LibraryFacets.IsAll(tag) ? "全部" : LibraryCollections.Label(tag);
             var count = _allBooks.Count(b => LibraryFacets.MatchesProjected(
-                b, group, tag, _summary, _reading, _category, _favoriteOnly));
+                b, group, tag, _summary, _reading, _category));
             radio.Content = count > 0 ? $"{label}  {count}" : label;
-        }
-        if (FilterPane.Children.OfType<CheckBox>().FirstOrDefault() is { } favorite)
-        {
-            var count = _allBooks.Count(b => LibraryFacets.MatchesProjected(
-                b, LibraryCollections.Favorite, LibraryCollections.Favorite,
-                _summary, _reading, _category, _favoriteOnly));
-            favorite.Content = count > 0 ? $"收藏  {count}" : "收藏";
         }
     }
 
@@ -364,13 +344,6 @@ public sealed partial class LibraryPage : Page
             case LibraryFacets.CategoryGroup: _category = tag; break;
             default: return;
         }
-        ApplyLocalFilters();
-    }
-
-    private void FavoriteFilter_Changed(object sender, RoutedEventArgs e)
-    {
-        if (_suppressFilter) return;
-        _favoriteOnly = (sender as CheckBox)?.IsChecked == true;
         ApplyLocalFilters();
     }
 
@@ -878,7 +851,7 @@ public sealed partial class LibraryPage : Page
         try
         {
             var libraryWide = LibrarySummarizeScope.IsLibraryWide(
-                LibraryFacets.IsDefault(_summary, _reading, _category, _favoriteOnly),
+                LibraryFacets.IsDefault(_summary, _reading, _category),
                 _titleQuery);
             var ids = LibrarySummarizeScope.IdsForUnselectedStart(_visibleBooks, libraryWide);
             if (ids is { Count: 0 })

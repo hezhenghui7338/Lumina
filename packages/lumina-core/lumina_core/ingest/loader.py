@@ -11,6 +11,7 @@ from typing import Any
 
 from lumina_core.chunker.chunker import ChunkSegment, chunk_text
 from lumina_core.chunker.semantic import PairScorer
+from lumina_core.chunker.units import count_units
 from lumina_core.config import MAX_FILE_BYTES, ChunkBudget, Settings
 from lumina_core.ingest.docx import load_docx
 from lumina_core.ingest.epub import load_epub
@@ -164,7 +165,7 @@ def build_segments(
                 "page_range": chunk.page_range,
                 "anchor_label": f"〔{anchor}〕",
                 "raw_text": chunk.raw_text,
-                "char_count": len(chunk.raw_text),
+                "char_count": count_units(chunk.raw_text),
                 "summary_status": "pending",
                 "retry_count": 0,
             }

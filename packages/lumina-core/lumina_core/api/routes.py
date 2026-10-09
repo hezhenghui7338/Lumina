@@ -35,6 +35,7 @@ from lumina_core.chunker.boundary import (
     list_cut_offsets,
     segment_anchor_label,
 )
+from lumina_core.chunker.units import count_units
 from lumina_core.config import (
     CHUNK_MAX_CHARS,
     CHUNKER_VERSION,
@@ -1415,11 +1416,14 @@ def _boundary_payload(
     oversized: bool = False,
     unchanged: bool = False,
 ) -> dict[str, Any]:
+    left_text = left.get("raw_text") or ""
+    right_text = right.get("raw_text") or ""
     return {
         "left_idx": left["idx"],
         "right_idx": right["idx"],
-        "left_char_count": left.get("char_count") or len(left.get("raw_text") or ""),
-        "right_char_count": right.get("char_count") or len(right.get("raw_text") or ""),
+        "left_char_count": left.get("char_count") or count_units(left_text),
+        "right_char_count": right.get("char_count") or count_units(right_text),
+        "snapped_offset": len(left_text),
         "left_anchor_label": left.get("anchor_label"),
         "right_anchor_label": right.get("anchor_label"),
         "left_chapter": left.get("chapter"),
@@ -2180,7 +2184,7 @@ async def ollama_status(request: Request, resource_id: str = "ollama") -> dict[s
     payload["served"] = status.probe_ok
     payload["model"] = resource.model or ""
     payload["probe_detail"] = status.message
-    payload["selected_model"] = resource.model
+    payload["selected_model"] = resource.primary_model
     return payload
 
 
@@ -2337,7 +2341,9 @@ async def delete_news_source(source_id: str, request: Request) -> dict[str, str]
 @router.post("/news/sync")
 async def news_sync(request: Request) -> dict[str, Any]:
     # Run blocking RSS I/O off the event loop so library JobQueue can keep scheduling.
-    results = await asyncio.to_thread(sync_all, _state(request).conn)
+    state = _state(request)
+    async with state.news_sync_lock:
+        results = await asyncio.to_thread(sync_all, state.conn)
     return {
         "results": [
             {
