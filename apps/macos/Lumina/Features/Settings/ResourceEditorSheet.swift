@@ -8,6 +8,7 @@ enum ResourceEditorCopy {
     static let normalModelLabel = "正常模型"
     static let advancedModelLabel = "高级模型"
     static let advancedModelPlaceholder = "留空则使用正常模型"
+    static let modelListHint = "多个模型用 ; 分隔，按从左到右顺序尝试；全部失败后继续下一个资源"
     static let baseURLLabel = "Base URL"
     static let apiKeyLabel = "API Key"
     static let availableModelsLabel = "可用模型"
@@ -133,6 +134,9 @@ struct ResourceEditorSheet: View {
             )
             .textFieldStyle(.roundedBorder)
         }
+        Text(ResourceEditorCopy.modelListHint)
+            .font(.footnote)
+            .foregroundStyle(.secondary)
         if kind.showsBaseURL {
             ResourceFormField(label: ResourceEditorCopy.baseURLLabel) {
                 TextField("", text: $resource.base_url, prompt: Text("https://…"))

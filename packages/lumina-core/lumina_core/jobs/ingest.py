@@ -14,6 +14,7 @@ from lumina_core.chunker.document_map import heuristic_document_map, refine_docu
 from lumina_core.chunker.embeddings import build_boundary_scorer
 from lumina_core.chunker.llm_cuts import refine_spans_with_llm
 from lumina_core.chunker.tree import build_document_tree
+from lumina_core.chunker.units import count_units
 from lumina_core.config import (
     CHUNKER_VERSION,
     ModelsConfig,
@@ -153,7 +154,7 @@ def _payload_ingest_sync(
         raise DocumentLoadCancelled("已取消")
     segments = build_segments(book_id, text, chunks=chunks)
     ingest_meta = slim_book_metadata(metadata)
-    ingest_meta["total_char_count"] = len(text.strip())
+    ingest_meta["total_char_count"] = count_units(text.strip())
     ingest_meta["chunker_version"] = CHUNKER_VERSION
     ingest_meta["chunk_target_chars"] = budget.target_chars
     ingest_meta["segment_tier"] = segment_tier

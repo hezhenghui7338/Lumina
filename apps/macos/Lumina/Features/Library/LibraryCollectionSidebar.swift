@@ -46,6 +46,6 @@ struct LibraryCollectionSidebar: View {
         .buttonStyle(.plain)
         .listRowBackground(selected ? LuminaTheme.libraryRowSelectionBackground : Color.clear)
         .accessibilityAddTraits(selected ? [.isSelected] : [])
-        .accessibilityHint(item == .favorite ? "与摘要、阅读、分类一起筛选" : "与其他筛选条件联合查询")
+        .accessibilityHint("与其他筛选条件联合查询")
     }
 }

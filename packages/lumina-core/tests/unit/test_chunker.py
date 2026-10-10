@@ -1,6 +1,7 @@
 """Chunker unit tests."""
 
 from lumina_core.chunker.chunker import chunk_text
+from lumina_core.chunker.units import count_units
 from lumina_core.config import (
     CHUNK_MAX_CHARS,
     OLLAMA_CHUNK_MAX,
@@ -27,7 +28,7 @@ def test_8000_char_short_book_respects_model_hard_max():
     segments = chunk_text(text, budget=budget)
 
     assert len(segments) >= 3
-    assert all(len(segment.raw_text) <= budget.max_chars for segment in segments)
+    assert all(count_units(segment.raw_text) <= budget.max_chars for segment in segments)
     assert "".join(segment.raw_text for segment in segments) == text
 
 
@@ -90,8 +91,8 @@ def test_epub_toc_markers_do_not_create_tiny_segments():
     segments = chunk_text(text, budget=budget)
 
     assert len(segments) > 1
-    assert min(len(segment.raw_text) for segment in segments[:-1]) >= budget.min_chars
-    assert min(len(segment.raw_text) for segment in segments) >= 1000
+    assert min(count_units(segment.raw_text) for segment in segments[:-1]) >= budget.min_chars
+    assert min(count_units(segment.raw_text) for segment in segments) >= 500
     assert "".join(segment.raw_text for segment in segments) == text
 
 
@@ -132,7 +133,7 @@ def test_segments_within_max_chars():
     text = "第一章 开篇\n\n" + ("段落内容。" * 1500 + "\n\n") * 40
     segments = chunk_text(text)
     for seg in segments:
-        assert len(seg.raw_text) <= CHUNK_MAX_CHARS
+        assert count_units(seg.raw_text) <= CHUNK_MAX_CHARS
 
 
 def test_ollama_budget_segments_within_max_chars():
@@ -145,7 +146,7 @@ def test_ollama_budget_segments_within_max_chars():
     segments = chunk_text(text, budget=budget)
     assert len(segments) >= 2
     for seg in segments:
-        assert len(seg.raw_text) <= OLLAMA_CHUNK_MAX
+        assert count_units(seg.raw_text) <= OLLAMA_CHUNK_MAX
 
 
 def test_ollama_budget_defaults():
@@ -203,7 +204,7 @@ def test_page_marker_scanned_once_not_per_segment(monkeypatch):
 
     probe = Probe()
     monkeypatch.setattr(chunker_mod, "PAGE_MARKER", probe)
-    parts = [f"## [p.{i}]\n" + ("正文句子。" * 50) for i in range(1, 30)]
+    parts = [f"## [p.{i}]\n" + ("正文句子。" * 50) for i in range(1, 40)]
     text = "\n".join(parts)
     segments = chunk_text(text)
     assert len(segments) >= 2

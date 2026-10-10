@@ -10,6 +10,7 @@ from collections.abc import Iterator
 
 from lumina_core.chunker.chunker import ChunkSegment, chunk_text
 from lumina_core.chunker.coop import CharProgressFn, GilYielder, ScanProgress, coerce_char_progress
+from lumina_core.chunker.units import advance_units
 from lumina_core.config import ChunkBudget, resolve_chunk_budget
 from lumina_core.ingest.text import (
     EncodingPlan,
@@ -150,7 +151,7 @@ def iter_txt_chunks(
             chunks = chunk_buffer()
             if len(chunks) <= 1:
                 # Rare: one span still longer than the window. Force a cut.
-                cut = min(len(buffer), resolved.max_chars)
+                cut = advance_units(buffer, 0, resolved.max_chars)
                 if cut <= 0:
                     break
                 forced = [

@@ -308,7 +308,7 @@ async def run_context_probe(
     timeout: float = CONTEXT_PROBE_TIMEOUT_SECONDS,
 ) -> ContextProbeStatus:
     status.status = "running"
-    status.model = resource.model
+    status.model = resource.primary_model
     status.current_chars = None
     status.max_ok_chars = None
     status.recommended_chars = None

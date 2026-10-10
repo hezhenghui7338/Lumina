@@ -88,7 +88,7 @@ def test_segment_prompt_settings_cloud_primary_openai():
     assert template == (prompts.segment_cloud or prompts.segment)
     assert template == SUMMARY_PROMPT_CLOUD
     assert text_limit == CLOUD_CHUNK_MAX
-    assert retries == 3
+    assert retries == 5
     assert min_body == 12
     assert text_only is True
     assert minimal is True

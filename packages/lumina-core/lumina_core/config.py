@@ -15,9 +15,9 @@ from pydantic_settings import BaseSettings
 
 # App / engine identity. Must match pyproject version and desktop marketing versions.
 # Clients replace a leftover sidecar when this disagrees, even if CHUNKER_VERSION matches.
-CORE_VERSION = "1.4.7"
+CORE_VERSION = "1.4.8"
 # Segmentation algorithm id only. Do not use this as the "engine is current" signal.
-CHUNKER_VERSION = "16"
+CHUNKER_VERSION = "17"
 DOCUMENT_MAP_TIMEOUT_SECONDS = float(
     os.getenv("LUMINA_DOCUMENT_MAP_TIMEOUT", "20")
 )
@@ -39,7 +39,7 @@ OLLAMA_KEEP_ALIVE = os.getenv("LUMINA_OLLAMA_KEEP_ALIVE", "30m")
 CLOUD_CHUNK_TARGET = 4000
 CLOUD_CHUNK_MAX = 6000
 SEGMENT_CACHE_QUOTA_BYTES = 2 * 1024 * 1024 * 1024  # 2GB
-MAX_SUMMARY_RETRIES = 3
+MAX_SUMMARY_RETRIES = 5
 OLLAMA_SUMMARY_MAX_RETRIES = 2
 SUMMARY_JOB_MAX_RETRIES = 2
 # After this many cumulative job failures on one segment, accept with relaxed quality.
@@ -228,6 +228,21 @@ class ModelResource(BaseModel):
         if tier == "advanced" and (self.advanced_model or "").strip():
             return (self.advanced_model or "").strip()
         return self.model
+
+    def summary_models(self, tier: str = "normal") -> list[str]:
+        """Return configured model candidates in preference order."""
+        def parse(value: str) -> list[str]:
+            return list(dict.fromkeys(part.strip() for part in value.split(";") if part.strip()))
+
+        if tier == "advanced":
+            advanced = parse(self.advanced_model or "")
+            if advanced:
+                return advanced
+        return parse(self.model or "")
+
+    @property
+    def primary_model(self) -> str:
+        return next((part.strip() for part in self.model.split(";") if part.strip()), "")
 
 
 class ProfileRoute(BaseModel):

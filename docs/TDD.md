@@ -438,7 +438,7 @@ load_document
   → DocumentSegment[] + chapter / heading_path / page 元数据
 ```
 
-角色只存在于结构元数据，**不得**写入 `raw_text` / 读者可见锚点。每段不少于 `SEGMENT_HARD_MIN_CHARS = 200` 字；HARD 章标题空壳（含 `## [§…]` 与紧随的「第N章」行）及目录碎屑必须并入**下文**至 ≥200，不足时可**跨章**向后合并。仅全书剩余不足 200 字时允许短段。`SEGMENT_MIN_CHARS = 500` 仍约束同一角色内 TOC 碎屑与话题切碎片。**目标段长 / soft floor** 打包不得跨章或跨角色填长度（短章不得为凑 target 吞下一章）；硬地板 200 不受该限制。用户 budget 的 `min_chars < 500`（目标约 200–416）时 500 碎屑地板让位于该 budget，但不得低于 200，除非全书尾不足。章内二次切分按 **章 > 自然段 > 句号 > 语义** 的硬阶梯：未超过 `max_chars` 的自然段不得劈开；句号只用于单段超长；embedding / 规则 novelty 只在段界上提前停。完整自然段优先于 0.6T 地板；章末或下一段整段放不进 max 时允许短块。有句末标点时禁止按字数在句中硬切。重平衡无法同时满足地板与 `max_chars` 时，优先遵守 `max_chars` 与段完整性，不得把全书并成一段。目录页连续短标题（即使无字面「目录」）在遇到实质正文前边界降为 STRONG，避免章名各自成段。
+角色只存在于结构元数据，**不得**写入 `raw_text` / 读者可见锚点。预算里的「字」不是码位：汉字、假名、谚文音节各计 1，一段连续的其他字母或数字计 1，空格和标点不计；泰文、老挝文、高棉文按码点计 1。字符串切点与 `left_char_count` 请求偏移仍是码位；展示用 `char_count` 与分段预算用上述字数。每段不少于 `SEGMENT_HARD_MIN_CHARS = 200` 字；HARD 章标题空壳（含 `## [§…]` 与紧随的「第N章」行）及目录碎屑必须并入**下文**至 ≥200，不足时可**跨章**向后合并。仅全书剩余不足 200 字时允许短段。`SEGMENT_MIN_CHARS = 500` 仍约束同一角色内 TOC 碎屑与话题切碎片。**目标段长 / soft floor** 打包不得跨章或跨角色填长度（短章不得为凑 target 吞下一章）；硬地板 200 不受该限制。用户 budget 的 `min_chars < 500`（目标约 200–416）时 500 碎屑地板让位于该 budget，但不得低于 200，除非全书尾不足。章内二次切分按 **章 > 自然段 > 句号 > 语义** 的硬阶梯：未超过 `max_chars` 的自然段不得劈开；句号只用于单段超长；embedding / 规则 novelty 只在段界上提前停。完整自然段优先于 0.6T 地板；章末或下一段整段放不进 max 时允许短块。有句末标点时禁止按字数在句中硬切。重平衡无法同时满足地板与 `max_chars` 时，优先遵守 `max_chars` 与段完整性，不得把全书并成一段。目录页连续短标题（即使无字面「目录」）在遇到实质正文前边界降为 STRONG，避免章名各自成段。
 
 **Lumina 参数（v1.0 默认）**
 
@@ -462,6 +462,7 @@ load_document
 摘要请求携带 `summary_tier: normal | advanced`（缺省为 `normal`）。`ModelResource.model`
 保持为正常模型以兼容旧 `models.json`，可选 `advanced_model` 用于高级摘要；为空时回退
 `model`。两档共用 `summarize.priority` fallback 链。`segments.summary_tier` 记录实际档位，
+两个模型字段均允许以分号分隔候选值，路由按字段顺序展开并逐个失败回退，再继续资源优先级链；
 历史数据迁移为 `normal`。「开始摘要」携带新档位时仅对未完成段生效，已 ready
 段保留原摘要与原档位。客户端点「开始摘要」默认提交 `normal`，点旁边箭头并确认后提交
 `advanced`；悬停文字不得展开高级。「全书重新摘要」(`POST .../summarize/regenerate`) 才会
@@ -667,7 +668,7 @@ Sidecar 绑定 `127.0.0.1` only；无认证（本机进程）。
 | GET | `/health` | Sidecar 存活 |
 | POST | `/books/import` | 导入文件/文件夹；**409** + `{existing_book_id}` 若 `file_hash` 重复 |
 | POST | `/books/{id}/import/overwrite` | 用户确认覆盖后重新导入 |
-| GET | `/books` | 书库列表；`?filter=all\|unread\|reading\|finished\|idle\|segmenting\|summarizing\|summarized\|error\|favorite\|<分类>`；`summarize_state` 含 `segmenting`（`status=processing`）；`filter=error` 为导入失败（`status=error`，含取消）；失败书不进入 idle/segmenting/summarizing/summarized；`?sort=recent\|added\|title\|segments\|progress\|favorite` |
+| GET | `/books` | 书库列表；`?filter=all\|unread\|reading\|finished\|idle\|segmenting\|summarizing\|summarized\|error\|favorite\|<分类>`（`filter=favorite` 仍可用，UI 侧栏已无「收藏」集合）；`summarize_state` 含 `segmenting`（`status=processing`）；`filter=error` 为导入失败（`status=error`，含取消）；失败书不进入 idle/segmenting/summarizing/summarized；`?sort=recent\|added\|title\|segments\|progress\|favorite` |
 | GET | `/books/categories` | 固定 LLM 主分类枚举 |
 | PATCH | `/books/{id}` | 更新收藏 / 分类 / 标题 |
 | DELETE | `/books/{id}` | 删除书及本地副本、摘要、笔记 |

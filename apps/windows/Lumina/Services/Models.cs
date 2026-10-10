@@ -396,7 +396,6 @@ public static class LibraryCollections
     public const string Unread = "unread";
     public const string Reading = "reading";
     public const string Finished = "finished";
-    public const string Favorite = "favorite";
 
     public static readonly string[] FallbackCategories =
         ["文学", "历史", "科技", "哲学", "经济", "传记", "其他"];
@@ -413,7 +412,6 @@ public static class LibraryCollections
         Unread => "未读",
         Reading => "在读",
         Finished => "已读完",
-        Favorite => "收藏",
         _ => raw,
     };
 
@@ -430,7 +428,6 @@ public static class LibraryCollections
         Unread => book.ReadingProgressBucket == "unread",
         Reading => book.ReadingProgressBucket == "reading",
         Finished => book.ReadingProgressBucket == "finished",
-        Favorite => book.Favorite,
         _ => book.Category == collection,
     };
 }
@@ -442,9 +439,8 @@ public static class LibraryFacets
     public const string ReadingGroup = "Reading";
     public const string CategoryGroup = "Category";
 
-    public static bool IsDefault(
-        string summary, string reading, string category, bool favoriteOnly) =>
-        IsAll(summary) && IsAll(reading) && IsAll(category) && !favoriteOnly;
+    public static bool IsDefault(string summary, string reading, string category) =>
+        IsAll(summary) && IsAll(reading) && IsAll(category);
 
     public static bool IsAll(string? value) =>
         string.IsNullOrEmpty(value) || value is All or LibraryCollections.Recent;
@@ -453,13 +449,11 @@ public static class LibraryFacets
         BookSummary book,
         string summary = All,
         string reading = All,
-        string category = All,
-        bool favoriteOnly = false)
+        string category = All)
     {
         if (!MatchesSummary(summary, book)) return false;
         if (!MatchesReading(reading, book)) return false;
         if (!MatchesCategory(category, book)) return false;
-        if (favoriteOnly && !book.Favorite) return false;
         return true;
     }
 
@@ -488,14 +482,12 @@ public static class LibraryFacets
     public static bool MatchesCategory(string filter, BookSummary book) =>
         IsAll(filter) || book.Category == filter;
 
-    public static string Title(
-        string summary, string reading, string category, bool favoriteOnly)
+    public static string Title(string summary, string reading, string category)
     {
-        if (IsDefault(summary, reading, category, favoriteOnly)) return "书架";
+        if (IsDefault(summary, reading, category)) return "书架";
         var parts = new List<string>();
         if (!IsAll(summary)) parts.Add(LibraryCollections.Label(summary));
         if (!IsAll(reading)) parts.Add(LibraryCollections.Label(reading));
-        if (favoriteOnly) parts.Add(LibraryCollections.Label(LibraryCollections.Favorite));
         if (!IsAll(category)) parts.Add(LibraryCollections.Label(category));
         return string.Join(" · ", parts);
     }
@@ -506,14 +498,12 @@ public static class LibraryFacets
         string value,
         string summary,
         string reading,
-        string category,
-        bool favoriteOnly)
+        string category)
     {
         var nextSummary = group == SummaryGroup ? value : summary;
         var nextReading = group == ReadingGroup ? value : reading;
         var nextCategory = group == CategoryGroup ? value : category;
-        var nextFavorite = group == LibraryCollections.Favorite || favoriteOnly;
-        return Matches(book, nextSummary, nextReading, nextCategory, nextFavorite);
+        return Matches(book, nextSummary, nextReading, nextCategory);
     }
 }
 
@@ -777,6 +767,8 @@ public sealed class SegmentBoundaryMoveResult
     public int RightIdx { get; set; }
     public int LeftCharCount { get; set; }
     public int RightCharCount { get; set; }
+    /// <summary>Unicode scalar cut. <see cref="LeftCharCount"/> is the reading-length count.</summary>
+    public int SnappedOffset { get; set; }
     public string? LeftAnchorLabel { get; set; }
     public string? RightAnchorLabel { get; set; }
     public string? LeftChapter { get; set; }

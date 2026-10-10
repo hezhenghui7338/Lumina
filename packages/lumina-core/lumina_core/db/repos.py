@@ -16,6 +16,7 @@ from lumina_core.chunker.tree import (
     encode_heading_path,
     heading_path_from_chapter,
 )
+from lumina_core.chunker.units import count_units
 from lumina_core.classify.book import BOOK_CATEGORIES
 from lumina_core.db.connection import db_lock, db_transaction
 from lumina_core.search.fts import (
@@ -1584,7 +1585,7 @@ class SegmentRepo:
                 """,
                 (
                     left_text,
-                    len(left_text),
+                    count_units(left_text),
                     summary_tier,
                     left_anchor,
                     left["id"],
@@ -1602,7 +1603,7 @@ class SegmentRepo:
                         "page_range": left.get("page_range"),
                         "anchor_label": right_anchor,
                         "raw_text": right_text,
-                        "char_count": len(right_text),
+                        "char_count": count_units(right_text),
                         "summary_status": "pending",
                         "retry_count": 0,
                         "label": left.get("label"),
@@ -1681,7 +1682,7 @@ class SegmentRepo:
             """,
             (
                 raw_text,
-                len(raw_text),
+                count_units(raw_text),
                 lumina_chapter_label(chapter),
                 encode_heading_path(heading_path_from_chapter(chapter)),
                 page_range,

@@ -78,6 +78,9 @@
                        Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
             <TextBlock x:Name="ResourceStatusText" FontSize="12" TextWrapping="WrapWholeWords"
                        Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+            <TextBlock Text="模型可填写多个候选项，用分号 ; 分隔，按从左到右的顺序尝试；当前资源全部失败后会继续下一个资源。"
+                       FontSize="12" TextWrapping="WrapWholeWords"
+                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
             <TextBox x:Name="OllamaModelBox" Header="Ollama 正常模型" PlaceholderText="qwen3.5:4b"/>
             <TextBox x:Name="OllamaAdvancedModelBox" Header="Ollama 高级模型（留空回退正常模型）"/>
             <TextBox x:Name="OllamaUrlBox" Header="Ollama Base URL" PlaceholderText="http://127.0.0.1:11434"/>

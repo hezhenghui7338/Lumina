@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import logging
 import sys
 import time
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import uvicorn
@@ -17,6 +19,32 @@ from lumina_core.api.ops_routes import router as ops_router
 from lumina_core.api.routes import router
 from lumina_core.app_state import AppState, create_app_state
 from lumina_core.config import Settings
+
+logger = logging.getLogger(__name__)
+
+
+async def _daily_news_sync(state: AppState) -> None:
+    """Run one RSS sync at 09:00 in the machine's local timezone each day."""
+    while True:
+        now = datetime.now().astimezone()
+        next_run = now.replace(hour=9, minute=0, second=0, microsecond=0)
+        if next_run <= now:
+            next_run += timedelta(days=1)
+        await asyncio.sleep((next_run - now).total_seconds())
+        try:
+            from lumina_core.news.sync import sync_all
+
+            async with state.news_sync_lock:
+                results = await asyncio.to_thread(sync_all, state.conn)
+            errors = [result.error for result in results if result.error]
+            if errors:
+                logger.warning("Daily RSS sync completed with errors: %s", "; ".join(errors[:3]))
+            else:
+                logger.info("Daily RSS sync completed (%d feeds)", len(results))
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Daily RSS sync failed")
 
 
 async def _cold_start_pipeline(state: AppState) -> None:
@@ -54,7 +82,15 @@ async def lifespan(app: FastAPI):
         _cold_start_pipeline(state),
         name="lumina-cold-start",
     )
+    daily_news_task = asyncio.create_task(
+        _daily_news_sync(state), name="lumina-daily-news-sync"
+    )
     yield
+    daily_news_task.cancel()
+    try:
+        await daily_news_task
+    except asyncio.CancelledError:
+        pass
     if not startup_task.done():
         startup_task.cancel()
         try:

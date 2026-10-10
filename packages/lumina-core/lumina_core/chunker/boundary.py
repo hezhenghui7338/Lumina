@@ -11,6 +11,7 @@ from lumina_core.chunker.semantic import (
     _SENTENCE_END,
     atomize_text,
 )
+from lumina_core.chunker.units import count_units
 from lumina_core.config import CHUNK_MAX_CHARS, CHUNK_TARGET_CHARS
 
 
@@ -46,8 +47,8 @@ class BoundaryMove:
     @property
     def oversized(self) -> bool:
         return (
-            self.left_char_count > CHUNK_MAX_CHARS
-            or self.right_char_count > CHUNK_MAX_CHARS
+            count_units(self.left_text) > CHUNK_MAX_CHARS
+            or count_units(self.right_text) > CHUNK_MAX_CHARS
         )
 
 

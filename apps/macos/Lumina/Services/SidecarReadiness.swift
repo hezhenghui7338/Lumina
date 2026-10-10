@@ -21,7 +21,7 @@ enum HealthPollDecision: Equatable {
 enum SidecarReadiness {
     /// Must match lumina-core `CHUNKER_VERSION`. A mismatch never marks the sidecar ready,
     /// so library / news / settings all refuse to load.
-    static let expectedChunkerVersion = "16"
+    static let expectedChunkerVersion = "17"
 
     /// GET /health and POST /shutdown must not wait on a wedged event loop.
     static let probeTimeoutSeconds: TimeInterval = 2

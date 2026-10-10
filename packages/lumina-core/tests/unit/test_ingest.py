@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+from lumina_core.chunker.units import count_units
 from lumina_core.ingest.loader import build_segments, detect_format, load_document
 
 
@@ -518,8 +519,8 @@ def test_build_segments_from_txt():
     segs = build_segments("book-1", text)
     assert len(segs) >= 1
     assert segs[0]["book_id"] == "book-1"
-    assert segs[0]["char_count"] == len(segs[0]["raw_text"])
-    assert sum(s["char_count"] for s in segs) == len(text.strip())
+    assert segs[0]["char_count"] == count_units(segs[0]["raw_text"])
+    assert sum(s["char_count"] for s in segs) == count_units(text.strip())
 
 
 @pytest.mark.skipif(

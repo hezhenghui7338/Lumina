@@ -16,6 +16,12 @@ from lumina_core.chunker.markers import (
     match_structure_line,
     parse_heading_line)
 from lumina_core.chunker.roles import DocumentRole, role_families_differ, role_family
+from lumina_core.chunker.units import (
+    UnitScale,
+    advance_units,
+    count_units,
+    unit_count_exceeds,
+)
 
 class TextStyle(str, Enum):
     PROSE = "prose"
@@ -38,6 +44,8 @@ class TextAtom:
     style: TextStyle
     boundary_before: BoundaryStrength
     role: DocumentRole = DocumentRole.BODYMATTER
+    # Mixed-script reading length. -1 means "count on demand".
+    units: int = -1
 
     @property
     def content_chars(self) -> int:
@@ -177,7 +185,7 @@ def atomize_text(
             boundary = BoundaryStrength.STRONG
 
         # Never pre-cut at the reading target. Only split atoms that exceed hard_max.
-        if end - start > max_chars:
+        if unit_count_exceeds(text, start, end, max_chars, yielder=coop):
             pieces = _split_oversized_span(
                 text,
                 start,
@@ -197,7 +205,8 @@ def atomize_text(
                     end=piece_end,
                     text=piece_text,
                     style=piece_style,
-                    boundary_before=piece_boundary)
+                    boundary_before=piece_boundary,
+                    units=count_units(piece_text))
             )
         previous_was_heading = style is TextStyle.HEADING
         coop.bump(end - start)
@@ -209,7 +218,8 @@ def atomize_text(
             end=first.end,
             text=first.text,
             style=first.style,
-            boundary_before=BoundaryStrength.HARD)
+            boundary_before=BoundaryStrength.HARD,
+            units=first.units)
     return _soften_heading_shell_runs(atoms)
 
 def adaptive_merge(
@@ -225,6 +235,7 @@ def adaptive_merge(
     """Pack whole paragraphs until max_chars; topic shift may stop early at a paragraph."""
     if not atoms:
         return []
+    scale = UnitScale(atoms, text)
     coop = yielder or GilYielder()
     floor = _segment_floor(min_chars, max_chars)
     novelty = [0.0] * max(0, len(atoms) - 1)
@@ -256,7 +267,7 @@ def adaptive_merge(
     for i, atom in enumerate(atoms[1:], start=1):
         boundary = atom.boundary_before
         pair_novelty = novelty[i - 1]
-        next_length = atom.end - group_start
+        next_length = scale.units(group_start, atom.end)
         enough_evidence = min(atoms[i - 1].content_chars, atom.content_chars) >= 60
         topic_shift = (
             boundary >= BoundaryStrength.STRONG
@@ -284,7 +295,7 @@ def adaptive_merge(
             new_chapter = False
         role_hard = role_families_differ(atoms[i - 1].role, atom.role)
         must_cut = new_chapter or role_hard or next_length > max_chars
-        group_chars = group_end - group_start
+        group_chars = scale.units(group_start, group_end)
         in_soft_window = group_chars >= floor
         should_cut = must_cut
         if in_soft_window:
@@ -347,15 +358,17 @@ def adaptive_merge(
         atoms,
         max_chars=max_chars,
         min_chars=min_chars,
-        yielder=coop)
+        yielder=coop,
+        scale=scale)
     return _enforce_minimum_spans(
         spans,
         atoms,
         text=text,
-        text_length=len(text),
+        text_length=scale.units(atoms[0].start, atoms[-1].end),
         max_chars=max_chars,
         min_chars=min_chars,
-        yielder=coop)
+        yielder=coop,
+        scale=scale)
 
 def _information_size(atom: TextAtom) -> float:
     multiplier = {
@@ -679,11 +692,10 @@ def _best_cut_offset(
     max_chars: int,
     end: int) -> int | None:
     """Chapter/paragraph cuts in the max window beat a closer sentence inside target."""
-    remaining = end - cursor
-    if remaining <= preferred_chars:
+    if not unit_count_exceeds(text, cursor, end, preferred_chars):
         return None
-    preferred_limit = min(cursor + preferred_chars, end)
-    hard_limit = min(cursor + max_chars, end)
+    preferred_limit = advance_units(text, cursor, preferred_chars, end)
+    hard_limit = advance_units(text, cursor, max_chars, end)
 
     paragraph_cut = _last_cut_in_windows(
         _paragraph_cut_offsets(text, cursor, hard_limit),
@@ -696,7 +708,7 @@ def _best_cut_offset(
     if sentence_cut is not None:
         return sentence_cut
 
-    if remaining <= max_chars:
+    if not unit_count_exceeds(text, cursor, end, max_chars):
         return None
 
     weak = _weak_cut_offsets(text, cursor, hard_limit)
@@ -715,7 +727,8 @@ def _pick_rebalance_split(
     upper: int,
     target: int,
     max_chars: int,
-    atom_starts: list[int] | None = None) -> int:
+    atom_starts: list[int] | None = None,
+    scale: UnitScale | None = None) -> int:
     """Keep paragraph-complete splits even when one side is below the floor."""
 
     def closest(candidates: list[int]) -> int:
@@ -724,11 +737,13 @@ def _pick_rebalance_split(
     def in_window(offsets: list[int], lo: int, hi: int) -> list[int]:
         return [point for point in offsets if lo <= point <= hi]
 
+    measure = scale or UnitScale([], text)
+
     def both_fit(point: int) -> bool:
         return (
             combined_start < point < combined_end
-            and point - combined_start <= max_chars
-            and combined_end - point <= max_chars
+            and measure.units(combined_start, point) <= max_chars
+            and measure.units(point, combined_end) <= max_chars
         )
 
     paragraphs = _paragraph_cut_offsets(text, combined_start, combined_end)
@@ -754,8 +769,8 @@ def _pick_rebalance_split(
     if sent_fit:
         return closest(sent_fit)
 
-    wide_lo = max(combined_start + 1, combined_end - max_chars)
-    wide_hi = min(combined_end - 1, combined_start + max_chars)
+    wide_lo = max(combined_start + 1, measure.before_tail(combined_start, combined_end, max_chars))
+    wide_hi = min(combined_end - 1, measure.advance(combined_start, max_chars, combined_end))
     if wide_lo <= wide_hi:
         hits = in_window(weak, wide_lo, wide_hi)
         if hits:
@@ -782,10 +797,12 @@ def _merge_noise_fragments(
     *,
     max_chars: int,
     min_chars: int,
-    yielder: GilYielder | None = None) -> list[tuple[int, int]]:
+    yielder: GilYielder | None = None,
+    scale: UnitScale | None = None) -> list[tuple[int, int]]:
     """Pack TOC/metadata crumbs first, then rebalance leftovers to min_chars."""
     if len(spans) < 2:
         return spans
+    measure = scale or UnitScale(atoms)
     hard_starts = _cross_chapter_starts(atoms)
     packed = _pack_synthetic_fragments(
         spans,
@@ -793,14 +810,16 @@ def _merge_noise_fragments(
         hard_starts=hard_starts,
         max_chars=max_chars,
         min_chars=min_chars,
-        yielder=yielder)
+        yielder=yielder,
+        scale=measure)
     return _rebalance_toc_spans(
         packed,
         atoms,
         hard_starts=hard_starts,
         max_chars=max_chars,
         min_chars=min_chars,
-        yielder=yielder)
+        yielder=yielder,
+        scale=measure)
 
 def _pack_synthetic_fragments(
     spans: list[tuple[int, int]],
@@ -809,14 +828,16 @@ def _pack_synthetic_fragments(
     hard_starts: set[int],
     max_chars: int,
     min_chars: int,
-    yielder: GilYielder | None = None) -> list[tuple[int, int]]:
+    yielder: GilYielder | None = None,
+    scale: UnitScale | None = None) -> list[tuple[int, int]]:
     tiny_limit = min(120, max(24, min_chars // 10))
+    measure = scale or UnitScale(atoms)
     role_hard = _role_hard_starts(atoms)
     out: list[tuple[int, int]] = []
     for index, (start, end) in enumerate(spans):
         if yielder is not None and index % 32 == 0:
             yielder.bump(yielder.every)
-        length = end - start
+        length = measure.units(start, end)
         synthetic_metadata = any(
             atom.text.lstrip().startswith("## [")
             for atom in atoms
@@ -829,8 +850,8 @@ def _pack_synthetic_fragments(
         crosses_chapter = start in hard_starts
         if (
             out
-            and (out[-1][1] - out[-1][0]) < SEGMENT_HARD_MIN_CHARS
-            and end - out[-1][0] <= max_chars
+            and measure.units(out[-1][0], out[-1][1]) < SEGMENT_HARD_MIN_CHARS
+            and measure.units(out[-1][0], end) <= max_chars
             and start not in role_hard
             and (not crosses_chapter or prev_shell)
         ):
@@ -850,10 +871,10 @@ def _pack_synthetic_fragments(
             and start not in role_hard
             and _is_heading_shell(_atom_at_offset(atoms, start) or atoms[0])
             and (prev_shell or follows_toc)
-            and end - out[-1][0] <= max_chars
+            and measure.units(out[-1][0], end) <= max_chars
         ):
             packable = True
-        if packable and out and end - out[-1][0] <= max_chars:
+        if packable and out and measure.units(out[-1][0], end) <= max_chars:
             previous_start, _ = out[-1]
             out[-1] = (previous_start, end)
         else:
@@ -867,7 +888,9 @@ def _rebalance_toc_spans(
     hard_starts: set[int],
     max_chars: int,
     min_chars: int,
-    yielder: GilYielder | None = None) -> list[tuple[int, int]]:
+    yielder: GilYielder | None = None,
+    scale: UnitScale | None = None) -> list[tuple[int, int]]:
+    measure = scale or UnitScale(atoms)
     atom_starts = sorted({atom.start for atom in atoms})
     balanced: list[tuple[int, int]] = []
     for index, (start, end) in enumerate(spans):
@@ -875,7 +898,7 @@ def _rebalance_toc_spans(
             yielder.bump(yielder.every)
         if (
             balanced
-            and end - start < min_chars
+            and measure.units(start, end) < min_chars
             and start not in hard_starts
             and _span_has_toc(atoms, balanced[-1][0], end)
         ):
@@ -883,9 +906,10 @@ def _rebalance_toc_spans(
             candidates = [
                 point
                 for point in atom_starts
-                if previous_start + min_chars <= point <= end - min_chars
-                and point - previous_start <= max_chars
-                and end - point <= max_chars
+                if measure.units(previous_start, point) >= min_chars
+                and measure.units(point, end) >= min_chars
+                and measure.units(previous_start, point) <= max_chars
+                and measure.units(point, end) <= max_chars
             ]
             if candidates:
                 split_at = min(
@@ -904,11 +928,13 @@ def _enforce_minimum_spans(
     text_length: int,
     max_chars: int,
     min_chars: int,
-    yielder: GilYielder | None = None) -> list[tuple[int, int]]:
+    yielder: GilYielder | None = None,
+    scale: UnitScale | None = None) -> list[tuple[int, int]]:
     """Merge short spans to ≥200 (forward, may cross chapter) and rebalance crumbs."""
     packer_floor = _segment_floor(min_chars, max_chars)
     fragment_floor = _fragment_floor(min_chars, max_chars)
     hard_min = min(SEGMENT_HARD_MIN_CHARS, max_chars)
+    measure = scale or UnitScale(atoms, text)
     if len(spans) < 2 or text_length < hard_min:
         return spans
     role_hard = _role_hard_starts(atoms)
@@ -924,7 +950,7 @@ def _enforce_minimum_spans(
             yielder.bump(yielder.every)
         start, end = out[i]
         floor = packer_floor if _span_has_toc(atoms, start, end) else fragment_floor
-        length = end - start
+        length = measure.units(start, end)
         needs_hard = length < hard_min
         needs_fragment = length < floor
         if not needs_hard and not needs_fragment:
@@ -994,7 +1020,7 @@ def _enforce_minimum_spans(
             continue
         combined_start = out[left_index][0]
         combined_end = out[right_index][1]
-        combined_length = combined_end - combined_start
+        combined_length = measure.units(combined_start, combined_end)
         if combined_length <= max_chars:
             out[left_index : right_index + 1] = [(combined_start, combined_end)]
             i = max(0, left_index - 1)
@@ -1014,8 +1040,14 @@ def _enforce_minimum_spans(
             continue
 
         rebalance_floor = hard_min if needs_hard else floor
-        lower = max(combined_start + rebalance_floor, combined_end - max_chars)
-        upper = min(combined_start + max_chars, combined_end - rebalance_floor)
+        lower = max(
+            measure.advance(combined_start, rebalance_floor, combined_end),
+            measure.before_tail(combined_start, combined_end, max_chars),
+        )
+        upper = min(
+            measure.advance(combined_start, max_chars, combined_end),
+            measure.before_tail(combined_start, combined_end, rebalance_floor),
+        )
         if lower <= upper:
             split_at = _pick_rebalance_split(
                 text,
@@ -1025,10 +1057,11 @@ def _enforce_minimum_spans(
                 upper=upper,
                 target=original_boundary,
                 max_chars=max_chars,
-                atom_starts=atom_starts)
+                atom_starts=atom_starts,
+                scale=measure)
             if combined_start < split_at < combined_end:
                 # Never re-cut a hard-min merge into a title-only left shell.
-                if needs_hard and (split_at - combined_start) < hard_min:
+                if needs_hard and measure.units(combined_start, split_at) < hard_min:
                     i += 1
                     continue
                 left_atom = _atom_at_offset(atoms, combined_start)
@@ -1061,7 +1094,7 @@ def _enforce_minimum_spans(
         while True:
             expanded_start = out[expanded_left][0]
             expanded_end = out[expanded_right][1]
-            expanded_length = expanded_end - expanded_start
+            expanded_length = measure.units(expanded_start, expanded_end)
             part_count = (expanded_length + max_chars - 1) // max_chars
             if part_count <= expanded_length // expand_floor:
                 break
@@ -1109,7 +1142,8 @@ def _enforce_minimum_spans(
             floor=expand_floor,
             max_chars=max_chars,
             hard_starts=None if needs_hard else hard_starts,
-            yielder=yielder)
+            yielder=yielder,
+            scale=measure)
         current = out[expanded_left : expanded_right + 1]
         if replacement == current:
             i += 1
@@ -1128,13 +1162,15 @@ def _balanced_partition(
     floor: int,
     max_chars: int,
     hard_starts: set[int] | None = None,
-    yielder: GilYielder | None = None) -> list[tuple[int, int]]:
+    yielder: GilYielder | None = None,
+    scale: UnitScale | None = None) -> list[tuple[int, int]]:
+    measure = scale or UnitScale(atoms, text)
     interior = sorted(point for point in (hard_starts or ()) if start < point < end)
     if interior:
         points = [start, *interior, end]
         out: list[tuple[int, int]] = []
         for left, right in zip(points, points[1:]):
-            length = right - left
+            length = measure.units(left, right)
             piece_count = max(1, (length + max_chars - 1) // max_chars)
             out.extend(
                 _balanced_partition(
@@ -1146,7 +1182,8 @@ def _balanced_partition(
                     floor=floor,
                     max_chars=max_chars,
                     hard_starts=None,
-                    yielder=yielder)
+                    yielder=yielder,
+                    scale=measure)
             )
         return out
     if part_count <= 1:
@@ -1164,11 +1201,20 @@ def _balanced_partition(
 
     boundaries = [start]
     cursor = start
+    total_units = measure.units(start, end)
     for index in range(1, part_count):
         remaining_parts = part_count - index
-        lower = max(cursor + floor, end - remaining_parts * max_chars)
-        upper = min(cursor + max_chars, end - remaining_parts * floor)
-        target = start + round((end - start) * index / part_count)
+        lower = max(
+            measure.advance(cursor, floor, end),
+            measure.before_tail(cursor, end, remaining_parts * max_chars),
+        )
+        upper = min(
+            measure.advance(cursor, max_chars, end),
+            measure.before_tail(cursor, end, remaining_parts * floor),
+        )
+        target = measure.advance(
+            start, round(total_units * index / part_count), end
+        )
         boundary = None
         for group in (paragraph_points, sentence_points, atom_points):
             candidates = [point for point in group if lower <= point <= upper]
@@ -1184,7 +1230,8 @@ def _balanced_partition(
                 upper=upper,
                 target=target,
                 max_chars=max_chars,
-                atom_starts=atom_starts)
+                atom_starts=atom_starts,
+                scale=measure)
         if boundary <= cursor:
             later = [point for point in paragraph_points if cursor < point < end]
             if not later:
@@ -1199,8 +1246,8 @@ def _balanced_partition(
                 ]
             if later:
                 boundary = min(later)
-            elif end - cursor > max_chars:
-                boundary = min(cursor + max_chars, end)
+            elif measure.units(cursor, end) > max_chars:
+                boundary = min(measure.advance(cursor, max_chars, end), end)
             else:
                 break
         boundaries.append(boundary)
@@ -1228,7 +1275,7 @@ def _split_oversized_span(
     yielder: GilYielder | None = None) -> list[tuple[int, int]]:
     pieces: list[tuple[int, int]] = []
     cursor = start
-    while end - cursor > preferred_chars:
+    while unit_count_exceeds(text, cursor, end, preferred_chars, yielder=yielder):
         if yielder is not None:
             yielder.bump(max(1, min(max_chars, end - cursor)))
         split_at = _best_cut_offset(

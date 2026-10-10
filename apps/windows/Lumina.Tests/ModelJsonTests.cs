@@ -302,7 +302,7 @@ public class ModelJsonTests
         Assert.True(LibraryFacets.Matches(ingestFailed, LibraryCollections.IngestFailed, LibraryFacets.All, LibraryFacets.All));
         Assert.False(LibraryFacets.Matches(ingestFailed, LibraryCollections.Summarized, LibraryFacets.All, LibraryFacets.All));
         Assert.Equal("导入失败", LibraryCollections.Label(LibraryCollections.IngestFailed));
-        Assert.Equal("导入失败", LibraryFacets.Title(LibraryCollections.IngestFailed, LibraryFacets.All, LibraryFacets.All, false));
+        Assert.Equal("导入失败", LibraryFacets.Title(LibraryCollections.IngestFailed, LibraryFacets.All, LibraryFacets.All));
         Assert.Equal("段落数", LibrarySorts.Label(LibrarySorts.Segments));
         Assert.Equal("阅读进度", LibrarySorts.Label(LibrarySorts.Progress));
 
@@ -417,16 +417,16 @@ public class ModelJsonTests
             SummaryTotalCount = 10,
         };
 
-        Assert.True(LibraryFacets.IsDefault(LibraryFacets.All, LibraryFacets.All, LibraryFacets.All, false));
-        Assert.Equal("书架", LibraryFacets.Title(LibraryFacets.All, LibraryFacets.All, LibraryFacets.All, false));
+        Assert.True(LibraryFacets.IsDefault(LibraryFacets.All, LibraryFacets.All, LibraryFacets.All));
+        Assert.Equal("书架", LibraryFacets.Title(LibraryFacets.All, LibraryFacets.All, LibraryFacets.All));
         Assert.True(LibraryFacets.Matches(hit, LibraryCollections.Summarized, LibraryCollections.Unread, "历史"));
         Assert.False(LibraryFacets.Matches(wrongCategory, LibraryCollections.Summarized, LibraryCollections.Unread, "历史"));
         Assert.False(LibraryFacets.Matches(idle, LibraryCollections.Summarized, LibraryCollections.Unread, "历史"));
         Assert.False(LibraryFacets.Matches(opened, LibraryCollections.Summarized, LibraryCollections.Unread, "历史"));
         Assert.Equal(
             "已摘要 · 未读 · 历史",
-            LibraryFacets.Title(LibraryCollections.Summarized, LibraryCollections.Unread, "历史", false));
-        Assert.Equal("分段中", LibraryFacets.Title(LibraryCollections.Segmenting, LibraryFacets.All, LibraryFacets.All, false));
+            LibraryFacets.Title(LibraryCollections.Summarized, LibraryCollections.Unread, "历史"));
+        Assert.Equal("分段中", LibraryFacets.Title(LibraryCollections.Segmenting, LibraryFacets.All, LibraryFacets.All));
         Assert.True(LibraryFacets.Matches(
             new BookSummary { Status = "processing", SummarizeState = "segmenting" },
             LibraryCollections.Segmenting));
