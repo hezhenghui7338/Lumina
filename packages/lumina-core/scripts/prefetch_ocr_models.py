@@ -23,11 +23,23 @@ def _models_dir() -> Path:
     return Path(rapidocr.__file__).resolve().parent / "models"
 
 
+def warm_models(engine) -> None:
+    """Pull det/cls/rec weights before PyInstaller.
+
+    rapidocr 3.9 downloads inside ``RapidOCR()``. 3.10 defers that until the
+    first inference, so a constructor-only prefetch leaves the bundle empty.
+    """
+    for name in ("_load_det_model", "_load_cls_model", "_load_rec_model"):
+        load = getattr(engine, name, None)
+        if callable(load):
+            load()
+
+
 def main() -> int:
     from rapidocr import ModelType, OCRVersion, RapidOCR
 
     print("==> Prefetching RapidOCR PP-OCRv6 medium (ch)…")
-    RapidOCR(
+    engine = RapidOCR(
         params={
             "Det.model_type": ModelType.MEDIUM,
             "Det.ocr_version": OCRVersion.PPOCRV6,
@@ -37,6 +49,7 @@ def main() -> int:
             "Rec.lang_type": "ch",
         }
     )
+    warm_models(engine)
 
     models = _models_dir()
     missing = [name for name in REQUIRED if not (models / name).is_file()]
