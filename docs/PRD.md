@@ -24,7 +24,7 @@ Lumina 帮你读那些买了、下了、却迟迟没打开的书。
 | **读得完** | 产品目标是帮用户完成阅读理解，长书靠分段 + prefetch 逐段推进 | 替代阅读；只追求速度不追求理解 |
 
 **v1.0 平台**：macOS（Apple Silicon 优先，Intel 尽力兼容）。  
-**商业模式**：免费开源。  
+**商业模式**：个人与非商业使用免费；商业使用须另行取得许可（Polyform Noncommercial 1.0.0）。  
 **与 LocalAgent 关系**：算法与设计参考 LA；代码独立演进；不做 CLI 集成。
 
 ---
@@ -1063,7 +1063,7 @@ Citation（运行时）
 | AI 引擎 | Python `lumina-core` sidecar（localhost HTTP） |
 | 数据库 | SQLite（Core 独占写） |
 | 跨书 recall | FTS5（v1.0）；sqlite-vec（v1.1） |
-| 开源协议 | MIT |
+| 许可证 | Polyform Noncommercial 1.0.0 |
 
 详见 [docs/TDD.md](docs/TDD.md)。
 
@@ -1189,3 +1189,4 @@ Citation（运行时）
 | 2026-10 | 书架评分 | 每书 1–5 星，仅 macOS 书架点星；再点当前星清除。排序增加「评分」，默认降序；未评分按 3 星计，与明确 3 星同档，同档按标题升序 |
 | 2026-10 | 书架取消收藏集合 | 智能集合去掉「收藏」；保留收藏动作与排序「收藏优先」 |
 | 2026-10 | 选区划线 | macOS 摘要/原文选区菜单在复制、写想法后增加「划线」；存 `type=highlight`（quote+content）；笔记抽屉/全部笔记可看删跳；不画正文持久底色；不改复制/写想法；Windows 不跟 |
+| 2026-10 | 许可证 | Polyform Noncommercial 1.0.0；个人与非商业使用免费，商业使用须另行许可 |
