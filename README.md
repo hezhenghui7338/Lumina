@@ -8,7 +8,7 @@
 </p>
 
 <p align="center">
-  macOS 14+ · Windows 10/11（P0） · MIT · <a href="https://github.com/hezhenghui7338/Lumina/releases/latest">Latest Release</a>
+  macOS 14+ · Windows 10/11（P0） · Polyform Noncommercial · <a href="https://github.com/hezhenghui7338/Lumina/releases/latest">Latest Release</a>
 </p>
 
 <p align="center">
@@ -386,4 +386,8 @@ git tag v1.1.0 && git push origin v1.1.0
 
 ## 许可证
 
-MIT
+[Polyform Noncommercial 1.0.0](LICENSE)。
+
+个人研究、学习、爱好项目等非商业用途可以免费使用、修改和分享。把本软件用于经营，或据此提供付费产品、服务，需要版权人另行许可。
+
+依赖库仍适用它们各自的许可证。
