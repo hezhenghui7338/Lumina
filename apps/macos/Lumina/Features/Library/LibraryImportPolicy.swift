@@ -51,3 +51,44 @@ enum LibraryImportPolicy {
         urls.map { $0.path }.filter { !$0.isEmpty }
     }
 }
+
+/// Paste box for public web pages. English semicolons separate URLs.
+enum WebURLImportPolicy {
+    struct Parsed: Equatable {
+        var urls: [String]
+        var invalid: [String]
+    }
+
+    static func parse(_ raw: String) -> Parsed {
+        var urls: [String] = []
+        var invalid: [String] = []
+        for piece in raw.split(separator: ";", omittingEmptySubsequences: false) {
+            let token = piece.trimmingCharacters(in: .whitespacesAndNewlines)
+            if token.isEmpty { continue }
+            if isImportableHTTPURL(token) {
+                urls.append(token)
+            } else {
+                invalid.append(token)
+            }
+        }
+        return Parsed(urls: urls, invalid: invalid)
+    }
+
+    static func isImportableHTTPURL(_ raw: String) -> Bool {
+        let token = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !token.isEmpty, !token.contains(where: \.isWhitespace) else { return false }
+        guard let url = URL(string: token), let scheme = url.scheme?.lowercased() else {
+            return false
+        }
+        guard scheme == "http" || scheme == "https" else { return false }
+        guard let host = url.host, !host.isEmpty else { return false }
+        return true
+    }
+
+    static func invalidMessage(tokens: [String]) -> String {
+        guard !tokens.isEmpty else { return "请输入网址" }
+        let preview = tokens.prefix(3).joined(separator: "、")
+        let suffix = tokens.count > 3 ? " 等 \(tokens.count) 个" : ""
+        return "这些内容不是可导入的网址：\(preview)\(suffix)"
+    }
+}

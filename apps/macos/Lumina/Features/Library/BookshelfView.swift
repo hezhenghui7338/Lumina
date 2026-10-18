@@ -9,6 +9,7 @@ struct BookshelfView: View {
 
     var onImport: () -> Void
     var onImportPaths: ([String]) -> Void
+    var onImportURLs: () -> Void
     var onSearch: () -> Void
     var onShowAllNotes: () -> Void
     var onStartSummarize: (SummaryTier) -> Void
@@ -210,10 +211,14 @@ struct BookshelfView: View {
     @ToolbarContentBuilder
     private var toolbarContent: some ToolbarContent {
         ToolbarItem(placement: .primaryAction) {
-            Button(action: onImport) {
+            Menu {
+                Button("导入书籍…", action: onImport)
+                Button("从网址导入…", action: onImportURLs)
+            } label: {
                 Label("导入", systemImage: "square.and.arrow.down")
             }
             .help("导入书籍")
+            .menuIndicator(.hidden)
             .labelStyle(.iconOnly)
             .foregroundStyle(LuminaTheme.accent)
         }
@@ -517,6 +522,7 @@ struct BookshelfView: View {
             .buttonStyle(.borderedProminent)
             .tint(LuminaTheme.accent)
             .tourAnchor(.importButton)
+            Button("从网址导入…", action: onImportURLs)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }

@@ -32,6 +32,8 @@ for pkg in (
     "mobi",
     "ebooklib",
     "loguru",
+    "trafilatura",
+    "htmldate",
 ):
     try:
         _datas, _binaries, _hidden = collect_all(pkg)

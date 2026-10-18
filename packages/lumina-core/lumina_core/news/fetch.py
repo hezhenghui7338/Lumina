@@ -175,6 +175,9 @@ def _download_html(url: str, *, timeout: float) -> tuple[str, str]:
 def _extract_with_trafilatura(html: str, *, url: str) -> tuple[str, str]:
     import trafilatura
 
+    from lumina_core.ingest.web import ensure_trafilatura_config
+
+    ensure_trafilatura_config()
     extracted = trafilatura.extract(
         html,
         include_comments=False,

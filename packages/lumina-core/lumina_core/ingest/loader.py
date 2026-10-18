@@ -69,7 +69,7 @@ def load_document(
     cancel_event: threading.Event | None = None,
 ) -> tuple[str, dict[str, Any]]:
     """Return (annotated_text, metadata)."""
-    if fmt == "txt":
+    if fmt in {"txt", "md"}:
         return load_txt(path), {}
     if fmt == "pdf":
         return load_pdf(
