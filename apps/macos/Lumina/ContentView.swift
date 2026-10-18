@@ -40,6 +40,8 @@ struct ContentView: View {
     @State private var showUsageGuide = false
     @State private var importConflict: ImportConflictError?
     @State private var pendingImportPaths: [String] = []
+    @State private var pendingImportURLs: [String] = []
+    @State private var showURLImport = false
     @State private var isImportingBook = false
     @State private var skipRemainingImportDuplicates = false
 
@@ -119,7 +121,7 @@ struct ContentView: View {
                     applyImportConflictChoice(.skip, conflict: conflict)
                 }
                 if ImportConflictPolicy.showsSkipRemaining(
-                    pendingCount: pendingImportPaths.count
+                    pendingCount: pendingImportPaths.count + pendingImportURLs.count
                 ) {
                     Button("跳过剩下所有") {
                         applyImportConflictChoice(
@@ -137,7 +139,7 @@ struct ContentView: View {
                 Text(
                     ImportConflictPolicy.dialogMessage(
                         title: conflict.title,
-                        remainingCount: pendingImportPaths.count
+                        remainingCount: pendingImportPaths.count + pendingImportURLs.count
                     )
                 )
             }
@@ -154,6 +156,16 @@ struct ContentView: View {
             guard sidecar.productReady else { return }
             tab = .library
             importBook()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .luminaImportURL)) { _ in
+            guard sidecar.productReady else { return }
+            tab = .library
+            showURLImport = true
+        }
+        .sheet(isPresented: $showURLImport) {
+            WebURLImportSheet { raw in
+                submitURLImport(raw)
+            }
         }
         .onReceive(NotificationCenter.default.publisher(for: .luminaOpenFiles)) { note in
             let paths = (note.userInfo?[AppDelegate.openFilesPathsKey] as? [String]) ?? []
@@ -251,6 +263,7 @@ struct ContentView: View {
             jumpSegmentIndex: $jumpSegmentIndex,
             onImport: importBook,
             onImportPaths: { enqueueImports(paths: $0) },
+            onImportURLs: { showURLImport = true },
             onSearch: { showSearch = true },
             onStartSummarize: { tier in
                 Task { await startSummarizeAction(summaryTier: tier) }
@@ -312,14 +325,23 @@ struct ContentView: View {
         if !decision.continueQueue {
             skipRemainingImportDuplicates = false
             pendingImportPaths.removeAll()
+            pendingImportURLs.removeAll()
             return
         }
         if decision.overwriteCurrent, let conflict {
-            startImport(
-                path: conflict.path,
-                overwrite: true,
-                replacingBookId: conflict.existingBookId
-            )
+            if WebURLImportPolicy.isImportableHTTPURL(conflict.path) {
+                startURLImport(
+                    url: conflict.path,
+                    overwrite: true,
+                    replacingBookId: conflict.existingBookId
+                )
+            } else {
+                startImport(
+                    path: conflict.path,
+                    overwrite: true,
+                    replacingBookId: conflict.existingBookId
+                )
+            }
             return
         }
         importNextBook()
@@ -327,12 +349,94 @@ struct ContentView: View {
 
     private func importNextBook() {
         guard !isImportingBook, importConflict == nil else { return }
-        guard !pendingImportPaths.isEmpty else {
-            skipRemainingImportDuplicates = false
+        if !pendingImportPaths.isEmpty {
+            let path = pendingImportPaths.removeFirst()
+            startImport(path: path, overwrite: false)
             return
         }
-        let path = pendingImportPaths.removeFirst()
-        startImport(path: path, overwrite: false)
+        if !pendingImportURLs.isEmpty {
+            let url = pendingImportURLs.removeFirst()
+            startURLImport(url: url, overwrite: false)
+            return
+        }
+        skipRemainingImportDuplicates = false
+    }
+
+    private func submitURLImport(_ raw: String) {
+        let parsed = WebURLImportPolicy.parse(raw)
+        if !parsed.invalid.isEmpty {
+            alertError = WebURLImportPolicy.invalidMessage(tokens: parsed.invalid)
+        }
+        guard !parsed.urls.isEmpty else {
+            if parsed.invalid.isEmpty {
+                alertError = "请输入网址"
+            }
+            return
+        }
+        pendingImportURLs.append(contentsOf: parsed.urls)
+        importNextBook()
+    }
+
+    private func startURLImport(
+        url: String,
+        overwrite: Bool,
+        replacingBookId: String? = nil
+    ) {
+        guard !isImportingBook else { return }
+        isImportingBook = true
+        Task {
+            await importURL(url, overwrite: overwrite, replacingBookId: replacingBookId)
+        }
+    }
+
+    private func importURL(
+        _ url: String,
+        overwrite: Bool,
+        replacingBookId: String?
+    ) async {
+        do {
+            await sidecar.ensureRunning()
+            guard sidecar.isRunning else {
+                isImportingBook = false
+                skipRemainingImportDuplicates = false
+                pendingImportPaths.removeAll()
+                pendingImportURLs.removeAll()
+                if !sidecar.userStopped {
+                    connectionError = sidecar.launchError ?? "无法连接到 AI 引擎，请重试或退出。"
+                }
+                return
+            }
+            let book = try await core.importURL(url, overwrite: overwrite)
+            NotificationCenter.default.post(
+                name: .luminaLibraryRefresh,
+                object: nil,
+                userInfo: ["afterImport": true]
+            )
+            if selectedBookId == replacingBookId {
+                selectedBookId = book.id
+            }
+            isImportingBook = false
+            importNextBook()
+        } catch let conflict as ImportConflictError {
+            isImportingBook = false
+            if ImportConflictPolicy.shouldPrompt(
+                skipRemainingDuplicates: skipRemainingImportDuplicates
+            ) {
+                importConflict = conflict
+            } else {
+                importNextBook()
+            }
+        } catch {
+            isImportingBook = false
+            skipRemainingImportDuplicates = false
+            pendingImportPaths.removeAll()
+            pendingImportURLs.removeAll()
+            if ConnectionError.isConnectionFailure(error) {
+                connectionError = "无法连接到 AI 引擎，请重试或退出。"
+            } else {
+                alertError = error.localizedDescription
+            }
+        }
     }
 
     private func startImport(
@@ -362,6 +466,7 @@ struct ContentView: View {
                 isImportingBook = false
                 skipRemainingImportDuplicates = false
                 pendingImportPaths.removeAll()
+                pendingImportURLs.removeAll()
                 if !sidecar.userStopped {
                     connectionError = sidecar.launchError ?? "无法连接到 AI 引擎，请重试或退出。"
                 }
@@ -391,6 +496,7 @@ struct ContentView: View {
             isImportingBook = false
             skipRemainingImportDuplicates = false
             pendingImportPaths.removeAll()
+            pendingImportURLs.removeAll()
             if ConnectionError.isConnectionFailure(error) {
                 connectionError = "无法连接到 AI 引擎，请重试或退出。"
             } else {
@@ -443,6 +549,7 @@ private struct LibraryTabView: View {
     @Binding var jumpSegmentIndex: Int?
     var onImport: () -> Void
     var onImportPaths: ([String]) -> Void
+    var onImportURLs: () -> Void
     var onSearch: () -> Void
     var onStartSummarize: (SummaryTier) -> Void
     var onStopSummarize: () -> Void
@@ -571,6 +678,7 @@ private struct LibraryTabView: View {
                 selectedBookId: $selectedBookId,
                 onImport: onImport,
                 onImportPaths: onImportPaths,
+                onImportURLs: onImportURLs,
                 onSearch: onSearch,
                 onShowAllNotes: showAllNotes,
                 onStartSummarize: onStartSummarize,
@@ -605,10 +713,49 @@ private struct LibraryTabView: View {
     }
 }
 
+private struct WebURLImportSheet: View {
+    var onSubmit: (String) -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var draft = ""
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("从网址导入")
+                .font(.headline)
+            Text("多个网址用英文分号 ; 隔开。只抓取可以直接下载的公开网页正文。")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            TextEditor(text: $draft)
+                .font(.body)
+                .frame(minHeight: 140)
+                .overlay {
+                    RoundedRectangle(cornerRadius: 6)
+                        .stroke(Color.secondary.opacity(0.35))
+                }
+            HStack {
+                Spacer()
+                Button("取消") { dismiss() }
+                Button("导入") {
+                    let raw = draft
+                    dismiss()
+                    onSubmit(raw)
+                }
+                .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(20)
+        .frame(width: 480)
+    }
+}
+
 extension Notification.Name {
     static let luminaOpenSearch = Notification.Name("luminaOpenSearch")
     static let luminaOpenUsageGuide = Notification.Name("luminaOpenUsageGuide")
     static let luminaImportBook = Notification.Name("luminaImportBook")
+    static let luminaImportURL = Notification.Name("luminaImportURL")
     static let luminaOpenFiles = Notification.Name("luminaOpenFiles")
     static let luminaRevealMainWindow = Notification.Name("luminaRevealMainWindow")
     static let luminaLibraryRefresh = Notification.Name("luminaLibraryRefresh")

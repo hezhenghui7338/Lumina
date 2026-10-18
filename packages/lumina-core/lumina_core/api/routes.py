@@ -55,6 +55,8 @@ from lumina_core.db.repos import (
     NewsChatRepo,
     NoteRepo,
     SegmentRepo,
+    TITLE_USER_SET_KEY,
+    _parse_metadata,
     metadata_with_title_user_set,
 )
 from lumina_core.export.markdown import content_disposition_attachment, export_book_markdown
@@ -64,6 +66,13 @@ from lumina_core.ingest.loader import (
     file_hash,
     title_from_path,
     validate_import,
+)
+from lumina_core.ingest.web import (
+    WebImportError,
+    canonicalize_import_url,
+    fetch_web_page,
+    url_import_hash,
+    write_web_markdown,
 )
 from lumina_core.jobs.ingest import run_ingest_job
 from lumina_core.jobs.resegment import run_resegment_job
@@ -121,6 +130,11 @@ SUPPORTED_FORMATS = {
 
 class ImportRequest(BaseModel):
     paths: list[str]
+    overwrite: bool = False
+
+
+class ImportURLRequest(BaseModel):
+    url: str
     overwrite: bool = False
 
 
@@ -588,6 +602,120 @@ def _schedule_ingest(
     task.add_done_callback(_cleanup)
 
 
+def _mark_url_import_failed(conn: sqlite3.Connection, book_id: str, message: str) -> None:
+    repo = BookRepo(conn)
+    book = repo.get(book_id)
+    if not book or book.get("status") != "processing":
+        return
+    meta = _parse_metadata(book)
+    meta["ingest_error"] = message
+    repo.update(book_id, status="error", metadata_json=meta)
+
+
+def _schedule_url_fetch(state: AppState, *, book_id: str, canonical_url: str) -> None:
+    """Download HTML off the event loop, then hand the Markdown file to ingest."""
+    cancel_event = threading.Event()
+    title = book_title(state.conn, book_id)
+    record = state.task_registry.register(
+        kind="ingest",
+        subject_type="book",
+        subject_id=book_id,
+        subject_label=title,
+        detail="下载网页",
+        cancellable=True,
+        cancel_fn=cancel_event.set,
+        job_key=f"{book_id}:url-fetch",
+        status="queued",
+    )
+
+    async def _fail(message: str, *, cancelled: bool) -> None:
+        await asyncio.to_thread(_mark_url_import_failed, state.conn, book_id, message)
+        event_type = "ingest_cancelled" if cancelled else "ingest_failed"
+        await _emit_book_event(state, book_id, {"type": event_type, "message": message})
+        if cancelled:
+            state.task_registry.cancel(record.id)
+        else:
+            state.task_registry.fail(record.id, message)
+
+    async def _run() -> str:
+        try:
+            state.task_registry.mark_running(record.id)
+            await _emit_book_event(
+                state,
+                book_id,
+                {
+                    "type": "ingest_progress",
+                    "page": 0,
+                    "total": 0,
+                    "message": "正在下载网页…",
+                },
+            )
+            if cancel_event.is_set():
+                await _fail("已取消导入", cancelled=True)
+                return "cancelled"
+            try:
+                page = await asyncio.to_thread(fetch_web_page, canonical_url)
+            except WebImportError as exc:
+                await _fail(str(exc), cancelled=False)
+                return "failed"
+            if cancel_event.is_set():
+                await _fail("已取消导入", cancelled=True)
+                return "cancelled"
+
+            dest = state.books_dir / book_id / "original.md"
+            await asyncio.to_thread(write_web_markdown, dest, page.text)
+
+            def _stamp() -> None:
+                repo = BookRepo(state.conn)
+                book = repo.get(book_id)
+                if not book or book.get("status") != "processing":
+                    return
+                meta = _parse_metadata(book)
+                meta["source_url"] = page.final_url or canonical_url
+                meta[TITLE_USER_SET_KEY] = True
+                display = page.title.strip() or canonical_url
+                repo.update(
+                    book_id,
+                    title=display,
+                    file_path=str(dest),
+                    format="md",
+                    metadata_json=meta,
+                )
+
+            await asyncio.to_thread(_stamp)
+            current = await asyncio.to_thread(BookRepo(state.conn).get, book_id)
+            if not current or current.get("status") != "processing":
+                await _fail("已取消导入", cancelled=True)
+                return "cancelled"
+            if cancel_event.is_set():
+                await _fail("已取消导入", cancelled=True)
+                return "cancelled"
+            state.task_registry.complete(record.id)
+            _schedule_ingest(
+                state,
+                book_id=book_id,
+                dest=dest,
+                fmt="md",
+                src=dest,
+            )
+            return "completed"
+        except Exception as exc:
+            logger.exception("URL import failed for book %s", book_id)
+            await _fail(f"下载失败：{exc}", cancelled=False)
+            return "failed"
+
+    task = asyncio.create_task(_run())
+    state.ingest_tasks[book_id] = task
+    state.ingest_cancel_events[book_id] = cancel_event
+
+    def _cleanup(completed: asyncio.Task[str]) -> None:
+        if state.ingest_tasks.get(book_id) is completed:
+            state.ingest_tasks.pop(book_id, None)
+            state.ingest_cancel_events.pop(book_id, None)
+
+    task.add_done_callback(_cleanup)
+
+
 def _schedule_resegment(
     state: AppState,
     *,
@@ -801,6 +929,49 @@ async def import_books(body: ImportRequest, request: Request) -> dict[str, Any]:
             raise HTTPException(400, f"导入失败: {e}") from e
 
     return {"books": results}
+
+
+@router.post("/books/import-url")
+async def import_book_url(body: ImportURLRequest, request: Request) -> dict[str, Any]:
+    """Accept one public page URL and download it in the background."""
+    state = _state(request)
+    try:
+        canonical = canonicalize_import_url(body.url)
+    except WebImportError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+    books_repo = BookRepo(state.conn)
+    digest = url_import_hash(canonical)
+    existing = await asyncio.to_thread(books_repo.find_by_hash, digest)
+    if existing and not body.overwrite:
+        raise HTTPException(
+            409,
+            detail={"existing_book_id": existing["id"], "title": existing["title"]},
+        )
+    if existing and body.overwrite:
+        await _purge_book(state, existing["id"])
+
+    _wire_job_events(state)
+    book_id = str(uuid.uuid4())
+    book = books_repo.insert(
+        id=book_id,
+        title=canonical,
+        author=None,
+        format="md",
+        file_path="",
+        file_hash=digest,
+        language=None,
+        target_language=state.settings.target_language,
+        segment_count=0,
+        status="processing",
+        metadata_json={"source_url": canonical, "source_kind": "url"},
+    )
+    _schedule_url_fetch(state, book_id=book_id, canonical_url=canonical)
+    return {
+        "book_id": book_id,
+        "status": "processing",
+        "title": book["title"],
+    }
 
 
 @router.post("/books/{book_id}/import/overwrite")

@@ -48,6 +48,28 @@ final class LibraryImportPolicyTests: XCTestCase {
         XCTAssertTrue(multi.contains("b.chm"))
     }
 
+    func testURLParse_splitsOnSemicolonAndSkipsBlanks() {
+        let parsed = WebURLImportPolicy.parse(
+            " https://Example.com/a ; ;ftp://files.example/x; https://example.com/b "
+        )
+        XCTAssertEqual(parsed.urls, ["https://Example.com/a", "https://example.com/b"])
+        XCTAssertEqual(parsed.invalid, ["ftp://files.example/x"])
+    }
+
+    func testURLParse_rejectsBareText() {
+        let parsed = WebURLImportPolicy.parse("不是网址")
+        XCTAssertTrue(parsed.urls.isEmpty)
+        XCTAssertEqual(parsed.invalid, ["不是网址"])
+        XCTAssertTrue(WebURLImportPolicy.invalidMessage(tokens: parsed.invalid).contains("不是网址"))
+    }
+
+    func testURLBatch_laterURLsStillOfferSkipRemaining() {
+        let parsed = WebURLImportPolicy.parse("https://a.example/1;https://b.example/2")
+        let pendingAfterCurrent = parsed.urls.count - 1
+        XCTAssertTrue(ImportConflictPolicy.showsSkipRemaining(pendingCount: pendingAfterCurrent))
+        XCTAssertFalse(ImportConflictPolicy.shouldPrompt(skipRemainingDuplicates: true))
+    }
+
     func testPathsToForward_keepsAbsolutePathsIncludingUnsupported() {
         let urls = [
             URL(fileURLWithPath: "/Users/me/book.epub"),

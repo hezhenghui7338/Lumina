@@ -23,7 +23,7 @@ from lumina_core.config import (
     resolve_chunk_budget,
 )
 from lumina_core.db.connection import detach_db_lock
-from lumina_core.db.repos import BookRepo, SegmentRepo, resolve_ingest_title
+from lumina_core.db.repos import BookRepo, SegmentRepo, _parse_metadata, resolve_ingest_title
 from lumina_core.db.schema import connect_db
 from lumina_core.ingest.loader import (
     author_from_metadata,
@@ -198,6 +198,10 @@ def _persist_ingest_sync(
         if not book:
             return
         persist_meta = slim_book_metadata(ingest_meta)
+        existing_meta = _parse_metadata(book)
+        source_url = existing_meta.get("source_url")
+        if isinstance(source_url, str) and source_url.strip():
+            persist_meta["source_url"] = source_url.strip()
         title = resolve_ingest_title(book, title_from_path(src, metadata), persist_meta)
         SegmentRepo(conn).finalize_ingest(
             book_id,
