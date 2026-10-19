@@ -14,6 +14,7 @@ final class SegmentHeaderLayoutPolicyTests: XCTestCase {
         for variant in variants {
             let items = SegmentHeaderLayoutPolicy.trailingItems(
                 showsContentMeta: variant.meta,
+                showsAdjustBoundary: true,
                 isSummaryInProgress: variant.progress,
                 showsRegenerate: variant.regenerate,
                 showsTurnButtons: true
@@ -30,17 +31,19 @@ final class SegmentHeaderLayoutPolicyTests: XCTestCase {
         XCTAssertEqual(
             SegmentHeaderLayoutPolicy.trailingItems(
                 showsContentMeta: true,
+                showsAdjustBoundary: true,
                 isSummaryInProgress: false,
                 showsRegenerate: true,
                 showsTurnButtons: true
             ),
-            [.contentMeta, .panelToggle, .regenerateSummary, .turnButtons]
+            [.contentMeta, .panelToggle, .adjustBoundary, .regenerateSummary, .turnButtons]
         )
     }
 
     func testTrailingItems_panelToggleLeadsWhenMetaHidden() {
         let withoutRegenerate = SegmentHeaderLayoutPolicy.trailingItems(
             showsContentMeta: false,
+            showsAdjustBoundary: false,
             isSummaryInProgress: true,
             showsRegenerate: false,
             showsTurnButtons: true
@@ -52,6 +55,7 @@ final class SegmentHeaderLayoutPolicyTests: XCTestCase {
     func testTrailingItems_omitsTurnButtonsWhenHidden() {
         let items = SegmentHeaderLayoutPolicy.trailingItems(
             showsContentMeta: true,
+            showsAdjustBoundary: false,
             isSummaryInProgress: false,
             showsRegenerate: true,
             showsTurnButtons: false
@@ -64,11 +68,15 @@ final class SegmentHeaderLayoutPolicyTests: XCTestCase {
     func testTrailingItems_omitsContentMetaWhenHidden() {
         let items = SegmentHeaderLayoutPolicy.trailingItems(
             showsContentMeta: false,
+            showsAdjustBoundary: true,
             isSummaryInProgress: true,
             showsRegenerate: true,
             showsTurnButtons: true
         )
-        XCTAssertEqual(items, [.panelToggle, .progress, .regenerateSummary, .turnButtons])
+        XCTAssertEqual(
+            items,
+            [.panelToggle, .adjustBoundary, .progress, .regenerateSummary, .turnButtons]
+        )
     }
 
     func testContentMeta_joinsOrdinalAndCharCount() {

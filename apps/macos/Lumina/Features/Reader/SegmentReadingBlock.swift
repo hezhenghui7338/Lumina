@@ -7,6 +7,7 @@ import SwiftUI
 enum SegmentHeaderTrailingItem: Hashable {
     case contentMeta
     case panelToggle
+    case adjustBoundary
     case progress
     case regenerateSummary
     case turnButtons
@@ -15,6 +16,7 @@ enum SegmentHeaderTrailingItem: Hashable {
 enum SegmentHeaderLayoutPolicy {
     static func trailingItems(
         showsContentMeta: Bool,
+        showsAdjustBoundary: Bool,
         isSummaryInProgress: Bool,
         showsRegenerate: Bool,
         showsTurnButtons: Bool
@@ -22,6 +24,10 @@ enum SegmentHeaderLayoutPolicy {
         var items: [SegmentHeaderTrailingItem] = []
         if showsContentMeta { items.append(.contentMeta) }
         items.append(.panelToggle)
+        // Between 切换原文 and 重新摘要 on the current segment. The divider
+        // button sat on the previous segment's tail and landed under the top
+        // chrome after 下一段.
+        if showsAdjustBoundary { items.append(.adjustBoundary) }
         if isSummaryInProgress { items.append(.progress) }
         if showsRegenerate { items.append(.regenerateSummary) }
         if showsTurnButtons { items.append(.turnButtons) }
@@ -182,31 +188,20 @@ struct SegmentReadingBlock: View, Equatable {
     }
 
     private var segmentBoundarySeparator: some View {
-        HStack(spacing: 8) {
-            Rectangle()
-                .fill(paper.border)
-                .frame(height: 1)
+        Rectangle()
+            .fill(paper.border)
+            .frame(height: 1)
+            .padding(.vertical, 12)
+    }
 
-            if let onAdjustBoundary {
-                Button(action: onAdjustBoundary) {
-                    Image(systemName: "rectangle.split.1x2")
-                        .font(.system(size: LuminaTheme.summaryLabelSize, weight: .semibold))
-                        .foregroundStyle(LuminaTheme.accent)
-                        .frame(minWidth: 24, minHeight: 24)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .help("调整与下一段的边界")
-                .accessibilityLabel("调整与下一段的边界")
-                .accessibilityIdentifier("lumina.reader.control.adjustBoundary")
-            }
-
-            Rectangle()
-                .fill(paper.border)
-                .frame(height: 1)
-        }
-        .absorbsReaderChromeClicks()
-        .padding(.vertical, 12)
+    private var adjustBoundaryButton: some View {
+        Button("调整分段", action: { onAdjustBoundary?() })
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .help("调整与下一段的边界")
+            .accessibilityLabel("调整与下一段的边界")
+            .accessibilityIdentifier("lumina.reader.control.adjustBoundary")
+            .absorbsReaderChromeClicks()
     }
 
     private var showingSource: Bool {
@@ -452,6 +447,7 @@ struct SegmentReadingBlock: View, Equatable {
     private var trailingHeaderItems: [SegmentHeaderTrailingItem] {
         SegmentHeaderLayoutPolicy.trailingItems(
             showsContentMeta: true,
+            showsAdjustBoundary: onAdjustBoundary != nil,
             isSummaryInProgress: isSummaryInProgress,
             showsRegenerate: showsRegenerateSummaryButton,
             showsTurnButtons: showsSegmentTurnButtons
@@ -513,6 +509,8 @@ struct SegmentReadingBlock: View, Equatable {
                 .minimumScaleFactor(0.8)
         case .panelToggle:
             panelToggleButton
+        case .adjustBoundary:
+            adjustBoundaryButton
         case .progress:
             HStack(spacing: 6) {
                 ProgressView()

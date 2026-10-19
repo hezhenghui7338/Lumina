@@ -764,30 +764,22 @@ final class ReaderChromeClickArchitectureTests: XCTestCase {
         )
     }
 
-    func testSegmentBoundaryAdjustButtonIsCenteredAccent() throws {
+    func testSegmentBoundaryAdjustButtonSitsInTheHeaderRow() throws {
         let block = try source("Lumina/Features/Reader/SegmentReadingBlock.swift")
         let separator = block.components(separatedBy: "private var segmentBoundarySeparator").last?
-            .components(separatedBy: "private var showingSource").first ?? ""
-        XCTAssertTrue(
-            separator.contains("LuminaTheme.accent"),
-            "the between-segment adjust control must use the product accent, not muted paper text"
-        )
+            .components(separatedBy: "private var adjustBoundaryButton").first ?? ""
         XCTAssertFalse(
-            separator.contains("paper.textSecondary"),
-            "muted secondary text made the adjust control look like decoration"
+            separator.contains("Button"),
+            "the divider must not host the adjust control; that button sat under the top chrome"
         )
-        XCTAssertEqual(
-            separator.components(separatedBy: ".fill(paper.border)").count - 1,
-            2,
-            "a line on each side of the button keeps it in the middle of the boundary"
+        XCTAssertTrue(
+            block.contains("Button(\"调整分段\""),
+            "the adjust control is a header button on the same row as 切换原文 and 重新摘要"
         )
-        let firstLine = try XCTUnwrap(separator.range(of: ".fill(paper.border)"))
-        let button = try XCTUnwrap(separator.range(of: "Button(action: onAdjustBoundary)"))
-        XCTAssertLessThan(firstLine.lowerBound, button.lowerBound)
-        XCTAssertNotNil(
-            separator[button.upperBound...].range(of: ".fill(paper.border)"),
-            "the second boundary line must follow the button so the icon sits on the divider, not at the trailing edge"
-        )
+        XCTAssertTrue(block.contains("case .adjustBoundary:"))
+        let reader = try readerSource()
+        XCTAssertTrue(reader.contains("openBoundaryEditor(at: idx)"))
+        XCTAssertFalse(reader.contains("openBoundaryEditor(at: idx - 1)"))
     }
 
     func testBoundaryEditorUsesClickNotDrag() throws {
