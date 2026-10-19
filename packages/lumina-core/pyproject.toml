@@ -29,7 +29,7 @@ dependencies = [
 ocr = [
     "rapidocr>=3.9.0",
     "onnxruntime>=1.18.0",
-    "pymupdf>=1.24.0",
+    "pymupdf>=1.24.0,<2",
     "opencv-python-headless>=4.8.0",
 ]
 cursor = [
@@ -47,7 +47,7 @@ dev = [
     "pytest-timeout>=2.3.0",
     "rapidocr>=3.9.0",
     "onnxruntime>=1.18.0",
-    "pymupdf>=1.24.0",
+    "pymupdf>=1.24.0,<2",
     "opencv-python-headless>=4.8.0",
     "tokenizers>=0.20.0",
 ]
@@ -55,7 +55,7 @@ release = [
     "pyinstaller>=6.11.0",
     "rapidocr>=3.9.0",
     "onnxruntime>=1.18.0",
-    "pymupdf>=1.24.0",
+    "pymupdf>=1.24.0,<2",
     "opencv-python-headless>=4.8.0",
     "tokenizers>=0.20.0",
 ]

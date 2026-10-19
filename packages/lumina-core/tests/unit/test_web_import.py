@@ -123,6 +123,14 @@ def test_pyinstaller_spec_bundles_trafilatura_settings():
     assert '"justext"' in text
 
 
+def test_release_pins_pymupdf_below_2():
+    """PyMuPDF 2 imports layout weights that the sidecar does not bundle."""
+    text = (Path(__file__).resolve().parents[2] / "pyproject.toml").read_text(encoding="utf-8")
+    pins = [line for line in text.splitlines() if "pymupdf" in line]
+    assert pins
+    assert all("<2" in line for line in pins)
+
+
 def test_fetch_retries_transient_tls_eof(monkeypatch):
     sleeps: list[float] = []
     calls = {"n": 0}
