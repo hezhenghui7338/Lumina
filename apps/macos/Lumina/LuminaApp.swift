@@ -35,6 +35,9 @@ struct LuminaApp: App {
                 Button("从网址导入…") {
                     NotificationCenter.default.post(name: .luminaImportURL, object: nil)
                 }
+                Button("粘贴文本…") {
+                    NotificationCenter.default.post(name: .luminaImportText, object: nil)
+                }
                 // Shortcut: ShortcutStore / ShortcutKeyMonitor (default ⌘O; settings 可改)
             }
             CommandGroup(replacing: .help) {

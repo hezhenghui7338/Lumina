@@ -13,6 +13,23 @@ struct ImportConflictDecision: Equatable {
     var continueQueue: Bool
 }
 
+enum ImportConflictTarget: Equatable {
+    case file(String)
+    case url(String)
+    case paste(String)
+
+    static func from(_ conflict: ImportConflictError) -> ImportConflictTarget {
+        switch conflict.kind {
+        case .file:
+            return .file(conflict.path)
+        case .url:
+            return .url(conflict.path)
+        case .paste:
+            return .paste(conflict.path)
+        }
+    }
+}
+
 enum ImportConflictPolicy {
     static func shouldPrompt(skipRemainingDuplicates: Bool) -> Bool {
         !skipRemainingDuplicates

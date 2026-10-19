@@ -75,6 +75,9 @@ struct ReaderView: View {
     @State private var notesRefreshToken = 0
     @State private var noteError: String?
     @State private var actionError: String?
+    /// Transient “书籍已读完” after next-turn on the last segment. Generation refreshes the 2s timer.
+    @State private var segmentEndNotice: String?
+    @State private var segmentEndNoticeGeneration = 0
     @State private var showRegenerateConfirm = false
     @State private var showAdvancedStartConfirm = false
     @State private var regenerateSummaryTier: SummaryTier = .normal
@@ -880,6 +883,31 @@ struct ReaderView: View {
             readerProgressReturnOverlay
             readerChromeBarsOverlay
             readerListenMiniBarOverlay
+            segmentEndNoticeOverlay
+        }
+    }
+
+    @ViewBuilder
+    private var segmentEndNoticeOverlay: some View {
+        if segmentEndNotice != nil {
+            VStack {
+                Spacer()
+                Text(segmentEndNotice ?? "")
+                    .font(.system(size: 14, weight: .medium))
+                    .foregroundStyle(theme.readerPaper.textPrimary)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 10)
+                    .background(theme.readerPaper.card, in: Capsule())
+                    .padding(.bottom, 72)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .allowsHitTesting(false)
+            .accessibilityIdentifier("lumina.reader.notice.bookFinished")
+            .task(id: segmentEndNoticeGeneration) {
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
+                guard !Task.isCancelled else { return }
+                segmentEndNotice = nil
+            }
         }
     }
 
@@ -1681,7 +1709,12 @@ struct ReaderView: View {
                 }
             },
             canGoPrev: viewModel.canNavigateSegment(from: idx, delta: -1),
-            canGoNext: viewModel.canNavigateSegment(from: idx, delta: 1),
+            canGoNext: viewModel.canNavigateSegment(from: idx, delta: 1)
+                || SegmentTurnNavigation.endOfBookNotice(
+                    current: idx,
+                    delta: 1,
+                    sortedIdxs: viewModel.sortedSegmentIdxs
+                ) != nil,
             onPrevSegment: { turnSegment(from: idx, delta: -1) },
             onNextSegment: { turnSegment(from: idx, delta: 1) },
             onAdjustBoundary: isLast ? nil : { openBoundaryEditor(at: idx) },
@@ -1744,8 +1777,17 @@ struct ReaderView: View {
     }
 
     private func turnSegment(from idx: Int, delta: Int) {
-        guard let target = viewModel.neighbourSegmentIdx(from: idx, delta: delta) else { return }
-        navigateToSegment(target, suspendProgress: false)
+        if let target = viewModel.neighbourSegmentIdx(from: idx, delta: delta) {
+            navigateToSegment(target, suspendProgress: false)
+            return
+        }
+        guard let message = SegmentTurnNavigation.endOfBookNotice(
+            current: idx,
+            delta: delta,
+            sortedIdxs: viewModel.sortedSegmentIdxs
+        ) else { return }
+        segmentEndNoticeGeneration += 1
+        segmentEndNotice = message
     }
 
     private func navigateToSegment(

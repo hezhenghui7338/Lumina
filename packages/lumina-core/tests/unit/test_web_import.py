@@ -120,6 +120,7 @@ def test_pyinstaller_spec_bundles_trafilatura_settings():
     spec = Path(__file__).resolve().parents[2] / "lumina-core.spec"
     text = spec.read_text(encoding="utf-8")
     assert '"trafilatura"' in text
+    assert '"justext"' in text
 
 
 def test_fetch_retries_transient_tls_eof(monkeypatch):

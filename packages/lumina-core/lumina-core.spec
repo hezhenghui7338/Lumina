@@ -34,6 +34,10 @@ for pkg in (
     "loguru",
     "trafilatura",
     "htmldate",
+    # jusText stopword lists are data files, not imported modules. Trafilatura
+    # calls os.listdir(justext/stoplists) while extracting HTML; without them
+    # URL import dies with Errno 2 even though the download succeeded.
+    "justext",
 ):
     try:
         _datas, _binaries, _hidden = collect_all(pkg)

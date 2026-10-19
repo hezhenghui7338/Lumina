@@ -41,7 +41,9 @@ struct ContentView: View {
     @State private var importConflict: ImportConflictError?
     @State private var pendingImportPaths: [String] = []
     @State private var pendingImportURLs: [String] = []
+    @State private var pendingImportTexts: [String] = []
     @State private var showURLImport = false
+    @State private var showTextImport = false
     @State private var isImportingBook = false
     @State private var skipRemainingImportDuplicates = false
 
@@ -121,7 +123,7 @@ struct ContentView: View {
                     applyImportConflictChoice(.skip, conflict: conflict)
                 }
                 if ImportConflictPolicy.showsSkipRemaining(
-                    pendingCount: pendingImportPaths.count + pendingImportURLs.count
+                    pendingCount: pendingImportCount
                 ) {
                     Button("跳过剩下所有") {
                         applyImportConflictChoice(
@@ -139,7 +141,7 @@ struct ContentView: View {
                 Text(
                     ImportConflictPolicy.dialogMessage(
                         title: conflict.title,
-                        remainingCount: pendingImportPaths.count + pendingImportURLs.count
+                        remainingCount: pendingImportCount
                     )
                 )
             }
@@ -162,9 +164,19 @@ struct ContentView: View {
             tab = .library
             showURLImport = true
         }
+        .onReceive(NotificationCenter.default.publisher(for: .luminaImportText)) { _ in
+            guard sidecar.productReady else { return }
+            tab = .library
+            showTextImport = true
+        }
         .sheet(isPresented: $showURLImport) {
             WebURLImportSheet { raw in
                 submitURLImport(raw)
+            }
+        }
+        .sheet(isPresented: $showTextImport) {
+            PastedTextImportSheet { raw in
+                submitTextImport(raw)
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: .luminaOpenFiles)) { note in
@@ -264,6 +276,7 @@ struct ContentView: View {
             onImport: importBook,
             onImportPaths: { enqueueImports(paths: $0) },
             onImportURLs: { showURLImport = true },
+            onImportText: { showTextImport = true },
             onSearch: { showSearch = true },
             onStartSummarize: { tier in
                 Task { await startSummarizeAction(summaryTier: tier) }
@@ -324,20 +337,26 @@ struct ContentView: View {
         }
         if !decision.continueQueue {
             skipRemainingImportDuplicates = false
-            pendingImportPaths.removeAll()
-            pendingImportURLs.removeAll()
+            clearPendingImports()
             return
         }
         if decision.overwriteCurrent, let conflict {
-            if WebURLImportPolicy.isImportableHTTPURL(conflict.path) {
+            switch ImportConflictTarget.from(conflict) {
+            case .url(let url):
                 startURLImport(
-                    url: conflict.path,
+                    url: url,
                     overwrite: true,
                     replacingBookId: conflict.existingBookId
                 )
-            } else {
+            case .paste(let text):
+                startTextImport(
+                    text: text,
+                    overwrite: true,
+                    replacingBookId: conflict.existingBookId
+                )
+            case .file(let path):
                 startImport(
-                    path: conflict.path,
+                    path: path,
                     overwrite: true,
                     replacingBookId: conflict.existingBookId
                 )
@@ -359,7 +378,22 @@ struct ContentView: View {
             startURLImport(url: url, overwrite: false)
             return
         }
+        if !pendingImportTexts.isEmpty {
+            let text = pendingImportTexts.removeFirst()
+            startTextImport(text: text, overwrite: false)
+            return
+        }
         skipRemainingImportDuplicates = false
+    }
+
+    private var pendingImportCount: Int {
+        pendingImportPaths.count + pendingImportURLs.count + pendingImportTexts.count
+    }
+
+    private func clearPendingImports() {
+        pendingImportPaths.removeAll()
+        pendingImportURLs.removeAll()
+        pendingImportTexts.removeAll()
     }
 
     private func submitURLImport(_ raw: String) {
@@ -399,8 +433,7 @@ struct ContentView: View {
             guard sidecar.isRunning else {
                 isImportingBook = false
                 skipRemainingImportDuplicates = false
-                pendingImportPaths.removeAll()
-                pendingImportURLs.removeAll()
+                clearPendingImports()
                 if !sidecar.userStopped {
                     connectionError = sidecar.launchError ?? "无法连接到 AI 引擎，请重试或退出。"
                 }
@@ -429,8 +462,76 @@ struct ContentView: View {
         } catch {
             isImportingBook = false
             skipRemainingImportDuplicates = false
-            pendingImportPaths.removeAll()
-            pendingImportURLs.removeAll()
+            clearPendingImports()
+            if ConnectionError.isConnectionFailure(error) {
+                connectionError = "无法连接到 AI 引擎，请重试或退出。"
+            } else {
+                alertError = error.localizedDescription
+            }
+        }
+    }
+
+    private func submitTextImport(_ raw: String) {
+        guard PasteTextImportPolicy.hasImportableBody(raw) else {
+            alertError = "没有可导入的正文"
+            return
+        }
+        pendingImportTexts.append(raw)
+        importNextBook()
+    }
+
+    private func startTextImport(
+        text: String,
+        overwrite: Bool,
+        replacingBookId: String? = nil
+    ) {
+        guard !isImportingBook else { return }
+        isImportingBook = true
+        Task {
+            await importPastedText(text, overwrite: overwrite, replacingBookId: replacingBookId)
+        }
+    }
+
+    private func importPastedText(
+        _ text: String,
+        overwrite: Bool,
+        replacingBookId: String?
+    ) async {
+        do {
+            await sidecar.ensureRunning()
+            guard sidecar.isRunning else {
+                isImportingBook = false
+                skipRemainingImportDuplicates = false
+                clearPendingImports()
+                if !sidecar.userStopped {
+                    connectionError = sidecar.launchError ?? "无法连接到 AI 引擎，请重试或退出。"
+                }
+                return
+            }
+            let book = try await core.importPastedText(text, overwrite: overwrite)
+            NotificationCenter.default.post(
+                name: .luminaLibraryRefresh,
+                object: nil,
+                userInfo: ["afterImport": true]
+            )
+            if selectedBookId == replacingBookId {
+                selectedBookId = book.id
+            }
+            isImportingBook = false
+            importNextBook()
+        } catch let conflict as ImportConflictError {
+            isImportingBook = false
+            if ImportConflictPolicy.shouldPrompt(
+                skipRemainingDuplicates: skipRemainingImportDuplicates
+            ) {
+                importConflict = conflict
+            } else {
+                importNextBook()
+            }
+        } catch {
+            isImportingBook = false
+            skipRemainingImportDuplicates = false
+            clearPendingImports()
             if ConnectionError.isConnectionFailure(error) {
                 connectionError = "无法连接到 AI 引擎，请重试或退出。"
             } else {
@@ -465,8 +566,7 @@ struct ContentView: View {
             guard sidecar.isRunning else {
                 isImportingBook = false
                 skipRemainingImportDuplicates = false
-                pendingImportPaths.removeAll()
-                pendingImportURLs.removeAll()
+                clearPendingImports()
                 if !sidecar.userStopped {
                     connectionError = sidecar.launchError ?? "无法连接到 AI 引擎，请重试或退出。"
                 }
@@ -495,8 +595,7 @@ struct ContentView: View {
         } catch {
             isImportingBook = false
             skipRemainingImportDuplicates = false
-            pendingImportPaths.removeAll()
-            pendingImportURLs.removeAll()
+            clearPendingImports()
             if ConnectionError.isConnectionFailure(error) {
                 connectionError = "无法连接到 AI 引擎，请重试或退出。"
             } else {
@@ -550,6 +649,7 @@ private struct LibraryTabView: View {
     var onImport: () -> Void
     var onImportPaths: ([String]) -> Void
     var onImportURLs: () -> Void
+    var onImportText: () -> Void
     var onSearch: () -> Void
     var onStartSummarize: (SummaryTier) -> Void
     var onStopSummarize: () -> Void
@@ -679,6 +779,7 @@ private struct LibraryTabView: View {
                 onImport: onImport,
                 onImportPaths: onImportPaths,
                 onImportURLs: onImportURLs,
+                onImportText: onImportText,
                 onSearch: onSearch,
                 onShowAllNotes: showAllNotes,
                 onStartSummarize: onStartSummarize,
@@ -751,11 +852,50 @@ private struct WebURLImportSheet: View {
     }
 }
 
+private struct PastedTextImportSheet: View {
+    var onSubmit: (String) -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var draft = ""
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("粘贴文本")
+                .font(.headline)
+            Text("把文章全文粘贴到这里，将作为一本纯文本导入。书名用第一行。超过 15MB 请改用 TXT 文件。")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            TextEditor(text: $draft)
+                .font(.body)
+                .frame(minHeight: 220)
+                .overlay {
+                    RoundedRectangle(cornerRadius: 6)
+                        .stroke(Color.secondary.opacity(0.35))
+                }
+            HStack {
+                Spacer()
+                Button("取消") { dismiss() }
+                Button("导入") {
+                    let raw = draft
+                    dismiss()
+                    onSubmit(raw)
+                }
+                .disabled(!PasteTextImportPolicy.hasImportableBody(draft))
+                .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(20)
+        .frame(width: 520)
+    }
+}
+
 extension Notification.Name {
     static let luminaOpenSearch = Notification.Name("luminaOpenSearch")
     static let luminaOpenUsageGuide = Notification.Name("luminaOpenUsageGuide")
     static let luminaImportBook = Notification.Name("luminaImportBook")
     static let luminaImportURL = Notification.Name("luminaImportURL")
+    static let luminaImportText = Notification.Name("luminaImportText")
     static let luminaOpenFiles = Notification.Name("luminaOpenFiles")
     static let luminaRevealMainWindow = Notification.Name("luminaRevealMainWindow")
     static let luminaLibraryRefresh = Notification.Name("luminaLibraryRefresh")

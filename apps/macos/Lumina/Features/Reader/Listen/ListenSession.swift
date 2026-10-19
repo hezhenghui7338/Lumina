@@ -1,5 +1,13 @@
 import Foundation
 
+enum ListenBookEndCue {
+    static let text = "书籍已播完"
+
+    static func shouldSpeak(hasSpokenSegment: Bool) -> Bool {
+        hasSpokenSegment
+    }
+}
+
 enum ListenAdvanceDecision: Equatable {
     case play(Int)
     case skip(idx: Int, reason: String)
@@ -171,9 +179,7 @@ final class ListenSession: ObservableObject {
     private func runLoop(token: Int) async {
         while token == generation, isActive {
             if currentIdx >= segmentCount {
-                statusMessage = "已听完"
-                isPlaying = false
-                isLoading = false
+                await finishNaturally(token: token)
                 return
             }
             isLoading = true
@@ -197,10 +203,7 @@ final class ListenSession: ObservableObject {
             )
             switch decision {
             case .finished:
-                statusMessage = "已听完"
-                isLoading = false
-                isPlaying = false
-                activeHighlight = nil
+                await finishNaturally(token: token)
                 return
             case .pauseTooManySkips:
                 skipNotice = skipMessage(for: idx, reason: script.skipReason)
@@ -257,10 +260,49 @@ final class ListenSession: ObservableObject {
             guard token == generation, isActive else { return }
             currentIdx = idx + 1
         }
-        if currentIdx >= segmentCount {
+        if currentIdx >= segmentCount, token == generation, isActive {
             statusMessage = "已听完"
             isPlaying = false
             activeHighlight = nil
+        }
+    }
+
+    /// Natural end of continuous playback. Speaks the book-end cue only after a real segment.
+    private func finishNaturally(token: Int) async {
+        guard token == generation, isActive else { return }
+        if ListenBookEndCue.shouldSpeak(hasSpokenSegment: hasSpokenSegment) {
+            await speakBookEndCue(token: token)
+            guard token == generation, isActive else { return }
+        }
+        statusMessage = "已听完"
+        isLoading = false
+        isPlaying = false
+        activeHighlight = nil
+    }
+
+    private func speakBookEndCue(token: Int) async {
+        guard token == generation, isActive else { return }
+        let engine = self.engine ?? makeEngine?() ?? SystemNeuralEngine()
+        self.engine = engine
+        isPaused = false
+        isPlaying = true
+        isLoading = false
+        activeHighlight = nil
+        let idx = min(max(currentIdx, 0), max(segmentCount - 1, 0))
+        do {
+            try await engine.speak(
+                ListenSpeakRequest(
+                    texts: [ListenBookEndCue.text],
+                    language: "zh",
+                    rate: rate,
+                    bookId: bookId,
+                    idx: idx,
+                    mode: mode
+                ),
+                onUtteranceStart: nil
+            )
+        } catch {
+            return
         }
     }
 
