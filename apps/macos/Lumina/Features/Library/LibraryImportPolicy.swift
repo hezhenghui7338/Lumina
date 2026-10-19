@@ -92,3 +92,10 @@ enum WebURLImportPolicy {
         return "这些内容不是可导入的网址：\(preview)\(suffix)"
     }
 }
+
+/// One pasted article becomes one plain-text book. The engine names and stores it.
+enum PasteTextImportPolicy {
+    static func hasImportableBody(_ raw: String) -> Bool {
+        !raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+}

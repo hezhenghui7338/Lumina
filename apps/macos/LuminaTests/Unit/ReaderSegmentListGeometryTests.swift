@@ -772,6 +772,22 @@ final class SegmentTurnNavigationTests: XCTestCase {
         )
     }
 
+    func testEndOfBookNoticeOnlyOnNextFromLast() {
+        XCTAssertEqual(
+            SegmentTurnNavigation.endOfBookNotice(current: 5, delta: 1, sortedIdxs: [0, 2, 5]),
+            SegmentTurnNavigation.finishedBookNotice
+        )
+        XCTAssertNil(
+            SegmentTurnNavigation.endOfBookNotice(current: 5, delta: -1, sortedIdxs: [0, 2, 5])
+        )
+        XCTAssertNil(
+            SegmentTurnNavigation.endOfBookNotice(current: 2, delta: 1, sortedIdxs: [0, 2, 5])
+        )
+        XCTAssertNil(
+            SegmentTurnNavigation.endOfBookNotice(current: 0, delta: 1, sortedIdxs: [])
+        )
+    }
+
     func testEmptyAndMissingCurrentReturnNil() {
         XCTAssertNil(SegmentTurnNavigation.targetIdx(current: 0, delta: 1, sortedIdxs: []))
         XCTAssertNil(

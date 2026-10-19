@@ -80,4 +80,9 @@ final class LibraryImportPolicyTests: XCTestCase {
             ["/Users/me/book.epub", "/Users/me/skip.png"]
         )
     }
+
+    func testPasteBody_rejectsWhitespaceOnly() {
+        XCTAssertFalse(PasteTextImportPolicy.hasImportableBody(" \n\t"))
+        XCTAssertTrue(PasteTextImportPolicy.hasImportableBody("标题\n正文"))
+    }
 }

@@ -369,10 +369,17 @@ enum SummarizeStateFilter: String, CaseIterable, Identifiable {
     }
 }
 
+enum ImportConflictKind: Equatable {
+    case file
+    case url
+    case paste
+}
+
 struct ImportConflictError: LocalizedError {
     let existingBookId: String
     let title: String
     let path: String
+    var kind: ImportConflictKind = .file
 
     var errorDescription: String? {
         "《\(title)》已在书库中"
@@ -1434,7 +1441,31 @@ final class CoreClient: ObservableObject {
     func importURL(_ url: String, overwrite: Bool = false) async throws -> BookSummary {
         struct Body: Codable { let url: String; let overwrite: Bool }
         let body = try JSONEncoder().encode(Body(url: url, overwrite: overwrite))
-        let data = try await postAllowingConflict(path: "/books/import-url", body: body, importPath: url)
+        let data = try await postAllowingConflict(
+            path: "/books/import-url", body: body, importPath: url, kind: .url
+        )
+        struct Resp: Codable { let book_id: String; let title: String; let status: String }
+        let first = try await Self.decode(Resp.self, from: data)
+        return BookSummary(
+            id: first.book_id,
+            title: first.title,
+            status: first.status,
+            segment_count: nil,
+            is_favorite: nil,
+            category: nil,
+            last_opened_at: nil,
+            current_segment_index: nil,
+            author: nil,
+            created_at: nil
+        )
+    }
+
+    func importPastedText(_ text: String, overwrite: Bool = false) async throws -> BookSummary {
+        struct Body: Codable { let text: String; let overwrite: Bool }
+        let body = try JSONEncoder().encode(Body(text: text, overwrite: overwrite))
+        let data = try await postAllowingConflict(
+            path: "/books/import-paste", body: body, importPath: text, kind: .paste
+        )
         struct Resp: Codable { let book_id: String; let title: String; let status: String }
         let first = try await Self.decode(Resp.self, from: data)
         return BookSummary(
@@ -1483,7 +1514,12 @@ final class CoreClient: ObservableObject {
         url(path: "/books/\(bookId)/assets/\(assetId)")
     }
 
-    private func postAllowingConflict(path: String, body: Data, importPath: String) async throws -> Data {
+    private func postAllowingConflict(
+        path: String,
+        body: Data,
+        importPath: String,
+        kind: ImportConflictKind = .file
+    ) async throws -> Data {
         try await withConnectionRetry {
             var request = URLRequest(url: self.url(path: path))
             request.httpMethod = "POST"
@@ -1491,21 +1527,25 @@ final class CoreClient: ObservableObject {
             request.httpBody = body
             let (data, resp) = try await self.session.data(for: request)
             if let http = resp as? HTTPURLResponse, http.statusCode == 409 {
-                throw Self.parseImportConflict(data: data, path: importPath)
+                throw Self.parseImportConflict(data: data, path: importPath, kind: kind)
             }
             try self.validate(resp: resp, data: data)
             return data
         }
     }
 
-    private static func parseImportConflict(data: Data, path: String) -> ImportConflictError {
+    private static func parseImportConflict(
+        data: Data,
+        path: String,
+        kind: ImportConflictKind
+    ) -> ImportConflictError {
         if let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
            let detail = obj["detail"] as? [String: Any],
            let bookId = detail["existing_book_id"] as? String {
             let title = detail["title"] as? String ?? "未知书名"
-            return ImportConflictError(existingBookId: bookId, title: title, path: path)
+            return ImportConflictError(existingBookId: bookId, title: title, path: path, kind: kind)
         }
-        return ImportConflictError(existingBookId: "", title: "未知书名", path: path)
+        return ImportConflictError(existingBookId: "", title: "未知书名", path: path, kind: kind)
     }
 
     func openBook(id: String) async throws -> OpenBookResponse {

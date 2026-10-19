@@ -67,6 +67,7 @@ from lumina_core.ingest.loader import (
     title_from_path,
     validate_import,
 )
+from lumina_core.ingest.paste import PasteImportError, prepare_pasted_text, write_pasted_text
 from lumina_core.ingest.web import (
     WebImportError,
     canonicalize_import_url,
@@ -135,6 +136,11 @@ class ImportRequest(BaseModel):
 
 class ImportURLRequest(BaseModel):
     url: str
+    overwrite: bool = False
+
+
+class ImportPasteRequest(BaseModel):
+    text: str
     overwrite: bool = False
 
 
@@ -967,6 +973,59 @@ async def import_book_url(body: ImportURLRequest, request: Request) -> dict[str,
         metadata_json={"source_url": canonical, "source_kind": "url"},
     )
     _schedule_url_fetch(state, book_id=book_id, canonical_url=canonical)
+    return {
+        "book_id": book_id,
+        "status": "processing",
+        "title": book["title"],
+    }
+
+
+@router.post("/books/import-paste")
+async def import_pasted_text(body: ImportPasteRequest, request: Request) -> dict[str, Any]:
+    """Store one pasted article as a plain-text book and segment it in the background."""
+    state = _state(request)
+    try:
+        prepared = await asyncio.to_thread(prepare_pasted_text, body.text)
+    except PasteImportError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+    books_repo = BookRepo(state.conn)
+    existing = await asyncio.to_thread(books_repo.find_by_hash, prepared.digest)
+    if existing and not body.overwrite:
+        raise HTTPException(
+            409,
+            detail={"existing_book_id": existing["id"], "title": existing["title"]},
+        )
+    if existing and body.overwrite:
+        await _purge_book(state, existing["id"])
+
+    _wire_job_events(state)
+    book_id = str(uuid.uuid4())
+    dest = state.books_dir / book_id / "original.txt"
+    await asyncio.to_thread(write_pasted_text, dest, prepared.text)
+    book = books_repo.insert(
+        id=book_id,
+        title=prepared.title,
+        author=None,
+        format="txt",
+        file_path=str(dest),
+        file_hash=prepared.digest,
+        language=None,
+        target_language=state.settings.target_language,
+        segment_count=0,
+        status="processing",
+        metadata_json={
+            "source_kind": "paste",
+            TITLE_USER_SET_KEY: True,
+        },
+    )
+    _schedule_ingest(
+        state,
+        book_id=book_id,
+        dest=dest,
+        fmt="txt",
+        src=dest,
+    )
     return {
         "book_id": book_id,
         "status": "processing",

@@ -45,4 +45,17 @@ final class ImportConflictPolicyTests: XCTestCase {
         XCTAssertTrue(batch.contains("跳过剩下所有"))
         XCTAssertTrue(batch.contains("仍导入新书"))
     }
+
+    func testOverwritePaste_doesNotTreatTheTextAsAURL() {
+        let conflict = ImportConflictError(
+            existingBookId: "id",
+            title: "旧书",
+            path: "https://example.com/post",
+            kind: .paste
+        )
+        XCTAssertEqual(
+            ImportConflictTarget.from(conflict),
+            .paste("https://example.com/post")
+        )
+    }
 }

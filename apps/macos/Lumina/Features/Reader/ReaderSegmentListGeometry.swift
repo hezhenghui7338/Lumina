@@ -267,11 +267,20 @@ enum ReaderSegmentPanelHeight {
 
 /// Prev/next segment by sorted idx, used by arrow buttons and keyboard.
 enum SegmentTurnNavigation {
+    static let finishedBookNotice = "书籍已读完"
+
     static func targetIdx(current: Int, delta: Int, sortedIdxs: [Int]) -> Int? {
         guard let pos = sortedIdxs.firstIndex(of: current) else { return nil }
         let newPos = pos + delta
         guard sortedIdxs.indices.contains(newPos) else { return nil }
         return sortedIdxs[newPos]
+    }
+
+    /// Notice when the reader is already on the last segment and asks for the next one.
+    static func endOfBookNotice(current: Int, delta: Int, sortedIdxs: [Int]) -> String? {
+        guard delta > 0, let last = sortedIdxs.last, current == last else { return nil }
+        guard targetIdx(current: current, delta: delta, sortedIdxs: sortedIdxs) == nil else { return nil }
+        return finishedBookNotice
     }
 }
 

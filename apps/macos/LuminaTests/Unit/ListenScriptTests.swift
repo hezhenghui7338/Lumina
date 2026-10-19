@@ -315,3 +315,103 @@ final class ListenSessionTests: XCTestCase {
         )
     }
 }
+
+@MainActor
+private final class RecordingListenEngine: ListenEngine {
+    private(set) var spoken: [String] = []
+    private(set) var isPaused = false
+
+    func speak(
+        _ request: ListenSpeakRequest,
+        onUtteranceStart: ((Int) -> Void)?
+    ) async throws {
+        for (index, text) in request.texts.enumerated() {
+            try Task.checkCancellation()
+            onUtteranceStart?(index)
+            spoken.append(text)
+        }
+    }
+
+    func pause() { isPaused = true }
+    func resume() { isPaused = false }
+    func stop() {}
+}
+
+@MainActor
+final class ListenSessionPlaybackTests: XCTestCase {
+    func testSpeaksBookEndCueAfterLastSegment() async {
+        let engine = RecordingListenEngine()
+        let session = ListenSession()
+        session.configure(
+            bookId: "book",
+            segmentCount: 1,
+            resolve: { _, mode, context in
+                ListenScript.build(
+                    mode: mode,
+                    summary: nil,
+                    rawText: "你好。",
+                    chapterContext: context
+                )
+            },
+            labelFor: { _ in "段 1" },
+            makeEngine: { engine }
+        )
+        session.start(mode: .original, from: 0)
+        await waitUntil { session.statusMessage == "已听完" }
+        XCTAssertEqual(session.statusMessage, "已听完")
+        XCTAssertEqual(engine.spoken.last, ListenBookEndCue.text)
+        XCTAssertGreaterThan(engine.spoken.count, 1)
+    }
+
+    func testNoBookEndCueWhenNothingWasSpoken() async {
+        let engine = RecordingListenEngine()
+        let session = ListenSession()
+        session.configure(
+            bookId: "book",
+            segmentCount: 1,
+            resolve: { _, mode, _ in
+                ListenScript.notReady(mode, reason: "summary_not_ready")
+            },
+            labelFor: { _ in "段 1" },
+            makeEngine: { engine }
+        )
+        session.start(mode: .summary, from: 0)
+        await waitUntil { session.statusMessage == "已听完" }
+        XCTAssertEqual(session.statusMessage, "已听完")
+        XCTAssertFalse(engine.spoken.contains(ListenBookEndCue.text))
+    }
+
+    func testStopDoesNotSpeakBookEndCue() async {
+        let engine = RecordingListenEngine()
+        let session = ListenSession()
+        session.configure(
+            bookId: "book",
+            segmentCount: 1,
+            resolve: { _, mode, _ in
+                while !Task.isCancelled {
+                    try? await Task.sleep(nanoseconds: 30_000_000)
+                }
+                return ListenScript.notReady(mode, reason: "summary_not_ready")
+            },
+            labelFor: { _ in "段 1" },
+            makeEngine: { engine }
+        )
+        session.start(mode: .summary, from: 0)
+        session.stop()
+        try? await Task.sleep(nanoseconds: 80_000_000)
+        XCTAssertFalse(session.isActive)
+        XCTAssertNil(session.statusMessage)
+        XCTAssertFalse(engine.spoken.contains(ListenBookEndCue.text))
+    }
+
+    private func waitUntil(
+        _ predicate: () -> Bool,
+        timeoutMs: Int = 1000
+    ) async {
+        let steps = max(1, timeoutMs / 20)
+        for _ in 0..<steps {
+            if predicate() { return }
+            try? await Task.sleep(nanoseconds: 20_000_000)
+        }
+    }
+}

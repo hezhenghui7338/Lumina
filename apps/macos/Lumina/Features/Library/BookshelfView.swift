@@ -10,6 +10,7 @@ struct BookshelfView: View {
     var onImport: () -> Void
     var onImportPaths: ([String]) -> Void
     var onImportURLs: () -> Void
+    var onImportText: () -> Void
     var onSearch: () -> Void
     var onShowAllNotes: () -> Void
     var onStartSummarize: (SummaryTier) -> Void
@@ -214,6 +215,7 @@ struct BookshelfView: View {
             Menu {
                 Button("导入书籍…", action: onImport)
                 Button("从网址导入…", action: onImportURLs)
+                Button("粘贴文本…", action: onImportText)
             } label: {
                 Label("导入", systemImage: "square.and.arrow.down")
             }
@@ -523,6 +525,7 @@ struct BookshelfView: View {
             .tint(LuminaTheme.accent)
             .tourAnchor(.importButton)
             Button("从网址导入…", action: onImportURLs)
+            Button("粘贴文本…", action: onImportText)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
