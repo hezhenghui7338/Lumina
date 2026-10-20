@@ -178,6 +178,19 @@ async def test_hot_update_preserves_concurrency_limit(conn):
     updated = _ollama_models(concurrency=1)
     router.models = updated
     router.update_resources(updated.resources)
+
+    # In-flight calls may still hold slots acquired under the old limit=2.
+    # Only measure post-update peak after in_use has drained to the new limit,
+    # otherwise overlapping pre-update holders falsely trip peak_after_update.
+    for _ in range(100):
+        in_use = next(
+            r["in_use"] for r in gate.snapshot() if r["resource_id"] == "ollama"
+        )
+        if in_use <= 1:
+            break
+        await asyncio.sleep(0.01)
+    else:
+        pytest.fail("in-flight did not drain to new concurrency limit")
     update_done.set()
 
     for _ in range(120):
@@ -195,6 +208,9 @@ async def test_hot_update_preserves_concurrency_limit(conn):
 
     assert peak <= 2
     assert peak_after_update <= 1
+    ollama = next(r for r in router.gate.snapshot() if r["resource_id"] == "ollama")
+    assert ollama["limit"] == 1
+    assert ollama["in_use"] == 0
 
 
 @pytest.mark.asyncio

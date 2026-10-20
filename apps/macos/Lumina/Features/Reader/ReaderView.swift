@@ -891,14 +891,14 @@ struct ReaderView: View {
     private var segmentEndNoticeOverlay: some View {
         if segmentEndNotice != nil {
             VStack {
-                Spacer()
                 Text(segmentEndNotice ?? "")
                     .font(.system(size: 14, weight: .medium))
                     .foregroundStyle(theme.readerPaper.textPrimary)
                     .padding(.horizontal, 16)
                     .padding(.vertical, 10)
                     .background(theme.readerPaper.card, in: Capsule())
-                    .padding(.bottom, 72)
+                    .padding(.top, ReaderChromeBarMetrics.height + 12)
+                Spacer()
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .allowsHitTesting(false)
