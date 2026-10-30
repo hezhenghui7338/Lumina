@@ -230,6 +230,9 @@ def create_app_state(settings: Settings | None = None) -> AppState:
         router,
         target_language=settings.target_language,
         auto_start_summary=settings.auto_start_summary,
+        web_search_enabled=settings.web_search_enabled,
+        web_search_provider=settings.web_search_provider,
+        tavily_api_key=settings.tavily_api_key,
         task_registry=task_registry,
         prompts=settings.prompts,
     )

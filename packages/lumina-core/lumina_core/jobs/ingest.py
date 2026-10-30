@@ -15,10 +15,15 @@ from lumina_core.chunker.embeddings import build_boundary_scorer
 from lumina_core.chunker.llm_cuts import refine_spans_with_llm
 from lumina_core.chunker.tree import build_document_tree
 from lumina_core.chunker.units import count_units
+from lumina_core.classify.segment_profile import (
+    build_segment_profile,
+    peek_txt_sample,
+)
 from lumina_core.config import (
     CHUNKER_VERSION,
     ModelsConfig,
     Settings,
+    clamp_english_chunk_factor,
     normalize_segment_tier,
     resolve_chunk_budget,
 )
@@ -110,10 +115,23 @@ def _chunk_ingest_sync(
     cancel_event: threading.Event,
     document_map: list | None,
     on_progress=None,
+    *,
+    chunk_target_chars: int | None = None,
+    category: str | None = None,
+    classical: bool = False,
+    language: str | None = None,
+    english_chunk_factor: float | None = None,
 ):
     if cancel_event.is_set():
         raise DocumentLoadCancelled("已取消")
-    budget = resolve_chunk_budget(models)
+    budget = resolve_chunk_budget(
+        models,
+        target_chars=chunk_target_chars,
+        category=category,
+        classical=classical,
+        language=language,
+        english_chunk_factor=english_chunk_factor,
+    )
     scorer = build_boundary_scorer(cancelled=cancel_event.is_set)
     try:
         tree = build_document_tree(
@@ -158,6 +176,10 @@ def _payload_ingest_sync(
     ingest_meta["chunker_version"] = CHUNKER_VERSION
     ingest_meta["chunk_target_chars"] = budget.target_chars
     ingest_meta["segment_tier"] = segment_tier
+    if metadata.get("text_style"):
+        ingest_meta["text_style"] = metadata["text_style"]
+    if metadata.get("segment_profile_category"):
+        ingest_meta["segment_profile_category"] = metadata["segment_profile_category"]
     return segments, ingest_meta, infer_language(text)
 
 
@@ -212,6 +234,9 @@ def _persist_ingest_sync(
             target_language=target_language,
             metadata_json=persist_meta,
         )
+        profile_category = persist_meta.get("segment_profile_category")
+        if isinstance(profile_category, str) and profile_category.strip():
+            books_repo.update(book_id, category=profile_category.strip())
         _persist_cover_if_any(
             books_repo,
             book_id,
@@ -390,7 +415,35 @@ async def run_ingest_job(
             },
         )
 
+        english_factor = clamp_english_chunk_factor(
+            getattr(settings, "english_chunk_factor", None)
+        )
+        router = getattr(job_queue, "router", None)
+        prompts = getattr(job_queue, "prompts", None)
+
         if should_offload_cpu(dest):
+            pre_profile = None
+            if fmt == "txt":
+                sample = await asyncio.to_thread(peek_txt_sample, dest)
+                book_row = await asyncio.to_thread(books_repo.get, book_id)
+                await emit(
+                    book_id,
+                    {
+                        "type": "ingest_progress",
+                        "page": 0,
+                        "total": 0,
+                        "message": "正在识别文本类型…",
+                    },
+                )
+                pre_profile = await build_segment_profile(
+                    title=(book_row or {}).get("title") or title_from_path(src, {}),
+                    author=(book_row or {}).get("author"),
+                    text_sample=sample,
+                    models=models,
+                    english_chunk_factor=english_factor,
+                    router=router,
+                    prompts=prompts,
+                )
             result = await asyncio.to_thread(
                 run_cpu_worker_sync,
                 {
@@ -407,6 +460,14 @@ async def run_ingest_job(
                     "settings": settings_for_cpu_job(settings),
                     "_ocr_cloud_api_key": settings.ocr_cloud_api_key,
                     "models": models_for_cpu_job(models),
+                    "chunk_target_chars": (
+                        pre_profile.chunk_target_chars if pre_profile else None
+                    ),
+                    "category": pre_profile.category if pre_profile else None,
+                    "classical": pre_profile.classical if pre_profile else False,
+                    "language_hint": pre_profile.language if pre_profile else None,
+                    "text_style": pre_profile.text_style if pre_profile else None,
+                    "english_chunk_factor": english_factor,
                 },
                 cancel_event,
                 on_progress,
@@ -427,6 +488,26 @@ async def run_ingest_job(
         if fmt == "txt":
             from lumina_core.ingest.txt_persist import persist_streamed_txt_ingest
 
+            sample = await asyncio.to_thread(peek_txt_sample, dest)
+            book_row = await asyncio.to_thread(books_repo.get, book_id)
+            await emit(
+                book_id,
+                {
+                    "type": "ingest_progress",
+                    "page": 0,
+                    "total": 0,
+                    "message": "正在识别文本类型…",
+                },
+            )
+            profile = await build_segment_profile(
+                title=(book_row or {}).get("title") or title_from_path(src, {}),
+                author=(book_row or {}).get("author"),
+                text_sample=sample,
+                models=models,
+                english_chunk_factor=english_factor,
+                router=router,
+                prompts=prompts,
+            )
             count, _ingest_meta, _lang = await asyncio.to_thread(
                 persist_streamed_txt_ingest,
                 db_path,
@@ -441,6 +522,13 @@ async def run_ingest_job(
                 ),
                 cancel_event=cancel_event,
                 on_progress=on_progress,
+                chunk_target_chars=profile.chunk_target_chars,
+                category=profile.category,
+                classical=profile.classical,
+                language_hint=profile.language,
+                english_chunk_factor=english_factor,
+                text_style=profile.text_style,
+                profile_category=profile.category,
             )
             if job_queue.auto_start_summary:
                 await job_queue.enqueue_book_prefetch(book_id)
@@ -470,6 +558,27 @@ async def run_ingest_job(
                 "type": "ingest_progress",
                 "page": 0,
                 "total": 0,
+                "message": "正在识别文本类型…",
+            },
+        )
+        book_row = await asyncio.to_thread(books_repo.get, book_id)
+        profile = await build_segment_profile(
+            title=(book_row or {}).get("title")
+            or title_from_path(src, metadata),
+            author=(book_row or {}).get("author") or author_from_metadata(metadata),
+            text_sample=text,
+            models=models,
+            english_chunk_factor=english_factor,
+            router=router,
+            prompts=prompts,
+        )
+        metadata.update(profile.metadata_fields())
+        await emit(
+            book_id,
+            {
+                "type": "ingest_progress",
+                "page": 0,
+                "total": 0,
                 "message": "正在识别序言与正文结构…",
             },
         )
@@ -480,8 +589,6 @@ async def run_ingest_job(
             cancel_event,
             on_progress,
         )
-        router = getattr(job_queue, "router", None)
-        prompts = getattr(job_queue, "prompts", None)
         units = await refine_document_map(
             units,
             router=router,
@@ -505,6 +612,11 @@ async def run_ingest_job(
             cancel_event,
             units,
             on_progress,
+            chunk_target_chars=profile.chunk_target_chars,
+            category=profile.category,
+            classical=profile.classical,
+            language=profile.language,
+            english_chunk_factor=english_factor,
         )
         segment_tier = normalize_segment_tier(
             getattr(settings, "default_segment_tier", "normal")

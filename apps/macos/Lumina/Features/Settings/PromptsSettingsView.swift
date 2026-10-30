@@ -7,11 +7,13 @@ struct PromptsSettingsView: View {
 
     @State private var saving = false
 
+    private static let styleKeys = PromptsSettings.segmentStyleKeys
+
     var body: some View {
         Form {
             promptSection(
                 title: "段摘要",
-                footer: "必填占位符：{text}、{anchor}；可选：{target_language}",
+                footer: "必填占位符：{text}、{anchor}；可选：{target_language}、{style_guidance}",
                 text: $prompts.segment
             ) {
                 prompts.segment = defaultPrompts.segment
@@ -20,18 +22,31 @@ struct PromptsSettingsView: View {
             DisclosureGroup("段摘要 · 高级（可选覆盖）") {
                 optionalPromptSection(
                     title: "Ollama 覆盖",
-                    footer: "留空则使用主模板。必填占位符：{text}；可选：{target_language}",
+                    footer: "留空则使用主模板。必填占位符：{text}；可选：{target_language}、{style_guidance}",
                     text: optionalBinding(\.segment_ollama)
                 ) {
                     prompts.segment_ollama = defaultPrompts.segment_ollama
                 }
                 optionalPromptSection(
                     title: "Cloud 覆盖",
-                    footer: "留空则使用主模板。必填占位符：{text}；可选：{target_language}",
+                    footer: "留空则使用主模板。必填占位符：{text}；可选：{target_language}、{style_guidance}",
                     text: optionalBinding(\.segment_cloud)
                 ) {
                     prompts.segment_cloud = defaultPrompts.segment_cloud
                 }
+            }
+
+            DisclosureGroup("按类型摘要风格") {
+                Text("按书类 / 古文注入语气与侧重点；改后仅对新生成与手动重试摘要生效。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                ForEach(Self.styleKeys, id: \.self) { key in
+                    styleSection(key: key)
+                }
+                Button("恢复全部风格默认") {
+                    prompts.segment_styles = defaultPrompts.segment_styles
+                }
+                .font(.caption)
             }
 
             promptSection(
@@ -86,6 +101,33 @@ struct PromptsSettingsView: View {
         }
         .formStyle(.grouped)
         .navigationTitle("Prompt 模板")
+    }
+
+    @ViewBuilder
+    private func styleSection(key: String) -> some View {
+        Section {
+            PromptTextEditor(text: styleBinding(key))
+                .frame(minHeight: 80)
+            Button("恢复默认") {
+                var styles = prompts.segment_styles ?? [:]
+                styles[key] = defaultPrompts.segment_styles?[key] ?? ""
+                prompts.segment_styles = styles
+            }
+            .font(.caption)
+        } header: {
+            Text(key)
+        }
+    }
+
+    private func styleBinding(_ key: String) -> Binding<String> {
+        Binding(
+            get: { prompts.segment_styles?[key] ?? defaultPrompts.segment_styles?[key] ?? "" },
+            set: { newValue in
+                var styles = prompts.segment_styles ?? defaultPrompts.segment_styles ?? [:]
+                styles[key] = newValue
+                prompts.segment_styles = styles
+            }
+        )
     }
 
     @ViewBuilder
@@ -153,6 +195,8 @@ private struct PromptTextEditor: View {
 }
 
 struct PromptsSettings: Codable, Equatable {
+    static let segmentStyleKeys = ["文学", "历史", "科技", "哲学", "经济", "传记", "其他", "古文"]
+
     var segment: String
     var segment_ollama: String?
     var segment_cloud: String?
@@ -161,6 +205,7 @@ struct PromptsSettings: Codable, Equatable {
     var news_chat: String
     var translate: String
     var classify: String
+    var segment_styles: [String: String]?
 
     init(
         segment: String,
@@ -170,7 +215,8 @@ struct PromptsSettings: Codable, Equatable {
         chat: String,
         news_chat: String,
         translate: String,
-        classify: String
+        classify: String,
+        segment_styles: [String: String]? = nil
     ) {
         self.segment = segment
         self.segment_ollama = segment_ollama
@@ -180,6 +226,7 @@ struct PromptsSettings: Codable, Equatable {
         self.news_chat = news_chat
         self.translate = translate
         self.classify = classify
+        self.segment_styles = segment_styles
     }
 
     init(from decoder: Decoder) throws {
@@ -192,9 +239,11 @@ struct PromptsSettings: Codable, Equatable {
         news_chat = try c.decode(String.self, forKey: .news_chat)
         translate = try c.decode(String.self, forKey: .translate)
         classify = try c.decode(String.self, forKey: .classify)
+        segment_styles = try c.decodeIfPresent([String: String].self, forKey: .segment_styles)
     }
 
     enum CodingKeys: String, CodingKey {
         case segment, segment_ollama, segment_cloud, document, chat, news_chat, translate, classify
+        case segment_styles
     }
 }

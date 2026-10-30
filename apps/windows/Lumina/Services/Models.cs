@@ -31,6 +31,8 @@ public sealed class BookSummary
     public string? CreatedAt { get; set; }
     public int? TotalCharCount { get; set; }
     public int? ChunkTargetChars { get; set; }
+    public int? SuggestedChunkTarget { get; set; }
+    public string? TextStyle { get; set; }
     public int? SummaryReadyCount { get; set; }
     public int? SummaryTotalCount { get; set; }
     public string? ChunkerVersion { get; set; }
@@ -316,8 +318,14 @@ public static class ResegmentTarget
         return clamped == DefaultFor(provider) ? 0 : clamped;
     }
 
-    public static int Normalized(int? currentTarget, int? totalChars, int segmentCount)
+    public static int Normalized(
+        int? currentTarget,
+        int? totalChars,
+        int segmentCount,
+        int? suggestedTarget = null)
     {
+        if (suggestedTarget is int suggested)
+            return Clamp(suggested);
         var currentAverage = (totalChars ?? 4000) / Math.Max(segmentCount, 1);
         var target = currentTarget ?? currentAverage;
         return Clamp(target);
@@ -745,6 +753,41 @@ public sealed class SegmentSummaryDetail
     public int? SummaryLlmAttempts { get; set; }
 }
 
+/// <summary>Book-level AI intro — not a product segment. GET /books/{id}/intro</summary>
+public sealed class BookIntroCitation
+{
+    public string? Title { get; set; }
+    public string? Url { get; set; }
+    public string? Source { get; set; }
+}
+
+public sealed class BookIntroBullet
+{
+    public string? Label { get; set; }
+    public string? Body { get; set; }
+}
+
+public sealed class BookIntroSummaryPayload
+{
+    public List<string>? Sentences { get; set; }
+    public List<BookIntroBullet>? Bullets { get; set; }
+    public List<string>? Notes { get; set; }
+    public List<string>? FollowUps { get; set; }
+    public string? Label { get; set; }
+    public string? Anchor { get; set; }
+}
+
+public sealed class BookIntro
+{
+    public string? BookId { get; set; }
+    public string Status { get; set; } = "idle";
+    public string? SourceText { get; set; }
+    public BookIntroSummaryPayload? Summary { get; set; }
+    public List<BookIntroCitation>? Citations { get; set; }
+    public string? Error { get; set; }
+    public string? UpdatedAt { get; set; }
+}
+
 public sealed class SegmentBoundaryCandidate
 {
     public int Offset { get; set; }
@@ -1150,6 +1193,9 @@ public sealed class ResourceRuntimeResponse
 
 public sealed class PromptsSettings
 {
+    public static readonly string[] SegmentStyleKeys =
+        ["文学", "历史", "科技", "哲学", "经济", "传记", "其他", "古文"];
+
     public string Segment { get; set; } = "";
     public string? SegmentOllama { get; set; }
     public string? SegmentCloud { get; set; }
@@ -1158,6 +1204,7 @@ public sealed class PromptsSettings
     public string NewsChat { get; set; } = "";
     public string Translate { get; set; } = "";
     public string Classify { get; set; } = "";
+    public Dictionary<string, string>? SegmentStyles { get; set; }
 }
 
 public sealed class AppSettings
@@ -1173,6 +1220,7 @@ public sealed class AppSettings
     public bool DebugMode { get; set; }
     public bool AutoStartSummary { get; set; }
     public string DefaultSegmentTier { get; set; } = "normal";
+    public double EnglishChunkFactor { get; set; } = 0.55;
     public ModelsSettings Models { get; set; } = new();
     public PromptsSettings Prompts { get; set; } = new();
     public PromptsSettings PromptsDefaults { get; set; } = new();

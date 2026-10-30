@@ -89,6 +89,10 @@ struct SettingsView: View {
             guard autoSaveEnabled else { return }
             Task { await save() }
         }
+        .onChange(of: settings?.english_chunk_factor) { _, _ in
+            guard autoSaveEnabled else { return }
+            Task { await save() }
+        }
         .sheet(item: $editingResource) { resource in
             ResourceEditorSheet(
                 resource: resourceBinding(for: resource.id),
@@ -218,10 +222,22 @@ struct SettingsView: View {
                 Text("正常分段").tag("normal")
                 Text("高级分段").tag("advanced")
             }
+            HStack {
+                Text("英文切段系数")
+                Spacer()
+                Text(String(format: "%.2f", settings?.english_chunk_factor ?? 0.55))
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+            }
+            Slider(
+                value: englishChunkFactorBinding,
+                in: 0.30...1.00,
+                step: 0.05
+            )
         } header: {
             Text("阅读")
         } footer: {
-            Text("开启后，导入完成、打开书籍及重启时自动排队段摘要。导入默认分段为正常；高级会额外调用模型校准超长块。")
+            Text("开启后，导入完成、打开书籍及重启时自动排队段摘要。导入默认分段为正常；高级会额外调用模型校准超长块。英文书目标段长会再乘以切段系数（默认 0.55）。")
         }
     }
 
@@ -696,6 +712,17 @@ struct SettingsView: View {
         )
     }
 
+    private var englishChunkFactorBinding: Binding<Double> {
+        Binding(
+            get: { settings?.english_chunk_factor ?? 0.55 },
+            set: { newValue in
+                guard var s = settings else { return }
+                s.english_chunk_factor = min(1.0, max(0.30, newValue))
+                settings = s
+            }
+        )
+    }
+
     private func resourceDisplayName(_ resource: ModelResourceSettings) -> String {
         ModelProviderKind.from(provider: resource.provider, baseURL: resource.base_url).label
             + " (\(resource.id))"
@@ -882,6 +909,7 @@ struct SettingsView: View {
                 debugMode: snapshot.debug_mode,
                 autoStartSummary: snapshot.auto_start_summary,
                 defaultSegmentTier: snapshot.default_segment_tier,
+                englishChunkFactor: snapshot.english_chunk_factor,
                 models: snapshot.models,
                 prompts: snapshot.prompts
             )
@@ -918,6 +946,7 @@ struct SettingsView: View {
                 debugMode: snapshot.debug_mode,
                 autoStartSummary: snapshot.auto_start_summary,
                 defaultSegmentTier: snapshot.default_segment_tier,
+                englishChunkFactor: snapshot.english_chunk_factor,
                 models: snapshot.models,
                 prompts: snapshot.prompts
             )
@@ -1001,6 +1030,7 @@ struct AppSettings: Codable {
     var debug_mode: Bool
     var auto_start_summary: Bool
     var default_segment_tier: String
+    var english_chunk_factor: Double
     var models: ModelsSettings
     var prompts: PromptsSettings
     var prompts_defaults: PromptsSettings
@@ -1017,6 +1047,7 @@ struct AppSettings: Codable {
         debug_mode: Bool = false,
         auto_start_summary: Bool = false,
         default_segment_tier: String = "normal",
+        english_chunk_factor: Double = 0.55,
         models: ModelsSettings = .defaults,
         prompts: PromptsSettings? = nil,
         prompts_defaults: PromptsSettings? = nil
@@ -1032,6 +1063,7 @@ struct AppSettings: Codable {
         self.debug_mode = debug_mode
         self.auto_start_summary = auto_start_summary
         self.default_segment_tier = default_segment_tier
+        self.english_chunk_factor = english_chunk_factor
         self.models = models
         let empty = PromptsSettings(
             segment: "",
@@ -1058,6 +1090,7 @@ struct AppSettings: Codable {
         debug_mode = try c.decodeIfPresent(Bool.self, forKey: .debug_mode) ?? false
         auto_start_summary = try c.decodeIfPresent(Bool.self, forKey: .auto_start_summary) ?? false
         default_segment_tier = try c.decodeIfPresent(String.self, forKey: .default_segment_tier) ?? "normal"
+        english_chunk_factor = try c.decodeIfPresent(Double.self, forKey: .english_chunk_factor) ?? 0.55
         models = try c.decodeIfPresent(ModelsSettings.self, forKey: .models) ?? .defaults
         let empty = PromptsSettings(
             segment: "",
@@ -1084,6 +1117,7 @@ struct AppSettings: Codable {
         try c.encode(debug_mode, forKey: .debug_mode)
         try c.encode(auto_start_summary, forKey: .auto_start_summary)
         try c.encode(default_segment_tier, forKey: .default_segment_tier)
+        try c.encode(english_chunk_factor, forKey: .english_chunk_factor)
         try c.encode(models, forKey: .models)
         try c.encode(prompts, forKey: .prompts)
     }
@@ -1092,7 +1126,8 @@ struct AppSettings: Codable {
         case target_language, web_search_provider, web_search_enabled, tavily_api_key
         case ocr_cloud_base_url, ocr_cloud_model, ocr_cloud_api_key
         case ocr_cloud_timeout_seconds
-        case debug_mode, auto_start_summary, default_segment_tier, models, prompts, prompts_defaults
+        case debug_mode, auto_start_summary, default_segment_tier, english_chunk_factor
+        case models, prompts, prompts_defaults
     }
 }
 

@@ -111,6 +111,29 @@ def detect_style(value: str) -> TextStyle:
             return TextStyle.CLASSICAL
     return TextStyle.PROSE
 
+
+def detect_classical_sample(value: str, *, sample_chars: int = 4000) -> bool:
+    """Book-level classical Chinese heuristic on a text sample (for chunk targets)."""
+    stripped = (value or "").strip()
+    if not stripped:
+        return False
+    if len(stripped) > sample_chars:
+        stripped = stripped[:sample_chars]
+    # Prefer body paragraphs over title lines for density.
+    blocks = [b.strip() for b in re.split(r"\n{2,}", stripped) if b.strip()]
+    probe = "\n".join(blocks[:12]) if blocks else stripped
+    if len(probe) > _STYLE_SAMPLE_CHARS * 3:
+        probe = probe[: _STYLE_SAMPLE_CHARS * 3]
+    han_count = len(_HAN.findall(probe))
+    if han_count < 48:
+        return False
+    if _MODERN_TERMS.search(probe):
+        return False
+    term_count = len(_CLASSICAL_TERMS.findall(probe))
+    sentences = [s for s in _SENTENCE_END.split(probe) if s.strip()]
+    avg_sentence = han_count / max(1, len(sentences))
+    return term_count / han_count >= 0.03 and avg_sentence <= 48
+
 def atomize_text(
     text: str,
     *,

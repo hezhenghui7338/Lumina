@@ -61,6 +61,19 @@ def test_books_list_is_favorite_is_json_bool(client):
     assert fav is True
 
 
+def test_book_intro_api_shape_for_swift(client):
+    """GET /books/{id}/intro matches Swift BookIntro decoding."""
+    book_id = _import_sample(client)
+    body = client.get(f"/books/{book_id}/intro").json()
+    assert body["status"] == "idle"
+    assert "source_text" in body
+    assert "summary" in body
+    assert isinstance(body["citations"], list)
+    assert "error" in body
+    assert "updated_at" in body
+    assert "book_id" in body
+
+
 def test_books_patch_returns_bool_favorite(client):
     book_id = _import_sample(client)
 
@@ -435,6 +448,7 @@ def test_settings_matches_swift_app_settings(client):
     assert body.get("debug_mode") is False
     assert body.get("auto_start_summary") is False
     assert body.get("default_segment_tier") == "normal"
+    assert body.get("english_chunk_factor") == 0.55
     prompts = body["prompts"]
     assert isinstance(prompts["segment"], str)
     assert isinstance(prompts["document"], str)
@@ -445,9 +459,15 @@ def test_settings_matches_swift_app_settings(client):
     assert isinstance(prompts.get("rollup"), (str, type(None)))
     if prompts.get("rollup"):
         assert "{text}" in prompts["rollup"]
+    styles = prompts.get("segment_styles")
+    assert isinstance(styles, dict)
+    for key in ("文学", "历史", "科技", "哲学", "经济", "传记", "其他", "古文"):
+        assert isinstance(styles.get(key), str) and styles[key].strip()
+    assert "{style_guidance}" in prompts["segment"]
     defaults = body["prompts_defaults"]
     assert isinstance(defaults["segment"], str)
     assert defaults["segment"] == prompts["segment"]
+    assert defaults["segment_styles"]["科技"] == styles["科技"]
     models = body["models"]
     assert isinstance(models["resources"], list)
     for resource in models["resources"]:

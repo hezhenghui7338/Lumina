@@ -13,7 +13,10 @@ internal static class ResegmentBookDialog
         if (xamlRoot is null || !book.CanResegment) return null;
 
         var target = ResegmentTarget.Normalized(
-            book.ChunkTargetChars, book.TotalCharCount, book.SegmentCount ?? 0);
+            book.ChunkTargetChars,
+            book.TotalCharCount,
+            book.SegmentCount ?? 0,
+            book.SuggestedChunkTarget);
         var box = ChunkTargetField.MakeBox(
             "目标大小（字）", ResegmentTarget.MinChars, ResegmentTarget.MaxChars, target);
         var panel = new StackPanel { Spacing = 8 };

@@ -32,7 +32,10 @@ from lumina_core.summarize.schema import (
     parse_segment_summary_minimal,
     validate_summary_richness,
 )
+from lumina_core.summarize.segment_styles import resolve_segment_style_guidance
 from lumina_core.translate.language import language_display_name
+
+_STYLE_APPEND_PREFIX = "\n\n类型风格指导（须遵守；不得违反硬性结构规则）：\n"
 
 SummaryProgressCallback = Callable[[dict[str, Any]], Awaitable[None]]
 
@@ -124,15 +127,20 @@ def _format_base_prompt(
     text_only: bool,
     background_context: str | None = None,
     target_language: str = "zh-CN",
+    style_guidance: str = "",
 ) -> str:
     _ = text_only
     display = language_display_name(target_language)
+    guidance = (style_guidance or "").strip()
     prompt = format_prompt(
         template,
         text=text,
         anchor=anchor_label,
         target_language=display,
+        style_guidance=guidance,
     )
+    if guidance and "{style_guidance}" not in template:
+        prompt = _STYLE_APPEND_PREFIX + guidance + "\n" + prompt
     if not background_context:
         return prompt
     return (
@@ -239,15 +247,23 @@ async def summarize_segment(
     background_context: str | None = None,
     target_language: str = "zh-CN",
     relaxed_quality: bool = False,
+    category: str | None = None,
+    text_style: str | None = None,
 ) -> SummarizeResult:
     resolved = prompts or load_prompts_config()
     prompt_template, text_limit, default_retries, min_body_chars, text_only, use_minimal_parse, provider_kind = (
         _segment_prompt_settings(router, resolved)
     )
     segment_text = raw_text[:text_limit]
+    style_guidance = resolve_segment_style_guidance(
+        resolved,
+        category=category,
+        text_style=text_style,
+    )
     base_prompt = _format_base_prompt(
         prompt_template,
         anchor_label=anchor_label,
+        style_guidance=style_guidance,
         text=segment_text,
         text_only=text_only,
         background_context=background_context,

@@ -58,6 +58,30 @@ final class BookshelfGridScrollPolicyTests: XCTestCase {
         XCTAssertEqual(rows[1], ["d", "e"])
     }
 
+    func testTenBooks_balanceRowsAndAdaptToWidth() {
+        for (width, expectedColumns, expectedRows) in [
+            (CGFloat(968), 5, [5, 5]),
+            (CGFloat(640), 4, [4, 4, 2]),
+            (CGFloat(312), 2, [2, 2, 2, 2, 2]),
+            (CGFloat(1624), 10, [10])
+        ] {
+            let columns = BookshelfGridScrollPolicy.columnCount(
+                forLayoutWidth: width, bookCount: 10
+            )
+            XCTAssertEqual(columns, expectedColumns)
+            XCTAssertEqual(
+                BookshelfGridScrollPolicy.rows(books: Array(0..<10), columnCount: columns).map(\.count),
+                expectedRows
+            )
+        }
+    }
+
+    func testBalancedColumns_handleEmptyAndSingleBookPages() {
+        XCTAssertEqual(BookshelfGridScrollPolicy.columnCount(forLayoutWidth: 968, bookCount: 0), 6)
+        XCTAssertEqual(BookshelfGridScrollPolicy.columnCount(forLayoutWidth: 968, bookCount: 1), 6)
+        XCTAssertEqual(BookshelfGridScrollPolicy.columnCount(forLayoutWidth: 0, bookCount: 10), 1)
+    }
+
     func testBookshelfView_pinsLayoutWidthAndAvoidsLazyAdaptiveGrid() throws {
         let macosRoot = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()

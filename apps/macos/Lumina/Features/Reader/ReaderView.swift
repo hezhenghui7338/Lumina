@@ -300,7 +300,8 @@ struct ReaderView: View {
         resegmentTargetChars = ResegmentTarget.normalized(
             currentTarget: viewModel.chunkTargetChars,
             totalChars: viewModel.totalCharCount,
-            segmentCount: viewModel.segments.count
+            segmentCount: viewModel.segments.count,
+            suggestedTarget: viewModel.suggestedChunkTarget
         )
         resegmentTier = .normal
         showResegmentSheet = true
@@ -643,6 +644,17 @@ struct ReaderView: View {
                             showRegenerateConfirm = true
                         }
                     }
+                    Button(viewModel.bookIntro?.status == "ready" ? "重新获取 AI 导读" : "获取 AI 导读") {
+                        showSummarizePopover = false
+                        Task {
+                            do { try await viewModel.requestBookIntro(core: core) }
+                            catch { actionError = error.localizedDescription }
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 6)
+                    .disabled(viewModel.bookIntro?.status == "pending")
                     Button("停止摘要") {
                         showSummarizePopover = false
                         Task {
@@ -1493,6 +1505,23 @@ struct ReaderView: View {
                             segmentBlock(for: seg)
                         }
                     } else {
+                        if let intro = viewModel.bookIntro, intro.isVisibleInFeed {
+                            IntroReadingBlock(
+                                contentMode: contentMode,
+                                intro: intro,
+                                onFollowUp: { question in
+                                    openOverlay(.chat, engaged: true)
+                                    Task { await viewModel.sendChat(question, core: core) }
+                                },
+                                onRetry: {
+                                    Task {
+                                        do { try await viewModel.requestBookIntro(core: core) }
+                                        catch { actionError = error.localizedDescription }
+                                    }
+                                }
+                            )
+                            .id("book-intro")
+                        }
                         // Compat full slim catalog (no around) — intentional d383158.
                         ForEach(viewModel.segments, id: \.idx) { seg in
                             segmentBlock(for: seg)
@@ -3232,8 +3261,10 @@ final class ReaderViewModel: ObservableObject {
     @Published var summarizeState: String?
     @Published var segmentRunningMetrics: [Int: SegmentRunningMetrics] = [:]
     @Published private(set) var parsedSummaryCache: [Int: ParsedSummary] = [:]
+    @Published private(set) var bookIntro: BookIntro?
     @Published var totalCharCount: Int?
     @Published var chunkTargetChars: Int?
+    @Published var suggestedChunkTarget: Int?
     @Published private(set) var bookStatus = "unread"
     @Published private(set) var isResegmenting = false
     @Published private(set) var isResegmentCancelling = false
@@ -3597,6 +3628,7 @@ final class ReaderViewModel: ObservableObject {
             collapsedOutlineByBook[self.bookId] = collapsedOutlineKeys
         }
         segments = []
+        bookIntro = nil
         sortedSegmentIdxs = []
         outlineRows = []
         outlineRebuildCount = 0
@@ -3613,6 +3645,7 @@ final class ReaderViewModel: ObservableObject {
         segmentRunningMetrics = [:]
         totalCharCount = nil
         chunkTargetChars = nil
+        suggestedChunkTarget = nil
         bookLanguage = nil
         bookTargetLanguage = nil
         bookTitle = nil
@@ -3689,8 +3722,10 @@ final class ReaderViewModel: ObservableObject {
             summarizeState = book.summarize_state
             totalCharCount = book.total_char_count
             chunkTargetChars = book.chunk_target_chars
+            suggestedChunkTarget = book.suggested_chunk_target
             bookLanguage = book.language
             bookTargetLanguage = book.target_language
+            Task { await self.refreshBookIntro(core: core) }
             if let idx {
                 // ⌘K / note / citation open: keep the pre-jump progress on the
                 // bookshelf; only the feed scrolls to the jump target.
@@ -4344,6 +4379,45 @@ final class ReaderViewModel: ObservableObject {
         NotificationCenter.default.post(name: .luminaLibraryRefresh, object: nil)
     }
 
+    func refreshBookIntro(core: CoreClient) async {
+        guard !bookId.isEmpty else { return }
+        do {
+            let intro = try await core.fetchBookIntro(bookId: bookId)
+            applyBookIntro(intro)
+        } catch {
+            // Soft-fail: intro is optional and must never block reading.
+        }
+    }
+
+    func requestBookIntro(core: CoreClient) async throws {
+        let intro = try await core.generateBookIntro(bookId: bookId)
+        applyBookIntro(intro)
+    }
+
+    func applyBookIntro(_ intro: BookIntro) {
+        // idle/skipped stay nil so the feed does not reserve space.
+        if intro.isVisibleInFeed || intro.status == "pending" {
+            bookIntro = intro
+        } else {
+            bookIntro = nil
+        }
+    }
+
+    func applyBookIntroEvent(_ event: [String: Any]) {
+        guard let data = try? JSONSerialization.data(withJSONObject: event),
+              let intro = try? JSONDecoder().decode(BookIntro.self, from: data) else {
+            if let status = event["status"] as? String {
+                var current = bookIntro ?? BookIntro(status: status)
+                current.status = status
+                current.source_text = event["source_text"] as? String ?? current.source_text
+                current.error = event["error"] as? String
+                applyBookIntro(current)
+            }
+            return
+        }
+        applyBookIntro(intro)
+    }
+
     func regenerateAllSummaries(
         core: CoreClient, summaryTier: SummaryTier = .normal
     ) async throws {
@@ -4812,6 +4886,8 @@ final class ReaderViewModel: ObservableObject {
             if let seg = segments.first(where: { $0.idx == idx }), needsSummaryHydration(seg) {
                 hydrateSummary(idx: idx, core: core)
             }
+        case "intro_progress", "intro_ready", "intro_skipped", "intro_failed":
+            applyBookIntroEvent(event)
         case "segment_boundary_moved":
             let leftIdx = event["left_idx"] as? Int ?? SegmentReadyEventParser.eventIndex(from: event)
             guard let leftIdx else { return }

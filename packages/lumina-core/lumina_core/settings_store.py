@@ -123,9 +123,23 @@ def hydrate_startup_settings(settings: Settings | None = None) -> Settings:
 def save_settings(settings: Settings) -> None:
     settings.data_dir.mkdir(parents=True, exist_ok=True)
     path = settings_path(settings.data_dir)
+    existing_prompts: dict[str, Any] | None = None
+    if path.exists():
+        try:
+            prior = json.loads(path.read_text(encoding="utf-8")) or {}
+            raw_prompts = prior.get("prompts")
+            if isinstance(raw_prompts, dict):
+                existing_prompts = raw_prompts
+        except (json.JSONDecodeError, OSError, TypeError):
+            existing_prompts = None
     payload = settings.model_dump(mode="json")
     for key in _SETTINGS_SKIP_PERSIST:
         payload.pop(key, None)
+    # prompts stay out of Settings dump path, but must persist for Prompt UI.
+    if settings.prompts is not None:
+        payload["prompts"] = prompts_to_dict(settings.prompts)
+    elif existing_prompts is not None:
+        payload["prompts"] = existing_prompts
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
@@ -155,6 +169,7 @@ def settings_public_dict(settings: Settings) -> dict[str, Any]:
         "debug_mode": settings.debug_mode,
         "auto_start_summary": settings.auto_start_summary,
         "default_segment_tier": normalize_segment_tier(settings.default_segment_tier),
+        "english_chunk_factor": float(settings.english_chunk_factor),
         "prompts": prompts_to_dict(prompts),
         "prompts_defaults": prompts_to_dict(default_prompts()),
     }

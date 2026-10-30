@@ -277,6 +277,44 @@ def test_save_settings_persists_default_segment_tier(tmp_path: Path):
     assert loaded.default_segment_tier == "advanced"
 
 
+def test_save_settings_persists_english_chunk_factor(tmp_path: Path):
+    from lumina_core.config import Settings
+    from lumina_core.settings_store import (
+        load_settings,
+        save_settings,
+        settings_path,
+        settings_public_dict,
+    )
+
+    settings = Settings(data_dir=tmp_path, english_chunk_factor=0.7)
+    save_settings(settings)
+    raw = json.loads(settings_path(tmp_path).read_text(encoding="utf-8"))
+    assert raw["english_chunk_factor"] == 0.7
+    loaded = load_settings(tmp_path)
+    assert loaded.english_chunk_factor == 0.7
+    assert settings_public_dict(loaded)["english_chunk_factor"] == 0.7
+
+
+def test_save_settings_persists_prompts_and_segment_styles(tmp_path: Path):
+    from lumina_core.config import Settings, normalize_segment_styles
+    from lumina_core.prompts_store import default_prompts
+    from lumina_core.settings_store import load_settings, save_settings, settings_path
+
+    prompts = default_prompts()
+    styles = normalize_segment_styles(
+        {**(prompts.segment_styles or {}), "科技": "持久化科技风格"}
+    )
+    prompts = prompts.model_copy(update={"segment_styles": styles})
+    settings = Settings(data_dir=tmp_path, prompts=prompts)
+    save_settings(settings)
+    raw = json.loads(settings_path(tmp_path).read_text(encoding="utf-8"))
+    assert raw["prompts"]["segment_styles"]["科技"] == "持久化科技风格"
+    loaded = load_settings(tmp_path)
+    assert loaded.prompts is not None
+    assert loaded.prompts.segment_styles is not None
+    assert loaded.prompts.segment_styles["科技"] == "持久化科技风格"
+
+
 def test_hydrate_startup_settings_reloads_ocr_and_web_search_like_cli(
     tmp_path: Path, monkeypatch
 ):

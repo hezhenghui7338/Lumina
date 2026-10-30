@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
 from dataclasses import dataclass, field
@@ -20,7 +21,7 @@ from lumina_core.config import (
     load_prompts_config,
 )
 from lumina_core.db.connection import db_transaction
-from lumina_core.db.repos import BookRepo, SegmentRepo, SummaryNodeRepo
+from lumina_core.db.repos import BookIntroRepo, BookRepo, SegmentRepo, SummaryNodeRepo
 from lumina_core.models.router import ProfileModelRouter
 from lumina_core.ops.task_registry import TaskRegistry
 from lumina_core.summarize.segment import (
@@ -84,6 +85,9 @@ class JobQueue:
         *,
         target_language: str = "zh-CN",
         auto_start_summary: bool = False,
+        web_search_enabled: bool = True,
+        web_search_provider: str = "ddgs",
+        tavily_api_key: str | None = None,
         task_registry: TaskRegistry | None = None,
         prompts: PromptsConfig | None = None,
     ) -> None:
@@ -91,6 +95,9 @@ class JobQueue:
         self.router = router
         self.target_language = target_language
         self.auto_start_summary = auto_start_summary
+        self.web_search_enabled = web_search_enabled
+        self.web_search_provider = web_search_provider
+        self.tavily_api_key = tavily_api_key
         self.prompts = prompts or load_prompts_config()
         self._task_registry = task_registry
         self._queue: asyncio.PriorityQueue[JobItem] = asyncio.PriorityQueue()
@@ -105,6 +112,7 @@ class JobQueue:
         self._books_repo = BookRepo(conn)
         self._segments_repo = SegmentRepo(conn)
         self._nodes_repo = SummaryNodeRepo(conn)
+        self._intros_repo = BookIntroRepo(conn)
         # User-controlled summarize pause (separate from chat pause_ollama)
         self._user_paused_all = False
         self._user_paused_books: set[str] = set()
@@ -135,6 +143,9 @@ class JobQueue:
         self._original_index_backfill_task: asyncio.Task[None] | None = None
         # Background summarize/start finishers (HTTP ack returns before these).
         self._start_tasks: set[asyncio.Task[None]] = set()
+        # Book-level AI intro tasks (one in-flight claim per book via DB pending).
+        self._intro_tasks: set[asyncio.Task[None]] = set()
+        self._intro_cancel: set[str] = set()
 
     def startup_data_phase(self) -> str:
         return self._startup_data_phase
@@ -481,6 +492,157 @@ class JobQueue:
     async def emit(self, book_id: str, payload: dict[str, Any]) -> None:
         if self._event_callback:
             await self._event_callback(book_id, payload)
+
+    def schedule_intro(self, book_id: str, *, force: bool = False) -> None:
+        """Fire-and-forget book-level AI intro. HTTP must not await the pipeline."""
+        task = asyncio.create_task(
+            self._run_intro_safe(book_id, force=force, already_claimed=False),
+            name=f"lumina-intro-{book_id}",
+        )
+        self._intro_tasks.add(task)
+        task.add_done_callback(self._intro_tasks.discard)
+
+    def schedule_intro_after_claim(self, book_id: str) -> None:
+        """Continue intro after caller already marked pending (manual generate)."""
+        task = asyncio.create_task(
+            self._run_intro_safe(book_id, force=True, already_claimed=True),
+            name=f"lumina-intro-{book_id}",
+        )
+        self._intro_tasks.add(task)
+        task.add_done_callback(self._intro_tasks.discard)
+
+    def cancel_intro(self, book_id: str) -> None:
+        self._intro_cancel.add(book_id)
+
+    async def _run_intro_safe(
+        self, book_id: str, *, force: bool, already_claimed: bool
+    ) -> None:
+        try:
+            await self._run_intro(
+                book_id, force=force, already_claimed=already_claimed
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("book intro failed book_id=%s", book_id)
+            try:
+                row = await self._run_db(
+                    lambda: self._intros_repo.upsert(
+                        book_id, status="failed", error="intro job crashed"
+                    )
+                )
+                from lumina_core.summarize.intro import intro_public_payload
+
+                await self.emit(
+                    book_id,
+                    {"type": "intro_failed", **intro_public_payload(row)},
+                )
+            except Exception:
+                logger.exception("intro failure persist failed book_id=%s", book_id)
+
+    async def _run_intro(
+        self, book_id: str, *, force: bool, already_claimed: bool = False
+    ) -> None:
+        from lumina_core.summarize.intro import (
+            generate_book_intro,
+            intro_public_payload,
+            segment0_sample_chars,
+        )
+        from lumina_core.summarize.segment import summary_to_json
+
+        self._intro_cancel.discard(book_id)
+
+        def _preflight() -> tuple[bool, dict[str, Any] | None]:
+            book = self._books_repo.get(book_id)
+            if not book:
+                return False, None
+            if already_claimed:
+                return True, book
+            existing = self._intros_repo.get(book_id)
+            if existing and existing.get("status") == "pending":
+                return False, book
+            if not force and existing and existing.get("status") == "ready":
+                return False, book
+            claimed = self._intros_repo.try_mark_pending(book_id)
+            return claimed, book
+
+        claimed, book = await self._run_db(_preflight)
+        if not claimed or book is None:
+            return
+
+        pending_row = await self._run_db(lambda: self._intros_repo.get_or_idle(book_id))
+        await self.emit(
+            book_id,
+            {"type": "intro_progress", **intro_public_payload(pending_row)},
+        )
+
+        if book_id in self._intro_cancel:
+            return
+
+        seg0 = await self._run_db(
+            lambda: self._segments_repo.get_by_index(book_id, 0)
+        )
+        chapter = (seg0 or {}).get("chapter")
+        label = (seg0 or {}).get("label")
+        sample = segment0_sample_chars((seg0 or {}).get("raw_text"))
+
+        result = await generate_book_intro(
+            self.router,
+            title=book.get("title") or "",
+            author=book.get("author"),
+            segment0_chapter=chapter,
+            segment0_label=label,
+            segment0_sample=sample,
+            web_search_enabled=bool(self.web_search_enabled),
+            web_search_provider=self.web_search_provider or "ddgs",
+            tavily_api_key=self.tavily_api_key,
+            target_language=self.target_language,
+            prompts=self.prompts,
+        )
+
+        if book_id in self._intro_cancel:
+            return
+
+        def _persist() -> dict[str, Any]:
+            if result.status == "ready" and result.summary is not None:
+                return self._intros_repo.upsert(
+                    book_id,
+                    status="ready",
+                    source_text=result.source_text,
+                    summary_json=summary_to_json(result.summary),
+                    citations=[c.as_dict() for c in (result.citations or [])],
+                    error=None,
+                )
+            if result.status == "skipped":
+                return self._intros_repo.upsert(
+                    book_id,
+                    status="skipped",
+                    source_text=result.source_text,
+                    summary_json=None,
+                    citations=[c.as_dict() for c in (result.citations or [])]
+                    if result.citations
+                    else [],
+                    error=None,
+                )
+            return self._intros_repo.upsert(
+                book_id,
+                status="failed",
+                source_text=result.source_text,
+                summary_json=None,
+                citations=[c.as_dict() for c in (result.citations or [])]
+                if result.citations
+                else [],
+                error=result.error or "intro failed",
+            )
+
+        row = await self._run_db(_persist)
+        payload = intro_public_payload(row)
+        event_type = {
+            "ready": "intro_ready",
+            "skipped": "intro_skipped",
+            "failed": "intro_failed",
+        }.get(result.status, "intro_failed")
+        await self.emit(book_id, {"type": event_type, **payload})
 
     async def _run_db(self, fn: Callable[[], T]) -> T:
         """Keep SQLite/FTS off the uvicorn event loop (never-freeze)."""
@@ -1156,10 +1318,13 @@ class JobQueue:
         await self._enqueue_next_book_summary(
             book_id, summary_tier=summary_tier
         )
+        # Whole-book regenerate always refreshes the book-level AI intro.
+        self.schedule_intro(book_id, force=True)
         return len(segments)
 
     async def stop_book(self, book_id: str) -> None:
         self._user_paused_books.add(book_id)
+        self.cancel_intro(book_id)
         await self._set_intent_async(book_id, "paused")
         await self._suspend_jobs(lambda item: item.book_id == book_id)
         self._clear_active_summarize_for_book(book_id)
@@ -1340,10 +1505,15 @@ class JobQueue:
     ) -> None:
         # start_all ack only stamps intent; supersede runs here for tier switches.
         await self._supersede_book_tier(book_id, summary_tier)
+        # From-zero summarize: schedule intro before prefetch mutates ready counts.
+        progress = await self._run_db(lambda: self._summary_progress(book_id))
+        from_zero = int(progress.get("summary_ready_count") or 0) == 0
         await self._restore_suspended(book_id)
         await self._apply_tier_to_incomplete_segments(book_id, summary_tier)
         await self._reset_segments_for_user_resume(book_id)
         await self.enqueue_book_prefetch(book_id, summary_tier=summary_tier)
+        if from_zero:
+            self.schedule_intro(book_id, force=False)
 
     def _schedule_complete_start(
         self, book_id: str, *, summary_tier: str = "normal"
@@ -1626,10 +1796,16 @@ class JobQueue:
 
     def _load_summarize_inputs(
         self, book_id: str, segment_idx: int
-    ) -> tuple[dict[str, Any] | None, list[dict[str, Any]], str]:
+    ) -> tuple[
+        dict[str, Any] | None,
+        list[dict[str, Any]],
+        str,
+        str | None,
+        str | None,
+    ]:
         seg = self._segments_repo.get_by_index(book_id, segment_idx)
         if not seg:
-            return None, [], self.target_language
+            return None, [], self.target_language, None, None
         rows = self._segments_repo.list_ready_summaries_before(
             book_id,
             segment_idx,
@@ -1641,7 +1817,21 @@ class JobQueue:
             or self.target_language
             or "zh-CN"
         )
-        return seg, rows, target
+        category = (book or {}).get("category")
+        if not isinstance(category, str):
+            category = None
+        text_style: str | None = None
+        meta_raw = (book or {}).get("metadata_json")
+        if meta_raw:
+            try:
+                meta = json.loads(meta_raw) if isinstance(meta_raw, str) else meta_raw
+            except (json.JSONDecodeError, TypeError):
+                meta = {}
+            if isinstance(meta, dict):
+                style = meta.get("text_style")
+                if isinstance(style, str) and style.strip():
+                    text_style = style.strip()
+        return seg, rows, target, category, text_style
 
     def _persist_ready_summary(
         self,
@@ -1692,7 +1882,7 @@ class JobQueue:
         import time
 
 
-        seg, context_rows, target_language = await self._run_db(
+        seg, context_rows, target_language, book_category, book_text_style = await self._run_db(
             lambda: self._load_summarize_inputs(item.book_id, item.segment_idx)
         )
         if not seg:
@@ -1770,6 +1960,8 @@ class JobQueue:
                     background_context=background_context,
                     target_language=target_language,
                     relaxed_quality=relaxed_quality,
+                    category=book_category,
+                    text_style=book_text_style,
                 ),
                 timeout=job_timeout,
             )

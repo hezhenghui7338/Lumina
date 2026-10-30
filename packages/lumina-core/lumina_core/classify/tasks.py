@@ -19,12 +19,19 @@ async def run_classify_book(
     router: ProfileModelRouter,
     book_id: str,
     prompts: PromptsConfig | None = None,
+    *,
+    force: bool = False,
 ) -> str | None:
     books_repo = BookRepo(conn)
     segments_repo = SegmentRepo(conn)
     book = books_repo.get(book_id)
     if not book:
         return None
+
+    existing = (book.get("category") or "").strip()
+    if existing and not force:
+        # Ingest already wrote a pre-chunk profile category.
+        return existing
 
     segments = segments_repo.list_for_book(book_id, include_body=True)
     sample = ""

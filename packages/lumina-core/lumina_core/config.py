@@ -15,9 +15,9 @@ from pydantic_settings import BaseSettings
 
 # App / engine identity. Must match pyproject version and desktop marketing versions.
 # Clients replace a leftover sidecar when this disagrees, even if CHUNKER_VERSION matches.
-CORE_VERSION = "1.5.1"
+CORE_VERSION = "1.5.2"
 # Segmentation algorithm id only. Do not use this as the "engine is current" signal.
-CHUNKER_VERSION = "17"
+CHUNKER_VERSION = "18"
 DOCUMENT_MAP_TIMEOUT_SECONDS = float(
     os.getenv("LUMINA_DOCUMENT_MAP_TIMEOUT", "20")
 )
@@ -38,6 +38,19 @@ OPENROUTER_CHUNK_MAX = 5250
 OLLAMA_KEEP_ALIVE = os.getenv("LUMINA_OLLAMA_KEEP_ALIVE", "30m")
 CLOUD_CHUNK_TARGET = 4000
 CLOUD_CHUNK_MAX = 6000
+# Product defaults for import chunk targets by shelf category / classical style.
+CLASSICAL_CHUNK_TARGET = 200
+CATEGORY_CHUNK_TARGETS: dict[str, int] = {
+    "文学": 2000,
+    "科技": 500,
+    "历史": 1500,
+    "传记": 1500,
+    "哲学": 800,
+    "经济": 800,
+}
+DEFAULT_ENGLISH_CHUNK_FACTOR = 0.55
+ENGLISH_CHUNK_FACTOR_MIN = 0.30
+ENGLISH_CHUNK_FACTOR_MAX = 1.00
 SEGMENT_CACHE_QUOTA_BYTES = 2 * 1024 * 1024 * 1024  # 2GB
 MAX_SUMMARY_RETRIES = 5
 OLLAMA_SUMMARY_MAX_RETRIES = 2
@@ -110,6 +123,29 @@ def default_chunk_target_for_provider(provider: str) -> int:
     return CLOUD_CHUNK_TARGET
 
 
+def clamp_english_chunk_factor(value: float | int | None) -> float:
+    if value is None:
+        return DEFAULT_ENGLISH_CHUNK_FACTOR
+    try:
+        factor = float(value)
+    except (TypeError, ValueError):
+        return DEFAULT_ENGLISH_CHUNK_FACTOR
+    return max(ENGLISH_CHUNK_FACTOR_MIN, min(ENGLISH_CHUNK_FACTOR_MAX, factor))
+
+
+def type_chunk_target(
+    *,
+    category: str | None = None,
+    classical: bool = False,
+) -> int | None:
+    """Return product type-table target, or None to fall back to provider default."""
+    if classical:
+        return CLASSICAL_CHUNK_TARGET
+    if not category:
+        return None
+    return CATEGORY_CHUNK_TARGETS.get(category.strip())
+
+
 def _chunk_budget_from_target(target: int) -> ChunkBudget:
     max_chars = max(target, int(target * 1.5))
     min_chars = max(1, int(target * 0.6))
@@ -134,8 +170,16 @@ def resolve_chunk_budget(
     models: ModelsConfig | None = None,
     *,
     target_chars: int | None = None,
+    category: str | None = None,
+    classical: bool = False,
+    language: str | None = None,
+    english_chunk_factor: float | None = None,
 ) -> ChunkBudget:
-    """Resolve segment chunk sizes from summarize primary resource or env overrides."""
+    """Resolve segment chunk sizes.
+
+    Priority: explicit ``target_chars`` / env > resource override > type table
+    × English factor > provider default.
+    """
     if target_chars is not None:
         return _chunk_budget_from_target(target_chars)
 
@@ -152,20 +196,39 @@ def resolve_chunk_budget(
             min_chars=min_chars,
         )
 
+    resource = None
     if models is not None:
         resources = models.resources_for_profile("summarize")
         if resources:
-            budget = resolve_resource_chunk_budget(resources[0])
-            if env_max:
-                max_chars = max(int(env_max), budget.target_chars)
-                return ChunkBudget(
-                    target_chars=budget.target_chars,
-                    max_chars=max_chars,
-                    min_chars=budget.min_chars,
-                )
-            return budget
+            resource = resources[0]
+            if resource.chunk_target_chars > 0:
+                budget = resolve_resource_chunk_budget(resource)
+                if env_max:
+                    max_chars = max(int(env_max), budget.target_chars)
+                    return ChunkBudget(
+                        target_chars=budget.target_chars,
+                        max_chars=max_chars,
+                        min_chars=budget.min_chars,
+                    )
+                return budget
 
-    budget = _chunk_budget_from_target(CLOUD_CHUNK_TARGET)
+    from lumina_core.classify.segment_profile import suggested_chunk_target
+
+    provider = resource.provider if resource is not None else "openai"
+    provider_default = default_chunk_target_for_provider(provider)
+    factor = clamp_english_chunk_factor(
+        english_chunk_factor
+        if english_chunk_factor is not None
+        else DEFAULT_ENGLISH_CHUNK_FACTOR
+    )
+    target = suggested_chunk_target(
+        category=category,
+        classical=classical,
+        language=language,
+        english_chunk_factor=factor,
+        provider_default=provider_default,
+    )
+    budget = _chunk_budget_from_target(target)
     if env_max:
         max_chars = max(int(env_max), budget.target_chars)
         return ChunkBudget(
@@ -501,6 +564,7 @@ PROMPT_PLACEHOLDERS: dict[str, tuple[str, ...]] = {
     "news_chat": (),
     "rollup": ("{text}",),
     "document_map": ("{units}",),
+    "book_intro": ("{title}", "{author}", "{text}"),
 }
 
 
@@ -516,6 +580,8 @@ class PromptsConfig(BaseModel):
     classify: str
     rollup: str | None = None
     document_map: str | None = None
+    book_intro: str | None = None
+    segment_styles: dict[str, str] | None = None
 
     def validate_placeholders(self) -> None:
         errors: list[str] = []
@@ -528,6 +594,7 @@ class PromptsConfig(BaseModel):
                     "segment_quality",
                     "rollup",
                     "document_map",
+                    "book_intro",
                 ):
                     continue
                 errors.append(f"{field}: missing value")
@@ -539,17 +606,34 @@ class PromptsConfig(BaseModel):
             raise ValueError("; ".join(errors))
 
 
+def normalize_segment_styles(raw: object | None) -> dict[str, str]:
+    from lumina_core.prompts_defaults import DEFAULT_SEGMENT_STYLES
+
+    out = dict(DEFAULT_SEGMENT_STYLES)
+    if not isinstance(raw, dict):
+        return out
+    for key, value in raw.items():
+        name = str(key).strip()
+        if not name or name not in out:
+            continue
+        if isinstance(value, str) and value.strip():
+            out[name] = value.strip()
+    return out
+
+
 def load_prompts_config(path: Path | None = None) -> PromptsConfig:
     from lumina_core.prompts_defaults import (
         DEFAULT_CHAT,
         DEFAULT_CLASSIFY,
         DEFAULT_DOCUMENT,
         DEFAULT_NEWS_CHAT,
+        DEFAULT_BOOK_INTRO,
         DEFAULT_ROLLUP,
         DEFAULT_SEGMENT,
         DEFAULT_SEGMENT_CLOUD,
         DEFAULT_SEGMENT_OLLAMA,
         DEFAULT_SEGMENT_QUALITY,
+        DEFAULT_SEGMENT_STYLES,
         DEFAULT_TRANSLATE,
         DEFAULT_DOCUMENT_MAP,
     )
@@ -573,13 +657,21 @@ def load_prompts_config(path: Path | None = None) -> PromptsConfig:
             classify=DEFAULT_CLASSIFY,
             rollup=DEFAULT_ROLLUP,
             document_map=DEFAULT_DOCUMENT_MAP,
+            book_intro=DEFAULT_BOOK_INTRO,
+            segment_styles=dict(DEFAULT_SEGMENT_STYLES),
         )
     raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    if isinstance(raw, dict):
+        raw["segment_styles"] = normalize_segment_styles(raw.get("segment_styles"))
     cfg = PromptsConfig.model_validate(raw)
     if not cfg.rollup:
         cfg.rollup = DEFAULT_ROLLUP
     if not cfg.document_map:
         cfg.document_map = DEFAULT_DOCUMENT_MAP
+    if not cfg.book_intro:
+        cfg.book_intro = DEFAULT_BOOK_INTRO
+    if not cfg.segment_styles:
+        cfg.segment_styles = dict(DEFAULT_SEGMENT_STYLES)
     cfg.validate_placeholders()
     return cfg
 
@@ -618,12 +710,18 @@ class Settings(BaseSettings):
     debug_mode: bool = False
     auto_start_summary: bool = False
     default_segment_tier: str = "normal"
+    english_chunk_factor: float = DEFAULT_ENGLISH_CHUNK_FACTOR
     prompts: PromptsConfig | None = None
 
     @field_validator("default_segment_tier")
     @classmethod
     def _validate_segment_tier(cls, value: str) -> str:
         return normalize_segment_tier(value)
+
+    @field_validator("english_chunk_factor")
+    @classmethod
+    def _validate_english_chunk_factor(cls, value: float) -> float:
+        return clamp_english_chunk_factor(value)
 
     class Config:
         env_prefix = "LUMINA_"

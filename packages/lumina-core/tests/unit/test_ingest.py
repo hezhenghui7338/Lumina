@@ -434,13 +434,32 @@ def test_load_docx_preserves_headings_tables_and_metadata(tmp_path):
     table = document.add_table(rows=1, cols=2)
     table.cell(0, 0).text = "甲"
     table.cell(0, 1).text = "乙"
+    document.add_paragraph("表后段落。")
     document.save(p)
 
     text, meta = load_document(p, "docx")
     assert "## [§第一章]" in text
     assert "正文段落" in text
-    assert "甲 | 乙" in text
+    assert "| 甲 | 乙 |" in text
+    assert "| --- | --- |" in text
+    assert text.index("正文段落") < text.index("| 甲 | 乙 |") < text.index("表后段落")
     assert meta == {"title": "DOCX 测试书", "author": "测试作者"}
+
+
+def test_html_tables_emit_pipe_gfm():
+    from lumina_core.ingest.html import parse_html_document
+
+    text, _ = parse_html_document(
+        "<p>前</p>"
+        "<table>"
+        "<tr><th>名</th><th>值</th></tr>"
+        "<tr><td>甲</td><td>一</td></tr>"
+        "</table>"
+        "<p>后</p>"
+    )
+    assert text.index("前") < text.index("| 名 | 值 |") < text.index("后")
+    assert "| --- | --- |" in text
+    assert "| 甲 | 一 |" in text
 
 
 def test_load_odt_preserves_headings_and_metadata(tmp_path):

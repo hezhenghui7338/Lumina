@@ -222,6 +222,17 @@ CREATE TABLE IF NOT EXISTS segment_illustrations (
 CREATE INDEX IF NOT EXISTS idx_segment_illustrations_book_idx
   ON segment_illustrations(book_id, segment_idx);
 
+-- Book-level AI intro (not a product segment; does not affect segment idx).
+CREATE TABLE IF NOT EXISTS book_intros (
+  book_id         TEXT PRIMARY KEY REFERENCES books(id) ON DELETE CASCADE,
+  status          TEXT NOT NULL DEFAULT 'idle',
+  source_text     TEXT,
+  summary_json    TEXT,
+  citations_json  TEXT,
+  error           TEXT,
+  updated_at      TEXT NOT NULL
+);
+
 -- Hot-path secondary indexes (also ensured in migrate for upgrades).
 -- idx_books_file_hash is created in _ensure_hot_path_indexes after
 -- _migrate_books adds file_hash on legacy DBs.
@@ -612,6 +623,22 @@ def _migrate_illustration_tables(conn: sqlite3.Connection) -> None:
     )
 
 
+def _migrate_book_intros(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS book_intros (
+          book_id         TEXT PRIMARY KEY REFERENCES books(id) ON DELETE CASCADE,
+          status          TEXT NOT NULL DEFAULT 'idle',
+          source_text     TEXT,
+          summary_json    TEXT,
+          citations_json  TEXT,
+          error           TEXT,
+          updated_at      TEXT NOT NULL
+        )
+        """
+    )
+
+
 def connect_db(db_path: Path) -> sqlite3.Connection:
     """Open an existing database with the runtime concurrency settings."""
     from lumina_core.perf import instrument_connection
@@ -629,11 +656,15 @@ def init_db(db_path: Path) -> sqlite3.Connection:
     db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = connect_db(db_path)
     conn.executescript(SCHEMA_SQL)
+    from lumina_core.library_assistant import LIBRARY_SCHEMA_SQL
+
+    conn.executescript(LIBRARY_SCHEMA_SQL)
     _migrate_news_articles(conn)
     _migrate_books(conn)
     _migrate_segments(conn)
     _migrate_summary_nodes(conn)
     _migrate_illustration_tables(conn)
+    _migrate_book_intros(conn)
     migrate_search_fts_map(conn)
     _migrate_notes_require_segment(conn)
     from lumina_core.search.original_index import ensure_original_index_schema

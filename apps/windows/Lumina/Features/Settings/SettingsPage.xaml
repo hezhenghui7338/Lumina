@@ -36,6 +36,10 @@
                 <ComboBoxItem Content="正常分段" Tag="normal" IsSelected="True"/>
                 <ComboBoxItem Content="高级分段" Tag="advanced"/>
             </ComboBox>
+            <TextBlock x:Name="EnglishChunkFactorLabel" Text="英文切段系数：0.55" Margin="0,8,0,0"/>
+            <Slider x:Name="EnglishChunkFactorSlider" Minimum="0.30" Maximum="1.00" StepFrequency="0.05"
+                    TickFrequency="0.05" SnapsTo="StepValues" Value="0.55" Width="320"
+                    ValueChanged="EnglishChunkFactorSlider_ValueChanged"/>
 
             <TextBlock Text="听书" FontSize="18" FontWeight="SemiBold" Margin="0,8,0,0"/>
             <TextBlock x:Name="ListenPrivacyText"
@@ -180,6 +184,11 @@
             <TextBox x:Name="PromptNewsChatBox" Header="资讯深聊" AcceptsReturn="True" TextWrapping="Wrap" Height="60"/>
             <TextBox x:Name="PromptTranslateBox" Header="翻译" AcceptsReturn="True" TextWrapping="Wrap" Height="60"/>
             <TextBox x:Name="PromptClassifyBox" Header="分类" AcceptsReturn="True" TextWrapping="Wrap" Height="60"/>
+            <TextBlock Text="按类型摘要风格" FontWeight="SemiBold" Margin="0,8,0,0"/>
+            <TextBlock Text="按书类 / 古文注入语气；改后仅对新生成与手动重试摘要生效。"
+                       FontSize="12" TextWrapping="WrapWholeWords"
+                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+            <StackPanel x:Name="PromptStyleHost" Spacing="8"/>
             <Button Content="恢复 Prompt 默认" Click="ResetPrompts_Click"/>
 
             <TextBlock Text="高级" FontSize="18" FontWeight="SemiBold" Margin="0,8,0,0"/>
