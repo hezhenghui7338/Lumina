@@ -588,6 +588,150 @@ def _insert_segments_batched(conn: sqlite3.Connection, segments: list[dict[str, 
         time.sleep(0.001)
 
 
+INTRO_STATUSES = frozenset({"idle", "pending", "ready", "failed", "skipped"})
+
+
+class BookIntroRepo:
+    """Book-level AI intro — not a product segment."""
+
+    def __init__(self, conn: sqlite3.Connection) -> None:
+        self.conn = conn
+
+    def get(self, book_id: str) -> dict[str, Any] | None:
+        with db_lock(self.conn):
+            row = self.conn.execute(
+                "SELECT * FROM book_intros WHERE book_id = ?",
+                (book_id,),
+            ).fetchone()
+        return self._public(row) if row else None
+
+    def get_or_idle(self, book_id: str) -> dict[str, Any]:
+        row = self.get(book_id)
+        if row is not None:
+            return row
+        return {
+            "book_id": book_id,
+            "status": "idle",
+            "source_text": None,
+            "summary": None,
+            "citations": [],
+            "error": None,
+            "updated_at": None,
+        }
+
+    def upsert(
+        self,
+        book_id: str,
+        *,
+        status: str,
+        source_text: str | None = None,
+        summary_json: str | dict[str, Any] | None = None,
+        citations: list[dict[str, Any]] | None = None,
+        error: str | None = None,
+    ) -> dict[str, Any]:
+        if status not in INTRO_STATUSES:
+            raise ValueError(f"invalid intro status: {status}")
+        summary_raw: str | None
+        if summary_json is None:
+            summary_raw = None
+        elif isinstance(summary_json, dict):
+            summary_raw = json.dumps(summary_json, ensure_ascii=False)
+        else:
+            summary_raw = summary_json
+        citations_raw = (
+            json.dumps(citations, ensure_ascii=False) if citations is not None else None
+        )
+        now = _now()
+        with db_transaction(self.conn):
+            self.conn.execute(
+                """
+                INSERT INTO book_intros (
+                  book_id, status, source_text, summary_json, citations_json, error, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(book_id) DO UPDATE SET
+                  status = excluded.status,
+                  source_text = excluded.source_text,
+                  summary_json = excluded.summary_json,
+                  citations_json = excluded.citations_json,
+                  error = excluded.error,
+                  updated_at = excluded.updated_at
+                """,
+                (
+                    book_id,
+                    status,
+                    source_text,
+                    summary_raw,
+                    citations_raw,
+                    error,
+                    now,
+                ),
+            )
+        return self.get_or_idle(book_id)
+
+    def try_mark_pending(self, book_id: str) -> bool:
+        """Atomically claim pending. Returns False if already pending."""
+        now = _now()
+        with db_transaction(self.conn):
+            row = self.conn.execute(
+                "SELECT status FROM book_intros WHERE book_id = ?",
+                (book_id,),
+            ).fetchone()
+            if row and row["status"] == "pending":
+                return False
+            self.conn.execute(
+                """
+                INSERT INTO book_intros (
+                  book_id, status, source_text, summary_json, citations_json, error, updated_at
+                ) VALUES (?, 'pending', NULL, NULL, NULL, NULL, ?)
+                ON CONFLICT(book_id) DO UPDATE SET
+                  status = 'pending',
+                  error = NULL,
+                  updated_at = excluded.updated_at
+                """,
+                (book_id, now),
+            )
+        return True
+
+    def delete(self, book_id: str) -> None:
+        with db_transaction(self.conn):
+            self.conn.execute("DELETE FROM book_intros WHERE book_id = ?", (book_id,))
+
+    @staticmethod
+    def _public(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
+        data = dict(row)
+        summary = None
+        raw_summary = data.get("summary_json")
+        if isinstance(raw_summary, str) and raw_summary.strip():
+            try:
+                parsed = json.loads(raw_summary)
+                if isinstance(parsed, dict):
+                    summary = normalize_summary_data(parsed)
+            except json.JSONDecodeError:
+                summary = None
+        elif isinstance(raw_summary, dict):
+            summary = normalize_summary_data(raw_summary)
+        citations: list[dict[str, Any]] = []
+        raw_cites = data.get("citations_json")
+        if isinstance(raw_cites, str) and raw_cites.strip():
+            try:
+                loaded = json.loads(raw_cites)
+                if isinstance(loaded, list):
+                    citations = [c for c in loaded if isinstance(c, dict)]
+            except json.JSONDecodeError:
+                citations = []
+        elif isinstance(raw_cites, list):
+            citations = [c for c in raw_cites if isinstance(c, dict)]
+        return {
+            "book_id": data.get("book_id"),
+            "status": data.get("status") or "idle",
+            "source_text": data.get("source_text"),
+            "summary": summary,
+            "citations": citations,
+            "error": data.get("error"),
+            "updated_at": data.get("updated_at"),
+        }
+
+
 class SegmentRepo:
     def __init__(self, conn: sqlite3.Connection) -> None:
         self.conn = conn

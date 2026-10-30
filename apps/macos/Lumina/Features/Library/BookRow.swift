@@ -136,6 +136,11 @@ struct BookRow: View {
             HStack(spacing: 6) {
                 summarizeStateBadge
                 categoryBadge
+                if let tags = book.tags, !tags.isEmpty {
+                    Text(tags.prefix(3).map { "#\($0)" }.joined(separator: "  "))
+                        .font(.caption2).foregroundStyle(LuminaTheme.accent).lineLimit(1)
+                        .help(tags.joined(separator: "、"))
+                }
                 if let count = book.segment_count, count > 0 {
                     Text("\(count) 段")
                         .font(.caption2)

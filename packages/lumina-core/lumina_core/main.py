@@ -108,6 +108,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app = FastAPI(title="lumina-core", version=__version__, lifespan=lifespan)
     app.state.lumina = state
     app.include_router(router)
+    from lumina_core.api.library_routes import router as library_router
+
+    app.include_router(library_router)
     app.include_router(ops_router)
     app.add_middleware(PerfHTTPMiddleware)
     return app

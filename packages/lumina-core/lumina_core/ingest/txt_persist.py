@@ -61,14 +61,23 @@ def persist_streamed_txt_ingest(
     cancel_event: threading.Event,
     on_progress: CharProgressFn | None = None,
     chunk_target_chars: int | None = None,
+    category: str | None = None,
+    classical: bool = False,
+    language_hint: str | None = None,
+    english_chunk_factor: float | None = None,
+    text_style: str | None = None,
+    profile_category: str | None = None,
 ) -> tuple[int, dict[str, Any], str | None]:
     """Decode/chunk/insert TXT in windows. Returns (segment_count, ingest_meta, language)."""
     if cancel_event.is_set():
         raise DocumentLoadCancelled("已取消")
-    budget = (
-        resolve_chunk_budget(target_chars=chunk_target_chars)
-        if chunk_target_chars is not None
-        else resolve_chunk_budget(models)
+    budget = resolve_chunk_budget(
+        models,
+        target_chars=chunk_target_chars,
+        category=category,
+        classical=classical,
+        language=language_hint,
+        english_chunk_factor=english_chunk_factor,
     )
     conn = connect_db(db_path)
     try:
@@ -137,7 +146,14 @@ def persist_streamed_txt_ingest(
         ingest_meta["chunk_target_chars"] = budget.target_chars
         ingest_meta["segment_tier"] = normalize_segment_tier(segment_tier)
         ingest_meta["text_encoding"] = plan_label
-        language = infer_language("".join(lang_parts)[:_LANG_SAMPLE_CHARS])
+        if text_style:
+            ingest_meta["text_style"] = text_style
+        resolved_profile_category = profile_category or category
+        if resolved_profile_category:
+            ingest_meta["segment_profile_category"] = resolved_profile_category
+        language = language_hint or infer_language(
+            "".join(lang_parts)[:_LANG_SAMPLE_CHARS]
+        )
         book_row = books_repo.get(book_id)
         if not book_row:
             return 0, {}, None
@@ -151,6 +167,8 @@ def persist_streamed_txt_ingest(
             metadata_json=ingest_meta,
             segment_count=count,
         )
+        if isinstance(resolved_profile_category, str) and resolved_profile_category.strip():
+            books_repo.update(book_id, category=resolved_profile_category.strip())
         book_row = books_repo.get(book_id)
         if book_row:
             index_book(conn, book_row)

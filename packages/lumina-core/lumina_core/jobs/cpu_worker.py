@@ -424,6 +424,15 @@ def execute_ingest_cpu(job: dict[str, Any]) -> None:
     src = Path(str(job["src"]))
     book_id = str(job["book_id"])
     _emit({"type": "progress", "page": 0, "total": 0, "message": "正在解析文档…"})
+    english_factor = getattr(settings, "english_chunk_factor", None)
+    if job.get("english_chunk_factor") is not None:
+        english_factor = job.get("english_chunk_factor")
+    pre_target = job.get("chunk_target_chars")
+    pre_category = job.get("category")
+    pre_classical = bool(job.get("classical") or False)
+    pre_language = job.get("language_hint")
+    pre_style = job.get("text_style")
+
     if str(job["fmt"]) == "txt":
         from lumina_core.ingest.txt_persist import persist_streamed_txt_ingest
 
@@ -438,12 +447,45 @@ def execute_ingest_cpu(job: dict[str, Any]) -> None:
             segment_tier=normalize_segment_tier(str(job.get("segment_tier") or "normal")),
             cancel_event=cancel_event,
             on_progress=on_progress,
+            chunk_target_chars=int(pre_target) if pre_target is not None else None,
+            category=str(pre_category) if pre_category else None,
+            classical=pre_classical,
+            language_hint=str(pre_language) if pre_language else None,
+            english_chunk_factor=english_factor,
+            text_style=str(pre_style) if pre_style else None,
+            profile_category=str(pre_category) if pre_category else None,
         )
         _emit({"type": "done", "segment_count": count})
         return
     text, metadata = _load_ingest_sync(
         dest, str(job["fmt"]), settings, on_progress, cancel_event
     )
+    from lumina_core.classify.segment_profile import build_segment_profile_local
+
+    if pre_target is not None:
+        profile_target = int(pre_target)
+        profile_category = str(pre_category) if pre_category else None
+        profile_classical = pre_classical
+        profile_language = str(pre_language) if pre_language else None
+        profile_style = str(pre_style) if pre_style else None
+    else:
+        local = build_segment_profile_local(
+            text,
+            models=models,
+            english_chunk_factor=float(english_factor)
+            if english_factor is not None
+            else 0.55,
+            category=str(pre_category) if pre_category else None,
+        )
+        profile_target = local.chunk_target_chars
+        profile_category = local.category
+        profile_classical = local.classical
+        profile_language = local.language
+        profile_style = local.text_style
+    if profile_style:
+        metadata["text_style"] = profile_style
+    if profile_category:
+        metadata["segment_profile_category"] = profile_category
     _emit(
         {
             "type": "progress",
@@ -468,6 +510,11 @@ def execute_ingest_cpu(job: dict[str, Any]) -> None:
         cancel_event,
         units,
         on_progress,
+        chunk_target_chars=profile_target,
+        category=profile_category,
+        classical=profile_classical,
+        language=profile_language,
+        english_chunk_factor=english_factor,
     )
     segment_tier = normalize_segment_tier(str(job.get("segment_tier") or "normal"))
     segments, ingest_meta, detected_language = _payload_ingest_sync(

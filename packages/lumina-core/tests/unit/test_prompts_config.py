@@ -13,6 +13,9 @@ from lumina_core.prompts_store import default_prompts, load_prompts, merge_promp
 def test_load_prompts_config_has_required_placeholders():
     cfg = load_prompts_config()
     cfg.validate_placeholders()
+    assert "{style_guidance}" in cfg.segment
+    assert cfg.segment_styles is not None
+    assert "古文" in cfg.segment_styles
 
 
 def test_load_prompts_config_matches_defaults_module():
@@ -20,6 +23,7 @@ def test_load_prompts_config_matches_defaults_module():
     defaults = default_prompts()
     assert cfg.segment == defaults.segment
     assert cfg.document == defaults.document
+    assert cfg.segment_styles == defaults.segment_styles
 
 
 def test_validate_placeholders_rejects_missing_segment_anchor():

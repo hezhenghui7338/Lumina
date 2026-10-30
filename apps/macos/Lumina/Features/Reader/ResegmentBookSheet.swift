@@ -14,8 +14,12 @@ enum ResegmentTarget {
     static func normalized(
         currentTarget: Int?,
         totalChars: Int?,
-        segmentCount: Int
+        segmentCount: Int,
+        suggestedTarget: Int? = nil
     ) -> Int {
+        if let suggested = suggestedTarget {
+            return clamp(suggested)
+        }
         let currentAverage = (totalChars ?? 4000) / max(segmentCount, 1)
         let target = currentTarget ?? currentAverage
         return clamp(target)

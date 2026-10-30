@@ -43,6 +43,7 @@ struct BookshelfView: View {
     @State private var dropTargeted = false
     @State private var isEditingPageNumber = false
     @State private var pageNumberDraft = ""
+    @State private var showAskLibrary = false
     @FocusState private var titleFilterFocused: Bool
     @FocusState private var pageNumberFocused: Bool
 
@@ -70,6 +71,9 @@ struct BookshelfView: View {
         }
         .navigationTitle(viewModel.query.title)
         .toolbar { toolbarContent }
+        .sheet(isPresented: $showAskLibrary) {
+            AskLibraryView { bookId in selectedBookId = bookId }
+        }
         .onAppear {
             // macOS often autofocuses the first TextField; clear so ←/→ page.
             titleFilterFocused = false
@@ -225,6 +229,10 @@ struct BookshelfView: View {
             .foregroundStyle(LuminaTheme.accent)
         }
         ToolbarItemGroup(placement: .automatic) {
+            Button { showAskLibrary = true } label: {
+                Label("问书库", systemImage: "books.vertical.circle")
+            }
+            .help("统计、找书与整理标签")
             if let overview = viewModel.summarizeOverview,
                SummarizeActivityChip.shouldShow(activeCount: overview.activeCount) {
                 SummarizeActivityChip(
@@ -538,7 +546,8 @@ struct BookshelfView: View {
                 forContainerWidth: geo.size.width
             )
             let columnCount = BookshelfGridScrollPolicy.columnCount(
-                forLayoutWidth: layoutWidth
+                forLayoutWidth: layoutWidth,
+                bookCount: viewModel.pagedBooks.count
             )
             let rows = BookshelfGridScrollPolicy.rows(
                 books: viewModel.pagedBooks,
@@ -679,7 +688,8 @@ struct BookshelfView: View {
         resegmentTargetChars = ResegmentTarget.normalized(
             currentTarget: book.chunk_target_chars,
             totalChars: book.total_char_count,
-            segmentCount: book.segment_count ?? 0
+            segmentCount: book.segment_count ?? 0,
+            suggestedTarget: book.suggested_chunk_target
         )
         resegmentTier = .normal
         bookPendingResegment = book
@@ -1022,4 +1032,3 @@ final class BookshelfKeyNSView: NSView {
         return false
     }
 }
-

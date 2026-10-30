@@ -12,7 +12,7 @@ Lumina 采用 **「E2E 驱动、单元测试延伸」** 的分层测试策略，
 
 **核心原则**：
 
-1. 每个 PRD 用户故事（B1–B12、N1–N4）都有对应 **E2E 用例 ID**
+1. 每个 PRD 用户故事（B1–B15、N1–N4）都有对应 **E2E 用例 ID**
 2. 每个 E2E 向下延伸 **3–8 个单元测试**，覆盖边界分支
 3. **默认 Mock LLM** — CI 快速、确定性
 4. **唯一 Live 例外** — 长文本切割 + 真实 Ollama 摘要段 0/1（见 [chunking-review.md](testing/chunking-review.md)）
@@ -142,6 +142,7 @@ Lumina/
 | **E2E-B1** | §5.1 B1 | 批量导入混合格式 | 无 crash；复制到 App Support；元数据 ≥90%；大 TXT 结构扫描有字数进度，无进度超时进导入失败 | API | Mock |
 | **E2E-B1-open-with** | §5.1 B1 | macOS Finder 打开方式 | 支持扩展入队导入；不支持立即「格式不支持」；单实例转发路径 | Swift unit | Mock |
 | **E2E-B1-formats** | §5.2 | Markdown/HTML/RTF/DOCX/ODT/FB2 导入 | 立即返回 processing；后台 ready；正文可读 | API | Mock |
+| **E2E-B1-tables-illus** | §5.2 | macOS 原文表格网格 + EPUB 插图排版 | DOCX/HTML 表管道形且文档序正确；原文模式网格；插图居中限高；摘要/搜索不排版表图 | API unit + Swift unit | Mock |
 | **E2E-B1-dup** | TDD §14 | 同 hash 二次导入 | 409 + overwrite 重建 | API | Mock |
 | **E2E-B1-dup-skip-rest** | §5.1 | 批量冲突跳过剩下所有 | 后续重复不再弹窗；新书仍导入；与取消剩余导入区分 | Swift/Win unit | Mock |
 | **E2E-B1-reject** | TDD §14 | >500MB 拒绝 | 明确错误 | API | Mock |
@@ -151,6 +152,8 @@ Lumina/
 | **E2E-B2** | §5.3 B2 | 打开书 → 段列表 | macOS：标题最多 2 层 + 段叶子（更深并入二级）；第一行 `段 N · label`；三句话+要点+锚点 | API | Mock |
 | **E2E-B11** | §5.3 B11 | 长书导入后立即 open | 段 0 ready；段 1+ pending；SSE 进度 | API + SSE | Mock |
 | **E2E-B12** | §5.3.1 B12 | 听稿 summary/detailed/original | 有 `label` 先读标题；起播/章变更先读章名；简要=sentences；完整含要点不含 notes/follow_ups；summary 模式不读 raw_text；utterance 带跟读锚点；连播自然结束后再读「书籍已播完」（单元测试） | API | Mock |
+| **E2E-B14** | §5.3.4 B14 | 书级 AI 导读 | 关联网 → skipped；`start` 且 ready==0 / regenerate / 手动 force 调度；ready>0 的 start 不调度；不占段号 | API unit | Mock |
+| **E2E-B15** | §5.1.1 B15 | 问书库元数据查询与标签 | 连续筛选、标签预览不写入、批量应用幂等、禁止字段与过期结果 | API unit | Mock |
 | **E2E-B2-switch** | §7.1 | 已缓存段切换 | ≤200ms | perf + XCUITest | — |
 | **E2E-B4** | §5.5 B4 | 深聊 10 轮 follow-up | 上下文不丢；每书单 thread | API + SSE | Mock |
 | **E2E-B6** | §5.5 B6 | Citation 跳转 | 100% 正确 segment_index | API + XCUITest | Mock |

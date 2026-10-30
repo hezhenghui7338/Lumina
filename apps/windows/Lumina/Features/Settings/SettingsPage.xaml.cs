@@ -21,6 +21,7 @@ public sealed partial class SettingsPage : Page
     private readonly HashSet<string> _probing = [];
     private readonly Dictionary<string, TextBlock> _customProbeTexts = [];
     private readonly Dictionary<string, Button> _customProbeButtons = [];
+    private readonly Dictionary<string, TextBox> _promptStyleBoxes = [];
     private bool _listeningActivation;
     private bool _chunkPresetsWired;
 
@@ -106,6 +107,11 @@ public sealed partial class SettingsPage : Page
         SelectCombo(TargetLanguageBox, s.TargetLanguage);
         AutoSummaryToggle.IsOn = s.AutoStartSummary;
         SelectCombo(DefaultSegmentTierBox, string.IsNullOrWhiteSpace(s.DefaultSegmentTier) ? "normal" : s.DefaultSegmentTier);
+        var factor = s.EnglishChunkFactor;
+        if (factor < 0.30) factor = 0.30;
+        if (factor > 1.00) factor = 1.00;
+        EnglishChunkFactorSlider.Value = factor;
+        EnglishChunkFactorLabel.Text = $"英文切段系数：{factor:0.00}";
         WebSearchToggle.IsOn = s.WebSearchEnabled;
         SelectCombo(WebProviderBox, s.WebSearchProvider);
         TavilyKeyBox.Password = s.TavilyApiKey ?? "";
@@ -147,7 +153,31 @@ public sealed partial class SettingsPage : Page
         PromptNewsChatBox.Text = s.Prompts.NewsChat;
         PromptTranslateBox.Text = s.Prompts.Translate;
         PromptClassifyBox.Text = s.Prompts.Classify;
+        BindPromptStyles(s);
         BindCustomResources(s);
+    }
+
+    private void BindPromptStyles(AppSettings s)
+    {
+        PromptStyleHost.Children.Clear();
+        _promptStyleBoxes.Clear();
+        var styles = s.Prompts.SegmentStyles ?? s.PromptsDefaults.SegmentStyles ?? [];
+        var defaults = s.PromptsDefaults.SegmentStyles ?? [];
+        foreach (var key in PromptsSettings.SegmentStyleKeys)
+        {
+            var box = new TextBox
+            {
+                Header = key,
+                Text = styles.TryGetValue(key, out var value)
+                    ? value
+                    : (defaults.TryGetValue(key, out var fallback) ? fallback : ""),
+                AcceptsReturn = true,
+                TextWrapping = TextWrapping.Wrap,
+                Height = 72,
+            };
+            _promptStyleBoxes[key] = box;
+            PromptStyleHost.Children.Add(box);
+        }
     }
 
     private void BindCustomResources(AppSettings s)
@@ -416,6 +446,12 @@ public sealed partial class SettingsPage : Page
         PromptNewsChatBox.Text = d.NewsChat;
         PromptTranslateBox.Text = d.Translate;
         PromptClassifyBox.Text = d.Classify;
+        var defaults = d.SegmentStyles ?? [];
+        foreach (var key in PromptsSettings.SegmentStyleKeys)
+        {
+            if (_promptStyleBoxes.TryGetValue(key, out var box))
+                box.Text = defaults.TryGetValue(key, out var value) ? value : "";
+        }
     }
 
     private void TaskManager_Click(object sender, RoutedEventArgs e) =>
@@ -429,6 +465,11 @@ public sealed partial class SettingsPage : Page
     private async void Save_Click(object sender, RoutedEventArgs e) =>
         await FlushSettingsAsync("已保存", captureForm: true);
 
+    private void EnglishChunkFactorSlider_ValueChanged(object sender, Microsoft.UI.Xaml.Controls.Primitives.RangeBaseValueChangedEventArgs e)
+    {
+        EnglishChunkFactorLabel.Text = $"英文切段系数：{e.NewValue:0.00}";
+    }
+
     private void CaptureFormIntoSettings()
     {
         if (_settings is null) return;
@@ -437,6 +478,7 @@ public sealed partial class SettingsPage : Page
         _settings.AutoStartSummary = AutoSummaryToggle.IsOn;
         _settings.DefaultSegmentTier =
             (DefaultSegmentTierBox.SelectedItem as ComboBoxItem)?.Tag as string ?? "normal";
+        _settings.EnglishChunkFactor = Math.Clamp(EnglishChunkFactorSlider.Value, 0.30, 1.00);
         _settings.WebSearchEnabled = WebSearchToggle.IsOn;
         _settings.WebSearchProvider =
             (WebProviderBox.SelectedItem as ComboBoxItem)?.Tag as string ?? "ddgs";
@@ -508,6 +550,13 @@ public sealed partial class SettingsPage : Page
         _settings.Prompts.NewsChat = PromptNewsChatBox.Text ?? "";
         _settings.Prompts.Translate = PromptTranslateBox.Text ?? "";
         _settings.Prompts.Classify = PromptClassifyBox.Text ?? "";
+        var styles = new Dictionary<string, string>();
+        foreach (var key in PromptsSettings.SegmentStyleKeys)
+        {
+            if (_promptStyleBoxes.TryGetValue(key, out var box))
+                styles[key] = box.Text ?? "";
+        }
+        _settings.Prompts.SegmentStyles = styles;
     }
 
     private async Task FlushSettingsAsync(string okMessage, bool captureForm)

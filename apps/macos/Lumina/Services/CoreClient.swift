@@ -7,12 +7,15 @@ struct BookSummary: Codable, Identifiable, Hashable {
     let segment_count: Int?
     var is_favorite: Bool?
     var category: String?
+    var tags: [String]? = nil
     var last_opened_at: String?
     var current_segment_index: Int?
     var author: String?
     var created_at: String?
     var total_char_count: Int?
     var chunk_target_chars: Int?
+    var suggested_chunk_target: Int?
+    var text_style: String?
     var summary_ready_count: Int?
     var summary_total_count: Int?
     var chunker_version: String?
@@ -33,9 +36,10 @@ struct BookSummary: Codable, Identifiable, Hashable {
     var readingPercent: Double? = nil
 
     enum CodingKeys: String, CodingKey {
-        case id, title, status, segment_count, is_favorite, category
+        case id, title, status, segment_count, is_favorite, category, tags
         case last_opened_at, current_segment_index, author, created_at
-        case total_char_count, chunk_target_chars, summary_ready_count, summary_total_count, chunker_version
+        case total_char_count, chunk_target_chars, suggested_chunk_target, text_style
+        case summary_ready_count, summary_total_count, chunker_version
         case language, target_language, summarize_active, summarize_state
         case summarize_queued_count, summary_tier, processing_kind, index_status, ingest_error
         case has_cover, rating
@@ -54,6 +58,8 @@ struct BookSummary: Codable, Identifiable, Hashable {
         created_at: String? = nil,
         total_char_count: Int? = nil,
         chunk_target_chars: Int? = nil,
+        suggested_chunk_target: Int? = nil,
+        text_style: String? = nil,
         summary_ready_count: Int? = nil,
         summary_total_count: Int? = nil,
         chunker_version: String? = nil,
@@ -82,6 +88,8 @@ struct BookSummary: Codable, Identifiable, Hashable {
         self.created_at = created_at
         self.total_char_count = total_char_count
         self.chunk_target_chars = chunk_target_chars
+        self.suggested_chunk_target = suggested_chunk_target
+        self.text_style = text_style
         self.summary_ready_count = summary_ready_count
         self.summary_total_count = summary_total_count
         self.chunker_version = chunker_version
@@ -115,12 +123,15 @@ struct BookSummary: Codable, Identifiable, Hashable {
             is_favorite = nil
         }
         category = try c.decodeIfPresent(String.self, forKey: .category)
+        tags = try c.decodeIfPresent([String].self, forKey: .tags)
         last_opened_at = try c.decodeIfPresent(String.self, forKey: .last_opened_at)
         current_segment_index = try c.decodeIfPresent(Int.self, forKey: .current_segment_index)
         author = try c.decodeIfPresent(String.self, forKey: .author)
         created_at = try c.decodeIfPresent(String.self, forKey: .created_at)
         total_char_count = try c.decodeIfPresent(Int.self, forKey: .total_char_count)
         chunk_target_chars = try c.decodeIfPresent(Int.self, forKey: .chunk_target_chars)
+        suggested_chunk_target = try c.decodeIfPresent(Int.self, forKey: .suggested_chunk_target)
+        text_style = try c.decodeIfPresent(String.self, forKey: .text_style)
         summary_ready_count = try c.decodeIfPresent(Int.self, forKey: .summary_ready_count)
         summary_total_count = try c.decodeIfPresent(Int.self, forKey: .summary_total_count)
         chunker_version = try c.decodeIfPresent(String.self, forKey: .chunker_version)
@@ -823,6 +834,54 @@ struct SegmentRow: Codable, Identifiable, Hashable {
     var illustrations: [SegmentIllustration]? = nil
 }
 
+/// Book-level AI intro (not a product segment). GET /books/{id}/intro
+struct BookIntroCitation: Codable, Hashable {
+    var title: String?
+    var url: String?
+    var source: String?
+}
+
+struct BookIntroSummaryPayload: Codable, Hashable {
+    var sentences: [String]?
+    var bullets: [BookIntroBullet]?
+    var notes: [String]?
+    var follow_ups: [String]?
+    var label: String?
+    var anchor: String?
+}
+
+struct BookIntroBullet: Codable, Hashable {
+    var label: String?
+    var body: String?
+}
+
+struct BookIntro: Codable, Hashable {
+    var book_id: String?
+    var status: String
+    var source_text: String?
+    var summary: BookIntroSummaryPayload?
+    var citations: [BookIntroCitation]?
+    var error: String?
+    var updated_at: String?
+
+    /// idle / skipped → do not reserve feed space.
+    var isVisibleInFeed: Bool {
+        switch status {
+        case "pending", "ready", "failed":
+            return true
+        default:
+            return false
+        }
+    }
+
+    var summaryJSONString: String? {
+        guard let summary else { return nil }
+        guard let data = try? JSONEncoder().encode(summary),
+              let text = String(data: data, encoding: .utf8) else { return nil }
+        return text
+    }
+}
+
 struct SegmentBoundaryCandidate: Codable, Hashable {
     let offset: Int
     let kind: String
@@ -1370,6 +1429,44 @@ final class CoreClient: ObservableObject {
         return try await Self.decode(Resp.self, from: data).books
     }
 
+    func askLibrary(_ message: String, previousResultId: String?) async throws -> LibraryAskResponse {
+        struct Body: Encodable { let message: String; let previous_result_id: String? }
+        let data = try await postLongRunning(path: "/library/ask", body: JSONEncoder().encode(
+            Body(message: message, previous_result_id: previousResultId)
+        ))
+        return try await Self.decode(LibraryAskResponse.self, from: data)
+    }
+
+    func previewLibraryTag(resultId: String, name: String, remove: Bool) async throws -> LibraryAskResponse {
+        struct Body: Encodable { let name: String; let remove: Bool }
+        let data = try await post(path: "/library/results/\(resultId)/preview-tag", body: JSONEncoder().encode(Body(name: name, remove: remove)))
+        return try await Self.decode(LibraryAskResponse.self, from: data)
+    }
+
+    func applyLibraryAction(resultId: String) async throws -> LibraryApplyResponse {
+        let data = try await post(path: "/library/results/\(resultId)/apply", body: Data("{}".utf8))
+        return try await Self.decode(LibraryApplyResponse.self, from: data)
+    }
+
+    func libraryTags() async throws -> [LibraryTag] {
+        let data = try await get(path: "/library/tags")
+        return try await Self.decode(LibraryTagsResponse.self, from: data).tags
+    }
+
+    func saveLibraryTag(name: String, id: String? = nil) async throws -> [LibraryTag] {
+        struct Body: Encodable { let name: String }
+        let body = try JSONEncoder().encode(Body(name: name))
+        let data: Data
+        if let id { data = try await patch(path: "/library/tags/\(id)", body: body) }
+        else { data = try await post(path: "/library/tags", body: body) }
+        return try await Self.decode(LibraryTagsResponse.self, from: data).tags
+    }
+
+    func deleteLibraryTag(id: String) async throws -> [LibraryTag] {
+        let data = try await delete(path: "/library/tags/\(id)")
+        return try await Self.decode(LibraryTagsResponse.self, from: data).tags
+    }
+
     func listBookCategories() async throws -> [String] {
         let data = try await get(path: "/books/categories")
         struct Resp: Codable { let categories: [String] }
@@ -1685,6 +1782,17 @@ final class CoreClient: ObservableObject {
         _ = try await post(path: "/books/\(bookId)/summarize/regenerate", body: body)
     }
 
+    func fetchBookIntro(bookId: String) async throws -> BookIntro {
+        let data = try await get(path: "/books/\(bookId)/intro")
+        return try await Self.decode(BookIntro.self, from: data)
+    }
+
+    @discardableResult
+    func generateBookIntro(bookId: String) async throws -> BookIntro {
+        let data = try await post(path: "/books/\(bookId)/intro/generate", body: Data("{}".utf8))
+        return try await Self.decode(BookIntro.self, from: data)
+    }
+
     func resegmentBook(
         bookId: String,
         chunkTargetChars: Int,
@@ -1864,6 +1972,7 @@ final class CoreClient: ObservableObject {
         debugMode: Bool? = nil,
         autoStartSummary: Bool? = nil,
         defaultSegmentTier: String? = nil,
+        englishChunkFactor: Double? = nil,
         models: ModelsSettings? = nil,
         prompts: PromptsSettings? = nil
     ) async throws -> AppSettings {
@@ -1879,6 +1988,7 @@ final class CoreClient: ObservableObject {
             let debug_mode: Bool?
             let auto_start_summary: Bool?
             let default_segment_tier: String?
+            let english_chunk_factor: Double?
             let models: ModelsSettings?
             let prompts: PromptsSettings?
         }
@@ -1895,6 +2005,7 @@ final class CoreClient: ObservableObject {
                 debug_mode: debugMode,
                 auto_start_summary: autoStartSummary,
                 default_segment_tier: defaultSegmentTier,
+                english_chunk_factor: englishChunkFactor,
                 models: models,
                 prompts: prompts
             )

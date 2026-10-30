@@ -763,66 +763,98 @@ struct SegmentReadingBlock: View, Equatable {
 
     @ViewBuilder
     private func originalTextWithIllustrations(_ body: SegmentSourceBody) -> some View {
+        let parts = OriginalTextBlockLayout.parts(
+            text: body.rawText,
+            illustrations: usesLightweightOriginalText ? [] : body.illustrations
+        )
+        let singleTextHighlight: NSRange? = {
+            if parts.count == 1, case .text = parts.first {
+                return resolvedOriginalHighlight.range
+            }
+            return nil
+        }()
         if usesLightweightOriginalText {
-            lightweightOriginalText(body.rawText)
-        } else {
-            let parts = OriginalTextIllustrationLayout.parts(
-                text: body.rawText,
-                illustrations: body.illustrations
-            )
-            if parts.count == 1, let first = parts.first, case .text(let only) = first {
-                LuminaSelectableText(
-                    text: only,
-                    fontSize: scaled(LuminaTheme.summaryBulletSize),
-                    lineSpacing: lineSpaced(LuminaTheme.summaryBulletLineSpacing),
-                    foreground: paper.textSecondary,
-                    highlightUTF16: resolvedOriginalHighlight.range,
-                    highlightStyle: resolvedOriginalHighlight.style
+            ScrollView {
+                originalTextBlocksStack(
+                    parts,
+                    highlightUTF16: singleTextHighlight,
+                    highlightStyle: resolvedOriginalHighlight.style,
+                    lightweight: true
                 )
-            } else {
-                VStack(alignment: .leading, spacing: scaled(10)) {
-                    ForEach(Array(parts.enumerated()), id: \.offset) { _, part in
-                        switch part {
-                        case .text(let chunk):
-                            if !chunk.isEmpty {
-                                LuminaSelectableText(
-                                    text: chunk,
-                                    fontSize: scaled(LuminaTheme.summaryBulletSize),
-                                    lineSpacing: lineSpaced(LuminaTheme.summaryBulletLineSpacing),
-                                    foreground: paper.textSecondary,
-                                    highlightUTF16: nil,
-                                    highlightStyle: .search
-                                )
-                            }
-                        case .image(let illustration):
-                            inlineIllustration(illustration)
+            }
+            .frame(maxHeight: 520)
+        } else if parts.count == 1, let first = parts.first, case .text(let only) = first {
+            LuminaSelectableText(
+                text: only,
+                fontSize: scaled(LuminaTheme.summaryBulletSize),
+                lineSpacing: lineSpaced(LuminaTheme.summaryBulletLineSpacing),
+                foreground: paper.textSecondary,
+                highlightUTF16: singleTextHighlight,
+                highlightStyle: resolvedOriginalHighlight.style
+            )
+        } else {
+            originalTextBlocksStack(
+                parts,
+                highlightUTF16: nil,
+                highlightStyle: .search,
+                lightweight: false
+            )
+        }
+    }
+
+    @ViewBuilder
+    private func originalTextBlocksStack(
+        _ parts: [OriginalTextBlock],
+        highlightUTF16: NSRange?,
+        highlightStyle: LuminaSelectableText.TextHighlightStyle,
+        lightweight: Bool
+    ) -> some View {
+        VStack(alignment: .leading, spacing: scaled(10)) {
+            ForEach(Array(parts.enumerated()), id: \.offset) { _, part in
+                switch part {
+                case .text(let chunk):
+                    if !chunk.isEmpty {
+                        if lightweight {
+                            Text(SearchFocusOriginalText.attributed(
+                                text: chunk,
+                                highlightUTF16: highlightUTF16,
+                                fontSize: scaled(LuminaTheme.summaryBulletSize),
+                                foreground: paper.textSecondary,
+                                highlightColor: Color(LuminaTheme.accent).opacity(0.35)
+                            ))
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .textSelection(.enabled)
+                        } else {
+                            LuminaSelectableText(
+                                text: chunk,
+                                fontSize: scaled(LuminaTheme.summaryBulletSize),
+                                lineSpacing: lineSpaced(LuminaTheme.summaryBulletLineSpacing),
+                                foreground: paper.textSecondary,
+                                highlightUTF16: highlightUTF16,
+                                highlightStyle: highlightStyle
+                            )
                         }
                     }
+                case .table(let table):
+                    OriginalPipeTableView(
+                        table: table,
+                        fontSize: scaled(LuminaTheme.summaryBulletSize),
+                        paper: paper
+                    )
+                case .image(let illustration):
+                    inlineIllustration(illustration)
                 }
             }
         }
     }
 
-    /// Search focus feed only — avoid NSTextView full-document ensureLayout on long CJK.
-    @ViewBuilder
-    private func lightweightOriginalText(_ text: String) -> some View {
-        ScrollView {
-            Text(SearchFocusOriginalText.attributed(
-                text: text,
-                highlightUTF16: resolvedOriginalHighlight.range,
-                fontSize: scaled(LuminaTheme.summaryBulletSize),
-                foreground: paper.textSecondary,
-                highlightColor: Color(LuminaTheme.accent).opacity(0.35)
-            ))
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .textSelection(.enabled)
-        }
-        .frame(maxHeight: 520)
-    }
-
     @ViewBuilder
     private func inlineIllustration(_ illustration: SegmentIllustration) -> some View {
         let url = illustrationURL?(illustration.asset_id)
+        let ratio = OriginalIllustrationLayoutPolicy.aspectRatio(
+            width: illustration.width,
+            height: illustration.height
+        )
         Group {
             if let url {
                 BookCoverImage(
@@ -832,12 +864,15 @@ struct SegmentReadingBlock: View, Equatable {
                 ) {
                     illustrationPlaceholder(illustration.alt)
                 }
-                .frame(maxWidth: .infinity)
+                .aspectRatio(ratio, contentMode: .fit)
+                .frame(maxWidth: .infinity, maxHeight: OriginalIllustrationLayoutPolicy.maxHeight)
                 .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
             } else {
                 illustrationPlaceholder(illustration.alt)
             }
         }
+        .frame(maxWidth: .infinity, alignment: .center)
+        .padding(.vertical, OriginalIllustrationLayoutPolicy.verticalPadding)
         .accessibilityLabel(illustration.alt?.isEmpty == false ? illustration.alt! : "插图")
     }
 
@@ -893,6 +928,62 @@ struct SegmentReadingBlock: View, Equatable {
             && lhs.originalHighlightUTF16 == rhs.originalHighlightUTF16
             && lhs.listenHighlight == rhs.listenHighlight
             && lhs.usesLightweightOriginalText == rhs.usesLightweightOriginalText
+    }
+}
+
+/// Readable grid for pipe/GFM tables in original text (macOS).
+struct OriginalPipeTableView: View {
+    let table: OriginalPipeTable
+    var fontSize: CGFloat = LuminaTheme.summaryBulletSize
+    var paper: ReaderPaper = .white
+
+    private var displayRows: [(cells: [String], isHeader: Bool)] {
+        var rows: [(cells: [String], isHeader: Bool)] = []
+        let cols = max(table.columnCount, 1)
+        if let header = table.header {
+            rows.append((pad(header, to: cols), true))
+        }
+        for row in table.rows {
+            rows.append((pad(row, to: cols), false))
+        }
+        return rows
+    }
+
+    var body: some View {
+        ScrollView(.horizontal, showsIndicators: true) {
+            Grid(alignment: .leading, horizontalSpacing: 0, verticalSpacing: 0) {
+                ForEach(Array(displayRows.enumerated()), id: \.offset) { _, row in
+                    GridRow(alignment: .top) {
+                        ForEach(Array(row.cells.enumerated()), id: \.offset) { _, cell in
+                            Text(cell.isEmpty ? " " : cell)
+                                .font(.system(
+                                    size: fontSize,
+                                    weight: row.isHeader ? .semibold : .regular
+                                ))
+                                .foregroundStyle(
+                                    row.isHeader ? paper.textPrimary : paper.textSecondary
+                                )
+                                .multilineTextAlignment(.leading)
+                                .frame(minWidth: 72, maxWidth: 280, alignment: .leading)
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 6)
+                                .background(row.isHeader ? paper.card.opacity(0.55) : paper.card.opacity(0.25))
+                                .overlay(Rectangle().stroke(paper.border.opacity(0.7), lineWidth: 0.5))
+                                .textSelection(.enabled)
+                        }
+                    }
+                }
+            }
+            .fixedSize(horizontal: true, vertical: false)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("表格")
+    }
+
+    private func pad(_ cells: [String], to count: Int) -> [String] {
+        if cells.count >= count { return Array(cells.prefix(count)) }
+        return cells + Array(repeating: "", count: count - cells.count)
     }
 }
 

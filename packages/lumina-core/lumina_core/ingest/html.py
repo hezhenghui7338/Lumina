@@ -9,6 +9,7 @@ from typing import Any, ClassVar
 from urllib.parse import unquote
 
 from lumina_core.chunker.markers import heading_marker
+from lumina_core.ingest.pipe_table import format_pipe_table
 from lumina_core.ingest.text import decode_text_bytes
 
 # Private-use markers keep illustration offsets aligned with cleaned text
@@ -39,8 +40,6 @@ class _DocumentParser(HTMLParser):
         "li",
         "p",
         "pre",
-        "table",
-        "tr",
     }
     # Layout wrappers common in EPUB/XHTML. Emitting \n on both sides turned
     # every <div class="para"> into a blank row in the reader. Match the old
@@ -67,6 +66,11 @@ class _DocumentParser(HTMLParser):
         self._heading_parts: list[str] = []
         self._capture_images = capture_images
         self._pending_images: list[dict[str, Any]] = []
+        self._table_depth = 0
+        self._table_rows: list[list[str]] = []
+        self._table_row: list[str] | None = None
+        self._table_cell: list[str] | None = None
+        self._table_has_header = False
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         tag = tag.lower()
@@ -75,6 +79,17 @@ class _DocumentParser(HTMLParser):
             self._hidden_depth += 1
             return
         if self._hidden_depth:
+            return
+        if tag == "table":
+            if self._table_depth == 0:
+                self._table_rows = []
+                self._table_row = None
+                self._table_cell = None
+                self._table_has_header = False
+            self._table_depth += 1
+            return
+        if self._table_depth:
+            self._handle_table_start(tag)
             return
         if self._capture_images and tag in {"img", "image"} and not self._title_depth:
             self._emit_image(attrs_dict)
@@ -95,6 +110,47 @@ class _DocumentParser(HTMLParser):
             self.parts.append("\n")
         elif tag in self._SOFT_BLOCK_TAGS:
             self.parts.append(" ")
+
+    def _handle_table_start(self, tag: str) -> None:
+        if tag == "tr":
+            self._flush_table_cell()
+            self._flush_table_row()
+            self._table_row = []
+        elif tag in {"td", "th"}:
+            self._flush_table_cell()
+            self._table_cell = []
+            if tag == "th":
+                self._table_has_header = True
+        elif tag == "br" and self._table_cell is not None:
+            self._table_cell.append(" ")
+
+    def _flush_table_cell(self) -> None:
+        if self._table_cell is None:
+            return
+        text = _clean_inline("".join(self._table_cell))
+        if self._table_row is None:
+            self._table_row = []
+        self._table_row.append(text)
+        self._table_cell = None
+
+    def _flush_table_row(self) -> None:
+        if self._table_row is None:
+            return
+        if any(c.strip() for c in self._table_row):
+            self._table_rows.append(self._table_row)
+        self._table_row = None
+
+    def _flush_table(self) -> None:
+        self._flush_table_cell()
+        self._flush_table_row()
+        formatted = format_pipe_table(
+            self._table_rows,
+            header=self._table_has_header or bool(self._table_rows),
+        )
+        if formatted:
+            self.parts.append(formatted)
+        self._table_rows = []
+        self._table_has_header = False
 
     def _emit_image(self, attrs: dict[str, str | None]) -> None:
         source = (
@@ -128,6 +184,18 @@ class _DocumentParser(HTMLParser):
             return
         if self._hidden_depth:
             return
+        if tag == "table" and self._table_depth:
+            self._table_depth -= 1
+            if self._table_depth == 0:
+                self._flush_table()
+            return
+        if self._table_depth:
+            if tag in {"td", "th"}:
+                self._flush_table_cell()
+            elif tag == "tr":
+                self._flush_table_cell()
+                self._flush_table_row()
+            return
         if tag == "title":
             self._title_depth = max(0, self._title_depth - 1)
         elif re.fullmatch(r"h[1-6]", tag) and self._heading_depth:
@@ -144,6 +212,11 @@ class _DocumentParser(HTMLParser):
 
     def handle_data(self, data: str) -> None:
         if self._hidden_depth:
+            return
+        if self._table_depth and self._table_cell is not None:
+            self._table_cell.append(data)
+            return
+        if self._table_depth:
             return
         if self._title_depth:
             self.title_parts.append(data)

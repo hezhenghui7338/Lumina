@@ -70,6 +70,27 @@ def test_list_books_filter_and_patch_favorite(client):
     assert favorites[0]["id"] == book_id
 
 
+def test_ask_library_open_count_and_tag_changes_reach_bookshelf(client):
+    book_id = _import_sample(client)
+    client.post(f"/books/{book_id}/open")
+    result = client.post("/library/ask", json={"message": "我有多少本书？"})
+    assert result.status_code == 200
+    row = next(b for b in result.json()["books"] if b["id"] == book_id)
+    assert row["open_count"] == 1
+    preview = client.post(
+        f"/library/results/{result.json()['result_id']}/preview-tag",
+        json={"name": "待读"},
+    )
+    assert preview.status_code == 200
+    assert client.post(f"/library/results/{preview.json()['result_id']}/apply").status_code == 200
+    books = client.get("/books").json()["books"]
+    assert next(b for b in books if b["id"] == book_id)["tags"] == ["待读"]
+    tag = client.get("/library/tags").json()["tags"][0]
+    assert client.patch(f"/library/tags/{tag['id']}", json={"name": "最近想读"}).status_code == 200
+    books = client.get("/books").json()["books"]
+    assert next(b for b in books if b["id"] == book_id)["tags"] == ["最近想读"]
+
+
 def test_patch_book_rejects_empty_title(client):
     book_id = _import_sample(client)
     before = client.get(f"/books/{book_id}").json()["title"]

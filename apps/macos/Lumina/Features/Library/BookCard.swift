@@ -98,6 +98,11 @@ struct BookCard: View {
                         }
                         .font(.caption2)
                         .foregroundStyle(LuminaTheme.textSecondary)
+                        if let tags = book.tags, !tags.isEmpty {
+                            Text(tags.prefix(3).map { "#\($0)" }.joined(separator: "  "))
+                                .font(.caption2).foregroundStyle(LuminaTheme.accent).lineLimit(1)
+                                .help(tags.joined(separator: "、"))
+                        }
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)

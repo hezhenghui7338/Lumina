@@ -323,6 +323,18 @@ public sealed class CoreClient : IDisposable
         await PostAsync($"/books/{bookId}/summarize/regenerate", body, ct).ConfigureAwait(false);
     }
 
+    public async Task<BookIntro> FetchBookIntroAsync(string bookId, CancellationToken ct = default)
+    {
+        var data = await GetAsync($"/books/{bookId}/intro", ct).ConfigureAwait(false);
+        return Deserialize<BookIntro>(data) ?? new BookIntro { Status = "idle", BookId = bookId };
+    }
+
+    public async Task<BookIntro> GenerateBookIntroAsync(string bookId, CancellationToken ct = default)
+    {
+        var data = await PostAsync($"/books/{bookId}/intro/generate", "{}", ct).ConfigureAwait(false);
+        return Deserialize<BookIntro>(data) ?? new BookIntro { Status = "pending", BookId = bookId };
+    }
+
     public async Task ResegmentBookAsync(
         string bookId,
         int chunkTargetChars,
@@ -543,6 +555,7 @@ public sealed class CoreClient : IDisposable
             default_segment_tier = string.IsNullOrWhiteSpace(settings.DefaultSegmentTier)
                 ? "normal"
                 : settings.DefaultSegmentTier,
+            english_chunk_factor = settings.EnglishChunkFactor,
             models = settings.Models,
             prompts = settings.Prompts,
         }, JsonOptions);

@@ -38,15 +38,18 @@ public class ModelJsonTests
         Assert.Equal("2026-08-10T08:00:00+00:00", brief.LastSyncedAt);
         Assert.Equal("a1", brief.Articles[0].Id);
 
-        var settingsJson = """{"target_language":"zh-CN","web_search_provider":"ddgs","web_search_enabled":true,"debug_mode":true,"auto_start_summary":false,"models":{"resources":[{"id":"ollama","provider":"ollama","base_url":"http://127.0.0.1:11434","model":"qwen3.5:4b","advanced_model":"qwen3.5:9b"}],"chat":{"priority":["ollama"]},"summarize":{"priority":["ollama"]}},"prompts":{"segment":"s","document":"d","chat":"c","news_chat":"nc","translate":"t","classify":"cl"},"prompts_defaults":{"segment":"","document":"","chat":"","news_chat":"","translate":"","classify":""}}""";
+        var settingsJson = """{"target_language":"zh-CN","web_search_provider":"ddgs","web_search_enabled":true,"debug_mode":true,"auto_start_summary":false,"models":{"resources":[{"id":"ollama","provider":"ollama","base_url":"http://127.0.0.1:11434","model":"qwen3.5:4b","advanced_model":"qwen3.5:9b"}],"chat":{"priority":["ollama"]},"summarize":{"priority":["ollama"]}},"prompts":{"segment":"s","document":"d","chat":"c","news_chat":"nc","translate":"t","classify":"cl","segment_styles":{"科技":"冷静术语"}},"prompts_defaults":{"segment":"","document":"","chat":"","news_chat":"","translate":"","classify":""}}""";
         var settings = JsonSerializer.Deserialize<AppSettings>(settingsJson, Opts)!;
         Assert.True(settings.DebugMode);
         Assert.False(settings.AutoStartSummary);
         Assert.Equal("normal", settings.DefaultSegmentTier);
+        Assert.Equal(0.55, settings.EnglishChunkFactor);
         Assert.True(settings.WebSearchEnabled);
         Assert.Equal("ollama", settings.Models.Resources[0].Id);
         Assert.Equal("qwen3.5:9b", settings.Models.Resources[0].AdvancedModel);
         Assert.Equal("system", settings.Models.Tts.Engine);
+        Assert.NotNull(settings.Prompts.SegmentStyles);
+        Assert.Equal("冷静术语", settings.Prompts.SegmentStyles["科技"]);
         var refJson = """{"title":"牛顿","url":"https://zh.wikipedia.org/wiki/牛顿","source":"Wikipedia"}""";
         var webRef = JsonSerializer.Deserialize<ChatWebRef>(refJson, Opts)!;
         Assert.Equal("牛顿", webRef.Title);
@@ -64,6 +67,20 @@ public class ModelJsonTests
         Assert.Equal(2800, status.RecommendedChars);
         Assert.False(status.IsRunning);
         Assert.Contains("3500", status.DisplayMessage);
+    }
+
+    [Fact]
+    public void Deserializes_book_intro()
+    {
+        var json = """{"book_id":"b1","status":"ready","source_text":"Wiki body","summary":{"sentences":["导读"],"bullets":[{"label":"背景","body":"说明文字足够长以便展示"}],"notes":[],"follow_ups":["问？"],"label":"AI导读","anchor":"AI导读"},"citations":[{"title":"Wiki","url":"https://zh.wikipedia.org/wiki/x","source":"Wikipedia"}],"error":null,"updated_at":"2026-10-20T00:00:00+00:00"}""";
+        var intro = JsonSerializer.Deserialize<BookIntro>(json, Opts)!;
+        Assert.Equal("b1", intro.BookId);
+        Assert.Equal("ready", intro.Status);
+        Assert.Equal("Wiki body", intro.SourceText);
+        Assert.NotNull(intro.Summary);
+        Assert.Equal("导读", intro.Summary!.Sentences![0]);
+        Assert.Single(intro.Citations!);
+        Assert.Equal("Wikipedia", intro.Citations![0].Source);
     }
 
     [Fact]

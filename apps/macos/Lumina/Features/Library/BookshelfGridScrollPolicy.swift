@@ -36,6 +36,14 @@ enum BookshelfGridScrollPolicy {
         columnCount(forLayoutWidth: layoutWidth(forContainerWidth: width))
     }
 
+    /// Keep the fewest rows that fit, then distribute books evenly across them.
+    static func columnCount(forLayoutWidth layoutWidth: CGFloat, bookCount: Int) -> Int {
+        let capacity = columnCount(forLayoutWidth: layoutWidth)
+        guard bookCount > capacity else { return capacity }
+        let rowCount = (bookCount + capacity - 1) / capacity
+        return (bookCount + rowCount - 1) / rowCount
+    }
+
     static func gridItems(forLayoutWidth layoutWidth: CGFloat) -> [GridItem] {
         Array(
             repeating: GridItem(.flexible(), spacing: columnSpacing),

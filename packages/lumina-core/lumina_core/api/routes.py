@@ -40,16 +40,23 @@ from lumina_core.config import (
     CHUNK_MAX_CHARS,
     CHUNKER_VERSION,
     CORE_VERSION,
+    DEFAULT_ENGLISH_CHUNK_FACTOR,
     ModelsConfig,
     PromptsConfig,
     Settings,
+    clamp_english_chunk_factor,
     normalize_segment_tier,
+)
+from lumina_core.classify.segment_profile import (
+    provider_default_from_models,
+    suggested_chunk_target,
 )
 from lumina_core.classify.book import BOOK_CATEGORIES
 from lumina_core.classify.tasks import run_classify_book, validate_manual_category
 from lumina_core.db.repos import (
     CATALOG_PAGE_DEFAULT,
     CATALOG_WINDOW_DEFAULT,
+    BookIntroRepo,
     BookRepo,
     ChatRepo,
     NewsChatRepo,
@@ -59,6 +66,7 @@ from lumina_core.db.repos import (
     _parse_metadata,
     metadata_with_title_user_set,
 )
+from lumina_core.summarize.intro import intro_public_payload
 from lumina_core.export.markdown import content_disposition_attachment, export_book_markdown
 from lumina_core.ingest.loader import (
     copy_to_library,
@@ -218,6 +226,7 @@ class SettingsUpdate(BaseModel):
     debug_mode: bool | None = None
     auto_start_summary: bool | None = None
     default_segment_tier: Literal["normal", "advanced"] | None = None
+    english_chunk_factor: float | None = Field(default=None, ge=0.30, le=1.00)
     models: ModelsConfig | None = None
     prompts: PromptsConfig | None = None
 
@@ -383,6 +392,8 @@ def book_public_dict(
     summarize_queued_count: int | None = None,
     summary_tier: str | None = None,
     processing_kind: str | None = None,
+    models: ModelsConfig | None = None,
+    english_chunk_factor: float | None = None,
 ) -> dict[str, Any]:
     """Normalize book row for JSON (SQLite stores is_favorite as INTEGER)."""
     out = dict(row)
@@ -403,6 +414,24 @@ def book_public_dict(
     out["total_char_count"] = meta.get("total_char_count")
     out["chunker_version"] = meta.get("chunker_version")
     out["chunk_target_chars"] = meta.get("chunk_target_chars")
+    text_style = meta.get("text_style")
+    out["text_style"] = (
+        text_style.strip()
+        if isinstance(text_style, str) and text_style.strip()
+        else None
+    )
+    classical = out["text_style"] == "classical"
+    out["suggested_chunk_target"] = suggested_chunk_target(
+        category=out.get("category"),
+        classical=classical,
+        language=out.get("language"),
+        english_chunk_factor=clamp_english_chunk_factor(
+            english_chunk_factor
+            if english_chunk_factor is not None
+            else DEFAULT_ENGLISH_CHUNK_FACTOR
+        ),
+        provider_default=provider_default_from_models(models),
+    )
     ingest_error = meta.get("ingest_error")
     out["ingest_error"] = (
         ingest_error.strip() if isinstance(ingest_error, str) and ingest_error.strip() else None
@@ -443,10 +472,19 @@ def book_public_dict(
     return out
 
 
+def _book_profile_kwargs(state: AppState) -> dict[str, Any]:
+    return {
+        "models": state.models,
+        "english_chunk_factor": clamp_english_chunk_factor(
+            getattr(state.settings, "english_chunk_factor", DEFAULT_ENGLISH_CHUNK_FACTOR)
+        ),
+    }
+
+
 def _book_public_with_queue(state: AppState, row: dict[str, Any]) -> dict[str, Any]:
     book_id = row.get("id")
     if not book_id:
-        return book_public_dict(row, conn=state.conn)
+        return book_public_dict(row, conn=state.conn, **_book_profile_kwargs(state))
     progress = BookRepo(state.conn).summary_progress(book_id)
     ready = int(progress["summary_ready_count"])
     total = int(progress["summary_total_count"])
@@ -461,6 +499,7 @@ def _book_public_with_queue(state: AppState, row: dict[str, Any]) -> dict[str, A
             book_id
         ),
         summary_tier=state.job_queue.summary_tier_for_book(book_id),
+        **_book_profile_kwargs(state),
     )
 
 
@@ -469,7 +508,9 @@ async def _emit_book_event(state: AppState, book_id: str, payload: dict[str, Any
         await q.put(payload)
 
 
-def _schedule_classify(state: AppState, book_id: str) -> None:
+def _schedule_classify(
+    state: AppState, book_id: str, *, force: bool = False
+) -> None:
     title = book_title(state.conn, book_id)
 
     async def _run() -> None:
@@ -489,6 +530,7 @@ def _schedule_classify(state: AppState, book_id: str) -> None:
                 state.router,
                 book_id,
                 prompts=_prompts(state),
+                force=force,
             )
             if category:
                 state.task_registry.update_resource(record.id, state.router.last_resource_id)
@@ -1057,9 +1099,13 @@ async def list_books(
             repo.repair_stale_imports(live_ids)
             # document_tree strip runs once in deferred startup work — not every list.
             books = repo.list_books(filter=filter, sort=sort)
+            from lumina_core.library_assistant import book_tags
+
+            tags_by_book = book_tags(conn)
             rows: list[dict[str, Any]] = []
             for book in books:
                 row = dict(book)
+                row["tags"] = tags_by_book.get(book["id"], [])
                 ready = row.get("summary_ready_count")
                 total = row.get("summary_total_count")
                 segment_count = int(row.get("segment_count") or 0)
@@ -1080,6 +1126,7 @@ async def list_books(
         # Queue fields stay in-memory. Do not call summarize_state_by_book()
         # here: that re-scans every book on the event loop (N+1 COUNT) and
         # stalls POST /open while the library polls during 分段中.
+        profile_kwargs = _book_profile_kwargs(state)
         result = [
             book_public_dict(
                 b,
@@ -1096,6 +1143,7 @@ async def list_books(
                     b["id"], "normal"
                 ),
                 processing_kind=_processing_kind(state, b["id"]),
+                **profile_kwargs,
             )
             for b in rows
         ]
@@ -1311,7 +1359,7 @@ async def classify_book_endpoint(book_id: str, request: Request) -> dict[str, st
     book = BookRepo(state.conn).get(book_id)
     if not book:
         raise HTTPException(404, "Book not found")
-    _schedule_classify(state, book_id)
+    _schedule_classify(state, book_id, force=True)
     return {"status": "queued"}
 
 
@@ -1349,6 +1397,7 @@ async def get_book(book_id: str, request: Request) -> dict[str, Any]:
             book_id
         ),
         processing_kind=_processing_kind(state, book_id),
+        **_book_profile_kwargs(state),
     )
 
 
@@ -1805,6 +1854,9 @@ async def open_book(book_id: str, request: Request) -> dict[str, Any]:
             fields["status"] = "reading"
         try:
             repo.update(book_id, **fields)
+            from lumina_core.library_assistant import record_open
+
+            record_open(state.conn, book_id)
         except sqlite3.OperationalError as exc:
             raise HTTPException(503, _SCHEMA_STALE_DETAIL) from exc
         return book
@@ -2083,6 +2135,35 @@ async def regenerate_book_summaries(
     return {"status": "queued", "count": count, "summary_tier": summary_tier}
 
 
+@router.get("/books/{book_id}/intro")
+async def get_book_intro(book_id: str, request: Request) -> dict[str, Any]:
+    """Book-level AI intro (not a product segment). Missing row → status idle."""
+    state = _state(request)
+    book = await asyncio.to_thread(BookRepo(state.conn).get, book_id)
+    if not book:
+        raise HTTPException(404, "Book not found")
+    row = await asyncio.to_thread(BookIntroRepo(state.conn).get_or_idle, book_id)
+    return intro_public_payload(row)
+
+
+@router.post("/books/{book_id}/intro/generate")
+async def generate_book_intro_endpoint(
+    book_id: str, request: Request
+) -> dict[str, Any]:
+    """Manually generate / overwrite AI intro. Ack pending; pipeline runs in background."""
+    state = _state(request)
+    book = await asyncio.to_thread(BookRepo(state.conn).get, book_id)
+    if not book:
+        raise HTTPException(404, "Book not found")
+    _wire_job_events(state)
+    intro_repo = BookIntroRepo(state.conn)
+    claimed = await asyncio.to_thread(intro_repo.try_mark_pending, book_id)
+    row = await asyncio.to_thread(intro_repo.get_or_idle, book_id)
+    if claimed:
+        state.job_queue.schedule_intro_after_claim(book_id)
+    return {"status": "queued", **intro_public_payload(row)}
+
+
 @router.get("/books/{book_id}/events")
 async def book_events(book_id: str, request: Request) -> StreamingResponse:
     state = _state(request)
@@ -2287,12 +2368,15 @@ async def update_settings(body: SettingsUpdate, request: Request) -> dict[str, A
         state.job_queue.target_language = body.target_language
     if body.web_search_provider is not None:
         state.settings.web_search_provider = normalize_web_search_provider(body.web_search_provider)
+        state.job_queue.web_search_provider = state.settings.web_search_provider
     if body.web_search_enabled is not None:
         state.settings.web_search_enabled = body.web_search_enabled
+        state.job_queue.web_search_enabled = body.web_search_enabled
     if "tavily_api_key" in body.model_fields_set:
         state.settings.tavily_api_key = merge_tavily_api_key(
             body.tavily_api_key, state.settings.tavily_api_key
         )
+        state.job_queue.tavily_api_key = state.settings.tavily_api_key
     if body.ocr_cloud_base_url is not None:
         state.settings.ocr_cloud_base_url = body.ocr_cloud_base_url.strip()
     if body.ocr_cloud_model is not None:
@@ -2311,6 +2395,10 @@ async def update_settings(body: SettingsUpdate, request: Request) -> dict[str, A
     if body.default_segment_tier is not None:
         state.settings.default_segment_tier = normalize_segment_tier(
             body.default_segment_tier
+        )
+    if body.english_chunk_factor is not None:
+        state.settings.english_chunk_factor = clamp_english_chunk_factor(
+            body.english_chunk_factor
         )
     if body.prompts is not None:
         try:

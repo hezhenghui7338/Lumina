@@ -203,6 +203,17 @@ CREATE TABLE books (
   updated_at    TEXT
 );
 
+-- 书级 AI 导读（非产品段；不占 idx / citation / summary_ready_count）
+CREATE TABLE book_intros (
+  book_id         TEXT PRIMARY KEY REFERENCES books(id) ON DELETE CASCADE,
+  status          TEXT NOT NULL DEFAULT 'idle',  -- idle|pending|ready|failed|skipped
+  source_text     TEXT,
+  summary_json    TEXT,                   -- 与段摘要同 schema
+  citations_json  TEXT,                   -- [{title,url,source}]
+  error           TEXT,
+  updated_at      TEXT NOT NULL
+);
+
 -- 段
 CREATE TABLE segments (
   id              TEXT PRIMARY KEY,
@@ -365,9 +376,9 @@ sequenceDiagram
 | EPUB | **`ebooklib` 为核心**，自建解析 Pipeline（spine → 章节 → 纯文本 + § 锚点）；正文以页面图片为主且文字不足时按 spine/DOM 图片顺序 OCR；**文本型 EPUB** 另旁路抽取正文插图到 `book_assets` / `segment_illustrations`（不写入 `raw_text`；启动 deferred 静默补抽） | 不用 epub2txt；图片页复用 PDF OCR provider 路由与页级进度；装饰/背景/封面重复过滤 |
 | MOBI | `mobi` | 同 LA |
 | TXT/Markdown | 内置 | `.txt/.text/.md/.markdown/.mdown/.mkd/.log`。**字节抽样**识别编码（BOM → UTF-8 合法且非乱码 → GB18030/Big5 → replace 评分汉字+中文标点 → charset-normalizer）。抽样用 IncrementalDecoder（`final=False`），64KiB 截在多字节中间不得判失败。抽样中段遇非法字节（电子书残留二进制，如 `0xd0 0x14`）不得整书报「无法识别文本编码」：用 `errors=replace` 按汉字与 `。，、` 密度认 UTF-8/GB18030/Big5。UTF-8 能解开不算数：Latin-1 误解的 GBK 再存成 UTF-8 须恢复为汉字。latin-1 不得作为中文成功路径；认不出则导入失败。锁定 codec 后 **IncrementalDecoder 滑窗**解码（`replace`，去掉 NUL），禁止 `read_bytes()` 全书。 |
-| HTML/XHTML | 内置 `HTMLParser` | 去除脚本/样式，保留标题锚点与元数据 |
+| HTML/XHTML | 内置 `HTMLParser` | 去除脚本/样式，保留标题锚点与元数据；`<table>` 写成管道/GFM 形（表前后空行），供 macOS 原文网格识别 |
 | RTF | `striprtf` | 纯文本 + title/author |
-| DOCX | `python-docx` | 段落、标题、表格文本、核心元数据 |
+| DOCX | `python-docx` | 段落、标题、表格文本、核心元数据；body 子节点**文档序**交错输出；表为管道/GFM 形（非全部段落后再挂表） |
 | ODT | `odfpy` | 段落、标题、核心元数据 |
 | FB2 | 内置 XML | 章节锚点 + title/author |
 
@@ -683,10 +694,27 @@ Sidecar 绑定 `127.0.0.1` only；无认证（本机进程）。
 | POST | `/books/{id}/segments/{idx}/retry` | 手动重试单段摘要；可选 `summary_tier`，缺省沿用原档位 |
 | POST | `/books/{id}/segments/retry` | 批量重试段摘要（body: `{ indices: number[], summary_tier?: normal \| advanced }`） |
 | POST | `/books/{id}/summarize/start` | 开始/恢复未完成摘要；`summary_tier` 仅作用于未摘要段，不覆盖 ready |
-| POST | `/books/{id}/summarize/regenerate` | 全书强制重新摘要（含 ready 段，覆盖已有摘要）；body 可选 `summary_tier`，默认正常。高成本操作，客户端须先确认 |
+| POST | `/books/{id}/summarize/regenerate` | 全书强制重新摘要（含 ready 段，覆盖已有摘要）；body 可选 `summary_tier`，默认正常。高成本操作，客户端须先确认。同时 `force` 调度书级 AI 导读 |
+| GET | `/books/{id}/intro` | 书级 AI 导读；无记录时 `status=idle`。字段：`status`（`idle\|pending\|ready\|failed\|skipped`）、`source_text`、`summary`（与段摘要同 schema）、`citations`、`error`、`updated_at`。不占段号 |
+| POST | `/books/{id}/intro/generate` | 手动生成/覆盖导读；立即 ack `pending`；已 `pending` 幂等。联网关闭 → 后台 `skipped` |
 | POST | `/books/{id}/resegment` | 整书重新分段；body `{ chunk_target_chars }` 范围 **200–8000**；清空摘要/笔记/本书对话 |
 | POST | `/books/{id}/resegment/cancel` | 取消进行中的重新分段，保留原段落数据 |
-| GET | `/books/{id}/events` | SSE：段摘要/翻译 progress |
+| GET | `/books/{id}/events` | SSE：段摘要/翻译 progress；书级导读 `intro_progress` / `intro_ready` / `intro_skipped` / `intro_failed` |
+
+### 5.1.1 问书库
+
+| Method | Path | 说明 |
+|--------|------|------|
+| POST | `/library/ask` | 自然语言 → 受约束查询计划 → 参数化 SQL；可带上次 `result_id` 做连续筛选。返回条件说明、总数、前 100 本与 `result_id` |
+| POST | `/library/results/{result_id}/actions/preview` | 预览对结果集的标签添加/移除（不写库） |
+| POST | `/library/results/{result_id}/actions/apply` | 事务应用标签变更；幂等 |
+| GET | `/library/tags` | 标签列表 |
+| POST | `/library/tags` | 创建标签 |
+| PATCH | `/library/tags/{id}` | 改名 |
+| DELETE | `/library/tags/{id}` | 删除标签（不删书） |
+| GET | `/library/tags/{id}/books` | 该标签下的书籍 |
+
+表：`library_tags` / `library_book_tags` / `library_reading_stats` / `library_query_results`。模型不接收正文或评论正文，不直接生成 SQL。详设见 `docs/ask-library-v1.md`。
 
 ### 5.2 阅读与 AI
 

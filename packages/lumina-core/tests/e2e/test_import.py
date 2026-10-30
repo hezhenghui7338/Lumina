@@ -251,9 +251,10 @@ def test_import_overwrite_purges_old_data(client, tmp_path):
 
 def test_resegment_book_uses_new_size_and_clears_segment_bound_data(client, tmp_path):
     sample = tmp_path / "long-book.txt"
+    # Modern markers keep pre-chunk profile off classical 200-char targets.
     sample.write_text(
         "\n\n".join(
-            f"第 {i} 段。这是一段用于验证整书重新分段的测试文字，包含完整句子和稳定边界。"
+            f"段落 {i}。我们这个问题已经可以验证整书重新分段，因为这段测试文字所以包含完整句子和稳定边界。"
             for i in range(700)
         ),
         encoding="utf-8",
@@ -265,6 +266,14 @@ def test_resegment_book_uses_new_size_and_clears_segment_bound_data(client, tmp_
     assert imported["status"] in ("unread", "reading", "summarized"), imported
     assert imported.get("segment_count", 0) > 0, imported
     original_count = imported["segment_count"]
+    original_target = int(imported.get("chunk_target_chars") or 0)
+    # Pick a resegment size that must move segment count predictably vs import profile.
+    if original_target > 1500 or original_target <= 0:
+        new_target = 1500
+        expect_more = True
+    else:
+        new_target = min(RESEGMENT_MAX_TARGET_CHARS, max(3000, original_target * 4))
+        expect_more = False
 
     segments = client.get(f"/books/{book_id}/segments").json()["segments"]
     assert segments, imported
@@ -281,14 +290,17 @@ def test_resegment_book_uses_new_size_and_clears_segment_bound_data(client, tmp_
 
     response = client.post(
         f"/books/{book_id}/resegment",
-        json={"chunk_target_chars": 1500},
+        json={"chunk_target_chars": new_target},
     )
     assert response.status_code == 202
     finished = wait_for_ingest(client, book_id)
 
-    assert finished["segment_count"] > original_count
+    if expect_more:
+        assert finished["segment_count"] > original_count, (finished, original_target)
+    else:
+        assert finished["segment_count"] < original_count, (finished, original_target)
     assert finished["current_segment_index"] == 0
-    assert finished["chunk_target_chars"] == 1500
+    assert finished["chunk_target_chars"] == new_target
     assert client.get("/notes", params={"book_id": book_id}).json()["notes"] == []
     segments = client.get(f"/books/{book_id}/segments").json()["segments"]
     assert segments

@@ -7,12 +7,16 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		A10006E1 /* AskLibraryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10006E0 /* AskLibraryView.swift */; };
 		A1000101 /* LuminaApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000201 /* LuminaApp.swift */; };
 		A1000102 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000202 /* ContentView.swift */; };
 		A1000103 /* ReaderView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000203 /* ReaderView.swift */; };
 		A1000119 /* SummaryReadingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000219 /* SummaryReadingView.swift */; };
 		A1000138 /* LazyParagraphText.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000233 /* LazyParagraphText.swift */; };
 		A1000139 /* SegmentReadingBlock.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000235 /* SegmentReadingBlock.swift */; };
+		A10006C1 /* IntroReadingBlock.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10006C0 /* IntroReadingBlock.swift */; };
+		A10006D1 /* OriginalTextBlocks.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10006D0 /* OriginalTextBlocks.swift */; };
+		A10006D3 /* OriginalTextBlocksTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10006D2 /* OriginalTextBlocksTests.swift */; };
 		A1000275 /* SegmentSidebarModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000274 /* SegmentSidebarModels.swift */; };
 		A1000279 /* SegmentSidebarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000278 /* SegmentSidebarView.swift */; };
 		A10005C1 /* SegmentOutlinePolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10005C0 /* SegmentOutlinePolicy.swift */; };
@@ -135,12 +139,16 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+		A10006E0 /* AskLibraryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AskLibraryView.swift; sourceTree = "<group>"; };
 		A1000201 /* LuminaApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LuminaApp.swift; sourceTree = "<group>"; };
 		A1000202 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		A1000203 /* ReaderView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderView.swift; sourceTree = "<group>"; };
 		A1000219 /* SummaryReadingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SummaryReadingView.swift; sourceTree = "<group>"; };
 		A1000233 /* LazyParagraphText.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LazyParagraphText.swift; sourceTree = "<group>"; };
 		A1000235 /* SegmentReadingBlock.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SegmentReadingBlock.swift; sourceTree = "<group>"; };
+		A10006C0 /* IntroReadingBlock.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IntroReadingBlock.swift; sourceTree = "<group>"; };
+		A10006D0 /* OriginalTextBlocks.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OriginalTextBlocks.swift; sourceTree = "<group>"; };
+		A10006D2 /* OriginalTextBlocksTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OriginalTextBlocksTests.swift; sourceTree = "<group>"; };
 		A1000274 /* SegmentSidebarModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SegmentSidebarModels.swift; sourceTree = "<group>"; };
 		A1000278 /* SegmentSidebarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SegmentSidebarView.swift; sourceTree = "<group>"; };
 		A10005C0 /* SegmentOutlinePolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SegmentOutlinePolicy.swift; sourceTree = "<group>"; };
@@ -365,6 +373,8 @@
 				A1000219 /* SummaryReadingView.swift */,
 				A1000233 /* LazyParagraphText.swift */,
 				A1000235 /* SegmentReadingBlock.swift */,
+				A10006C0 /* IntroReadingBlock.swift */,
+				A10006D0 /* OriginalTextBlocks.swift */,
 				A1000380 /* SegmentBoundaryEditor.swift */,
 				A10005E0 /* SegmentBoundaryOffset.swift */,
 				A1000274 /* SegmentSidebarModels.swift */,
@@ -490,6 +500,7 @@
 			children = (
 				A1000312 /* LibraryCollectionSidebar.swift */,
 				A1000311 /* BookshelfView.swift */,
+				A10006E0 /* AskLibraryView.swift */,
 				A1000310 /* BookCard.swift */,
 				A1000222 /* BookRow.swift */,
 				A1000223 /* LibraryViewModel.swift */,
@@ -542,6 +553,7 @@
 				A1000392 /* SummarizeActivityChipTests.swift */,
 				A1000399 /* SegmentHeaderLayoutPolicyTests.swift */,
 				A100039B /* OriginalTextIllustrationLayoutTests.swift */,
+				A10006D2 /* OriginalTextBlocksTests.swift */,
 				A1000422 /* ResourceEditorCopyTests.swift */,
 				A1000430 /* NewsSelectionChromeTests.swift */,
 				A1000450 /* ListenScriptTests.swift */,
@@ -701,6 +713,8 @@
 				A1000119 /* SummaryReadingView.swift in Sources */,
 				A1000138 /* LazyParagraphText.swift in Sources */,
 				A1000139 /* SegmentReadingBlock.swift in Sources */,
+				A10006C1 /* IntroReadingBlock.swift in Sources */,
+				A10006D1 /* OriginalTextBlocks.swift in Sources */,
 				A1000381 /* SegmentBoundaryEditor.swift in Sources */,
 				A10005E1 /* SegmentBoundaryOffset.swift in Sources */,
 				A1000275 /* SegmentSidebarModels.swift in Sources */,
@@ -753,6 +767,7 @@
 				A1000120 /* AllNotesView.swift in Sources */,
 				A1000320 /* BookCard.swift in Sources */,
 				A1000321 /* BookshelfView.swift in Sources */,
+				A10006E1 /* AskLibraryView.swift in Sources */,
 				A1000322 /* LibraryCollectionSidebar.swift in Sources */,
 				A1000122 /* BookRow.swift in Sources */,
 				A1000123 /* LibraryViewModel.swift in Sources */,
@@ -810,6 +825,7 @@
 				A1000393 /* SummarizeActivityChipTests.swift in Sources */,
 				A1000398 /* SegmentHeaderLayoutPolicyTests.swift in Sources */,
 				A100039A /* OriginalTextIllustrationLayoutTests.swift in Sources */,
+				A10006D3 /* OriginalTextBlocksTests.swift in Sources */,
 				A1000423 /* ResourceEditorCopyTests.swift in Sources */,
 				A1000431 /* NewsSelectionChromeTests.swift in Sources */,
 				A1000451 /* ListenScriptTests.swift in Sources */,
@@ -879,7 +895,7 @@
 				CODE_SIGN_IDENTITY = "-";
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 1.5.1;
+				CURRENT_PROJECT_VERSION = 1.5.2;
 				DEVELOPMENT_TEAM = "";
 				ENABLE_APP_SANDBOX = NO;
 				ENABLE_HARDENED_RUNTIME = NO;
@@ -890,7 +906,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 1.5.1;
+				MARKETING_VERSION = 1.5.2;
 				PRODUCT_BUNDLE_IDENTIFIER = com.lumina.app;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
@@ -905,7 +921,7 @@
 				CODE_SIGN_IDENTITY = "-";
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 1.5.1;
+				CURRENT_PROJECT_VERSION = 1.5.2;
 				DEVELOPMENT_TEAM = "";
 				ENABLE_APP_SANDBOX = NO;
 				ENABLE_HARDENED_RUNTIME = NO;
@@ -916,7 +932,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 1.5.1;
+				MARKETING_VERSION = 1.5.2;
 				PRODUCT_BUNDLE_IDENTIFIER = com.lumina.app;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
@@ -929,11 +945,11 @@
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1.5.1;
+				CURRENT_PROJECT_VERSION = 1.5.2;
 				DEVELOPMENT_TEAM = "";
 				GENERATE_INFOPLIST_FILE = YES;
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
-				MARKETING_VERSION = 1.5.1;
+				MARKETING_VERSION = 1.5.2;
 				PRODUCT_BUNDLE_IDENTIFIER = com.lumina.app.tests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = NO;
@@ -947,11 +963,11 @@
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1.5.1;
+				CURRENT_PROJECT_VERSION = 1.5.2;
 				DEVELOPMENT_TEAM = "";
 				GENERATE_INFOPLIST_FILE = YES;
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
-				MARKETING_VERSION = 1.5.1;
+				MARKETING_VERSION = 1.5.2;
 				PRODUCT_BUNDLE_IDENTIFIER = com.lumina.app.tests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = NO;
