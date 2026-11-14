@@ -339,6 +339,27 @@ private final class RecordingListenEngine: ListenEngine {
 
 @MainActor
 final class ListenSessionPlaybackTests: XCTestCase {
+    func testIntroPlaysBeforeBodyAndHighlightsItsOwnReadingPosition() async {
+        let engine = RecordingListenEngine()
+        let session = ListenSession()
+        var highlighted: [Int] = []
+        session.configure(
+            bookId: "book", segmentCount: 1, firstIndex: BookReadingItem.introIndex,
+            resolve: { idx, mode, _ in
+                ListenScript.build(mode: mode, summary: nil,
+                    rawText: idx == -1 ? "导读内容。" : "正文内容。",
+                    segmentLabel: idx == -1 ? "AI 导读" : "正文")
+            },
+            labelFor: { $0 == -1 ? "AI 导读" : "正文" }, makeEngine: { engine }
+        )
+        session.onHighlightSegment = { highlighted.append($0) }
+        session.start(mode: .original, from: -1)
+        await waitUntil { session.statusMessage == "已听完" }
+        XCTAssertEqual(highlighted, [-1, 0])
+        XCTAssertEqual(engine.spoken, ["AI 导读", "导读内容。", "正文", "正文内容。", ListenBookEndCue.text])
+        session.stop()
+    }
+
     func testSpeaksBookEndCueAfterLastSegment() async {
         let engine = RecordingListenEngine()
         let session = ListenSession()

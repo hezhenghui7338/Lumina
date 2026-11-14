@@ -48,6 +48,7 @@ struct BookCard: View {
     let onResegment: () -> Void
     let onExport: () -> Void
     let onDelete: () -> Void
+    var onRestore: (() -> Void)? = nil
     var onRate: ((Int) -> Void)? = nil
     var onStartSummarize: ((SummaryTier) -> Void)? = nil
     var onStopSummarize: (() -> Void)? = nil
@@ -205,6 +206,7 @@ struct BookCard: View {
             onResegment: onResegment,
             onExport: onExport,
             onDelete: onDelete,
+            onRestore: onRestore,
             onStartSummarize: onStartSummarize,
             onStopSummarize: onStopSummarize
         )

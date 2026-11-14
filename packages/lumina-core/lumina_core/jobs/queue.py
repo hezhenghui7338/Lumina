@@ -110,6 +110,7 @@ class JobQueue:
         self._rollup_workers: list[asyncio.Task[None]] = []
         self._event_callback: EventCallback | None = None
         self._books_repo = BookRepo(conn)
+        self._trashed_books = self._books_repo.trashed_ids()
         self._segments_repo = SegmentRepo(conn)
         self._nodes_repo = SummaryNodeRepo(conn)
         self._intros_repo = BookIntroRepo(conn)
@@ -284,6 +285,8 @@ class JobQueue:
         return intent
 
     def _set_intent(self, book_id: str, intent: str) -> None:
+        if book_id in self._trashed_books and intent != "paused":
+            return
         if self._intent_cache.get(book_id) == intent:
             return
         self._intent_cache[book_id] = intent
@@ -291,6 +294,8 @@ class JobQueue:
 
     async def _set_intent_async(self, book_id: str, intent: str) -> None:
         """Persist summarize intent without waiting for SQLite on the event loop."""
+        if book_id in self._trashed_books and intent != "paused":
+            return
         if self._intent_cache.get(book_id) == intent:
             return
         self._intent_cache[book_id] = intent
@@ -384,11 +389,14 @@ class JobQueue:
             state = self.summarize_state_for_book(book_id, ready=ready, total=total)
             if state in counts:
                 counts[state] += 1
-        indexing = self._active_rollup_count()
+        indexing = sum(item.kind == JobKind.ROLLUP and item.book_id not in self._trashed_books
+                       for item in self._active.values())
         counts["indexing"] = indexing
         return {
             "counts": counts,
-            "indexing_queued": self._rollup_queue.qsize(),
+            "indexing_queued": sum(key.endswith(":" + JobKind.ROLLUP.value)
+                                   and key.split(":", 1)[0] not in self._trashed_books
+                                   for key in self._queued_keys),
             "stalled_reason": self._stalled_reason(
                 running=counts["running"], queued=counts["queued"], indexing=indexing
             ),
@@ -554,7 +562,7 @@ class JobQueue:
 
         def _preflight() -> tuple[bool, dict[str, Any] | None]:
             book = self._books_repo.get(book_id)
-            if not book:
+            if not book or book.get("trashed_at"):
                 return False, None
             if already_claimed:
                 return True, book
@@ -770,12 +778,26 @@ class JobQueue:
         )
 
     def is_user_paused(self, book_id: str) -> bool:
+        if book_id in self._trashed_books:
+            return True
         if book_id in self._user_paused_books:
             return True
         return self._user_paused_all
 
+    def set_book_trashed(self, book_id: str, trashed: bool) -> None:
+        if trashed:
+            self._trashed_books.add(book_id)
+            self.cancel_intro(book_id)
+            for task in self._intro_tasks:
+                if task.get_name() == f"lumina-intro-{book_id}":
+                    task.cancel()
+        else:
+            self._trashed_books.discard(book_id)
+
     def unpause_book(self, book_id: str) -> None:
         """Clear pause for one book without releasing the rest of a global stop."""
+        if book_id in self._trashed_books:
+            return
         self._user_paused_books.discard(book_id)
         if self._intent_for(book_id) == "paused":
             # Caller may immediately set active (start_book). Otherwise the book
@@ -791,6 +813,8 @@ class JobQueue:
 
     async def unpause_book_async(self, book_id: str) -> None:
         """Async queue path for unpausing without SQLite work on the event loop."""
+        if book_id in self._trashed_books:
+            return
         self._user_paused_books.discard(book_id)
         intent = self._intent_cache.get(book_id)
         if intent is None:
@@ -940,7 +964,7 @@ class JobQueue:
 
     async def enqueue_rollup(self, book_id: str) -> None:
         book = await self._run_db(lambda: self._books_repo.get(book_id))
-        if not book:
+        if not book or book.get("trashed_at"):
             return
         progress = await self._run_db(lambda: self._books_repo.summary_progress(book_id))
         ready = int(progress["summary_ready_count"] or 0)
@@ -1104,6 +1128,7 @@ class JobQueue:
                     """
                     SELECT * FROM books
                     WHERE lower(format) IN ('epub', 'mobi', 'azw', 'azw3')
+                      AND trashed_at IS NULL
                       AND (
                         illustrations_status IS NULL
                         OR illustrations_status = ''
@@ -1487,6 +1512,8 @@ class JobQueue:
     async def _ack_start_book(
         self, book_id: str, *, summary_tier: str = "normal"
     ) -> None:
+        if book_id in self._trashed_books:
+            return
         await self._supersede_book_tier(book_id, summary_tier)
         await self.unpause_book_async(book_id)
         await self._set_intent_async(book_id, "active")
@@ -1503,6 +1530,8 @@ class JobQueue:
     async def _complete_start_book(
         self, book_id: str, *, summary_tier: str = "normal"
     ) -> None:
+        if book_id in self._trashed_books:
+            return
         # start_all ack only stamps intent; supersede runs here for tier switches.
         await self._supersede_book_tier(book_id, summary_tier)
         # From-zero summarize: schedule intro before prefetch mutates ready counts.
@@ -1849,6 +1878,9 @@ class JobQueue:
         summary_llm_attempts: int,
         summary_quality_relaxed: bool = False,
     ) -> bool:
+        book = self._books_repo.get(book_id)
+        if not book or book.get("trashed_at"):
+            return False
         # Structure tertiary (ingest/outline) wins: do not overwrite non-empty label.
         existing = self._segments_repo.get(segment_id) or {}
         existing_label = str(existing.get("label") or "").strip()

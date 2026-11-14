@@ -59,6 +59,57 @@ def test_prune_sidecar_strips_onnxruntime_ballast(tmp_path: Path):
         assert not (ort / name).exists(), f"onnxruntime/{name} must be pruned"
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="uses prune-sidecar.sh")
+def test_prune_sidecar_trims_justext_and_fake_useragent(tmp_path: Path):
+    """Keep common URL-import stoplists and a short UA list so App stays ≤520MB."""
+    import json
+
+    sidecar = tmp_path / "lumina-core"
+    internal = sidecar / "_internal"
+    stoplists = internal / "justext" / "stoplists"
+    stoplists.mkdir(parents=True)
+    (stoplists / "English.txt").write_text("the\n")
+    (stoplists / "Finnish.txt").write_text("ja\n")
+    ua = internal / "fake_useragent" / "data"
+    ua.mkdir(parents=True)
+    rows = [
+        {
+            "useragent": f"UA-{i}",
+            "percent": float(i),
+            "type": "desktop",
+            "device_brand": None,
+            "browser": "Chrome",
+            "browser_version": "1.0",
+            "browser_version_major_minor": 1.0,
+            "os": "macOS",
+            "os_version": "14",
+            "platform": "Mac",
+        }
+        for i in range(250)
+    ]
+    (ua / "browsers.jsonl").write_text(
+        "".join(json.dumps(row) + "\n" for row in rows),
+        encoding="utf-8",
+    )
+    (internal / "rapidocr" / "models").mkdir(parents=True)
+
+    subprocess.run(
+        ["bash", str(PRUNE_SCRIPT), str(sidecar)],
+        check=True,
+        cwd=ROOT,
+    )
+
+    assert (stoplists / "English.txt").is_file()
+    assert not (stoplists / "Finnish.txt").exists()
+    kept = [
+        json.loads(line)
+        for line in (ua / "browsers.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert len(kept) == 200
+    assert kept[0]["percent"] == 249.0
+
+
 def test_release_scripts_pin_cpython_from_python_version():
     """GitHub runners default to CPython 3.14; that sidecar made Lumina.app 501MB."""
     pin = (ROOT / ".python-version").read_text(encoding="utf-8").strip()

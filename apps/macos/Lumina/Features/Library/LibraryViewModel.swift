@@ -180,6 +180,14 @@ enum BookshelfPageTurnKeyPolicy {
 @MainActor
 final class LibraryViewModel: ObservableObject {
     @Published var books: [BookSummary] = []
+    @Published var trashBooks: [BookSummary] = []
+    @Published private(set) var showsTrash = false
+    @Published private(set) var trashLoading = false
+    @Published private(set) var trashError: String?
+    private var bookshelfTitleQuery = ""
+    private var refreshRevision = 0
+    private var trashRevision = 0
+    private var lifecycleInFlight = false
     @Published var query = LibraryFacetQuery()
     @Published var sort: LibrarySort = .recent
     @Published var sortOrder: LibrarySortOrder = .descending
@@ -202,10 +210,13 @@ final class LibraryViewModel: ObservableObject {
 
     /// Filtered + sorted shelf (full match set; used for counts and paging).
     var matchedBooks: [BookSummary] {
-        var result = books.filter { query.matches($0) }
+        var result = showsTrash ? trashBooks : books.filter { !$0.isTrashed && query.matches($0) }
         let trimmedTitle = titleQuery.trimmingCharacters(in: .whitespacesAndNewlines)
         if !trimmedTitle.isEmpty {
             result = result.filter { $0.title.localizedCaseInsensitiveContains(trimmedTitle) }
+        }
+        if showsTrash {
+            return result.sorted { ($0.trashed_at ?? "") > ($1.trashed_at ?? "") }
         }
         result = Self.sorted(result, by: sort, order: sortOrder)
         if query.isDefault, sort == .recent {
@@ -230,7 +241,7 @@ final class LibraryViewModel: ObservableObject {
 
     func count(for item: LibraryCollection) -> Int {
         let projected = query.projecting(item)
-        return books.filter { projected.matches($0) }.count
+        return books.filter { !$0.isTrashed && projected.matches($0) }.count
     }
 
     func loadPreferences() {
@@ -286,14 +297,48 @@ final class LibraryViewModel: ObservableObject {
     }
 
     func refresh(using core: CoreClient, preserveOrder: Bool = false) async throws {
-        let fetched = try await core.listBooks(filter: .all, sort: sort)
-        summarizeOverview = try? await core.fetchSummarizeOverview()
+        guard !lifecycleInFlight else { return }
+        refreshRevision += 1
+        let revision = refreshRevision
+        let fetched = try await core.listBooks(filter: .all, sort: sort).filter { !$0.isTrashed }
+        let overview = try? await core.fetchSummarizeOverview()
+        guard revision == refreshRevision, !Task.isCancelled else { return }
+        summarizeOverview = overview
         books = preserveOrder && !books.isEmpty
             ? Self.mergePreservingOrder(existing: books, fetched: fetched)
             : fetched
         books = Self.overlayLocalProgress(books) { ReadingProgressStore.shared.position(for: $0) }
         clampPageIndexIfNeeded()
         syncIngestSubscriptions(using: core)
+        if showsTrash { await loadTrash(using: core) }
+    }
+
+    func selectTrash() {
+        guard !showsTrash else { return }
+        bookshelfTitleQuery = titleQuery
+        titleQuery = ""
+        showsTrash = true
+        resetPage()
+    }
+
+    func loadTrash(using core: CoreClient) async {
+        guard showsTrash, !lifecycleInFlight else { return }
+        trashRevision += 1
+        let revision = trashRevision
+        trashLoading = true
+        defer { if revision == trashRevision { trashLoading = false } }
+        do {
+            let fetched = try await core.listBooks(visibility: "trash")
+            guard revision == trashRevision, !Task.isCancelled else { return }
+            trashBooks = Self.overlayLocalProgress(fetched.filter(\.isTrashed)) {
+                ReadingProgressStore.shared.position(for: $0)
+            }
+            trashError = nil
+            clampPageIndexIfNeeded()
+        } catch {
+            guard revision == trashRevision, !Task.isCancelled else { return }
+            trashError = ConnectionError.userMessage(for: error)
+        }
     }
 
     func syncIngestSubscriptions(using core: CoreClient) {
@@ -522,6 +567,10 @@ final class LibraryViewModel: ObservableObject {
     }
 
     func selectFacet(_ item: LibraryCollection) {
+        if showsTrash {
+            showsTrash = false
+            titleQuery = bookshelfTitleQuery
+        }
         var next = query
         next.apply(item)
         query = next
@@ -573,24 +622,52 @@ final class LibraryViewModel: ObservableObject {
     }
 
     func deleteBook(id: String, using core: CoreClient) async throws {
-        ingestEventTasks[id]?.cancel()
-        ingestEventTasks.removeValue(forKey: id)
-        ingestProgress.removeValue(forKey: id)
-        try await core.deleteBook(id: id)
-        books.removeAll { $0.id == id }
-        clampPageIndexIfNeeded()
+        try await performBookLifecycle(ids: [id], using: core, action: .delete)
     }
 
     func deleteBooks(ids: [String], using core: CoreClient) async throws {
-        guard !ids.isEmpty else { return }
+        try await performBookLifecycle(ids: ids, using: core, action: .delete)
+    }
+
+    enum BookLifecycleAction { case trash, restore, delete }
+
+    func performBookLifecycle(ids: [String], using core: CoreClient, action: BookLifecycleAction) async throws {
+        guard !ids.isEmpty, !lifecycleInFlight else { return }
+        lifecycleInFlight = true
+        refreshRevision += 1
+        trashRevision += 1
+        trashLoading = false
+        var failed: [String] = []
         for id in ids {
-            ingestEventTasks[id]?.cancel()
-            ingestEventTasks.removeValue(forKey: id)
-            ingestProgress.removeValue(forKey: id)
+            do {
+                let updated: BookSummary?
+                if action == .delete {
+                    try await core.deleteBook(id: id)
+                    updated = nil
+                } else {
+                    updated = try await core.setBookTrashed(id: id, trashed: action == .trash)
+                }
+                books.removeAll { $0.id == id }
+                trashBooks.removeAll { $0.id == id }
+                if let updated {
+                    if updated.isTrashed { trashBooks.append(updated) }
+                    else { books.append(updated) }
+                }
+                ingestEventTasks[id]?.cancel()
+                ingestEventTasks.removeValue(forKey: id)
+                ingestProgress.removeValue(forKey: id)
+            } catch {
+                let title = (books + trashBooks).first { $0.id == id }?.title ?? id
+                failed.append("《\(title)》：\(ConnectionError.userMessage(for: error))")
+            }
         }
-        try await core.deleteBooks(ids: ids)
-        books.removeAll { ids.contains($0.id) }
         clampPageIndexIfNeeded()
+        NotificationCenter.default.post(name: .luminaBookVisibilityChanged, object: nil)
+        lifecycleInFlight = false
+        try? await refresh(using: core, preserveOrder: true)
+        if !failed.isEmpty {
+            throw NSError(domain: "Lumina.Library", code: 1, userInfo: [NSLocalizedDescriptionKey: failed.joined(separator: "\n")])
+        }
     }
 
     func setFavorite(ids: [String], isFavorite: Bool, using core: CoreClient) async throws {
@@ -625,8 +702,8 @@ final class LibraryViewModel: ObservableObject {
     }
 
     func replace(_ book: BookSummary) {
-        guard let index = books.firstIndex(where: { $0.id == book.id }) else { return }
-        books[index] = book
+        if let index = books.firstIndex(where: { $0.id == book.id }) { books[index] = book }
+        if let index = trashBooks.firstIndex(where: { $0.id == book.id }) { trashBooks[index] = book }
     }
 
     /// Re-apply the store's positions to the rows. Called whenever the reader
@@ -636,6 +713,7 @@ final class LibraryViewModel: ObservableObject {
     /// never keep a previously overlaid value the open path would not use.
     func applyLocalProgress(openedAt: Date = Date(), cached: (String) -> ReadingPosition?) {
         books = Self.overlayLocalProgress(books, openedAt: openedAt, cached: cached)
+        trashBooks = Self.overlayLocalProgress(trashBooks, openedAt: openedAt, cached: cached)
     }
 
     var hasIncompleteSummaries: Bool {

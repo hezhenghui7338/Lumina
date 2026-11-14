@@ -229,3 +229,59 @@ async def test_run_intro_persists_ready(tmp_path, monkeypatch):
         assert row["source_text"] == "Encyclopedia body"
         assert row["summary"] is not None
         assert row["citations"]
+
+
+def test_intro_export_context_and_notes_use_intro_identity(client):
+    from lumina_core.chat.service import assemble_segment_context
+    from lumina_core.search.fts import search
+
+    book_id = import_sample_book(client)
+    state = client.app.state.lumina
+    BookIntroRepo(state.conn).upsert(
+        book_id, status="ready", summary_json=_sample_summary().model_dump(),
+        source_text="导读参考材料：作者及时代背景。",
+        citations=[{"title": "参考", "url": "https://example.com/intro"}],
+    )
+    markdown = client.post(f"/books/{book_id}/export", json={"mode": "full"}).text
+    assert markdown.index("## AI 导读") < markdown.index("## 段摘要")
+    assert "导读一句。" in markdown
+    assert "https://example.com/intro" in markdown
+    condensed = client.post(f"/books/{book_id}/export", json={"mode": "sentences"}).text
+    assert "导读一句。" in condensed
+    assert "导读要点正文" not in condensed
+    assert "导读来源" not in condensed
+
+    context = assemble_segment_context(
+        BookRepo(state.conn).get(book_id), current_segment_idx=-1,
+        segment_repo=SegmentRepo(state.conn),
+    )
+    assert "AI 导读" in context
+    assert "导读一句。" in context
+    assert "导读参考材料：作者及时代背景。" in context
+    assert "https://example.com/intro" in context
+    assert "当前段原文" not in context
+
+    response = client.post("/notes", json={
+        "book_id": book_id, "reading_item": "intro", "content": "导读笔记星河",
+        "quote": "导读一句。", "type": "highlight",
+    })
+    assert response.status_code == 200, response.text
+    note = response.json()
+    assert note["segment_id"] is None
+    assert note["segment_index"] == -1
+    assert note["segment_label"] == "AI 导读"
+    notes = client.get("/notes", params={"book_id": book_id}).json()["notes"]
+    assert any(n["id"] == note["id"] and n["segment_index"] == -1 for n in notes)
+    hits = search(state.conn, "导读笔记星河")
+    assert any(h.get("note_id") == note["id"] and h.get("segment_index") == -1 for h in hits)
+    assert client.delete(f"/notes/{note['id']}").status_code == 200
+
+
+def test_first_open_schedules_intro_even_without_auto_summary(client, monkeypatch):
+    book_id = import_sample_book(client)
+    queue = client.app.state.lumina.job_queue
+    monkeypatch.setattr(queue, "auto_start_summary", False)
+    scheduled = []
+    monkeypatch.setattr(queue, "schedule_intro", lambda bid: scheduled.append(bid))
+    assert client.post(f"/books/{book_id}/open").status_code == 200
+    assert scheduled == [book_id]

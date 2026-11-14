@@ -148,4 +148,37 @@ def test_migrate_drops_orphan_notes(tmp_path):
     rows = conn.execute("SELECT id FROM notes ORDER BY id").fetchall()
     assert [r[0] for r in rows] == ["ok"]
     info = {r[1]: r[3] for r in conn.execute("PRAGMA table_info(notes)").fetchall()}
-    assert info["segment_id"] == 1
+    assert info["segment_id"] == 0
+    assert "reading_item" in info
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute("INSERT INTO notes (id, book_id, content, type, created_at) VALUES ('bad', 'b1', 'orphan', 'manual', 'now')")
+
+
+def test_migrate_required_segment_schema_preserves_body_and_intro_notes(tmp_path):
+    db = tmp_path / "required-segment.db"
+    conn = init_db(db)
+    book_id, segment_id = _seed_book_with_segment(conn)
+    body_note = NoteRepo(conn).create(book_id=book_id, segment_id=segment_id, content="正文笔记")
+    # Recreate the previous shipped schema, which required segment_id NOT NULL.
+    conn.executescript("""
+        CREATE TABLE old_notes (
+            id TEXT PRIMARY KEY, book_id TEXT NOT NULL REFERENCES books(id),
+            segment_id TEXT NOT NULL REFERENCES segments(id), quote TEXT,
+            content TEXT NOT NULL, type TEXT NOT NULL, created_at TEXT NOT NULL
+        );
+        INSERT INTO old_notes SELECT id, book_id, segment_id, quote, content, type, created_at FROM notes;
+        DROP TABLE notes;
+        ALTER TABLE old_notes RENAME TO notes;
+    """)
+    conn.close()
+    conn = init_db(db)
+    intro_note = NoteRepo(conn).create(
+        book_id=book_id, segment_id=None, reading_item="intro", content="导读笔记"
+    )
+    conn.close()
+    conn = init_db(db)
+    notes = NoteRepo(conn).list_for_book(book_id)
+    assert {n["id"] for n in notes} == {body_note["id"], intro_note["id"]}
+    assert NoteRepo(conn).get(intro_note["id"])["segment_index"] == -1
+    assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
+    conn.close()

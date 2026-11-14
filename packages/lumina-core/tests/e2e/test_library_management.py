@@ -48,6 +48,110 @@ def _import_book_id(client: TestClient) -> str:
     return import_sample_book(client)
 
 
+def test_trash_read_restore_and_permanent_delete(client, monkeypatch):
+    state = client.app.state.lumina
+    state.job_queue.auto_start_summary = True
+    book_id = _import_sample(client)
+    segment = client.get(f"/books/{book_id}/segments").json()["segments"][0]
+    note = client.post("/notes", json={
+        "book_id": book_id, "segment_id": segment["id"], "content": "Keep this note",
+    })
+    assert note.status_code == 200
+    before = client.get(f"/books/{book_id}").json()
+    response = client.post(f"/books/{book_id}/trash")
+    assert response.status_code == 200
+    assert response.json()["trashed_at"]
+    assert client.post(f"/books/{book_id}/trash").json()["trashed_at"] == response.json()["trashed_at"]
+    assert client.get("/books").json()["books"] == []
+    assert client.get("/notes").json()["notes"] == []
+    assert client.get("/library/tags").status_code == 200
+    assert [b["id"] for b in client.get("/books?visibility=trash").json()["books"]] == [book_id]
+    assert client.get("/books?visibility=all").status_code == 422
+
+    # Explicit reading works without reviving jobs or visibility.
+    def unexpected(*args, **kwargs):
+        pytest.fail("Reading trash must not start automatic AI work")
+    monkeypatch.setattr(state.job_queue, "schedule_intro", unexpected)
+    monkeypatch.setattr(state.job_queue, "enqueue_book_prefetch", unexpected)
+    assert client.post(f"/books/{book_id}/open").status_code == 200
+    assert client.get(f"/books/{book_id}/segments/0").status_code == 200
+    assert client.get("/notes", params={"book_id": book_id}).json()["notes"][0]["content"] == "Keep this note"
+    assert client.patch(f"/books/{book_id}/reading-progress", json={"segment_index": 0}).status_code == 200
+    assert client.get("/books").json()["books"] == []
+    for action in ("summarize/start", "index", "intro/generate", "summarize/regenerate", "segments/0/retry"):
+        assert client.post(f"/books/{book_id}/{action}").status_code == 409
+
+    restored = client.post(f"/books/{book_id}/restore")
+    assert restored.status_code == 200
+    assert restored.json()["trashed_at"] is None
+    assert restored.json()["summarize_intent"] == "paused"
+    assert restored.json()["segment_count"] == before["segment_count"]
+    assert len(client.get("/books").json()["books"]) == 1
+    assert len(client.get("/notes").json()["notes"]) == 1
+    assert client.delete(f"/books/{book_id}?only_trashed=true").status_code == 409
+    assert client.post(f"/books/{book_id}/restore").status_code == 200
+    assert client.post(f"/books/{book_id}/trash").status_code == 200
+    assert client.delete(f"/books/{book_id}?only_trashed=true").status_code == 200
+    assert client.get(f"/books/{book_id}").status_code == 404
+    assert client.get("/books?visibility=trash").json()["books"] == []
+    assert not (state.books_dir / book_id).exists()
+    assert client.post("/books/missing/trash").status_code == 404
+    assert client.post("/books/missing/restore").status_code == 404
+
+
+@pytest.mark.parametrize("overwrite", [False, True])
+@pytest.mark.parametrize("kind", ["file", "paste", "url"])
+def test_reimport_trash_always_skips_without_replacing_data(client, overwrite, kind):
+    from lumina_core.ingest.loader import file_hash
+    from lumina_core.ingest.paste import prepare_pasted_text
+    from lumina_core.ingest.web import url_import_hash
+
+    state = client.app.state.lumina
+    sample = BOOK_FIXTURES / "sample.txt"
+    text = "Book title\nThis is the original pasted book content."
+    url = "https://example.com/reading"
+    digest = {"file": lambda: file_hash(sample), "paste": lambda: prepare_pasted_text(text).digest,
+              "url": lambda: url_import_hash(url)}[kind]()
+    repo = BookRepo(state.conn)
+    book = repo.insert(title="Keep me hidden", format="txt", file_path=str(sample), file_hash=digest)
+    repo.set_trashed(book["id"], True)
+    before = repo.get(book["id"])
+    path, body = {
+        "file": ("/books/import", {"paths": [str(sample)]}),
+        "paste": ("/books/import-paste", {"text": text}),
+        "url": ("/books/import-url", {"url": url}),
+    }[kind]
+    response = client.post(path, json={**body, "overwrite": overwrite})
+    assert response.status_code == 409
+    assert response.json()["detail"]["trashed_at"] == before["trashed_at"]
+    assert repo.get(book["id"]) == before
+    assert len(repo.list_books(visibility="all")) == 1
+
+
+@pytest.mark.parametrize("kind", ["import", "resegment"])
+def test_trash_cancels_queued_processing_without_waiting_for_other_books(client, kind):
+    state = client.app.state.lumina
+    if kind == "resegment":
+        book_id = _import_sample(client)
+        before = client.get(f"/books/{book_id}/segments").json()["segments"]
+    client.portal.call(state.cpu_job_lock.acquire)
+    try:
+        if kind == "import":
+            book_id = import_sample_book(client, wait=False)
+        else:
+            assert client.post(f"/books/{book_id}/resegment", json={"chunk_target_chars": 4000}).status_code == 202
+        started = time.monotonic()
+        response = client.post(f"/books/{book_id}/trash")
+        assert response.status_code == 200
+        assert time.monotonic() - started < 3
+        assert state.cpu_job_lock.locked(), "Trash must not release another book's CPU lock"
+        assert response.json()["status"] != "processing"
+        if kind == "resegment":
+            assert client.get(f"/books/{book_id}/segments").json()["segments"] == before
+    finally:
+        client.portal.call(state.cpu_job_lock.release)
+
+
 def test_list_books_filter_and_patch_favorite(client):
     book_id = _import_sample(client)
     client.post(f"/books/{book_id}/open")

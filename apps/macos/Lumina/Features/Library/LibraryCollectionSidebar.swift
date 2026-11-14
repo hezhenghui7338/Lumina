@@ -19,13 +19,25 @@ struct LibraryCollectionSidebar: View {
                     }
                 }
             }
+            Section {
+                Button {
+                    viewModel.selectTrash()
+                } label: {
+                    Label("垃圾桶", systemImage: "trash")
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .listRowBackground(viewModel.showsTrash ? LuminaTheme.libraryRowSelectionBackground : Color.clear)
+                .accessibilityAddTraits(viewModel.showsTrash ? [.isSelected] : [])
+            }
         }
         .listStyle(.sidebar)
         .navigationTitle("书架")
     }
 
     private func collectionRow(_ item: LibraryCollection) -> some View {
-        let selected = viewModel.query.isSelected(item)
+        let selected = !viewModel.showsTrash && viewModel.query.isSelected(item)
         return Button {
             viewModel.selectFacet(item)
         } label: {

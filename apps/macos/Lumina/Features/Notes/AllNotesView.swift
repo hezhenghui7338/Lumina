@@ -7,6 +7,7 @@ struct AllNotesView: View {
 
     @State private var notes: [NoteRow] = []
     @State private var loading = false
+    @State private var reloadRevision = 0
     @State private var error: String?
     @State private var isSelectionMode = false
     @State private var checkedNoteIds: Set<String> = []
@@ -48,6 +49,11 @@ struct AllNotesView: View {
         .toolbar { notesToolbar }
         .task { await reload() }
         .refreshable { await reload() }
+        .onReceive(NotificationCenter.default.publisher(for: .luminaBookVisibilityChanged)) { _ in
+            reloadRevision += 1
+            notes = []
+            Task { await reload() }
+        }
         .confirmationDialog(
             "确定删除这条笔记？",
             isPresented: Binding(
@@ -248,10 +254,14 @@ struct AllNotesView: View {
     }
 
     private func reload() async {
+        reloadRevision += 1
+        let revision = reloadRevision
         loading = true
-        defer { loading = false }
+        defer { if revision == reloadRevision { loading = false } }
         do {
-            notes = try await core.listNotes()
+            let fetched = try await core.listNotes()
+            guard revision == reloadRevision, !Task.isCancelled else { return }
+            notes = fetched
             error = nil
             let validIds = Set(notes.map(\.id))
             checkedNoteIds = checkedNoteIds.intersection(validIds)
@@ -259,6 +269,7 @@ struct AllNotesView: View {
                 exitSelectionMode()
             }
         } catch {
+            guard revision == reloadRevision, !Task.isCancelled else { return }
             if let message = error.userFacingMessage {
                 self.error = message
             }

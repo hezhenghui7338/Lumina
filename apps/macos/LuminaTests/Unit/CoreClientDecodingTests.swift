@@ -659,4 +659,15 @@ final class CoreClientDecodingTests: XCTestCase {
         XCTAssertEqual(page.has_more_after, true)
         XCTAssertNil(page.segments[0].raw_text)
     }
+    func testBookSummaryDecodesTrashAndLegacyResponses() throws {
+        let legacy = Data(#"{"id":"b","title":"Book","status":"reading","segment_count":3}"#.utf8)
+        XCTAssertFalse(try JSONDecoder().decode(BookSummary.self, from: legacy).isTrashed)
+        let trash = Data(#"{"id":"b","title":"Book","status":"reading","segment_count":3,"trashed_at":"2026-11-14T00:00:00Z"}"#.utf8)
+        let decoded = try JSONDecoder().decode(BookSummary.self, from: trash)
+        XCTAssertTrue(decoded.isTrashed)
+        XCTAssertEqual(decoded.trashed_at, "2026-11-14T00:00:00Z")
+        let encoded = try JSONEncoder().encode(decoded)
+        XCTAssertTrue(try JSONDecoder().decode(BookSummary.self, from: encoded).isTrashed)
+    }
+
 }

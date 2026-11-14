@@ -92,6 +92,7 @@ class AppState:
     resegment_cancel_events: dict[str, threading.Event] = field(default_factory=dict)
     ingest_tasks: dict[str, asyncio.Task[str]] = field(default_factory=dict)
     ingest_cancel_events: dict[str, threading.Event] = field(default_factory=dict)
+    book_lifecycle_locks: dict[str, asyncio.Lock] = field(default_factory=dict, repr=False)
     context_probe_tasks: dict[str, asyncio.Task[Any]] = field(default_factory=dict)
     context_probe_cancel: dict[str, asyncio.Event] = field(default_factory=dict)
     context_probe_status: dict[str, Any] = field(default_factory=dict)

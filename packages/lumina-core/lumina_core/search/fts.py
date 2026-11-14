@@ -212,6 +212,7 @@ def search(conn: sqlite3.Connection, query: str, *, limit: int = 30) -> list[dic
             SELECT book_id, segment_id, note_id, kind, title, snippet(search_fts, 4, '[', ']', '…', 10) AS snippet
             FROM search_fts
             WHERE search_fts MATCH ?
+              AND book_id IN (SELECT id FROM books WHERE trashed_at IS NULL)
             ORDER BY rank
             LIMIT ?
             """,
@@ -226,6 +227,12 @@ def search(conn: sqlite3.Connection, query: str, *, limit: int = 30) -> list[dic
                 ).fetchone()
                 if seg:
                     item["segment_index"] = seg["idx"]
+            elif item["note_id"]:
+                note = conn.execute(
+                    "SELECT reading_item FROM notes WHERE id = ?", (item["note_id"],)
+                ).fetchone()
+                if note and note["reading_item"] == "intro":
+                    item["segment_index"] = -1
             results.append(item)
     return results
 

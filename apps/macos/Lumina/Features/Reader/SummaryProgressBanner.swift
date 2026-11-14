@@ -164,7 +164,7 @@ struct ProgressReturnBanner: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            Text("是否返回上次进度（第 \(savedIndex + 1) 段）？")
+            Text(savedIndex == BookReadingItem.introIndex ? "是否返回上次进度（AI 导读）？" : "是否返回上次进度（第 \(savedIndex + 1) 段）？")
                 .font(.caption)
                 .foregroundStyle(LuminaTheme.textPrimary)
                 .lineLimit(1)

@@ -8,6 +8,8 @@ struct BookSummary: Codable, Identifiable, Hashable {
     var is_favorite: Bool?
     var category: String?
     var tags: [String]? = nil
+    var trashed_at: String? = nil
+    var isTrashed: Bool { trashed_at != nil }
     var last_opened_at: String?
     var current_segment_index: Int?
     var author: String?
@@ -42,7 +44,7 @@ struct BookSummary: Codable, Identifiable, Hashable {
         case summary_ready_count, summary_total_count, chunker_version
         case language, target_language, summarize_active, summarize_state
         case summarize_queued_count, summary_tier, processing_kind, index_status, ingest_error
-        case has_cover, rating
+        case has_cover, rating, trashed_at
     }
 
     init(
@@ -74,7 +76,8 @@ struct BookSummary: Codable, Identifiable, Hashable {
         ingest_error: String? = nil,
         rating: Int? = nil,
         has_cover: Bool? = nil,
-        readingPercent: Double? = nil
+        readingPercent: Double? = nil,
+        trashed_at: String? = nil
     ) {
         self.id = id
         self.title = title
@@ -105,6 +108,7 @@ struct BookSummary: Codable, Identifiable, Hashable {
         self.rating = rating
         self.has_cover = has_cover
         self.readingPercent = readingPercent
+        self.trashed_at = trashed_at
     }
 
     init(from decoder: Decoder) throws {
@@ -124,6 +128,7 @@ struct BookSummary: Codable, Identifiable, Hashable {
         }
         category = try c.decodeIfPresent(String.self, forKey: .category)
         tags = try c.decodeIfPresent([String].self, forKey: .tags)
+        trashed_at = try c.decodeIfPresent(String.self, forKey: .trashed_at)
         last_opened_at = try c.decodeIfPresent(String.self, forKey: .last_opened_at)
         current_segment_index = try c.decodeIfPresent(Int.self, forKey: .current_segment_index)
         author = try c.decodeIfPresent(String.self, forKey: .author)
@@ -187,7 +192,7 @@ struct BookSummary: Codable, Identifiable, Hashable {
     }
 
     var readingCurrent: Int {
-        guard last_opened_at != nil, readingTotal > 0 else { return 0 }
+        guard last_opened_at != nil, readingTotal > 0, current_segment_index != BookReadingItem.introIndex else { return 0 }
         let index = min(max(current_segment_index ?? 0, 0), readingTotal - 1)
         return index + 1
     }
@@ -273,7 +278,7 @@ struct BookSummary: Codable, Identifiable, Hashable {
     var summarizeQueuedCount: Int { summarize_queued_count ?? 0 }
 
     var canStartSummarize: Bool {
-        guard !isProcessing, summaryTotal > 0, summaryReady < summaryTotal else { return false }
+        guard !isTrashed, !isProcessing, summaryTotal > 0, summaryReady < summaryTotal else { return false }
         switch summarize_state {
         case "idle", "paused": return true
         default: return false
@@ -281,7 +286,7 @@ struct BookSummary: Codable, Identifiable, Hashable {
     }
 
     var canStopSummarize: Bool {
-        guard !isProcessing else { return false }
+        guard !isTrashed, !isProcessing else { return false }
         switch summarize_state {
         case "running", "queued", "paused": return true
         default: return false
@@ -291,7 +296,7 @@ struct BookSummary: Codable, Identifiable, Hashable {
     /// Ready books can be re-chunked from the library or reader. Import
     /// failures and in-flight ingest/resegment jobs cannot.
     var canResegment: Bool {
-        !isProcessing && status != "error" && (segment_count ?? 0) > 0
+        !isTrashed && !isProcessing && status != "error" && (segment_count ?? 0) > 0
     }
 
     var statusLabel: String {
@@ -391,9 +396,10 @@ struct ImportConflictError: LocalizedError {
     let title: String
     let path: String
     var kind: ImportConflictKind = .file
+    var isTrashed: Bool = false
 
     var errorDescription: String? {
-        "《\(title)》已在书库中"
+        isTrashed ? "《\(title)》已在垃圾桶中，本次已跳过" : "《\(title)》已在书库中"
     }
 }
 
@@ -864,14 +870,9 @@ struct BookIntro: Codable, Hashable {
     var error: String?
     var updated_at: String?
 
-    /// idle / skipped → do not reserve feed space.
+    /// The intro has a stable place in the reading sequence, including retry states.
     var isVisibleInFeed: Bool {
-        switch status {
-        case "pending", "ready", "failed":
-            return true
-        default:
-            return false
-        }
+        true
     }
 
     var summaryJSONString: String? {
@@ -1396,7 +1397,7 @@ struct NewsBrief: Codable {
 /// decoding must not block the UI thread (PRD 永不卡住用户).
 final class CoreClient: ObservableObject {
     let baseURL: URL
-    private let session = URLSession.shared
+    private let session: URLSession
     private static let longSession: URLSession = {
         let config = URLSessionConfiguration.default
         config.timeoutIntervalForRequest = 300
@@ -1413,17 +1414,20 @@ final class CoreClient: ObservableObject {
         return URLSession(configuration: config)
     }()
 
-    init(baseURL: URL) {
+    init(baseURL: URL, session: URLSession = .shared) {
         self.baseURL = baseURL
+        self.session = session
     }
 
     func listBooks(
         filter: LibraryFilter = .all,
-        sort: LibrarySort = .recent
+        sort: LibrarySort = .recent,
+        visibility: String = "active"
     ) async throws -> [BookSummary] {
         let data = try await get(path: "/books", queryItems: [
             URLQueryItem(name: "filter", value: filter.queryValue),
             URLQueryItem(name: "sort", value: sort.queryValue),
+            URLQueryItem(name: "visibility", value: visibility),
         ])
         struct Resp: Codable { let books: [BookSummary] }
         return try await Self.decode(Resp.self, from: data).books
@@ -1514,7 +1518,15 @@ final class CoreClient: ObservableObject {
     }
 
     func deleteBook(id: String) async throws {
-        _ = try await delete(path: "/books/\(id)")
+        _ = try await delete(path: "/books/\(id)", queryItems: [
+            URLQueryItem(name: "only_trashed", value: "true"),
+        ])
+    }
+
+    func setBookTrashed(id: String, trashed: Bool) async throws -> BookSummary {
+        let action = trashed ? "trash" : "restore"
+        let data = try await post(path: "/books/\(id)/\(action)", body: Data("{}".utf8))
+        return try await Self.decode(BookSummary.self, from: data)
     }
 
     func deleteBooks(ids: [String]) async throws {
@@ -1640,7 +1652,8 @@ final class CoreClient: ObservableObject {
            let detail = obj["detail"] as? [String: Any],
            let bookId = detail["existing_book_id"] as? String {
             let title = detail["title"] as? String ?? "未知书名"
-            return ImportConflictError(existingBookId: bookId, title: title, path: path, kind: kind)
+            return ImportConflictError(existingBookId: bookId, title: title, path: path, kind: kind,
+                                       isTrashed: detail["trashed_at"] is String)
         }
         return ImportConflictError(existingBookId: "", title: "未知书名", path: path, kind: kind)
     }
@@ -1927,19 +1940,20 @@ final class CoreClient: ObservableObject {
     func createNote(
         bookId: String,
         content: String,
-        segmentId: String,
+        segmentId: String?,
         quote: String? = nil,
         type: String = "manual"
     ) async throws -> NoteRow {
         struct Body: Codable {
             let book_id: String
             let content: String
-            let segment_id: String
+            let segment_id: String?
+            let reading_item: String?
             let quote: String?
             let type: String
         }
         let body = try JSONEncoder().encode(
-            Body(book_id: bookId, content: content, segment_id: segmentId, quote: quote, type: type)
+            Body(book_id: bookId, content: content, segment_id: segmentId, reading_item: segmentId == nil ? "intro" : nil, quote: quote, type: type)
         )
         let data = try await post(path: "/notes", body: body)
         return try await Self.decode(NoteRow.self, from: data)
@@ -2362,9 +2376,9 @@ final class CoreClient: ObservableObject {
         }
     }
 
-    private func delete(path: String) async throws -> Data {
+    private func delete(path: String, queryItems: [URLQueryItem]? = nil) async throws -> Data {
         try await withConnectionRetry {
-            var request = URLRequest(url: url(path: path))
+            var request = URLRequest(url: url(path: path, queryItems: queryItems))
             request.httpMethod = "DELETE"
             let (data, resp) = try await session.data(for: request)
             try validate(resp: resp, data: data)

@@ -17,6 +17,7 @@ private enum NotesFilter: String, CaseIterable, Identifiable {
 struct NotesPanel: View {
     let bookId: String
     let segmentId: String?
+    var isIntro: Bool = false
     var refreshToken: Int = 0
     var onSelectSegment: ((Int) -> Void)?
     @EnvironmentObject private var core: CoreClient
@@ -30,7 +31,7 @@ struct NotesPanel: View {
     @State private var batchDeleteCount: Int?
 
     private var canCreate: Bool {
-        segmentId != nil && !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        (segmentId != nil || isIntro) && !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     var body: some View {
@@ -43,7 +44,7 @@ struct NotesPanel: View {
 
             Picker("筛选", selection: $filter) {
                 ForEach(NotesFilter.allCases) { item in
-                    Text(item.title).tag(item)
+                    Text(item == .current && isIntro ? "AI 导读" : item.title).tag(item)
                 }
             }
             .pickerStyle(.segmented)
@@ -52,9 +53,9 @@ struct NotesPanel: View {
             TextField("写笔记…", text: $draft, axis: .vertical)
                 .textFieldStyle(.roundedBorder)
                 .lineLimit(2...4)
-                .disabled(segmentId == nil)
+                .disabled(segmentId == nil && !isIntro)
 
-            if segmentId == nil {
+            if segmentId == nil && !isIntro {
                 Text("请先选择段落再写笔记")
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -189,7 +190,7 @@ struct NotesPanel: View {
     private var taskKey: String {
         Self.reloadTaskKey(
             bookId: bookId,
-            segmentId: segmentId,
+            segmentId: isIntro ? "intro" : segmentId,
             filterCurrent: filter == .current,
             refreshToken: refreshToken
         )
@@ -209,7 +210,7 @@ struct NotesPanel: View {
     }
 
     private var emptyLabel: String {
-        filter == .current ? "当前段暂无笔记" : "暂无笔记"
+        filter == .current ? (isIntro ? "AI 导读暂无笔记" : "当前段暂无笔记") : "暂无笔记"
     }
 
     @ViewBuilder
@@ -318,12 +319,13 @@ struct NotesPanel: View {
     private func reload() async {
         do {
             let filterSegmentId = filter == .current ? segmentId : nil
-            if filter == .current && segmentId == nil {
+            if filter == .current && segmentId == nil && !isIntro {
                 notes = []
                 exitSelectionMode()
                 return
             }
             notes = try await core.listNotes(bookId: bookId, segmentId: filterSegmentId)
+            if filter == .current && isIntro { notes = notes.filter { $0.segment_index == BookReadingItem.introIndex } }
             let validIds = Set(notes.map(\.id))
             checkedNoteIds = checkedNoteIds.intersection(validIds)
             if notes.isEmpty {
@@ -339,7 +341,7 @@ struct NotesPanel: View {
     private func createNote(quote: String? = nil, type: String = "manual") async {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
-        guard let segmentId else {
+        guard segmentId != nil || isIntro else {
             error = "请先选择段落"
             return
         }
@@ -391,7 +393,7 @@ struct NoteTypeLabel {
 struct NoteRow: Codable, Identifiable, Hashable {
     let id: String
     let book_id: String
-    let segment_id: String
+    let segment_id: String?
     let quote: String?
     let content: String
     let type: String

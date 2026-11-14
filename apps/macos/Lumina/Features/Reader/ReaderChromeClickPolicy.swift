@@ -178,7 +178,7 @@ enum LuminaSelectionActionPolicy {
 /// not whichever segment currently has scroll focus).
 struct ReaderSelectionNoteAnchor: Equatable {
     let bookId: String
-    let segmentId: String
+    let segmentId: String?
 }
 
 private struct ReaderBodyTextPlainClickKey: EnvironmentKey {

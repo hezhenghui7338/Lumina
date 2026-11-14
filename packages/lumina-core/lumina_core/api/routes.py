@@ -18,7 +18,7 @@ from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import FileResponse, PlainTextResponse, StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from lumina_core.app_state import AppState, default_rss_sources
 from lumina_core.config import RESEGMENT_MAX_TARGET_CHARS, RESEGMENT_MIN_TARGET_CHARS
@@ -234,9 +234,16 @@ class SettingsUpdate(BaseModel):
 class NoteCreate(BaseModel):
     book_id: str
     content: str
-    segment_id: str
+    segment_id: str | None = None
+    reading_item: Literal["intro"] | None = None
     quote: str | None = None
     type: str = "manual"
+
+    @model_validator(mode="after")
+    def require_reading_anchor(self) -> "NoteCreate":
+        if (self.segment_id is None) == (self.reading_item is None):
+            raise ValueError("provide either segment_id or reading_item=intro")
+        return self
 
 
 class NewsSourceCreate(BaseModel):
@@ -264,6 +271,23 @@ def _raise_on_db_schema_error(exc: BaseException) -> None:
 
 
 async def _purge_book(state: AppState, book_id: str) -> None:
+    await _stop_book_processing(state, book_id)
+    await asyncio.to_thread(BookRepo(state.conn).delete, book_id)
+    book_dir = state.books_dir / book_id
+    if book_dir.exists():
+        await asyncio.to_thread(shutil.rmtree, book_dir)
+
+
+async def _purge_for_overwrite(state: AppState, book_id: str) -> None:
+    # The duplicate check may have run before another window moved the book.
+    async with state.book_lifecycle_locks.setdefault(book_id, asyncio.Lock()):
+        current = await asyncio.to_thread(BookRepo(state.conn).get, book_id)
+        _check_trashed_import(current)
+        if current:
+            await _purge_book(state, book_id)
+
+
+async def _stop_book_processing(state: AppState, book_id: str) -> None:
     ingest_cancel = state.ingest_cancel_events.get(book_id)
     if ingest_cancel:
         ingest_cancel.set()
@@ -271,10 +295,24 @@ async def _purge_book(state: AppState, book_id: str) -> None:
     if resegment_cancel:
         resegment_cancel.set()
     await state.job_queue.stop_book(book_id)
-    BookRepo(state.conn).delete(book_id)
-    book_dir = state.books_dir / book_id
-    if book_dir.exists():
-        await asyncio.to_thread(shutil.rmtree, book_dir)
+    pending = [by_book[book_id] for by_book in (state.ingest_tasks, state.resegment_tasks)
+               if book_id in by_book]
+    if pending:
+        await asyncio.gather(*pending, return_exceptions=True)
+
+
+def _require_active_book(book: dict[str, Any]) -> None:
+    if book.get("trashed_at"):
+        raise HTTPException(409, "请先从垃圾桶恢复这本书，再进行此操作")
+
+
+def _check_trashed_import(existing: dict[str, Any] | None) -> None:
+    if existing and existing.get("trashed_at"):
+        raise HTTPException(409, detail={
+            "existing_book_id": existing["id"], "title": existing["title"],
+            "trashed_at": existing["trashed_at"],
+            "message": "这本书已在垃圾桶中，本次已跳过",
+        })
 
 
 def _processing_kind(state: AppState, book_id: str) -> str | None:
@@ -301,6 +339,10 @@ async def _queue_segment_retry(
     seg: dict[str, Any] | None = None,
     summary_tier: str | None = None,
 ) -> None:
+    book = await asyncio.to_thread(BookRepo(state.conn).get, book_id)
+    if not book:
+        raise HTTPException(404, "Book not found")
+    _require_active_book(book)
     if seg is None:
         seg = await asyncio.to_thread(
             SegmentRepo(state.conn).get_by_index, book_id, idx
@@ -567,7 +609,9 @@ def _book_ingest_error(conn, book_id: str) -> str | None:
     return None
 
 
-async def _await_cpu_lock(state: AppState, queued_book_id: str) -> None:
+async def _await_cpu_lock(
+    state: AppState, queued_book_id: str, cancel_event: threading.Event | None = None
+) -> bool:
     queued = {
         "type": "ingest_progress",
         "page": 0,
@@ -577,9 +621,14 @@ async def _await_cpu_lock(state: AppState, queued_book_id: str) -> None:
     if state.cpu_job_lock.locked():
         await _emit_book_event(state, queued_book_id, queued)
     while True:
+        if cancel_event is not None and cancel_event.is_set():
+            return False
         try:
             await asyncio.wait_for(state.cpu_job_lock.acquire(), timeout=1.0)
-            return
+            if cancel_event is not None and cancel_event.is_set():
+                state.cpu_job_lock.release()
+                return False
+            return True
         except TimeoutError:
             await _emit_book_event(state, queued_book_id, queued)
 
@@ -607,7 +656,11 @@ def _schedule_ingest(
     )
 
     async def _run() -> str:
-        await _await_cpu_lock(state, book_id)
+        if not await _await_cpu_lock(state, book_id, cancel_event):
+            await asyncio.to_thread(_mark_url_import_failed, state.conn, book_id, "已取消导入")
+            state.task_registry.cancel(record.id)
+            await _emit_book_event(state, book_id, {"type": "ingest_cancelled", "message": "已取消导入"})
+            return "cancelled"
         try:
             state.task_registry.mark_running(record.id)
             outcome = await run_ingest_job(
@@ -791,7 +844,11 @@ def _schedule_resegment(
     )
 
     async def _run() -> str:
-        await _await_cpu_lock(state, book_id)
+        if not await _await_cpu_lock(state, book_id, cancel_event):
+            await asyncio.to_thread(BookRepo(state.conn).update, book_id, status=previous_status)
+            state.task_registry.cancel(record.id)
+            await _emit_book_event(state, book_id, {"type": "resegment_cancelled", "status": previous_status})
+            return "cancelled"
         try:
             state.task_registry.mark_running(record.id)
             outcome = await run_resegment_job(
@@ -928,13 +985,14 @@ async def import_books(body: ImportRequest, request: Request) -> dict[str, Any]:
 
         digest = await asyncio.to_thread(file_hash, src)
         existing = books_repo.find_by_hash(digest)
+        _check_trashed_import(existing)
         if existing and not body.overwrite:
             raise HTTPException(
                 409,
                 detail={"existing_book_id": existing["id"], "title": existing["title"]},
             )
         if existing and body.overwrite:
-            await _purge_book(state, existing["id"])
+            await _purge_for_overwrite(state, existing["id"])
 
         fmt = detect_format(src)
         if fmt not in SUPPORTED_FORMATS:
@@ -991,13 +1049,14 @@ async def import_book_url(body: ImportURLRequest, request: Request) -> dict[str,
     books_repo = BookRepo(state.conn)
     digest = url_import_hash(canonical)
     existing = await asyncio.to_thread(books_repo.find_by_hash, digest)
+    _check_trashed_import(existing)
     if existing and not body.overwrite:
         raise HTTPException(
             409,
             detail={"existing_book_id": existing["id"], "title": existing["title"]},
         )
     if existing and body.overwrite:
-        await _purge_book(state, existing["id"])
+        await _purge_for_overwrite(state, existing["id"])
 
     _wire_job_events(state)
     book_id = str(uuid.uuid4())
@@ -1033,13 +1092,14 @@ async def import_pasted_text(body: ImportPasteRequest, request: Request) -> dict
 
     books_repo = BookRepo(state.conn)
     existing = await asyncio.to_thread(books_repo.find_by_hash, prepared.digest)
+    _check_trashed_import(existing)
     if existing and not body.overwrite:
         raise HTTPException(
             409,
             detail={"existing_book_id": existing["id"], "title": existing["title"]},
         )
     if existing and body.overwrite:
-        await _purge_book(state, existing["id"])
+        await _purge_for_overwrite(state, existing["id"])
 
     _wire_job_events(state)
     book_id = str(uuid.uuid4())
@@ -1086,6 +1146,7 @@ async def list_books(
     request: Request,
     filter: str = Query("all"),
     sort: str = Query("recent"),
+    visibility: Literal["active", "trash"] = Query("active"),
 ) -> dict[str, Any]:
     state = _state(request)
     conn = state.conn
@@ -1098,7 +1159,7 @@ async def list_books(
             repo = BookRepo(conn)
             repo.repair_stale_imports(live_ids)
             # document_tree strip runs once in deferred startup work — not every list.
-            books = repo.list_books(filter=filter, sort=sort)
+            books = repo.list_books(filter=filter, sort=sort, visibility=visibility)
             from lumina_core.library_assistant import book_tags
 
             tags_by_book = book_tags(conn)
@@ -1148,7 +1209,9 @@ async def list_books(
             for b in rows
         ]
         result = apply_book_list_filter(result, filter)
-        if sort == "recent":
+        if visibility == "trash":
+            result.sort(key=lambda b: b["trashed_at"], reverse=True)
+        elif sort == "recent":
             result = _prioritize_summarize_activity(result)
         return {"books": result}
     except sqlite3.OperationalError as e:
@@ -1198,14 +1261,48 @@ async def patch_book(
     return _book_public_with_queue(state, updated)  # type: ignore[arg-type]
 
 
-@router.delete("/books/{book_id}")
-async def delete_book(book_id: str, request: Request) -> dict[str, str]:
+@router.post("/books/{book_id}/trash")
+async def trash_book(book_id: str, request: Request) -> dict[str, Any]:
     state = _state(request)
-    book = BookRepo(state.conn).get(book_id)
-    if not book:
-        raise HTTPException(404, "Book not found")
+    async with state.book_lifecycle_locks.setdefault(book_id, asyncio.Lock()):
+        repo = BookRepo(state.conn)
+        book = await asyncio.to_thread(repo.get, book_id)
+        if not book:
+            raise HTTPException(404, "Book not found")
+        await asyncio.to_thread(repo.set_trashed, book_id, True)
+        state.job_queue.set_book_trashed(book_id, True)
+        await _stop_book_processing(state, book_id)
+        await asyncio.to_thread(BookIntroRepo(state.conn).reset_pending, book_id)
+        updated = await asyncio.to_thread(repo.get, book_id)
+        return _book_public_with_queue(state, updated)
 
-    await _purge_book(state, book_id)
+
+@router.post("/books/{book_id}/restore")
+async def restore_book(book_id: str, request: Request) -> dict[str, Any]:
+    state = _state(request)
+    async with state.book_lifecycle_locks.setdefault(book_id, asyncio.Lock()):
+        repo = BookRepo(state.conn)
+        book = await asyncio.to_thread(repo.get, book_id)
+        if not book:
+            raise HTTPException(404, "Book not found")
+        await asyncio.to_thread(repo.set_trashed, book_id, False)
+        state.job_queue.set_book_trashed(book_id, False)
+        updated = await asyncio.to_thread(repo.get, book_id)
+        return _book_public_with_queue(state, updated)
+
+
+@router.delete("/books/{book_id}")
+async def delete_book(
+    book_id: str, request: Request, only_trashed: bool = Query(False)
+) -> dict[str, str]:
+    state = _state(request)
+    async with state.book_lifecycle_locks.setdefault(book_id, asyncio.Lock()):
+        book = await asyncio.to_thread(BookRepo(state.conn).get, book_id)
+        if not book:
+            raise HTTPException(404, "Book not found")
+        if only_trashed and not book.get("trashed_at"):
+            raise HTTPException(409, "这本书已不在垃圾桶中，请刷新后重试")
+        await _purge_book(state, book_id)
     return {"status": "deleted"}
 
 
@@ -1237,6 +1334,7 @@ async def rebuild_book_outline(
     book = await asyncio.to_thread(BookRepo(state.conn).get, book_id)
     if not book:
         raise HTTPException(404, "Book not found")
+    _require_active_book(book)
     if book.get("status") == "processing":
         raise HTTPException(409, "Book is already processing")
 
@@ -1294,6 +1392,7 @@ async def resegment_book(
     book = await asyncio.to_thread(BookRepo(state.conn).get, book_id)
     if not book:
         raise HTTPException(404, "Book not found")
+    _require_active_book(book)
     if book.get("status") == "processing":
         raise HTTPException(409, "Book is already processing")
     file_path = Path(str(book.get("file_path") or ""))
@@ -1359,6 +1458,7 @@ async def classify_book_endpoint(book_id: str, request: Request) -> dict[str, st
     book = BookRepo(state.conn).get(book_id)
     if not book:
         raise HTTPException(404, "Book not found")
+    _require_active_book(book)
     _schedule_classify(state, book_id, force=True)
     return {"status": "queued"}
 
@@ -1678,6 +1778,7 @@ def _boundary_pair(
     book = BookRepo(conn).get(book_id)
     if not book:
         raise HTTPException(404, "Book not found")
+    _require_active_book(book)
     if book.get("status") == "processing":
         raise HTTPException(409, "Book is still processing")
     repo = SegmentRepo(conn)
@@ -1850,6 +1951,9 @@ async def open_book(book_id: str, request: Request) -> dict[str, Any]:
         if not book:
             return None
         fields: dict[str, Any] = {"last_opened_at": _now_iso()}
+        if not book.get("last_opened_at") and not book.get("current_segment_index"):
+            fields["current_segment_index"] = -1
+            book["current_segment_index"] = -1
         if book.get("status") == "unread":
             fields["status"] = "reading"
         try:
@@ -1885,7 +1989,11 @@ async def open_book(book_id: str, request: Request) -> dict[str, Any]:
             elapsed_ms,
         )
     _wire_job_events(state)
-    if state.job_queue.auto_start_summary:
+    intro = await asyncio.to_thread(BookIntroRepo(state.conn).get_or_idle, book_id)
+    automatic_work = not book.get("trashed_at") and book.get("summarize_intent") != "paused"
+    if automatic_work and intro["status"] == "idle":
+        state.job_queue.schedule_intro(book_id)
+    if automatic_work and state.job_queue.auto_start_summary:
         # Never block first paint on O(n) prefetch / recover scans.
         task = asyncio.create_task(
             state.job_queue.enqueue_book_prefetch(book_id),
@@ -1920,10 +2028,10 @@ async def update_reading_progress(
         if not book:
             raise HTTPException(404, "Book not found")
         segment_count = book.get("segment_count") or 0
-        if segment_count > 0 and not (0 <= body.segment_index < segment_count):
+        if body.segment_index < -1 or (segment_count > 0 and body.segment_index >= segment_count):
             raise HTTPException(
                 400,
-                f"segment_index must be between 0 and {segment_count - 1}",
+                f"segment_index must be between -1 (AI intro) and {segment_count - 1}",
             )
         repo.update(
             book_id, current_segment_index=body.segment_index
@@ -1962,7 +2070,8 @@ async def start_summarize_batch(
     affected: list[str] = []
     skipped: list[str] = []
     for book_id in book_ids:
-        if not await asyncio.to_thread(repo.get, book_id):
+        book = await asyncio.to_thread(repo.get, book_id)
+        if not book or book.get("trashed_at"):
             skipped.append(book_id)
             continue
         await state.job_queue.begin_start_book(book_id, summary_tier=summary_tier)
@@ -2015,6 +2124,7 @@ async def start_summarize_book(
     book = await asyncio.to_thread(BookRepo(state.conn).get, book_id)
     if not book:
         raise HTTPException(404, "Book not found")
+    _require_active_book(book)
     _wire_job_events(state)
     summary_tier = body.summary_tier if body else "normal"
     await state.job_queue.begin_start_book(book_id, summary_tier=summary_tier)
@@ -2038,6 +2148,7 @@ async def build_book_index(book_id: str, request: Request) -> dict[str, Any]:
     book = await asyncio.to_thread(repo.get, book_id)
     if not book:
         raise HTTPException(404, "Book not found")
+    _require_active_book(book)
     _wire_job_events(state)
     progress = await asyncio.to_thread(repo.summary_progress, book_id)
     ready = int(progress["summary_ready_count"] or 0)
@@ -2089,6 +2200,7 @@ async def retry_segments(
     book = await asyncio.to_thread(BookRepo(state.conn).get, book_id)
     if not book:
         raise HTTPException(404, "Book not found")
+    _require_active_book(book)
     indices = sorted(set(body.indices))
     if not indices:
         raise HTTPException(400, "indices must not be empty")
@@ -2125,6 +2237,7 @@ async def regenerate_book_summaries(
     book = await asyncio.to_thread(repo.get, book_id)
     if not book:
         raise HTTPException(404, "Book not found")
+    _require_active_book(book)
     _wire_job_events(state)
     if book.get("status") == "summarized":
         await asyncio.to_thread(repo.update, book_id, status="reading")
@@ -2155,6 +2268,7 @@ async def generate_book_intro_endpoint(
     book = await asyncio.to_thread(BookRepo(state.conn).get, book_id)
     if not book:
         raise HTTPException(404, "Book not found")
+    _require_active_book(book)
     _wire_job_events(state)
     intro_repo = BookIntroRepo(state.conn)
     claimed = await asyncio.to_thread(intro_repo.try_mark_pending, book_id)
@@ -2228,7 +2342,7 @@ async def book_chat(book_id: str, body: ChatRequest, request: Request):
     segment_detail = (
         "深聊 · 全书"
         if body.scope == "book"
-        else f"深聊 · 段 {body.segment_index + 1}"
+        else ("深聊 · AI 导读" if body.segment_index == -1 else f"深聊 · 段 {body.segment_index + 1}")
     )
     record = register_book_task(
         state.task_registry,
@@ -2275,7 +2389,7 @@ async def book_chat_stream(book_id: str, body: ChatRequest, request: Request) ->
     segment_detail = (
         "深聊 · 全书"
         if body.scope == "book"
-        else f"深聊 · 段 {body.segment_index + 1}"
+        else ("深聊 · AI 导读" if body.segment_index == -1 else f"深聊 · 段 {body.segment_index + 1}")
     )
     cancel_event = asyncio.Event()
     record = register_book_task(
@@ -2340,6 +2454,7 @@ async def export_book(book_id: str, body: ExportRequest, request: Request) -> Pl
             include_notes=want_notes,
             notes=notes,
             mode=body.mode,
+            intro=BookIntroRepo(state.conn).get(book_id),
         )
 
     md = await asyncio.to_thread(_build_markdown)
@@ -2556,9 +2671,13 @@ async def create_note(body: NoteCreate, request: Request) -> dict[str, Any]:
     book = BookRepo(state.conn).get(body.book_id)
     if not book:
         raise HTTPException(404, "Book not found")
-    segment = SegmentRepo(state.conn).get(body.segment_id)
-    if not segment or segment["book_id"] != body.book_id:
-        raise HTTPException(400, "segment_id must belong to the book")
+    if body.reading_item == "intro":
+        if body.segment_id is not None:
+            raise HTTPException(400, "intro notes cannot have a segment_id")
+    else:
+        segment = SegmentRepo(state.conn).get(body.segment_id) if body.segment_id else None
+        if not segment or segment["book_id"] != body.book_id:
+            raise HTTPException(400, "segment_id must belong to the book")
 
     def _persist() -> dict[str, Any]:
         note = NoteRepo(state.conn).create(
@@ -2566,6 +2685,7 @@ async def create_note(body: NoteCreate, request: Request) -> dict[str, Any]:
             content=body.content,
             note_type=body.type,
             segment_id=body.segment_id,
+            reading_item=body.reading_item,
             quote=body.quote,
         )
         index_note(state.conn, book, note)

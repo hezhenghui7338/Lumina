@@ -22,9 +22,10 @@ enum ListenAdvancePolicy {
         ready: Bool,
         skipReason: String?,
         consecutiveSkips: Int,
-        maxSkips: Int = ListenPreferences.maxConsecutiveSkips
+        maxSkips: Int = ListenPreferences.maxConsecutiveSkips,
+        firstIndex: Int = 0
     ) -> ListenAdvanceDecision {
-        if idx < 0 || idx >= segmentCount {
+        if idx < firstIndex || idx >= segmentCount {
             return .finished
         }
         if ready {
@@ -66,6 +67,7 @@ final class ListenSession: ObservableObject {
     private var engine: ListenEngine?
     private var bookId = ""
     private var segmentCount = 0
+    private var firstIndex = 0
     private var resolve: ((Int, ListenMode, ListenChapterSpeakContext) async -> ListenScript)?
     private var labelFor: ((Int) -> String)?
     private var chapterFor: ((Int) -> String?)?
@@ -77,6 +79,7 @@ final class ListenSession: ObservableObject {
     func configure(
         bookId: String,
         segmentCount: Int,
+        firstIndex: Int = 0,
         resolve: @escaping (Int, ListenMode, ListenChapterSpeakContext) async -> ListenScript,
         labelFor: @escaping (Int) -> String,
         chapterFor: @escaping (Int) -> String? = { _ in nil },
@@ -84,6 +87,7 @@ final class ListenSession: ObservableObject {
     ) {
         self.bookId = bookId
         self.segmentCount = segmentCount
+        self.firstIndex = firstIndex
         self.resolve = resolve
         self.labelFor = labelFor
         self.chapterFor = chapterFor
@@ -98,7 +102,7 @@ final class ListenSession: ObservableObject {
         guard segmentCount > 0, resolve != nil else { return }
         stop()
         self.mode = mode
-        currentIdx = max(0, min(idx, segmentCount - 1))
+        currentIdx = max(firstIndex, min(idx, segmentCount - 1))
         rate = ListenPreferences.rate
         consecutiveSkips = 0
         skipNotice = nil
@@ -133,7 +137,7 @@ final class ListenSession: ObservableObject {
 
     func skipBack() {
         guard isActive else { return }
-        jump(to: max(0, currentIdx - 1))
+        jump(to: max(firstIndex, currentIdx - 1))
     }
 
     func setRate(_ newRate: Float) {
@@ -150,7 +154,7 @@ final class ListenSession: ObservableObject {
         engine?.stop()
         consecutiveSkips = 0
         skipNotice = nil
-        currentIdx = max(0, min(idx, max(segmentCount - 1, 0)))
+        currentIdx = max(firstIndex, min(idx, max(segmentCount - 1, firstIndex)))
         let token = generation
         playTask?.cancel()
         playTask = Task { [weak self] in
@@ -199,7 +203,8 @@ final class ListenSession: ObservableObject {
                 segmentCount: segmentCount,
                 ready: script.ready && !script.texts.isEmpty,
                 skipReason: script.skipReason,
-                consecutiveSkips: consecutiveSkips
+                consecutiveSkips: consecutiveSkips,
+                firstIndex: firstIndex
             )
             switch decision {
             case .finished:
@@ -220,7 +225,6 @@ final class ListenSession: ObservableObject {
                 continue
             case .play:
                 consecutiveSkips = 0
-                skipNotice = nil
                 lastSpokenChapter = ListenChapterAnnouncePolicy.normalizedChapter(chapterFor?(idx))
                 hasSpokenSegment = true
             }
@@ -258,6 +262,7 @@ final class ListenSession: ObservableObject {
                 return
             }
             guard token == generation, isActive else { return }
+            skipNotice = nil
             currentIdx = idx + 1
         }
         if currentIdx >= segmentCount, token == generation, isActive {
@@ -307,6 +312,9 @@ final class ListenSession: ObservableObject {
     }
 
     private func skipMessage(for idx: Int, reason: String?) -> String {
+        if idx == BookReadingItem.introIndex {
+            return "AI 导读暂无可朗读内容，已跳过；可在目录中重新获取"
+        }
         let n = idx + 1
         switch reason {
         case "empty_text":

@@ -4,6 +4,7 @@ import SwiftUI
 /// progress ticks (`segmentRunningMetrics`) do not re-run `SegmentOutlinePolicy.build`.
 struct SegmentOutlineCatalogList: View, Equatable {
     let rows: [SegmentOutlinePolicy.Row]
+    var introStatus: String? = nil
     let selectedIdx: Int?
     let isSelectionMode: Bool
     let checkedIndices: Set<Int>
@@ -14,9 +15,12 @@ struct SegmentOutlineCatalogList: View, Equatable {
     var onToggleCheck: (Int) -> Void
     var onRetrySegment: (Int) -> Void
     var onRetryChecked: () -> Void
+    var canGenerateSummary: Bool = true
 
     static func == (lhs: SegmentOutlineCatalogList, rhs: SegmentOutlineCatalogList) -> Bool {
         lhs.rows == rhs.rows
+            && lhs.canGenerateSummary == rhs.canGenerateSummary
+            && lhs.introStatus == rhs.introStatus
             && lhs.selectedIdx == rhs.selectedIdx
             && lhs.isSelectionMode == rhs.isSelectionMode
             && lhs.checkedIndices == rhs.checkedIndices
@@ -27,6 +31,29 @@ struct SegmentOutlineCatalogList: View, Equatable {
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 0) {
+                    if let introStatus {
+                        Button { onSelect(BookReadingItem.introIndex) } label: {
+                            HStack(spacing: 8) {
+                                Image(systemName: selectedIdx == BookReadingItem.introIndex
+                                    ? "largecircle.fill.circle" : "sparkles")
+                                    .foregroundStyle(LuminaTheme.accent)
+                                    .frame(width: 20)
+                                Text("AI 导读")
+                                Spacer()
+                                Text(introStatus == "pending" ? "生成中" : (introStatus == "ready" ? "" : "待获取"))
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 8)
+                            .contentShape(Rectangle())
+                            .background(selectedIdx == BookReadingItem.introIndex
+                                ? LuminaTheme.listSelectionBackground : Color.clear)
+                        }
+                        .buttonStyle(.plain)
+                        .id("s:\(BookReadingItem.introIndex)")
+                        .accessibilityIdentifier("lumina.reader.catalog.intro")
+                    }
                     ForEach(rows) { row in
                         outlineCatalogRow(row)
                             .id(row.id)
@@ -69,7 +96,8 @@ struct SegmentOutlineCatalogList: View, Equatable {
                 onSelect: onSelect,
                 onToggleCheck: onToggleCheck,
                 onRetrySegment: onRetrySegment,
-                onRetryChecked: onRetryChecked
+                onRetryChecked: onRetryChecked,
+                canGenerateSummary: canGenerateSummary
             )
             .equatable()
         }
@@ -116,9 +144,11 @@ private struct SegmentOutlineCatalogLeafRow: View, Equatable {
     var onToggleCheck: (Int) -> Void
     var onRetrySegment: (Int) -> Void
     var onRetryChecked: () -> Void
+    var canGenerateSummary: Bool = true
 
     static func == (lhs: SegmentOutlineCatalogLeafRow, rhs: SegmentOutlineCatalogLeafRow) -> Bool {
         lhs.segment == rhs.segment
+            && lhs.canGenerateSummary == rhs.canGenerateSummary
             && lhs.grouped == rhs.grouped
             && lhs.depth == rhs.depth
             && lhs.isSelected == rhs.isSelected
@@ -175,13 +205,15 @@ private struct SegmentOutlineCatalogLeafRow: View, Equatable {
             }
         }
         .contextMenu {
-            if isChecked, checkedCount > 1 {
-                Button("重新摘要选中 (\(checkedCount))") {
-                    onRetryChecked()
-                }
-            } else {
-                Button("重新摘要") {
-                    onRetrySegment(segment.idx)
+            if canGenerateSummary {
+                if isChecked, checkedCount > 1 {
+                    Button("重新摘要选中 (\(checkedCount))") {
+                        onRetryChecked()
+                    }
+                } else {
+                    Button("重新摘要") {
+                        onRetrySegment(segment.idx)
+                    }
                 }
             }
         }

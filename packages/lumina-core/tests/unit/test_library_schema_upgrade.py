@@ -21,6 +21,7 @@ SEG_ID = "s1"
 REQUIRED_BOOK_COLUMNS = frozenset(
     {
         "is_favorite",
+        "trashed_at",
         "rating",
         "category",
         "last_opened_at",
@@ -141,7 +142,7 @@ def legacy_upgraded_client(tmp_path, monkeypatch):
     # Prove legacy schema breaks list queries before migration.
     raw = sqlite3.connect(db_path)
     raw.row_factory = sqlite3.Row
-    with pytest.raises(sqlite3.OperationalError, match="last_opened_at"):
+    with pytest.raises(sqlite3.OperationalError, match="trashed_at|last_opened_at"):
         BookRepo(raw).list_books(sort="recent")
     raw.close()
 

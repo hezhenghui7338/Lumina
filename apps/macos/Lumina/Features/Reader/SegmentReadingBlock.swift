@@ -130,6 +130,7 @@ struct SegmentReadingBlock: View, Equatable {
     var onToggleSummary: () -> Void
     var onFollowUp: (String) -> Void
     var onRetrySummary: (SummaryTier) -> Void
+    var canGenerateSummary: Bool = true
     var canGoPrev: Bool = false
     var canGoNext: Bool = false
     var onPrevSegment: () -> Void = {}
@@ -654,6 +655,7 @@ struct SegmentReadingBlock: View, Equatable {
             }
             .accessibilityIdentifier(advancedIdentifier)
         }
+        .disabled(!canGenerateSummary)
         .accessibilityIdentifier(identifier)
         .accessibilityAction(named: "高级摘要") {
             onRetrySummary(.advanced)

@@ -122,6 +122,12 @@ def test_migrate_search_fts_map_backfills_existing_fts(tmp_path):
     raw.close()
 
     conn = init_db(db)
+    # Search visibility now resolves the owning book; legacy FTS rows need an owner.
+    conn.execute(
+        "INSERT INTO books (id, title, format, file_path, created_at, updated_at) "
+        "VALUES ('b1', '书名', 'txt', '/x', 'now', 'now')"
+    )
+    conn.commit()
     map_count = conn.execute("SELECT COUNT(*) AS c FROM search_fts_map").fetchone()[0]
     assert map_count == 2
     hits = search(conn, "正文可搜")

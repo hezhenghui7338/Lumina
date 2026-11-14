@@ -24,6 +24,8 @@ struct BookshelfView: View {
     @State private var isSelectionMode = false
     @State private var checkedBookIds: Set<String> = []
     @State private var batchDeleteCount: Int?
+    @State private var batchDeleteIds: [String] = []
+    @State private var lifecycleBusy = false
     @State private var bookPendingExport: BookSummary?
     @State private var bookPendingResegment: BookSummary?
     @State private var resegmentTargetChars = 4000
@@ -55,7 +57,15 @@ struct BookshelfView: View {
                 Divider()
             }
             Group {
-                if viewModel.matchedBooks.isEmpty {
+                if viewModel.showsTrash && viewModel.trashLoading && viewModel.trashBooks.isEmpty {
+                    ProgressView("加载垃圾桶…").frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else if viewModel.showsTrash, let error = viewModel.trashError {
+                    ContentUnavailableView {
+                        Label("垃圾桶加载失败", systemImage: "exclamationmark.triangle")
+                    } description: { Text(error) } actions: {
+                        Button("重试") { Task { await viewModel.loadTrash(using: core) } }
+                    }
+                } else if viewModel.matchedBooks.isEmpty {
                     emptyState
                 } else if viewModel.viewMode == .grid {
                     bookGrid
@@ -69,7 +79,7 @@ struct BookshelfView: View {
                 paginationBar
             }
         }
-        .navigationTitle(viewModel.query.title)
+        .navigationTitle(viewModel.showsTrash ? "垃圾桶" : viewModel.query.title)
         .toolbar { toolbarContent }
         .sheet(isPresented: $showAskLibrary) {
             AskLibraryView { bookId in selectedBookId = bookId }
@@ -81,6 +91,11 @@ struct BookshelfView: View {
         .onChange(of: viewModel.pagedBooks.map(\.id)) { _, _ in
             syncCheckedBooks()
         }
+        .onChange(of: viewModel.showsTrash) { _, _ in
+            exitSelectionMode()
+            showAskLibrary = false
+            showSummarizePopover = false
+        }
         .onChange(of: viewModel.titleQuery) { _, _ in
             viewModel.resetPage()
         }
@@ -88,7 +103,7 @@ struct BookshelfView: View {
             titleFilterFocused = false
         }
         .confirmationDialog(
-            "确定删除这本书？",
+            "确定彻底删除这本书？",
             isPresented: Binding(
                 get: { bookPendingDelete != nil },
                 set: { if !$0 { bookPendingDelete = nil } }
@@ -96,13 +111,13 @@ struct BookshelfView: View {
             titleVisibility: .visible
         ) {
             if let book = bookPendingDelete {
-                Button("删除《\(book.title)》", role: .destructive) {
+                Button("彻底删除《\(book.title)》", role: .destructive) {
                     Task { await confirmDelete(book) }
                 }
             }
             Button("取消", role: .cancel) { bookPendingDelete = nil }
         } message: {
-            Text("将删除本地副本、摘要与笔记，且不可恢复。")
+            Text("将删除本地副本、摘要、笔记和聊天记录，且不可恢复。")
         }
         .confirmationDialog(
             batchDeleteTitle,
@@ -113,15 +128,15 @@ struct BookshelfView: View {
             titleVisibility: .visible
         ) {
             if let count = batchDeleteCount {
-                Button("删除 \(count) 本书", role: .destructive) {
-                    let ids = Array(checkedBookIds)
+                Button("彻底删除 \(count) 本书", role: .destructive) {
+                    let ids = batchDeleteIds
                     batchDeleteCount = nil
                     Task { await confirmBatchDelete(ids) }
                 }
             }
             Button("取消", role: .cancel) { batchDeleteCount = nil }
         } message: {
-            Text("将删除本地副本、摘要与笔记，且不可恢复。")
+            Text("将删除本地副本、摘要、笔记和聊天记录，且不可恢复。")
         }
         .alert("重命名", isPresented: $showRenameAlert) {
             TextField("书名", text: $renameDraft)
@@ -215,6 +230,25 @@ struct BookshelfView: View {
 
     @ToolbarContentBuilder
     private var toolbarContent: some ToolbarContent {
+        if viewModel.showsTrash {
+            ToolbarItemGroup(placement: .primaryAction) {
+                if !viewModel.matchedBooks.isEmpty {
+                    Button { toggleSelectionMode() } label: {
+                        Label(isSelectionMode ? "退出多选" : "多选", systemImage: "checklist")
+                    }
+                }
+                Button("清空垃圾桶…", role: .destructive) {
+                    preparePermanentDelete(viewModel.trashBooks.map(\.id))
+                }
+                .disabled(viewModel.trashBooks.isEmpty || lifecycleBusy || viewModel.trashLoading)
+            }
+        } else {
+            ordinaryToolbarContent
+        }
+    }
+
+    @ToolbarContentBuilder
+    private var ordinaryToolbarContent: some ToolbarContent {
         ToolbarItem(placement: .primaryAction) {
             Menu {
                 Button("导入书籍…", action: onImport)
@@ -304,6 +338,9 @@ struct BookshelfView: View {
                 .textFieldStyle(.roundedBorder)
                 .focused($titleFilterFocused)
                 .frame(maxWidth: 240)
+            if viewModel.showsTrash {
+                Text("按移入时间倒序").font(.caption).foregroundStyle(.secondary)
+            } else {
             Picker("排序", selection: sortBinding) {
                 ForEach(LibrarySort.allCases) { item in
                     Text(item.label).tag(item)
@@ -319,6 +356,7 @@ struct BookshelfView: View {
             .pickerStyle(.segmented)
             .frame(maxWidth: 140)
             .help("升序：旧→新、A→Z、少→多、未收藏在前；降序相反")
+            }
             Picker("视图", selection: viewModeBinding) {
                 ForEach(BookshelfViewMode.allCases) { mode in
                     Label(mode.label, systemImage: mode.systemImage).tag(mode)
@@ -515,27 +553,36 @@ struct BookshelfView: View {
         )
     }
 
+    @ViewBuilder
     private var emptyState: some View {
-        ContentUnavailableView {
-            Label(
-                viewModel.books.isEmpty ? "书架是空的" : "没有符合筛选的书",
-                systemImage: "books.vertical"
+        if viewModel.showsTrash {
+            ContentUnavailableView(
+                viewModel.trashBooks.isEmpty ? "垃圾桶是空的" : "没有符合筛选的书",
+                systemImage: "trash",
+                description: Text(viewModel.trashBooks.isEmpty ? "移入这里的书只会在垃圾桶中显示，可随时恢复。" : "试试其他书名。")
             )
-        } description: {
-            Text(viewModel.books.isEmpty
-                 ? "导入电子书，或把文件拖到这里"
-                 : "试试其他筛选，或导入新书")
-        } actions: {
-            Button(action: onImport) {
-                Label("导入书籍", systemImage: "square.and.arrow.down")
+        } else {
+            ContentUnavailableView {
+                Label(
+                    viewModel.books.isEmpty ? "书架是空的" : "没有符合筛选的书",
+                    systemImage: "books.vertical"
+                )
+            } description: {
+                Text(viewModel.books.isEmpty
+                     ? "导入电子书，或把文件拖到这里"
+                     : "试试其他筛选，或导入新书")
+            } actions: {
+                Button(action: onImport) {
+                    Label("导入书籍", systemImage: "square.and.arrow.down")
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(LuminaTheme.accent)
+                .tourAnchor(.importButton)
+                Button("从网址导入…", action: onImportURLs)
+                Button("粘贴文本…", action: onImportText)
             }
-            .buttonStyle(.borderedProminent)
-            .tint(LuminaTheme.accent)
-            .tourAnchor(.importButton)
-            Button("从网址导入…", action: onImportURLs)
-            Button("粘贴文本…", action: onImportText)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private var bookGrid: some View {
@@ -572,7 +619,8 @@ struct BookshelfView: View {
                                     onReclassify: { Task { await reclassify(book.id) } },
                                     onResegment: { presentResegment(for: book) },
                                     onExport: { presentExport(for: book) },
-                                    onDelete: { bookPendingDelete = book },
+                                    onDelete: { handleDelete(book) },
+            onRestore: { Task { await performLifecycle([book.id], action: .restore) } },
                                     onRate: { stars in
                                         Task { await setRating(book, stars: stars) }
                                     },
@@ -628,7 +676,8 @@ struct BookshelfView: View {
             onReclassify: { Task { await reclassify(book.id) } },
             onResegment: { presentResegment(for: book) },
             onExport: { presentExport(for: book) },
-            onDelete: { bookPendingDelete = book },
+            onDelete: { handleDelete(book) },
+            onRestore: { Task { await performLifecycle([book.id], action: .restore) } },
             onRate: { stars in
                 Task { await setRating(book, stars: stars) }
             },
@@ -651,6 +700,8 @@ struct BookshelfView: View {
 
     private var selectionToolbar: some View {
         LibrarySelectionToolbar(
+            showsTrash: viewModel.showsTrash,
+            onRestore: { Task { await performLifecycle(Array(checkedBookIds), action: .restore) } },
             selectedCount: checkedBookIds.count,
             startableCount: startableCheckedCount,
             stoppableCount: stoppableCheckedCount,
@@ -659,7 +710,11 @@ struct BookshelfView: View {
                 Task { await batchStartSummarize(summaryTier: tier) }
             },
             onStopSummarize: { Task { await batchStopSummarize() } },
-            onDelete: { batchDeleteCount = checkedBookIds.count },
+            onDelete: {
+                let ids = Array(checkedBookIds)
+                if viewModel.showsTrash { preparePermanentDelete(ids) }
+                else { Task { await performLifecycle(ids, action: .trash) } }
+            },
             onFavorite: { Task { await batchSetFavorite(isFavorite: true) } },
             onUnfavorite: { Task { await batchSetFavorite(isFavorite: false) } },
             onSelectActive: { selectActiveSummarizeBooks() },
@@ -667,6 +722,7 @@ struct BookshelfView: View {
             onSelectAll: { checkedBookIds = Set(viewModel.pagedBooks.map(\.id)) },
             onDone: { exitSelectionMode() }
         )
+        .disabled(lifecycleBusy)
     }
 
     private func openBook(_ book: BookSummary) {
@@ -742,9 +798,9 @@ struct BookshelfView: View {
 
     private var batchDeleteTitle: String {
         if let count = batchDeleteCount {
-            return "确定删除 \(count) 本书？"
+            return "确定彻底删除 \(count) 本书？"
         }
-        return "确定删除书籍？"
+        return "确定彻底删除书籍？"
     }
 
     private func syncCheckedBooks() {
@@ -828,15 +884,35 @@ struct BookshelfView: View {
         checkedBookIds.formUnion(viewModel.pagedBooks.filter(\.canStartSummarize).map(\.id))
     }
 
+    private func handleDelete(_ book: BookSummary) {
+        guard !lifecycleBusy else { return }
+        if book.isTrashed { bookPendingDelete = book }
+        else { Task { await performLifecycle([book.id], action: .trash) } }
+    }
+
+    private func preparePermanentDelete(_ ids: [String]) {
+        guard !ids.isEmpty, !lifecycleBusy else { return }
+        batchDeleteIds = ids
+        batchDeleteCount = ids.count
+    }
+
+    private func performLifecycle(_ ids: [String], action: LibraryViewModel.BookLifecycleAction) async {
+        guard !ids.isEmpty, !lifecycleBusy else { return }
+        lifecycleBusy = true
+        defer { lifecycleBusy = false; syncCheckedBooks() }
+        do {
+            try await viewModel.performBookLifecycle(ids: ids, using: core, action: action)
+            if let selected = selectedBookId, ids.contains(selected) { selectedBookId = nil }
+            checkedBookIds.subtract(ids)
+            if checkedBookIds.isEmpty { exitSelectionMode() }
+        } catch {
+            actionError = error.localizedDescription
+        }
+    }
+
     private func confirmDelete(_ book: BookSummary) async {
         bookPendingDelete = nil
-        do {
-            try await viewModel.deleteBook(id: book.id, using: core)
-            if selectedBookId == book.id { selectedBookId = nil }
-            syncCheckedBooks()
-        } catch {
-            actionError = ConnectionError.userMessage(for: error)
-        }
+        await performLifecycle([book.id], action: .delete)
     }
 
     private func presentRename(_ book: BookSummary) {
@@ -857,17 +933,7 @@ struct BookshelfView: View {
     }
 
     private func confirmBatchDelete(_ ids: [String]) async {
-        guard !ids.isEmpty else { return }
-        do {
-            try await viewModel.deleteBooks(ids: ids, using: core)
-            if let selected = selectedBookId, ids.contains(selected) {
-                selectedBookId = nil
-            }
-            checkedBookIds.subtract(ids)
-            if checkedBookIds.isEmpty { exitSelectionMode() }
-        } catch {
-            actionError = ConnectionError.userMessage(for: error)
-        }
+        await performLifecycle(ids, action: .delete)
     }
 
     private func batchSetFavorite(isFavorite: Bool) async {

@@ -160,6 +160,12 @@ class BookRepo:
     def __init__(self, conn: sqlite3.Connection) -> None:
         self.conn = conn
 
+    def trashed_ids(self) -> set[str]:
+        with db_lock(self.conn):
+            return {row[0] for row in self.conn.execute(
+                "SELECT id FROM books WHERE trashed_at IS NOT NULL"
+            ).fetchall()}
+
     def find_by_hash(self, file_hash: str) -> dict[str, Any] | None:
         with db_lock(self.conn):
             row = self.conn.execute(
@@ -179,30 +185,52 @@ class BookRepo:
         *,
         filter: str = "all",
         sort: str = "recent",
+        visibility: str = "active",
     ) -> list[dict[str, Any]]:
         if filter not in BOOK_FILTERS:
             filter = "all"
         if sort not in BOOK_SORTS:
             sort = "recent"
         order = _SORT_ORDER[sort]
-        sql = "SELECT * FROM books"
+        visibility_sql = {
+            "active": "trashed_at IS NULL",
+            "trash": "trashed_at IS NOT NULL",
+            "all": "1=1",  # Internal maintenance only; never exposed by /books.
+        }
+        sql = "SELECT * FROM books WHERE " + visibility_sql[visibility]
         params: tuple[Any, ...] = ()
         sql_filter = filter if filter in _SQL_FILTERS else "all"
         if sql_filter == "summarized":
-            sql += " WHERE status = 'summarized'"
+            sql += " AND status = 'summarized'"
         elif sql_filter == "error":
-            sql += " WHERE status = 'error'"
+            sql += " AND status = 'error'"
         elif sql_filter == "favorite":
-            sql += " WHERE is_favorite = 1"
+            sql += " AND is_favorite = 1"
         elif sql_filter in _READING_FILTER_SQL:
-            sql += f" WHERE {_READING_FILTER_SQL[sql_filter]}"
+            sql += f" AND ({_READING_FILTER_SQL[sql_filter]})"
         elif sql_filter in BOOK_CATEGORIES:
-            sql += " WHERE category = ?"
+            sql += " AND category = ?"
             params = (sql_filter,)
         sql += f" ORDER BY {order}"
         with db_lock(self.conn):
             rows = self.conn.execute(sql, params).fetchall()
         return [dict(r) for r in rows]
+
+    def set_trashed(self, book_id: str, trashed: bool) -> None:
+        """Keep the original trash date on retries; restoring only changes visibility."""
+        with db_transaction(self.conn):
+            if trashed:
+                self.conn.execute(
+                    "UPDATE books SET trashed_at = COALESCE(trashed_at, ?), "
+                    "summarize_intent = 'paused', updated_at = ? WHERE id = ?",
+                    (_now(), _now(), book_id),
+                )
+            else:
+                self.conn.execute(
+                    "UPDATE books SET trashed_at = NULL, updated_at = ? "
+                    "WHERE id = ? AND trashed_at IS NOT NULL",
+                    (_now(), book_id),
+                )
 
     def insert(self, **fields: Any) -> dict[str, Any]:
         book_id = fields.get("id") or str(uuid.uuid4())
@@ -273,7 +301,7 @@ class BookRepo:
         """
         live_ids = live_ids or set()
         repaired = 0
-        for book in self.list_books():
+        for book in self.list_books(visibility="all"):
             book_id = book["id"]
             if book_id in live_ids:
                 continue
@@ -324,7 +352,7 @@ class BookRepo:
 
     def _drop_stored_document_trees_python(self) -> int:
         stripped = 0
-        for book in self.list_books():
+        for book in self.list_books(visibility="all"):
             time.sleep(0.001)
             meta = _parse_metadata(book)
             if "document_tree" not in meta:
@@ -341,7 +369,7 @@ class BookRepo:
                 """
                 UPDATE books
                 SET status = 'processing', updated_at = ?
-                WHERE id = ? AND status != 'processing'
+                WHERE id = ? AND status != 'processing' AND trashed_at IS NULL
                 """,
                 (_now(), book_id),
             )
@@ -618,6 +646,15 @@ class BookIntroRepo:
             "error": None,
             "updated_at": None,
         }
+
+    def reset_pending(self, book_id: str) -> None:
+        """Cancel the pending marker without discarding previously saved intro content."""
+        with db_transaction(self.conn):
+            self.conn.execute(
+                "UPDATE book_intros SET status = CASE WHEN summary_json IS NOT NULL "
+                "THEN 'ready' ELSE 'idle' END, error = NULL, updated_at = ? "
+                "WHERE book_id = ? AND status = 'pending'", (_now(), book_id),
+            )
 
     def upsert(
         self,
@@ -2015,12 +2052,13 @@ class ChatRepo:
 
 _NOTE_LIST_SQL = """
 SELECT
-  n.id, n.book_id, n.segment_id, n.quote, n.content, n.type, n.created_at,
-  s.idx AS segment_index,
-  COALESCE(NULLIF(s.label, ''), s.anchor_label, '段 ' || (s.idx + 1)) AS segment_label,
+  n.id, n.book_id, n.segment_id, n.reading_item, n.quote, n.content, n.type, n.created_at,
+  CASE WHEN n.reading_item = 'intro' THEN -1 ELSE s.idx END AS segment_index,
+  CASE WHEN n.reading_item = 'intro' THEN 'AI 导读'
+       ELSE COALESCE(NULLIF(s.label, ''), s.anchor_label, '段 ' || (s.idx + 1)) END AS segment_label,
   b.title AS book_title
 FROM notes n
-JOIN segments s ON s.id = n.segment_id
+LEFT JOIN segments s ON s.id = n.segment_id
 JOIN books b ON b.id = n.book_id
 """
 
@@ -2034,7 +2072,8 @@ class NoteRepo:
         *,
         book_id: str,
         content: str,
-        segment_id: str,
+        segment_id: str | None,
+        reading_item: str | None = None,
         note_type: str = "manual",
         quote: str | None = None,
     ) -> dict[str, Any]:
@@ -2043,10 +2082,10 @@ class NoteRepo:
         with db_transaction(self.conn):
             self.conn.execute(
                 """
-                INSERT INTO notes (id, book_id, segment_id, quote, content, type, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO notes (id, book_id, segment_id, reading_item, quote, content, type, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (note_id, book_id, segment_id, quote, content, note_type, now),
+                (note_id, book_id, segment_id, reading_item, quote, content, note_type, now),
             )
         enriched = self._list(where="n.id = ?", params=(note_id,))
         return enriched[0]
@@ -2062,7 +2101,7 @@ class NoteRepo:
         return self._list(where="n.book_id = ?", params=(book_id,))
 
     def list_all(self) -> list[dict[str, Any]]:
-        return self._list(where="1=1", params=())
+        return self._list(where="b.trashed_at IS NULL", params=())
 
     def get(self, note_id: str) -> dict[str, Any] | None:
         rows = self._list(where="n.id = ?", params=(note_id,))

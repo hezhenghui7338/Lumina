@@ -27,6 +27,7 @@ CREATE TABLE IF NOT EXISTS books (
   metadata_json TEXT,
   is_favorite   INTEGER DEFAULT 0,
   rating        INTEGER,
+  trashed_at    TEXT,
   category      TEXT,
   last_opened_at TEXT,
   index_status  TEXT DEFAULT 'idle',
@@ -62,11 +63,14 @@ CREATE TABLE IF NOT EXISTS segments (
 CREATE TABLE IF NOT EXISTS notes (
   id          TEXT PRIMARY KEY,
   book_id     TEXT NOT NULL REFERENCES books(id) ON DELETE CASCADE,
-  segment_id  TEXT NOT NULL REFERENCES segments(id),
+  segment_id  TEXT REFERENCES segments(id),
+  reading_item TEXT CHECK(reading_item IS NULL OR reading_item = 'intro'),
   quote       TEXT,
   content     TEXT NOT NULL,
   type        TEXT NOT NULL,
-  created_at  TEXT NOT NULL
+  created_at  TEXT NOT NULL,
+  CHECK ((segment_id IS NOT NULL AND reading_item IS NULL)
+      OR (segment_id IS NULL AND reading_item IS 'intro'))
 );
 CREATE INDEX IF NOT EXISTS idx_notes_book ON notes(book_id);
 CREATE INDEX IF NOT EXISTS idx_notes_segment ON notes(segment_id);
@@ -268,6 +272,7 @@ _BOOK_COLUMNS = (
     ("current_segment_index", "INTEGER DEFAULT 0"),
     ("is_favorite", "INTEGER DEFAULT 0"),
     ("rating", "INTEGER"),
+    ("trashed_at", "TEXT"),
     ("category", "TEXT"),
     ("last_opened_at", "TEXT"),
     ("index_status", "TEXT DEFAULT 'idle'"),
@@ -416,6 +421,7 @@ def _ensure_hot_path_indexes(conn: sqlite3.Connection) -> None:
     """Secondary indexes for FK/lookup hot paths (idempotent; survives notes rebuild)."""
     statements = (
         "CREATE INDEX IF NOT EXISTS idx_books_file_hash ON books(file_hash)",
+        "CREATE INDEX IF NOT EXISTS idx_books_trashed_at ON books(trashed_at)",
         "CREATE INDEX IF NOT EXISTS idx_notes_book ON notes(book_id)",
         "CREATE INDEX IF NOT EXISTS idx_notes_segment ON notes(segment_id)",
         "CREATE INDEX IF NOT EXISTS idx_chat_sessions_book ON chat_sessions(book_id)",
@@ -472,35 +478,30 @@ def _migrate_notes_columns(conn: sqlite3.Connection) -> None:
 
 
 def _migrate_notes_require_segment(conn: sqlite3.Connection) -> None:
-    """Drop orphan notes and enforce segment_id NOT NULL on existing DBs."""
+    """Keep segment notes and add an explicit intro anchor; remove legacy orphans."""
     _migrate_notes_columns(conn)
     info = conn.execute("PRAGMA table_info(notes)").fetchall()
-    if not info:
+    if not info or any(row[1] == "reading_item" for row in info):
         return
-    seg_col = next((row for row in info if row[1] == "segment_id"), None)
-    if seg_col is None:
-        return
-    # PRAGMA table_info: cid, name, type, notnull, dflt_value, pk
-    if seg_col[3] == 1:
-        return
-
     orphans = conn.execute("SELECT id FROM notes WHERE segment_id IS NULL").fetchall()
     for row in orphans:
         from lumina_core.search.fts import delete_note_from_fts
 
         delete_note_from_fts(conn, row[0])
     conn.execute("DELETE FROM notes WHERE segment_id IS NULL")
-
     conn.execute(
         """
         CREATE TABLE notes_migrated (
           id          TEXT PRIMARY KEY,
           book_id     TEXT NOT NULL REFERENCES books(id) ON DELETE CASCADE,
-          segment_id  TEXT NOT NULL REFERENCES segments(id),
+          segment_id  TEXT REFERENCES segments(id),
+          reading_item TEXT CHECK(reading_item IS NULL OR reading_item = 'intro'),
           quote       TEXT,
           content     TEXT NOT NULL,
           type        TEXT NOT NULL,
-          created_at  TEXT NOT NULL
+          created_at  TEXT NOT NULL,
+          CHECK ((segment_id IS NOT NULL AND reading_item IS NULL)
+              OR (segment_id IS NULL AND reading_item IS 'intro'))
         )
         """
     )

@@ -117,6 +117,12 @@ struct AskLibraryView: View {
         }
         .onAppear { inputFocused = true }
         .onDisappear { task?.cancel() }
+        .onReceive(NotificationCenter.default.publisher(for: .luminaBookVisibilityChanged)) { _ in
+            task?.cancel()
+            result = nil
+            busy = false
+            feedback = "书库已更新，请重新查询。"
+        }
     }
 
     @ViewBuilder private func resultView(_ response: LibraryAskResponse) -> some View {
@@ -202,7 +208,11 @@ struct AskLibraryView: View {
         busy = true; error = nil; feedback = nil
         task = Task { @MainActor in
             defer { busy = false }
-            do { result = try await core.previewLibraryTag(resultId: id, name: tagDraft, remove: removeTag) }
+            do {
+                let value = try await core.previewLibraryTag(resultId: id, name: tagDraft, remove: removeTag)
+                try Task.checkCancellation()
+                result = value
+            }
             catch { if !Task.isCancelled { self.error = error.localizedDescription } }
         }
     }
@@ -214,6 +224,7 @@ struct AskLibraryView: View {
             defer { busy = false }
             do {
                 let applied = try await core.applyLibraryAction(resultId: id)
+                try Task.checkCancellation()
                 feedback = applied.message; result?.action = nil; result?.books = applied.books
                 NotificationCenter.default.post(name: .luminaLibraryRefresh, object: nil)
             } catch { if !Task.isCancelled { self.error = error.localizedDescription } }

@@ -13,6 +13,7 @@ struct BookRow: View {
     let onResegment: () -> Void
     let onExport: () -> Void
     let onDelete: () -> Void
+    var onRestore: (() -> Void)? = nil
     var onRate: ((Int) -> Void)? = nil
     var onPrimary: (() -> Void)? = nil
     var onStartSummarize: ((SummaryTier) -> Void)? = nil
@@ -96,6 +97,7 @@ struct BookRow: View {
                 onResegment: onResegment,
                 onExport: onExport,
                 onDelete: onDelete,
+                onRestore: onRestore,
                 onStartSummarize: onStartSummarize,
                 onStopSummarize: onStopSummarize
             )
@@ -199,26 +201,35 @@ func bookLibraryContextMenu(
     onResegment: @escaping () -> Void,
     onExport: @escaping () -> Void,
     onDelete: @escaping () -> Void,
+    onRestore: (() -> Void)? = nil,
     onStartSummarize: ((SummaryTier) -> Void)? = nil,
     onStopSummarize: (() -> Void)? = nil
 ) -> some View {
-    Button(book.isFavorite ? "取消收藏" : "收藏", action: onToggleFavorite)
-    Button("重命名", action: onRename)
-    Button("重新分类", action: onReclassify)
-        .disabled(!LibraryBookContextMenuPolicy.isEnabled(.reclassify, for: book))
-    if book.canStartSummarize, let onStartSummarize {
-        Button("开始摘要") { onStartSummarize(.normal) }
-        Button(SummaryTier.advanced.startMenuLabel) { onStartSummarize(.advanced) }
+    if book.isTrashed {
+        if let onRestore { Button("恢复到书架", action: onRestore) }
+        Button("导出 Markdown 摘要…", action: onExport)
+            .disabled(!LibraryBookContextMenuPolicy.isEnabled(.exportMarkdown, for: book))
+        Divider()
+        Button("彻底删除…", role: .destructive, action: onDelete)
+    } else {
+        Button(book.isFavorite ? "取消收藏" : "收藏", action: onToggleFavorite)
+        Button("重命名", action: onRename)
+        Button("重新分类", action: onReclassify)
+            .disabled(!LibraryBookContextMenuPolicy.isEnabled(.reclassify, for: book))
+        if book.canStartSummarize, let onStartSummarize {
+            Button("开始摘要") { onStartSummarize(.normal) }
+            Button(SummaryTier.advanced.startMenuLabel) { onStartSummarize(.advanced) }
+        }
+        if book.canStopSummarize, let onStopSummarize {
+            Button("停止摘要", action: onStopSummarize)
+        }
+        Button("整书重新分段", action: onResegment)
+            .disabled(!LibraryBookContextMenuPolicy.isEnabled(.resegment, for: book))
+        Button("导出 Markdown 摘要…", action: onExport)
+            .disabled(!LibraryBookContextMenuPolicy.isEnabled(.exportMarkdown, for: book))
+        Divider()
+        Button("移入垃圾桶", role: .destructive, action: onDelete)
     }
-    if book.canStopSummarize, let onStopSummarize {
-        Button("停止摘要", action: onStopSummarize)
-    }
-    Button("整书重新分段", action: onResegment)
-        .disabled(!LibraryBookContextMenuPolicy.isEnabled(.resegment, for: book))
-    Button("导出 Markdown 摘要…", action: onExport)
-        .disabled(!LibraryBookContextMenuPolicy.isEnabled(.exportMarkdown, for: book))
-    Divider()
-    Button("删除", role: .destructive, action: onDelete)
 }
 
 struct BookSummaryStateBadge: View {

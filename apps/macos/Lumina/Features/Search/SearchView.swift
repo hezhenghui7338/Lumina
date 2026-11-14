@@ -6,6 +6,7 @@ struct SearchView: View {
     @State private var query = ""
     @State private var results: [SearchHit] = []
     @State private var searching = false
+    @State private var searchRevision = 0
     var onSelectBook: (String, Int?) -> Void
 
     var body: some View {
@@ -59,18 +60,28 @@ struct SearchView: View {
         }
         .frame(width: 560, height: 420)
         .background(LuminaTheme.background)
+        .onReceive(NotificationCenter.default.publisher(for: .luminaBookVisibilityChanged)) { _ in
+            searchRevision += 1
+            results = []
+            Task { await runSearch() }
+        }
         .onChange(of: query) { _, q in
-            guard q.count >= 2 else { results = []; return }
+            searchRevision += 1
+            guard q.count >= 2 else { results = []; searching = false; return }
             Task { await runSearch() }
         }
     }
 
     private func runSearch() async {
+        searchRevision += 1
+        let revision = searchRevision
         let q = query.trimmingCharacters(in: .whitespaces)
         guard q.count >= 2 else { return }
         searching = true
-        defer { searching = false }
-        results = (try? await core.search(query: q)) ?? []
+        defer { if revision == searchRevision { searching = false } }
+        let fetched = (try? await core.search(query: q)) ?? []
+        guard revision == searchRevision, !Task.isCancelled else { return }
+        results = fetched
     }
 
     private func kindLabel(_ kind: String) -> String {
