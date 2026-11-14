@@ -1,11 +1,13 @@
 import SwiftUI
 
-/// Book-level AI intro card placed before segment 0. Not a product segment.
+/// First reading item, followed by body segment 0.
 struct IntroReadingBlock: View {
     let contentMode: ReaderContentMode
     let intro: BookIntro
     var onFollowUp: ((String) -> Void)?
     var onRetry: (() -> Void)?
+    var onNext: (() -> Void)?
+    var listenHighlight: ListenHighlightAnchor? = nil
 
     @EnvironmentObject private var theme: ThemeManager
     @Environment(\.readerPaper) private var paper
@@ -21,8 +23,16 @@ struct IntroReadingBlock: View {
                 .font(.system(size: LuminaTheme.summaryLabelSize, weight: .semibold))
                 .foregroundStyle(paper.textSecondary)
                 .tracking(0.6)
+                .listenFollowHighlight(listenHighlight == .segmentTitle)
 
             panelBody
+            if let onNext {
+                HStack {
+                    Spacer()
+                    Button("开始正文", action: onNext)
+                        .buttonStyle(.borderless)
+                }
+            }
         }
         .padding(LuminaTheme.summaryPadding)
         .readingColumn()
@@ -58,18 +68,29 @@ struct IntroReadingBlock: View {
                     rawJSON: intro.summaryJSONString,
                     fallbackAnchor: "AI导读",
                     onFollowUp: onFollowUp,
-                    showsHeader: false
+                    showsHeader: false,
+                    listenHighlight: listenHighlight
                 )
             }
         default:
-            EmptyView()
+            VStack(alignment: .leading, spacing: 8) {
+                Text(intro.status == "skipped"
+                    ? "暂未获取到 AI 导读，可重新获取或继续阅读正文。"
+                    : "先读 AI 导读，了解本书背景、主题与阅读提示。")
+                    .font(.system(size: theme.scaled(LuminaTheme.summaryBulletSize)))
+                    .foregroundStyle(paper.textSecondary)
+                if let onRetry {
+                    Button("获取 AI 导读", action: onRetry)
+                        .buttonStyle(.borderless)
+                }
+            }
         }
     }
 
     @ViewBuilder
     private var sourceBody: some View {
-        let text = (intro.source_text ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        if text.isEmpty {
+        let text = intro.source_text ?? ""
+        if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             Text("暂无公开介绍原文")
                 .font(.system(size: theme.scaled(LuminaTheme.summaryBulletSize)))
                 .foregroundStyle(paper.textSecondary)
@@ -78,7 +99,9 @@ struct IntroReadingBlock: View {
                 text: text,
                 fontSize: theme.scaled(LuminaTheme.summaryBulletSize),
                 lineSpacing: theme.lineSpaced(LuminaTheme.summaryBulletLineSpacing),
-                foreground: paper.textPrimary
+                foreground: paper.textPrimary,
+                highlightUTF16: listenHighlight?.originalNSRange,
+                highlightStyle: .listen
             )
             if let citations = intro.citations, !citations.isEmpty {
                 VStack(alignment: .leading, spacing: 4) {

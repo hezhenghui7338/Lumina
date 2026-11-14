@@ -13,7 +13,7 @@ from lumina_core.config import (
     PromptsConfig,
     load_prompts_config,
 )
-from lumina_core.db.repos import ChatRepo, NoteRepo, SegmentRepo, SummaryNodeRepo
+from lumina_core.db.repos import BookIntroRepo, ChatRepo, NoteRepo, SegmentRepo, SummaryNodeRepo
 from lumina_core.models.router import ProfileModelRouter, parse_chat_response
 from lumina_core.search.evidence import (
     WEB_EVIDENCE_RESERVE_CHARS,
@@ -285,6 +285,18 @@ def assemble_segment_context(
     message: str = "",
     note_repo: NoteRepo | None = None,
 ) -> str:
+    if current_segment_idx == -1:
+        intro = BookIntroRepo(segment_repo.conn).get_or_idle(book["id"])
+        budget = ContextBudget(DOC_CONTEXT_MAX_CHARS)
+        budget.add(_book_heading(book))
+        budget.add("## 当前阅读：AI 导读（基于公开介绍生成，非书中原文）")
+        budget.add(_format_stored_summary(intro.get("summary")))
+        if intro.get("source_text"):
+            budget.add("## 导读参考材料\n" + intro["source_text"])
+        if intro.get("citations"):
+            budget.add("## 导读来源\n" + json.dumps(intro["citations"], ensure_ascii=False))
+        return budget.render()
+
     nearby_idxs = [
         i
         for i in range(current_segment_idx - 1, current_segment_idx + 2)

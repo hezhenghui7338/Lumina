@@ -5,6 +5,7 @@ struct ExportSheet: View {
     @Binding var includeNotes: Bool
     @Binding var mode: MarkdownExportMode
     let summaryReadyCount: Int
+    var introReady: Bool = false
     let summaryTotalCount: Int
     let onFetchMarkdown: () async throws -> String
     let onMarkdownReady: (String) -> Void
@@ -21,7 +22,7 @@ struct ExportSheet: View {
                 .font(.subheadline)
                 .foregroundStyle(summaryReadyCount > 0 ? Color.secondary : Color.orange)
 
-            if summaryReadyCount == 0 {
+            if summaryReadyCount == 0 && !introReady {
                 Text("尚无可用摘要，请先完成摘要生成")
                     .font(.caption)
                     .foregroundStyle(.orange)
@@ -73,7 +74,7 @@ struct ExportSheet: View {
                     }
                 }
                 .keyboardShortcut(.defaultAction)
-                .disabled(isExporting || summaryReadyCount == 0)
+                .disabled(isExporting || (summaryReadyCount == 0 && !introReady))
             }
         }
         .padding(20)

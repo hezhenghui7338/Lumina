@@ -58,7 +58,7 @@ enum ReaderPreferences {
     }
 
     static func setCachedProgress(index: Int, segmentCount: Int, for bookId: String) {
-        let cached = CachedProgress(index: max(index, 0), segmentCount: max(segmentCount, 0))
+        let cached = CachedProgress(index: max(index, BookReadingItem.introIndex), segmentCount: max(segmentCount, 0))
         guard let data = try? JSONEncoder().encode(cached) else { return }
         defaults.set(data, forKey: progressKey(for: bookId))
     }
@@ -126,7 +126,7 @@ final class ReadingProgressStore: ObservableObject {
     /// the sidecar PATCH is coalesced per book.
     func record(bookId: String, index: Int, total: Int) {
         guard !bookId.isEmpty, total > 0 else { return }
-        let idx = min(max(index, 0), total - 1)
+        let idx = min(max(index, BookReadingItem.introIndex), total - 1)
         let next = ReadingPosition(index: idx, total: total)
         guard positions[bookId] != next else { return }
 
@@ -149,7 +149,7 @@ final class ReadingProgressStore: ObservableObject {
     /// Adopt a server-provided position without scheduling a write back.
     func hydrate(bookId: String, index: Int, total: Int) {
         guard !bookId.isEmpty, total > 0 else { return }
-        let idx = min(max(index, 0), total - 1)
+        let idx = min(max(index, BookReadingItem.introIndex), total - 1)
         let next = ReadingPosition(index: idx, total: total)
         guard positions[bookId] != next else { return }
         positions[bookId] = next

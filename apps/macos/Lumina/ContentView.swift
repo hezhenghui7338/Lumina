@@ -452,7 +452,10 @@ struct ContentView: View {
             importNextBook()
         } catch let conflict as ImportConflictError {
             isImportingBook = false
-            if ImportConflictPolicy.shouldPrompt(
+            if conflict.isTrashed {
+                alertError = conflict.localizedDescription
+                importNextBook()
+            } else if ImportConflictPolicy.shouldPrompt(
                 skipRemainingDuplicates: skipRemainingImportDuplicates
             ) {
                 importConflict = conflict
@@ -521,7 +524,10 @@ struct ContentView: View {
             importNextBook()
         } catch let conflict as ImportConflictError {
             isImportingBook = false
-            if ImportConflictPolicy.shouldPrompt(
+            if conflict.isTrashed {
+                alertError = conflict.localizedDescription
+                importNextBook()
+            } else if ImportConflictPolicy.shouldPrompt(
                 skipRemainingDuplicates: skipRemainingImportDuplicates
             ) {
                 importConflict = conflict
@@ -585,7 +591,10 @@ struct ContentView: View {
             importNextBook()
         } catch let conflict as ImportConflictError {
             isImportingBook = false
-            if ImportConflictPolicy.shouldPrompt(
+            if conflict.isTrashed {
+                alertError = conflict.localizedDescription
+                importNextBook()
+            } else if ImportConflictPolicy.shouldPrompt(
                 skipRemainingDuplicates: skipRemainingImportDuplicates
             ) {
                 importConflict = conflict
@@ -722,6 +731,9 @@ private struct LibraryTabView: View {
         }
         .onChange(of: viewModel.books.map(\.id)) { _, _ in
             syncTourLibrary()
+        }
+        .task(id: viewModel.showsTrash) {
+            if viewModel.showsTrash { await viewModel.loadTrash(using: core) }
         }
         .onAppear {
             syncTourLibrary()
@@ -899,5 +911,6 @@ extension Notification.Name {
     static let luminaOpenFiles = Notification.Name("luminaOpenFiles")
     static let luminaRevealMainWindow = Notification.Name("luminaRevealMainWindow")
     static let luminaLibraryRefresh = Notification.Name("luminaLibraryRefresh")
+    static let luminaBookVisibilityChanged = Notification.Name("luminaBookVisibilityChanged")
     static let luminaReadingProgressDidChange = Notification.Name("luminaReadingProgressDidChange")
 }

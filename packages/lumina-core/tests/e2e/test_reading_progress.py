@@ -149,6 +149,22 @@ def test_patch_reading_progress_rejects_out_of_range(client):
 
     resp = client.patch(
         f"/books/{book_id}/reading-progress",
-        json={"segment_index": -1},
+        json={"segment_index": -2},
     )
     assert resp.status_code == 400
+
+
+def test_intro_progress_round_trips_through_open_and_library(client):
+    book_id = _insert_multi_segment_book(client, segment_count=5)
+    response = client.patch(f"/books/{book_id}/reading-progress", json={"segment_index": -1})
+    assert response.status_code == 200
+    assert response.json()["current_segment_index"] == -1
+    assert client.post(f"/books/{book_id}/open").json()["current_segment_index"] == -1
+    assert client.get(f"/books/{book_id}").json()["current_segment_index"] == -1
+
+
+def test_first_open_starts_at_intro_but_explicit_body_progress_is_preserved(client):
+    book_id = _insert_multi_segment_book(client, segment_count=5)
+    assert client.post(f"/books/{book_id}/open").json()["current_segment_index"] == -1
+    client.patch(f"/books/{book_id}/reading-progress", json={"segment_index": 0})
+    assert client.post(f"/books/{book_id}/open").json()["current_segment_index"] == 0

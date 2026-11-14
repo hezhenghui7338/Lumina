@@ -33,6 +33,16 @@ enum ReaderCoverPagePolicy {
 /// offsets and LazyVStack frames, while AppKit also nudged the scroll origin,
 /// is what made progress unreliable. Anchoring has exactly one owner (SwiftUI)
 /// and progress has exactly one source (the pinned segment).
+/// Stable reading identity before正文 segment 0; never sent to segment-body APIs.
+enum BookReadingItem {
+    static let introIndex = -1
+
+    static func openingIndex(saved: Int, hasLocalProgress: Bool, explicit: Int?) -> Int {
+        if let explicit { return explicit }
+        return saved == 0 && !hasLocalProgress ? introIndex : saved
+    }
+}
+
 enum ReadingProgress {
     /// Prefer the locally recorded index unless the book was resegmented since
     /// it was written, in which case the server index is the safer resume.
@@ -46,9 +56,9 @@ enum ReadingProgress {
         if let localIndex,
            localSegmentCount == currentSegmentCount,
            currentSegmentCount > 0 {
-            return min(max(localIndex, 0), last)
+            return min(max(localIndex, BookReadingItem.introIndex), last)
         }
-        return min(max(serverIndex, 0), last)
+        return min(max(serverIndex, BookReadingItem.introIndex), last)
     }
 
     /// Extra scrollable space so the last segment can pin to `.top`.
@@ -73,6 +83,7 @@ enum ReadingProgress {
     static func statusLabel(opened: Bool, index: Int, segmentCount: Int) -> String {
         guard opened else { return "未读" }
         guard segmentCount > 0 else { return "在读" }
+        if index == BookReadingItem.introIndex { return "在读 · AI 导读" }
         let last = segmentCount - 1
         let idx = min(max(index, 0), last)
         if isFinished(index: idx, count: segmentCount) { return "已读完" }

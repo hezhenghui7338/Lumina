@@ -58,7 +58,13 @@ enum BookMarkdownExporter {
         includeNotes: Bool,
         mode: MarkdownExportMode = .full
     ) async throws -> String {
-        guard summaryReadyCount > 0 else {
+        let hasIntro: Bool
+        if summaryReadyCount > 0 {
+            hasIntro = false
+        } else {
+            hasIntro = (try? await core.fetchBookIntro(bookId: bookId))?.status == "ready"
+        }
+        guard summaryReadyCount > 0 || hasIntro else {
             throw NSError(
                 domain: "Lumina",
                 code: 1,

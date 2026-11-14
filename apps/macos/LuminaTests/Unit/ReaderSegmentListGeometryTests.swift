@@ -517,7 +517,7 @@ final class ReadingProgressStoreTests: XCTestCase {
         XCTAssertEqual(store.position(for: book)?.index, 9)
 
         store.record(bookId: book, index: -3, total: 10)
-        XCTAssertEqual(store.position(for: book)?.index, 0)
+        XCTAssertEqual(store.position(for: book)?.index, BookReadingItem.introIndex)
     }
 
     /// Switching books from the sidebar used to mix two books' positions
@@ -1158,5 +1158,40 @@ final class SegmentSummaryPlaceholderHeightTests: XCTestCase {
         XCTAssertFalse(source.contains("EmptyView()"))
         XCTAssertTrue(source.contains("progressLabel("))
         XCTAssertTrue(source.contains(".minimumScaleFactor(0.8)"))
+    }
+}
+
+final class IntroReadingPositionTests: XCTestCase {
+    func testOpeningStartsWithIntroAndPreservesExplicitOrSavedBodyPosition() {
+        XCTAssertEqual(BookReadingItem.openingIndex(saved: 0, hasLocalProgress: false, explicit: nil), -1)
+        XCTAssertEqual(BookReadingItem.openingIndex(saved: -1, hasLocalProgress: true, explicit: nil), -1)
+        XCTAssertEqual(BookReadingItem.openingIndex(saved: 0, hasLocalProgress: true, explicit: nil), 0)
+        XCTAssertEqual(BookReadingItem.openingIndex(saved: 12, hasLocalProgress: false, explicit: nil), 12)
+        XCTAssertEqual(BookReadingItem.openingIndex(saved: -1, hasLocalProgress: true, explicit: 7), 7)
+    }
+
+    func testIntroProgressHasItsOwnRestoreAndStatus() {
+        XCTAssertEqual(ReadingProgress.restoreIndex(serverIndex: 8, localIndex: -1,
+            localSegmentCount: 10, currentSegmentCount: 10), -1)
+        XCTAssertEqual(ReadingProgress.restoreIndex(serverIndex: -1, localIndex: nil,
+            localSegmentCount: nil, currentSegmentCount: 10), -1)
+        XCTAssertEqual(ReadingProgress.statusLabel(opened: true, index: -1, segmentCount: 10), "在读 · AI 导读")
+        XCTAssertEqual(ReadingProgress.percent(index: -1, count: 10), 0)
+        XCTAssertFalse(ReadingProgress.isFinished(index: -1, count: 10))
+    }
+
+    func testTurnNavigationCrossesIntroBodyBoundary() {
+        XCTAssertEqual(SegmentTurnNavigation.targetIdx(current: -1, delta: 1, sortedIdxs: [-1, 0, 1]), 0)
+        XCTAssertEqual(SegmentTurnNavigation.targetIdx(current: 0, delta: -1, sortedIdxs: [-1, 0, 1]), -1)
+        XCTAssertNil(SegmentTurnNavigation.targetIdx(current: -1, delta: -1, sortedIdxs: [-1, 0, 1]))
+    }
+
+    @MainActor
+    func testIntroProgressPersistsWithoutBeingClampedToBody() {
+        let bookId = "intro-progress-\(UUID().uuidString)"
+        defer { ReadingProgressStore.shared.forget(bookId: bookId) }
+        ReadingProgressStore.shared.record(bookId: bookId, index: -1, total: 10)
+        XCTAssertEqual(ReaderPreferences.cachedProgress(for: bookId)?.index, -1)
+        XCTAssertEqual(ReadingProgressStore.shared.resumeIndex(bookId: bookId, serverIndex: 0, segmentCount: 10), -1)
     }
 }

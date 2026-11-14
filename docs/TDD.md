@@ -199,6 +199,7 @@ CREATE TABLE books (
   status        TEXT DEFAULT 'unread',  -- unread|reading|summarized|processing|error；processing 时公开 summarize_state=segmenting；error 为书架摘要维「导入失败」（含取消导入），不占未摘要/分段中/摘要中/已摘要；书架「未读/在读/已读完」按 last_opened_at + 段进度推导，不用此列
   index_status  TEXT DEFAULT 'idle',    -- idle|building|ready|error · 全书分层索引
   file_hash     TEXT,                   -- 缓存失效
+  trashed_at    TEXT,                   -- NULL=正常；非空=移入垃圾桶的 UTC 时间
   created_at    TEXT,
   updated_at    TEXT
 );
@@ -235,7 +236,8 @@ CREATE TABLE segments (
 CREATE TABLE notes (
   id          TEXT PRIMARY KEY,
   book_id     TEXT NOT NULL REFERENCES books(id),
-  segment_id  TEXT NOT NULL REFERENCES segments(id),
+  segment_id  TEXT REFERENCES segments(id),
+  reading_item TEXT,  -- 正文为 NULL；AI 导读为 intro；两种锚点互斥且必有其一
   quote       TEXT,
   content     TEXT NOT NULL,
   type        TEXT NOT NULL,              -- manual|highlight|ai
@@ -677,15 +679,17 @@ Sidecar 绑定 `127.0.0.1` only；无认证（本机进程）。
 | Method | Path | 说明 |
 |--------|------|------|
 | GET | `/health` | Sidecar 存活 |
-| POST | `/books/import` | 导入文件/文件夹；**409** + `{existing_book_id}` 若 `file_hash` 重复 |
+| POST | `/books/import` | 命中垃圾桶始终 409，detail 含 `trashed_at`（网址/粘贴同样）；导入文件/文件夹；**409** + `{existing_book_id}` 若 `file_hash` 重复 |
 | POST | `/books/{id}/import/overwrite` | 用户确认覆盖后重新导入 |
-| GET | `/books` | 书库列表；`?filter=all\|unread\|reading\|finished\|idle\|segmenting\|summarizing\|summarized\|error\|favorite\|<分类>`（`filter=favorite` 仍可用，UI 侧栏已无「收藏」集合）；`summarize_state` 含 `segmenting`（`status=processing`）；`filter=error` 为导入失败（`status=error`，含取消）；失败书不进入 idle/segmenting/summarizing/summarized；`?sort=recent\|added\|title\|segments\|progress\|favorite` |
+| GET | `/books` | `visibility=active\|trash`，默认 active；trash 按移入时间倒序。书库列表；`?filter=all\|unread\|reading\|finished\|idle\|segmenting\|summarizing\|summarized\|error\|favorite\|<分类>`（`filter=favorite` 仍可用，UI 侧栏已无「收藏」集合）；`summarize_state` 含 `segmenting`（`status=processing`）；`filter=error` 为导入失败（`status=error`，含取消）；失败书不进入 idle/segmenting/summarizing/summarized；`?sort=recent\|added\|title\|segments\|progress\|favorite` |
 | GET | `/books/categories` | 固定 LLM 主分类枚举 |
 | PATCH | `/books/{id}` | 更新收藏 / 分类 / 标题 |
-| DELETE | `/books/{id}` | 删除书及本地副本、摘要、笔记 |
+| POST | `/books/{id}/trash` | 幂等移入垃圾桶并停止后台任务；返回包含 `trashed_at` 的书籍 |
+| POST | `/books/{id}/restore` | 幂等恢复，保留资料且不自动续跑摘要 |
+| DELETE | `/books/{id}` | 彻底删除书及本地副本、摘要、笔记、聊天；macOS 传 `only_trashed=true`，已恢复的书返回 409，避免确认期间的状态变化导致误删 |
 | POST | `/books/{id}/classify` | 后台 LLM 重新分类 |
 | GET | `/books/{id}` | 书籍详情 |
-| PATCH | `/books/{id}/reading-progress` | 更新当前段进度 |
+| PATCH | `/books/{id}/reading-progress` | 更新阅读进度；`segment_index=-1` 表示 AI 导读，`0...N-1` 表示正文段 |
 | GET | `/books/{id}/segments` | 段列表（含 label、summary_status、heading_path；默认不含 raw_text） |
 | GET | `/books/{id}/segments/{idx}` | 单段详情 |
 | GET | `/books/{id}/segments/{idx}/boundary` | 相邻两段可吸附切点（`candidates`，不含拼接全文）；点击调界以 POST 为准，客户端不再用 candidates 步进 |
@@ -722,7 +726,7 @@ Sidecar 绑定 `127.0.0.1` only；无认证（本机进程）。
 |--------|------|------|
 | POST | `/books/{id}/chat` | 深聊（stream SSE；`scope=segment\|book`） |
 | GET | `/books/{id}/chat/sessions` | 会话列表 |
-| POST | `/books/{id}/export` | 导出 Markdown；body `{ include_notes?, mode?: full\|sentences }`，默认 `full` 含译文；`sentences` 仅各段三句话（忽略笔记） |
+| POST | `/books/{id}/export` | 导出 Markdown；body `{ include_notes?, mode?: full\|sentences }`，默认 `full` 含导读、来源与译文；`sentences` 含导读及各段总结（忽略笔记） |
 | GET | `/books/{id}/segments/{idx}/listen-script` | 听稿；`mode=summary\|detailed\|original`（summary=简要摘要，detailed=完整摘要）。summary/detailed **只读摘要列**，禁止为听简要/完整摘要读 `raw_text`。detailed 含要点、不含 notes。朗读在客户端用系统语音，无 `POST .../speech` |
 | GET | `/books/{id}/original-search?q=` | 书内原文查找。只搜 `raw_text`（不搜摘要/译文/笔记）；走 `original_fts` / `original_char_seg` 候选段再精确偏移；`asyncio.to_thread`；可选 `limit`（默认 30，硬顶 50）、`after_segment`/`after_start` 游标；响应 `{query, hits, truncated, index_ready}`，hit 含 `segment_index`、`start`/`end`（Unicode）、`start_utf16`/`end_utf16`、`snippet`、可选 `segment_label`；**不含** `raw_text`。空查询 → `hits=[]`。`truncated`=还有更多（兼容旧客户端） |
 
@@ -730,7 +734,7 @@ Sidecar 绑定 `127.0.0.1` only；无认证（本机进程）。
 
 | Method | Path | 说明 |
 |--------|------|------|
-| POST | `/notes` | 创建笔记（`segment_id` 必填；须属于该书） |
+| POST | `/notes` | 创建笔记（正文传 `segment_id`；AI 导读传 `reading_item: intro`，两者互斥；导读笔记返回 `segment_index=-1`） |
 | GET | `/notes?book_id=&segment_id=` | 有 `book_id` → 书内列表（可按段筛）；无 → 跨书列表 |
 | DELETE | `/notes/{id}` | 删除单条笔记（同步清理 FTS） |
 | GET | `/search?q=` | 跨书 FTS（笔记 + 段摘要 + 书名；不是书内原文 Find） |
@@ -1125,7 +1129,7 @@ JobQueue：`asyncio.PriorityQueue` + worker pool；每书一个摘要链锁，�
 |------|------|------|
 | v1.0 检索 | ✅ | FTS5 |
 | 笔记索引 | ✅ | 写入即 FTS trigger |
-| 必须挂段 | ✅ | `segment_id` NOT NULL；创建校验归属 |
+| 阅读内容锚点 | ✅ | 正文使用 `segment_id` 并校验归属；AI 导读使用 `reading_item=intro`；两者互斥 |
 | 书内 / 应用级列表 | ✅ | NotesPanel 当前段\|全部 + 书库全部笔记跨书；点击跳段 |
 
 ### B9 导出

@@ -1,6 +1,8 @@
 import SwiftUI
 
 struct LibrarySelectionToolbar: View {
+    var showsTrash: Bool = false
+    var onRestore: (() -> Void)? = nil
     let selectedCount: Int
     let startableCount: Int
     let stoppableCount: Int
@@ -55,10 +57,17 @@ struct LibrarySelectionToolbar: View {
 
     private var actionRow: some View {
         HStack(spacing: 6) {
-            summarizeMenu
-            deleteButton
-            favoriteMenu
-            selectMenu
+            if showsTrash {
+                Button("恢复到书架") { onRestore?() }
+                    .disabled(selectedCount == 0)
+                deleteButton
+                Button("全选") { onSelectAll() }
+            } else {
+                summarizeMenu
+                deleteButton
+                favoriteMenu
+                selectMenu
+            }
         }
     }
 
@@ -105,7 +114,7 @@ struct LibrarySelectionToolbar: View {
     }
 
     private var deleteButton: some View {
-        Button("删除") {
+        Button(showsTrash ? "彻底删除…" : "移入垃圾桶") {
             onDelete()
         }
         .font(.caption)
@@ -113,7 +122,7 @@ struct LibrarySelectionToolbar: View {
         .controlSize(.small)
         .frame(maxWidth: .infinity)
         .disabled(selectedCount == 0)
-        .help("删除已选 \(selectedCount) 本书")
+        .help(showsTrash ? "彻底删除已选书籍" : "将已选书籍移入垃圾桶")
     }
 
     private var favoriteMenu: some View {

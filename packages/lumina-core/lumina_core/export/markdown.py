@@ -83,6 +83,7 @@ def export_book_markdown(
     include_notes: bool = False,
     notes: list[dict[str, Any]] | None = None,
     mode: str = "full",
+    intro: dict[str, Any] | None = None,
 ) -> str:
     sentences_only = mode == "sentences"
     if sentences_only:
@@ -98,9 +99,28 @@ def export_book_markdown(
         f"- 格式: {book.get('format', '—')}",
         f"- 段数: {book.get('segment_count', len(segments))}",
         "",
-        "## 段摘要",
     ]
 
+    if intro and intro.get("status") == "ready" and intro.get("summary"):
+        try:
+            rendered = render_segment_summary_for_export(
+                intro["summary"], sentences_only=sentences_only
+            )
+        except (json.JSONDecodeError, TypeError, ValueError, ValidationError):
+            rendered = []
+        if rendered:
+            lines.extend(["## AI 导读", "", *rendered, ""])
+            if not sentences_only and intro.get("citations"):
+                citations = intro["citations"]
+                if isinstance(citations, list):
+                    sources = []
+                    for cite in citations:
+                        if isinstance(cite, dict) and cite.get("url"):
+                            sources.append(f"- [{cite.get('title') or cite['url']}]({cite['url']})")
+                    if sources:
+                        lines.extend(["### 导读来源", "", *sources, ""])
+
+    lines.append("## 段摘要")
     for seg in segments:
         idx = seg["idx"] + 1
         anchor = seg.get("anchor_label") or f"段 {idx}"

@@ -116,7 +116,7 @@ def list_tags(conn: sqlite3.Connection) -> list[dict[str, Any]]:
         return [dict(r) for r in conn.execute(
             "SELECT t.id, t.name, COUNT(b.id) AS book_count FROM library_tags t "
             "LEFT JOIN library_book_tags bt ON bt.tag_id=t.id "
-            "LEFT JOIN books b ON b.id=bt.book_id GROUP BY t.id ORDER BY t.name_key"
+            "LEFT JOIN books b ON b.id=bt.book_id AND b.trashed_at IS NULL GROUP BY t.id ORDER BY t.name_key"
         ).fetchall()]
 
 
@@ -172,11 +172,18 @@ def _load_result(conn: sqlite3.Connection, result_id: str) -> dict[str, Any]:
     row = conn.execute("SELECT * FROM library_query_results WHERE id=?", (result_id,)).fetchone()
     if row is None or row["expires_at"] < _now().isoformat():
         raise ValueError("这组结果已过期，请重新问一次书库")
-    return dict(row)
+    result = dict(row)
+    existing = conn.execute(
+        "SELECT COUNT(*) FROM books WHERE trashed_at IS NULL "
+        "AND id IN (SELECT value FROM json_each(?))", (result["book_ids_json"],)
+    ).fetchone()[0]
+    if existing != len(json.loads(result["book_ids_json"])):
+        raise ValueError("结果中的书籍已变化，请重新查询后继续")
+    return result
 
 
 def _where(plan: LibraryPlan) -> tuple[str, list[Any]]:
-    clauses, values = [], []
+    clauses, values = ["b.trashed_at IS NULL"], []
     for f in plan.filters:
         value = f.value
         if f.field == "tag":
@@ -251,7 +258,7 @@ def _result_books(conn: sqlite3.Connection, ids: list[str]) -> list[dict[str, An
         f"{_COLUMNS['highlight_count']} highlight_count,{_COLUMNS['comment_count']} comment_count,"
         f"{_COLUMNS['open_count']} open_count,{_COLUMNS['published_year']} published_year,b.metadata_json,"
         "(SELECT summary_json FROM book_intros WHERE book_id=b.id AND status='ready') intro_summary_json "
-        f"{_FROM} WHERE b.id IN (SELECT value FROM json_each(?))", (json.dumps(ids),)
+        f"{_FROM} WHERE b.trashed_at IS NULL AND b.id IN (SELECT value FROM json_each(?))", (json.dumps(ids),)
     ).fetchall()
     tag_rows = conn.execute("SELECT bt.book_id,t.name FROM library_book_tags bt JOIN library_tags t ON t.id=bt.tag_id "
                             "WHERE bt.book_id IN (SELECT value FROM json_each(?)) ORDER BY t.name_key", (json.dumps(ids),)).fetchall()
@@ -289,9 +296,6 @@ def apply_action(conn: sqlite3.Connection, result_id: str) -> dict[str, Any]:
         if not action:
             raise ValueError("这组结果没有待应用的标签操作")
         ids = json.loads(result["book_ids_json"])
-        existing = conn.execute("SELECT COUNT(*) FROM books WHERE id IN (SELECT value FROM json_each(?))", (result["book_ids_json"],)).fetchone()[0]
-        if existing != len(ids):
-            raise ValueError("结果中的书籍已变化，请重新查询后应用标签")
         if not ids:
             raise ValueError("没有可操作的书籍")
         name, key = _tag_name(action["tag"])

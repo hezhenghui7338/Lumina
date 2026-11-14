@@ -899,4 +899,144 @@ final class LibraryViewModelMergeTests: XCTestCase {
         viewModel.books = []
         XCTAssertFalse(viewModel.showsPagination)
     }
+    func testTrashIsIndependentFromReadingCategoryAndTitleFilters() {
+        let model = LibraryViewModel()
+        var hidden = book(id: "hidden", title: "Discarded", category: "历史")
+        hidden.trashed_at = "2026-11-14T00:00:00Z"
+        model.books = [book(id: "active", title: "Reading", category: "文学"), hidden]
+        model.titleQuery = "Reading"
+        model.selectFacet(.category("文学"))
+        XCTAssertEqual(model.matchedBooks.map(\.id), ["active"])
+        XCTAssertEqual(model.count(for: .category("历史")), 0)
+        model.trashBooks = [hidden]
+        model.selectTrash()
+        XCTAssertTrue(model.showsTrash)
+        XCTAssertEqual(model.titleQuery, "")
+        XCTAssertEqual(model.matchedBooks.map(\.id), ["hidden"])
+        model.selectFacet(.category("文学"))
+        XCTAssertFalse(model.showsTrash)
+        XCTAssertEqual(model.titleQuery, "Reading")
+        XCTAssertEqual(model.matchedBooks.map(\.id), ["active"])
+    }
+
+    func testTrashSortsByMoveTimeAndAllowsReadingWithoutGeneration() {
+        let model = LibraryViewModel()
+        var earlier = book(id: "earlier", title: "Z", summaryReady: 0, summaryTotal: 3,
+                           summarizeState: "paused")
+        earlier.trashed_at = "2026-11-13T00:00:00Z"
+        var later = earlier
+        later.trashed_at = "2026-11-14T00:00:00Z"
+        model.trashBooks = [earlier, BookSummary(id: "later", title: "A", status: "reading",
+            segment_count: 3, trashed_at: later.trashed_at)]
+        model.selectTrash()
+        XCTAssertEqual(model.matchedBooks.map(\.id), ["later", "earlier"])
+        XCTAssertTrue(earlier.canOpenInReader)
+        XCTAssertFalse(earlier.canStartSummarize)
+        XCTAssertFalse(earlier.canStopSummarize)
+        XCTAssertFalse(earlier.canResegment)
+    }
+
+    private func trashTestClient() -> CoreClient {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [TrashTestURLProtocol.self]
+        return CoreClient(baseURL: URL(string: "https://lumina-trash.test")!,
+                          session: URLSession(configuration: configuration))
+    }
+
+    func testBatchTrashKeepsSuccessfulChangesWhenAnotherBookAndRefreshFail() async {
+        let model = LibraryViewModel()
+        model.books = [book(id: "a", title: "Alpha"), book(id: "b", title: "Beta")]
+        TrashTestURLProtocol.respond = { request in
+            if request.url?.path == "/books/a/trash" {
+                return (200, #"{"id":"a","title":"Alpha","status":"reading","segment_count":10,"trashed_at":"2026-11-14T00:00:00Z"}"#, 0)
+            }
+            return (500, #"{"detail":"Test failure"}"#, 0)
+        }
+        defer { TrashTestURLProtocol.respond = nil }
+        do {
+            try await model.performBookLifecycle(ids: ["a", "b"], using: trashTestClient(), action: .trash)
+            XCTFail("The failed book must be reported")
+        } catch {
+            XCTAssertTrue(error.localizedDescription.contains("Beta"))
+        }
+        XCTAssertEqual(model.books.map(\.id), ["b"])
+        XCTAssertEqual(model.trashBooks.map(\.id), ["a"])
+    }
+
+    func testRestoreImmediatelyUpdatesBothListsEvenIfRefreshFails() async throws {
+        let model = LibraryViewModel()
+        let hidden = BookSummary(id: "a", title: "Alpha", status: "reading", segment_count: 10,
+                                 trashed_at: "2026-11-14T00:00:00Z")
+        model.trashBooks = [hidden]
+        model.selectTrash()
+        TrashTestURLProtocol.respond = { request in
+            if request.url?.path == "/books/a/restore" {
+                return (200, #"{"id":"a","title":"Alpha","status":"reading","segment_count":10,"trashed_at":null}"#, 0)
+            }
+            return (500, #"{"detail":"Test failure"}"#, 0)
+        }
+        defer { TrashTestURLProtocol.respond = nil }
+        try await model.performBookLifecycle(ids: ["a"], using: trashTestClient(), action: .restore)
+        XCTAssertTrue(model.trashBooks.isEmpty)
+        XCTAssertEqual(model.books.map(\.id), ["a"])
+        XCTAssertFalse(model.books[0].isTrashed)
+    }
+
+    func testOldRefreshCannotPutATrashedBookBackOnTheShelf() async throws {
+        let model = LibraryViewModel()
+        model.books = [book(id: "a", title: "Alpha")]
+        let requestStarted = expectation(description: "The old refresh started")
+        let lock = NSLock()
+        var shelfRequests = 0
+        TrashTestURLProtocol.respond = { request in
+            if request.httpMethod == "GET", request.url?.path == "/books" {
+                lock.lock()
+                shelfRequests += 1
+                let isFirst = shelfRequests == 1
+                lock.unlock()
+                if isFirst {
+                    requestStarted.fulfill()
+                    return (200, #"{"books":[{"id":"a","title":"Alpha","status":"reading","segment_count":10}]}"#, 0.15)
+                }
+                return (200, #"{"books":[]}"#, 0)
+            }
+            if request.url?.path == "/books/a/trash" {
+                return (200, #"{"id":"a","title":"Alpha","status":"reading","segment_count":10,"trashed_at":"2026-11-14T00:00:00Z"}"#, 0)
+            }
+            return (200, "{}", 0)
+        }
+        defer { TrashTestURLProtocol.respond = nil }
+        let core = trashTestClient()
+        let oldRefresh = Task { try await model.refresh(using: core) }
+        await fulfillment(of: [requestStarted], timeout: 2)
+        try await model.performBookLifecycle(ids: ["a"], using: core, action: .trash)
+        try await oldRefresh.value
+        XCTAssertTrue(model.books.isEmpty)
+        XCTAssertEqual(model.trashBooks.map(\.id), ["a"])
+    }
+
+}
+
+
+private final class TrashTestURLProtocol: URLProtocol {
+    static var respond: ((URLRequest) -> (Int, String, TimeInterval))?
+
+    override class func canInit(with request: URLRequest) -> Bool {
+        request.url?.host == "lumina-trash.test"
+    }
+
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        let (status, body, delay) = Self.respond?(request) ?? (500, "{}", 0)
+        DispatchQueue.global().asyncAfter(deadline: .now() + delay) {
+            let response = HTTPURLResponse(url: self.request.url!, statusCode: status,
+                                           httpVersion: nil, headerFields: ["Content-Type": "application/json"])!
+            self.client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+            self.client?.urlProtocol(self, didLoad: Data(body.utf8))
+            self.client?.urlProtocolDidFinishLoading(self)
+        }
+    }
+
+    override func stopLoading() {}
 }

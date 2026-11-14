@@ -248,6 +248,7 @@ struct ReaderView: View {
                     includeNotes: $exportIncludeNotes,
                     mode: $exportMode,
                     summaryReadyCount: viewModel.summaryReadyCount,
+                    introReady: viewModel.bookIntro?.status == "ready",
                     summaryTotalCount: viewModel.summaryTotalCount,
                     onFetchMarkdown: {
                         try await viewModel.fetchExportMarkdown(
@@ -526,12 +527,14 @@ struct ReaderView: View {
         listenSession.configure(
             bookId: bookId,
             segmentCount: viewModel.segments.count,
+            firstIndex: BookReadingItem.introIndex,
             resolve: { [viewModel, core] idx, listenMode, chapterContext in
                 await viewModel.listenScript(
                     idx: idx, mode: listenMode, core: core, chapterContext: chapterContext
                 )
             },
             labelFor: { [viewModel] idx in
+                if idx == BookReadingItem.introIndex { return "AI 导读" }
                 if let seg = viewModel.segments.first(where: { $0.idx == idx }) {
                     return seg.label ?? seg.anchor_label ?? "段 \(idx + 1)"
                 }
@@ -671,7 +674,7 @@ struct ReaderView: View {
             .help("点「开始摘要」立即正常档；点旁边箭头才展开高级（悬停不弹出）；重新摘要整书都会再确认覆盖")
             .accessibilityLabel("摘要")
             .tourAnchor(.summarize)
-            .disabled(viewModel.bookStatus == "processing")
+            .disabled(!viewModel.canGenerateContent)
             Button {
                 showSegmentPopover.toggle()
             } label: {
@@ -704,7 +707,7 @@ struct ReaderView: View {
             }
             .help("点图标选择调整分段或整书重新分段")
             .accessibilityLabel("分段")
-            .disabled(viewModel.bookStatus == "processing")
+            .disabled(!viewModel.canGenerateContent)
             Button {
                 exportIncludeNotes = false
                 exportMode = .full
@@ -1234,7 +1237,7 @@ struct ReaderView: View {
             else { return }
             stepOriginalSearch(-1)
         case .startSummarize:
-            guard viewModel.bookStatus != "processing" else { return }
+            guard viewModel.canGenerateContent else { return }
             startReaderSummarize(.normal)
         case .stopSummarize:
             Task {
@@ -1242,17 +1245,17 @@ struct ReaderView: View {
                 catch { actionError = error.localizedDescription }
             }
         case .openSummarizeMenu:
-            guard viewModel.bookStatus != "processing" else { return }
+            guard viewModel.canGenerateContent else { return }
             setChromeMode(.revealed)
             showSummarizePopover.toggle()
         case .regenerateSegment:
             regenerateCurrentSegment()
         case .openSegmentMenu:
-            guard viewModel.bookStatus != "processing" else { return }
+            guard viewModel.canGenerateContent else { return }
             setChromeMode(.revealed)
             showSegmentPopover.toggle()
         case .adjustBoundary:
-            guard viewModel.bookStatus != "processing" else { return }
+            guard viewModel.canGenerateContent else { return }
             openBoundaryEditor()
         case .toggleListen:
             toggleListenShortcut()
@@ -1351,10 +1354,14 @@ struct ReaderView: View {
 
     private func regenerateCurrentSegment() {
         let idx = topSegmentIdx ?? viewModel.selectedIdx ?? viewModel.segments.first?.idx
-        guard let idx, viewModel.bookStatus != "processing" else { return }
+        guard let idx, viewModel.canGenerateContent else { return }
         Task {
             do {
-                try await viewModel.retrySegment(idx, summaryTier: .normal, core: core)
+                if idx == BookReadingItem.introIndex {
+                    try await viewModel.requestBookIntro(core: core)
+                } else {
+                    try await viewModel.retrySegment(idx, summaryTier: .normal, core: core)
+                }
             } catch {
                 actionError = error.localizedDescription
             }
@@ -1465,6 +1472,13 @@ struct ReaderView: View {
                     .accessibilityHidden(true)
 
                 LazyVStack(alignment: .leading, spacing: segmentFeedGap) {
+                    if viewModel.isTrashed {
+                        Text("垃圾桶中的书籍 · 恢复到书架后可继续生成摘要和分段")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .padding(.horizontal, LuminaTheme.summaryPadding)
+                            .padding(.vertical, 8)
+                    }
                     if let error = viewModel.loadError {
                         loadErrorContent(error)
                     } else if viewModel.bookStatus == "processing" {
@@ -1493,6 +1507,9 @@ struct ReaderView: View {
                                 "search-focus-\(focus.idx)-\(originalSearchIndex)"
                             )
                     } else if fullscreenFeedGated {
+                        if (fullscreenFeedPin ?? topSegmentIdx) == BookReadingItem.introIndex {
+                            introReadingBlock
+                        }
                         // System fullscreen transition: full ForEach re-evaluates
                         // thousands of rows and freezes MainActor — slice only.
                         ForEach(
@@ -1505,23 +1522,7 @@ struct ReaderView: View {
                             segmentBlock(for: seg)
                         }
                     } else {
-                        if let intro = viewModel.bookIntro, intro.isVisibleInFeed {
-                            IntroReadingBlock(
-                                contentMode: contentMode,
-                                intro: intro,
-                                onFollowUp: { question in
-                                    openOverlay(.chat, engaged: true)
-                                    Task { await viewModel.sendChat(question, core: core) }
-                                },
-                                onRetry: {
-                                    Task {
-                                        do { try await viewModel.requestBookIntro(core: core) }
-                                        catch { actionError = error.localizedDescription }
-                                    }
-                                }
-                            )
-                            .id("book-intro")
-                        }
+                        introReadingBlock
                         // Compat full slim catalog (no around) — intentional d383158.
                         ForEach(viewModel.segments, id: \.idx) { seg in
                             segmentBlock(for: seg)
@@ -1662,6 +1663,41 @@ struct ReaderView: View {
         }
     }
 
+    @ViewBuilder
+    private var introReadingBlock: some View {
+        if let intro = viewModel.bookIntro {
+            IntroReadingBlock(
+                contentMode: listenTargetModeForIntro,
+                intro: intro,
+                onFollowUp: { question in
+                    navigateToSegment(BookReadingItem.introIndex, suspendProgress: false)
+                    viewModel.chatScope = .segment
+                    openOverlay(.chat, engaged: true)
+                    Task { await viewModel.sendChat(question, core: core) }
+                },
+                onRetry: viewModel.isTrashed ? nil : {
+                    Task {
+                        do { try await viewModel.requestBookIntro(core: core) }
+                        catch { actionError = error.localizedDescription }
+                    }
+                },
+                onNext: { turnSegment(from: BookReadingItem.introIndex, delta: 1) },
+                listenHighlight: listenSession.isActive && listenSession.currentIdx == BookReadingItem.introIndex
+                    ? listenSession.activeHighlight : nil
+            )
+            .readerSelectionNoteAnchor(ReaderSelectionNoteAnchor(bookId: bookId, segmentId: nil))
+            .id(BookReadingItem.introIndex)
+        }
+    }
+
+    private var listenTargetModeForIntro: ReaderContentMode {
+        ListenChromePolicy.isShowingOriginal(
+            contentMode: contentMode,
+            sourceExpanded: expandedSourceSegments.contains(BookReadingItem.introIndex),
+            summaryExpanded: expandedSummarySegments.contains(BookReadingItem.introIndex)
+        ) ? .original : .summary
+    }
+
     private func toggleSource(for idx: Int) {
         LuminaSelectionActionPopover.dismiss()
         if expandedSourceSegments.contains(idx) {
@@ -1672,7 +1708,7 @@ struct ReaderView: View {
             withAnimation(.easeOut(duration: 0.2)) {
                 expandedSourceSegments.insert(idx)
             }
-            viewModel.fetchSource(idx: idx, core: core)
+            if idx != BookReadingItem.introIndex { viewModel.fetchSource(idx: idx, core: core) }
         }
     }
 
@@ -1737,6 +1773,7 @@ struct ReaderView: View {
                     catch { actionError = error.localizedDescription }
                 }
             },
+            canGenerateSummary: !viewModel.isTrashed,
             canGoPrev: viewModel.canNavigateSegment(from: idx, delta: -1),
             canGoNext: viewModel.canNavigateSegment(from: idx, delta: 1)
                 || SegmentTurnNavigation.endOfBookNotice(
@@ -1746,7 +1783,7 @@ struct ReaderView: View {
                 ) != nil,
             onPrevSegment: { turnSegment(from: idx, delta: -1) },
             onNextSegment: { turnSegment(from: idx, delta: 1) },
-            onAdjustBoundary: isLast ? nil : { openBoundaryEditor(at: idx) },
+            onAdjustBoundary: isLast || viewModel.isTrashed ? nil : { openBoundaryEditor(at: idx) },
             onSourceAppear: contentMode == .original
                 ? {
                     if OriginalSearchHighlight.allowsNeighbourSourceFetch(
@@ -1862,7 +1899,7 @@ struct ReaderView: View {
                     .font(.caption)
                     .buttonStyle(.plain)
                     .foregroundStyle(LuminaTheme.accent)
-                    .disabled(viewModel.summaryReadyCount == 0)
+                    .disabled(viewModel.summaryReadyCount == 0 && viewModel.bookIntro?.status != "ready")
 
                     Button {
                         viewModel.toggleOutlineBulk()
@@ -1901,7 +1938,7 @@ struct ReaderView: View {
                     .font(.caption)
                     .buttonStyle(.bordered)
                     .controlSize(.small)
-                    .disabled(viewModel.checkedSegmentIndices.isEmpty)
+                    .disabled(viewModel.checkedSegmentIndices.isEmpty || viewModel.isTrashed)
 
                     Spacer(minLength: 0)
 
@@ -1933,6 +1970,7 @@ struct ReaderView: View {
     private var segmentSidebar: SegmentOutlineCatalogList {
         SegmentOutlineCatalogList(
             rows: viewModel.outlineRows,
+            introStatus: viewModel.bookIntro?.status ?? "idle",
             selectedIdx: viewModel.selectedIdx,
             isSelectionMode: viewModel.isSegmentSelectionMode,
             checkedIndices: viewModel.checkedSegmentIndices,
@@ -1952,7 +1990,8 @@ struct ReaderView: View {
                     do { try await viewModel.retryCheckedSegments(core: core) }
                     catch { actionError = error.localizedDescription }
                 }
-            }
+            },
+            canGenerateSummary: !viewModel.isTrashed
         )
     }
 
@@ -2019,6 +2058,7 @@ struct ReaderView: View {
         NotesPanel(
             bookId: bookId,
             segmentId: viewModel.currentSegment?.id,
+            isIntro: viewModel.selectedIdx == BookReadingItem.introIndex,
             refreshToken: notesRefreshToken,
             onSelectSegment: { idx in
                 navigateToSegment(idx)
@@ -2058,7 +2098,7 @@ struct ReaderView: View {
             HStack {
                 Text("深聊").font(.headline)
                 Picker("范围", selection: $viewModel.chatScope) {
-                    Text("当前段").tag(ReaderChatScope.segment)
+                    Text(viewModel.selectedIdx == BookReadingItem.introIndex ? "AI 导读" : "当前段").tag(ReaderChatScope.segment)
                     Text(viewModel.bookChatPickerLabel).tag(ReaderChatScope.book)
                 }
                 .pickerStyle(.segmented)
@@ -3266,6 +3306,8 @@ final class ReaderViewModel: ObservableObject {
     @Published var chunkTargetChars: Int?
     @Published var suggestedChunkTarget: Int?
     @Published private(set) var bookStatus = "unread"
+    @Published private(set) var isTrashed = false
+    var canGenerateContent: Bool { !isTrashed && bookStatus != "processing" }
     @Published private(set) var isResegmenting = false
     @Published private(set) var isResegmentCancelling = false
     @Published private(set) var isIngestCancelling = false
@@ -3442,7 +3484,14 @@ final class ReaderViewModel: ObservableObject {
     }
 
     func neighbourSegmentIdx(from idx: Int, delta: Int) -> Int? {
-        SegmentTurnNavigation.targetIdx(
+        if idx == BookReadingItem.introIndex {
+            let position = delta - 1
+            return sortedSegmentIdxs.indices.contains(position) ? sortedSegmentIdxs[position] : nil
+        }
+        if delta == -1, idx == sortedSegmentIdxs.first {
+            return BookReadingItem.introIndex
+        }
+        return SegmentTurnNavigation.targetIdx(
             current: idx,
             delta: delta,
             sortedIdxs: sortedSegmentIdxs
@@ -3494,7 +3543,7 @@ final class ReaderViewModel: ObservableObject {
     }
 
     var chatPlaceholder: String {
-        chatScope == .book ? "问全书…" : "针对本段提问…"
+        chatScope == .book ? "问全书…" : (selectedIdx == BookReadingItem.introIndex ? "针对 AI 导读提问…" : "针对本段提问…")
     }
 
     func parsedSummary(for idx: Int) -> ParsedSummary? {
@@ -3507,6 +3556,24 @@ final class ReaderViewModel: ObservableObject {
         core: CoreClient,
         chapterContext: ListenChapterSpeakContext = .sessionStart
     ) async -> ListenScript {
+        if idx == BookReadingItem.introIndex {
+            // Wait for the intro being generated, with cancellation on stop/jump.
+            while bookIntro?.status == "pending" {
+                do { try await Task.sleep(nanoseconds: 1_000_000_000) }
+                catch { return .notReady(mode, reason: "intro_not_ready") }
+                await refreshBookIntro(core: core)
+                if Task.isCancelled { return .notReady(mode, reason: "intro_not_ready") }
+            }
+            guard let intro = bookIntro, intro.status == "ready" else {
+                return .notReady(mode, reason: "intro_not_ready")
+            }
+            return ListenScript.build(
+                mode: mode,
+                summary: intro.summaryJSONString.flatMap { ParsedSummary(json: $0) },
+                rawText: intro.source_text,
+                segmentLabel: "AI 导读"
+            )
+        }
         let seg = segments.first(where: { $0.idx == idx })
         let segmentLabel = seg?.label
         let chapter = seg?.chapter
@@ -3628,7 +3695,7 @@ final class ReaderViewModel: ObservableObject {
             collapsedOutlineByBook[self.bookId] = collapsedOutlineKeys
         }
         segments = []
-        bookIntro = nil
+        bookIntro = BookIntro(status: "idle")
         sortedSegmentIdxs = []
         outlineRows = []
         outlineRebuildCount = 0
@@ -3651,6 +3718,7 @@ final class ReaderViewModel: ObservableObject {
         bookTitle = nil
         globalTargetLanguage = "zh-CN"
         bookStatus = "unread"
+        isTrashed = false
         isResegmenting = false
         isResegmentCancelling = false
         isIngestCancelling = false
@@ -3673,6 +3741,7 @@ final class ReaderViewModel: ObservableObject {
             let settings = try await settingsTask
             try Task.checkCancellation()
             bookStatus = book.status
+            isTrashed = book.isTrashed
             isResegmenting = book.processing_kind == "resegment"
             indexStatus = book.index_status ?? "idle"
             bookSummariesComplete = book.hasCompletedSummary
@@ -3691,6 +3760,7 @@ final class ReaderViewModel: ObservableObject {
                 return
             }
 
+            async let introTask: Void = refreshBookIntro(core: core)
             async let openTask = core.openBook(id: bookId)
             // Compat full slim catalog (no around) — intentional d383158 rollback.
             async let listTask = core.listSegments(bookId: bookId)
@@ -3698,6 +3768,9 @@ final class ReaderViewModel: ObservableObject {
             try Task.checkCancellation()
             let page = try await listTask
             try Task.checkCancellation()
+            await introTask
+            try Task.checkCancellation()
+            if bookIntro?.status == "idle" { await refreshBookIntro(core: core) }
             let list = page.segments
 
             let saved = ReadingProgressStore.shared.resumeIndex(
@@ -3706,9 +3779,15 @@ final class ReaderViewModel: ObservableObject {
                 segmentCount: page.total ?? list.count
             )
             let jumpedIn = initialSegmentIndex != nil
-            let idx = initialSegmentIndex
-                ?? list.first(where: { $0.idx == saved })?.idx
-                ?? list.first?.idx
+            let opening = BookReadingItem.openingIndex(
+                saved: saved,
+                hasLocalProgress: ReadingProgressStore.shared.position(for: bookId) != nil || book.last_opened_at != nil,
+                explicit: initialSegmentIndex
+            )
+            let idx: Int? = list.isEmpty ? nil : (
+                opening == BookReadingItem.introIndex ? opening
+                    : list.first(where: { $0.idx == opening })?.idx ?? list.first?.idx
+            )
             restoreTarget = idx
             // Pin before publishing the feed: the first layout lands on `idx`.
             onResume(idx)
@@ -3725,7 +3804,6 @@ final class ReaderViewModel: ObservableObject {
             suggestedChunkTarget = book.suggested_chunk_target
             bookLanguage = book.language
             bookTargetLanguage = book.target_language
-            Task { await self.refreshBookIntro(core: core) }
             if let idx {
                 // ⌘K / note / citation open: keep the pre-jump progress on the
                 // bookshelf; only the feed scrolls to the jump target.
@@ -4097,9 +4175,7 @@ final class ReaderViewModel: ObservableObject {
 
     /// Apply list meta only — never fetch or cache raw_text / translation in `segments[]`.
     func selectSegment(_ idx: Int) {
-        if let meta = segments.first(where: { $0.idx == idx }) {
-            currentSegment = meta
-        }
+        currentSegment = segments.first(where: { $0.idx == idx })
     }
 
     /// Peek only — must not mutate LRU order during SwiftUI `body` evaluation.
@@ -4145,6 +4221,7 @@ final class ReaderViewModel: ObservableObject {
 
     /// On-demand original text; results stay in per-segment cache (not `segments[]`).
     func fetchSource(idx: Int, core: CoreClient, force: Bool = false, translationOnly: Bool = false) {
+        guard idx >= 0 else { return }
         if !force, cachedSource(for: idx) != nil { return }
 
         detailTasks[idx]?.cancel()
@@ -4254,6 +4331,10 @@ final class ReaderViewModel: ObservableObject {
         summaryTier: SummaryTier? = nil,
         core: CoreClient
     ) async throws {
+        guard !isTrashed else {
+            throw NSError(domain: "Lumina.Trash", code: 1,
+                          userInfo: [NSLocalizedDescriptionKey: "请先从垃圾桶恢复这本书，再进行此操作"])
+        }
         try await core.retrySegment(
             bookId: bookId,
             idx: idx,
@@ -4368,6 +4449,10 @@ final class ReaderViewModel: ObservableObject {
     }
 
     func retryCheckedSegments(core: CoreClient) async throws {
+        guard !isTrashed else {
+            throw NSError(domain: "Lumina.Trash", code: 1,
+                          userInfo: [NSLocalizedDescriptionKey: "请先从垃圾桶恢复这本书，再进行此操作"])
+        }
         let indices = Array(checkedSegmentIndices).sorted()
         guard !indices.isEmpty else { return }
         try await core.retrySegments(bookId: bookId, indices: indices)
@@ -4381,26 +4466,38 @@ final class ReaderViewModel: ObservableObject {
 
     func refreshBookIntro(core: CoreClient) async {
         guard !bookId.isEmpty else { return }
+        let requestedBookId = bookId
         do {
-            let intro = try await core.fetchBookIntro(bookId: bookId)
+            let intro = try await core.fetchBookIntro(bookId: requestedBookId)
+            guard bookId == requestedBookId, !Task.isCancelled else { return }
             applyBookIntro(intro)
         } catch {
-            // Soft-fail: intro is optional and must never block reading.
+            // Keep a visible retry entry when loading the intro fails.
+            guard bookId == requestedBookId, !Task.isCancelled else { return }
+            if bookIntro?.status != "ready" {
+                applyBookIntro(BookIntro(status: "failed", error: "AI 导读加载失败，请重试"))
+            }
         }
     }
 
     func requestBookIntro(core: CoreClient) async throws {
-        let intro = try await core.generateBookIntro(bookId: bookId)
+        guard !isTrashed else {
+            throw NSError(domain: "Lumina.Trash", code: 1,
+                          userInfo: [NSLocalizedDescriptionKey: "请先从垃圾桶恢复这本书，再进行此操作"])
+        }
+        let requestedBookId = bookId
+        let intro = try await core.generateBookIntro(bookId: requestedBookId)
+        guard bookId == requestedBookId, !Task.isCancelled else { return }
         applyBookIntro(intro)
     }
 
     func applyBookIntro(_ intro: BookIntro) {
-        // idle/skipped stay nil so the feed does not reserve space.
-        if intro.isVisibleInFeed || intro.status == "pending" {
-            bookIntro = intro
-        } else {
-            bookIntro = nil
-        }
+        guard intro.book_id == nil || intro.book_id == bookId else { return }
+        // A GET started before generation must not overwrite a newer SSE state.
+        if let current = bookIntro, current.status != "idle", intro.status == "idle" { return }
+        if let currentDate = bookIntro?.updated_at, let incomingDate = intro.updated_at,
+           incomingDate < currentDate { return }
+        bookIntro = intro
     }
 
     func applyBookIntroEvent(_ event: [String: Any]) {
@@ -4421,6 +4518,10 @@ final class ReaderViewModel: ObservableObject {
     func regenerateAllSummaries(
         core: CoreClient, summaryTier: SummaryTier = .normal
     ) async throws {
+        guard !isTrashed else {
+            throw NSError(domain: "Lumina.Trash", code: 1,
+                          userInfo: [NSLocalizedDescriptionKey: "请先从垃圾桶恢复这本书，再进行此操作"])
+        }
         try await core.regenerateBookSummaries(
             bookId: bookId, summaryTier: summaryTier
         )
@@ -4603,7 +4704,8 @@ final class ReaderViewModel: ObservableObject {
     }
 
     func saveAsNote(_ content: String, core: CoreClient) async throws {
-        guard let segmentId = currentSegment?.id else {
+        let segmentId = selectedIdx == BookReadingItem.introIndex ? nil : currentSegment?.id
+        guard selectedIdx == BookReadingItem.introIndex || segmentId != nil else {
             throw NSError(
                 domain: "Lumina",
                 code: 1,
